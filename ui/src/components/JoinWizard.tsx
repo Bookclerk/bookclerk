@@ -158,7 +158,7 @@ export function JoinWizard({ defaultBranchName, onJoined, onCancel }: JoinWizard
             aria-selected={tab === id}
             className={cn(
               "flex-1 rounded px-3 py-1.5 text-sm font-medium transition-colors",
-              tab === id ? "bg-ink text-paper shadow-sm" : "text-ink/60 hover:text-ink",
+              tab === id ? "bg-ink text-paper shadow-sm" : "text-ink/70 hover:text-ink",
             )}
             onClick={() => {
               setTab(id);
@@ -192,7 +192,7 @@ export function JoinWizard({ defaultBranchName, onJoined, onCancel }: JoinWizard
                 Continue
               </Button>
             </div>
-            <p className="text-xs text-ink/50">
+            <p className="text-xs text-ink/70">
               The address you use to open that library in a browser. This server reads it, not your
               browser.
             </p>
@@ -207,7 +207,7 @@ export function JoinWizard({ defaultBranchName, onJoined, onCancel }: JoinWizard
             <div className="space-y-4 rounded-md border border-ink/10 bg-paper p-4">
               <p className="text-sm text-ink">
                 Found <strong>{library.library_name}</strong>{" "}
-                <span className="text-ink/50">({library.origin})</span>
+                <span className="text-ink/70">({library.origin})</span>
               </p>
               {library.needs_fingerprint && library.fingerprint ? (
                 <div className="space-y-2">
@@ -239,7 +239,7 @@ export function JoinWizard({ defaultBranchName, onJoined, onCancel }: JoinWizard
                   onChange={(e) => setBranchName(e.target.value)}
                   disabled={busy}
                 />
-                <p className="text-xs text-ink/50">The library's users see this name.</p>
+                <p className="text-xs text-ink/70">The library's users see this name.</p>
               </div>
               {sharedBranchEligible ? (
                 <div className="space-y-2">
@@ -256,7 +256,7 @@ export function JoinWizard({ defaultBranchName, onJoined, onCancel }: JoinWizard
                     />
                     <span>
                       <span className="block font-medium">Offer to join as a shared branch</span>
-                      <span className="block text-ink/55">
+                      <span className="block text-ink/70">
                         This server would share the library's database and keys instead of keeping
                         its own. Only an Owner of the library can choose it, and only when the
                         library uses PostgreSQL or Cloudflare D1. Otherwise this server joins as a
@@ -306,7 +306,7 @@ export function JoinWizard({ defaultBranchName, onJoined, onCancel }: JoinWizard
             onChange={(e) => setInvite(e.target.value)}
             disabled={busy}
           />
-          <p className="text-xs text-ink/50">
+          <p className="text-xs text-ink/70">
             Someone on the library made this with <strong>Add a branch</strong>. It works once, and
             this page does not keep it.
           </p>
@@ -317,7 +317,7 @@ export function JoinWizard({ defaultBranchName, onJoined, onCancel }: JoinWizard
       )}
 
       {error ? (
-        <p className="text-sm font-medium text-brick" role="alert">
+        <p className="text-sm font-medium text-brick-text" role="alert">
           {error}
         </p>
       ) : null}

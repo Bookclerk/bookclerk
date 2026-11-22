@@ -97,10 +97,10 @@ export function PlayerPasswordsSection() {
     <section className="space-y-3">
       <div className="space-y-1">
         <h2 className="flex items-center gap-2 text-lg font-semibold text-ink">
-          <Headphones className="h-4 w-4 text-ink/50" />
+          <Headphones className="h-4 w-4 text-ink/70" />
           Player apps
         </h2>
-        <p className="text-sm text-ink/55">
+        <p className="text-sm text-ink/70">
           Listen in apps made for Audiobookshelf servers. Use{" "}
           <span className="font-mono text-xs">{server}</span> as the server address, your sign-in
           name, and a player password from here. Your account password never works in an app.
@@ -135,7 +135,7 @@ export function PlayerPasswordsSection() {
         </div>
       ) : null}
       {error ? (
-        <p className="text-sm font-medium text-brick" role="alert">
+        <p className="text-sm font-medium text-brick-text" role="alert">
           {error}
         </p>
       ) : null}
@@ -145,7 +145,7 @@ export function PlayerPasswordsSection() {
             <li key={password.id} className="flex items-center justify-between gap-3 p-3">
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium text-ink">{password.label}</p>
-                <p className="text-xs text-ink/50">
+                <p className="text-xs text-ink/70">
                   Made {when(password.created_at)} · Last used {when(password.last_used_at)}
                 </p>
               </div>

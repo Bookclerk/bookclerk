@@ -77,7 +77,7 @@ export function RecoveryCopyForm({
   }
 
   const errorLine = error ? (
-    <p className="text-sm font-medium text-brick" role="alert">
+    <p className="text-sm font-medium text-brick-text" role="alert">
       {error}
     </p>
   ) : null;
@@ -161,7 +161,7 @@ export function RecoveryCopyForm({
           disabled={busy}
           onChange={(e) => setConfirm(e.target.value)}
         />
-        <p className="text-xs text-ink/50">
+        <p className="text-xs text-ink/70">
           At least {MIN_RECOVERY_PASSWORD_CHARS} characters. Without it the copy can't be restored,
           and nobody can reset it.
         </p>
@@ -327,7 +327,7 @@ export function RecoveryCopySetupStep({
     };
   }, [load]);
 
-  if (!asking) return <p className="text-sm text-ink/50">Checking the library key…</p>;
+  if (!asking) return <p className="text-sm text-ink/70">Checking the library key…</p>;
   return (
     <RecoveryCopyForm
       download={download}

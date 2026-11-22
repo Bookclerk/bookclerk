@@ -108,7 +108,7 @@ function UserAgentGrant({
   return (
     <div className="space-y-2 text-sm text-ink">
       <p className="font-medium">User-Agent</p>
-      <p className="text-xs text-ink/55">Requests identify as {agent}.</p>
+      <p className="text-xs text-ink/70">Requests identify as {agent}.</p>
       {requested.length > 0 ? (
         <>
           <p className="text-xs text-ink/70">
@@ -214,20 +214,20 @@ function ConsentSection({
       >
         <ChevronDown
           className={cn(
-            "mt-0.5 h-4 w-4 shrink-0 text-ink/45 transition-transform duration-200",
+            "mt-0.5 h-4 w-4 shrink-0 text-ink/70 transition-transform duration-200",
             open ? "rotate-0" : "-rotate-90",
           )}
           aria-hidden
         />
         <span
-          className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center text-teal"
+          className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center text-teal-text"
           aria-hidden
         >
           {icon}
         </span>
         <span className="min-w-0 flex-1">
           <span className="block text-sm font-semibold text-ink">{title}</span>
-          <span className="mt-0.5 block text-sm leading-snug text-ink/55">{summary}</span>
+          <span className="mt-0.5 block text-sm leading-snug text-ink/70">{summary}</span>
           {!open && preview ? <div className="mt-2">{preview}</div> : null}
         </span>
       </button>
@@ -298,7 +298,7 @@ function SettingDestinationsGrant({
   return (
     <div className="space-y-2 border-b border-ink/10 py-3.5 pl-8 text-sm text-ink">
       <p className="font-medium">Destinations from settings</p>
-      <p className="text-xs text-ink/55">
+      <p className="text-xs text-ink/70">
         These come from the plugin&apos;s settings. Changing a setting replaces its destination, and
         the new one waits for your approval.
       </p>
@@ -308,7 +308,7 @@ function SettingDestinationsGrant({
           const rowKey = `${row.instanceId ?? "default"}:${row.setting}`;
           if (!row.destination) {
             return (
-              <li key={rowKey} className="text-xs text-ink/55">
+              <li key={rowKey} className="text-xs text-ink/70">
                 <span className="font-medium text-ink/70">{row.label}</span>:{" "}
                 {row.state === "invalid" ? (row.error ?? "invalid value") : "not set"}
               </li>
@@ -327,13 +327,13 @@ function SettingDestinationsGrant({
                 />
                 <span className="min-w-0">
                   <span className="font-mono text-[13px]">{row.destination}</span>{" "}
-                  <span className="text-xs text-ink/55">
+                  <span className="text-xs text-ink/70">
                     {row.network === "fetch" ? "HTTP" : "TCP"} · from {row.label}
                     {row.state === "pending" ? " · new" : ""}
                   </span>
-                  {scope ? <span className="block text-xs text-ink/55">{scope}</span> : null}
+                  {scope ? <span className="block text-xs text-ink/70">{scope}</span> : null}
                   {row.tls === false && row.scope !== "localAddress" ? (
-                    <span className="block text-xs text-ink/55">
+                    <span className="block text-xs text-ink/70">
                       Not encrypted: the plugin trusts your network&apos;s DNS answer for this name.
                     </span>
                   ) : null}
@@ -669,15 +669,18 @@ export function PluginConsentDialog({
               />
             ) : (
               <div
-                className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-sm font-semibold uppercase text-paper"
-                style={{ background: brand?.bg || "var(--color-ink)" }}
+                className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-sm font-semibold uppercase"
+                style={{
+                  background: brand?.bg || "var(--color-ink)",
+                  color: brand?.fg || "var(--color-paper)",
+                }}
               >
                 {brandName.slice(0, 2)}
               </div>
             )}
             <div className="min-w-0">
               <p className="truncate text-base font-semibold text-ink">{brandName}</p>
-              <p className="truncate text-xs text-ink/50">
+              <p className="truncate text-xs text-ink/70">
                 {[
                   request.entrypoints?.length ? request.entrypoints.join(" · ") : "plugin",
                   isWorkerd ? "workerd" : "native",
@@ -688,7 +691,7 @@ export function PluginConsentDialog({
               </p>
               {consent.plugin_key ? (
                 <p
-                  className="mt-1 truncate font-mono text-[10px] text-ink/40"
+                  className="mt-1 truncate font-mono text-[10px] text-ink/70"
                   title={consent.plugin_key}
                 >
                   {consent.plugin_key}
@@ -703,7 +706,7 @@ export function PluginConsentDialog({
           >
             Permissions requested
           </h2>
-          <p className="mt-1.5 text-sm text-ink/60">
+          <p className="mt-1.5 text-sm text-ink/70">
             Review the requested grants, then accept to enable. Expand a section to adjust advanced
             configuration.
           </p>
@@ -729,7 +732,7 @@ export function PluginConsentDialog({
               </ul>
             </div>
           ) : null}
-          <p className="pb-1 pt-3 text-[11px] font-semibold uppercase tracking-[0.08em] text-ink/45">
+          <p className="pb-1 pt-3 text-[11px] font-semibold uppercase tracking-[0.08em] text-ink/70">
             This plugin would like to
           </p>
 
@@ -748,13 +751,14 @@ export function PluginConsentDialog({
             open={openSection === "network"}
             onToggle={() => toggleSection("network")}
           >
-            <p className="text-xs text-ink/55">
+            <p className="text-xs text-ink/70">
               {isWorkerd
                 ? "The plugin's sandbox has no network of its own: every connection goes through Bookclerk, which checks it against this grant. Fetch hosts are the isolate allowlist, and you may add destinations the author omitted. TCP connect() is a separate grant. Undeclared public redirects never include loopback, private networks, or cloud metadata. A fetch host without a port reaches ports 80 and 443 only; add host:port for another."
                 : "Native guests cannot declare fetch domains. The guest's sandbox has no network of its own: outbound TCP goes through Bookclerk's socket proxy, with the same policy as workerd connect()."}
             </p>
             <select
               className="w-full rounded-md border border-ink/15 bg-card-strong px-3 py-2 text-sm text-ink shadow-sm focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/30"
+              aria-label="Network access"
               value={networkMode}
               disabled={busy}
               onChange={(e) => setNetworkMode(e.target.value)}
@@ -782,7 +786,7 @@ export function PluginConsentDialog({
                           "rounded-md border px-2 py-1 text-xs font-medium transition-colors",
                           checked
                             ? "border-teal/40 bg-teal/15 text-ink"
-                            : "border-ink/10 bg-paper/80 text-ink/55",
+                            : "border-ink/10 bg-paper/80 text-ink/70",
                         )}
                         onClick={() =>
                           setDomains((current) =>
@@ -874,7 +878,7 @@ export function PluginConsentDialog({
                 </div>
                 <div className="space-y-2">
                   <p className="text-xs font-medium text-ink/70">Address-space CIDRs</p>
-                  <p className="text-xs text-ink/50">
+                  <p className="text-xs text-ink/70">
                     Default is public Internet only. Grant loopback, RFC1918, or link-local
                     explicitly (`127.0.0.1/32`, `10.0.0.0/8`).
                   </p>
@@ -929,7 +933,7 @@ export function PluginConsentDialog({
                     />
                     <span>
                       Allow redirects to undeclared public destinations
-                      <span className="mt-0.5 block text-xs text-ink/50">
+                      <span className="mt-0.5 block text-xs text-ink/70">
                         Still cannot reach loopback, RFC1918, link-local, or metadata without a CIDR
                         grant.
                       </span>
@@ -970,7 +974,7 @@ export function PluginConsentDialog({
             open={openSection === "bindings"}
             onToggle={() => toggleSection("bindings")}
           >
-            <p className="text-xs text-ink/55">
+            <p className="text-xs text-ink/70">
               Shared by native and workerd guests. Grant or remove bindings relative to the plugin
               request.
             </p>
@@ -995,9 +999,11 @@ export function PluginConsentDialog({
                         }
                       />
                       <span className="flex items-center gap-1.5">
-                        {checked ? <Check className="h-3.5 w-3.5 text-teal" aria-hidden /> : null}
+                        {checked ? (
+                          <Check className="h-3.5 w-3.5 text-teal-text" aria-hidden />
+                        ) : null}
                         <span>{binding}</span>
-                        {!requested ? <span className="text-xs text-ink/40">extra</span> : null}
+                        {!requested ? <span className="text-xs text-ink/70">extra</span> : null}
                       </span>
                     </label>
                   </li>
@@ -1014,7 +1020,7 @@ export function PluginConsentDialog({
             open={openSection === "resources"}
             onToggle={() => toggleSection("resources")}
           >
-            <p className="text-xs text-ink/55">
+            <p className="text-xs text-ink/70">
               {isWorkerd
                 ? "Memory and disk apply via the OS jail. Process headroom is host-managed. Isolate CPU is configured separately."
                 : "Applied via the OS jail. CPU is cores (1.00 = one logical CPU). Additional processes/threads are beyond the main guest (Linux counts threads). Disk budgets cover each of data/ and tmp/."}
@@ -1030,7 +1036,7 @@ export function PluginConsentDialog({
                   disabled={busy}
                   onChange={(e) => setMemoryMib(e.target.value)}
                 />
-                <span className="block text-xs font-normal text-ink/50">
+                <span className="block text-xs font-normal text-ink/70">
                   Max {limits.max_memory_mib}
                 </span>
               </label>
@@ -1045,7 +1051,7 @@ export function PluginConsentDialog({
                     disabled={busy}
                     onChange={(e) => setExtraProcesses(e.target.value)}
                   />
-                  <span className="block text-xs font-normal text-ink/50">
+                  <span className="block text-xs font-normal text-ink/70">
                     Beyond the main guest process. Max {limits.max_extra_processes}
                   </span>
                 </label>
@@ -1060,7 +1066,7 @@ export function PluginConsentDialog({
                   disabled={busy}
                   onChange={(e) => setDiskMib(e.target.value)}
                 />
-                <span className="block text-xs font-normal text-ink/50">
+                <span className="block text-xs font-normal text-ink/70">
                   Max {limits.max_disk_mib} (each for data/ and tmp/)
                 </span>
               </label>
@@ -1088,7 +1094,7 @@ export function PluginConsentDialog({
               open={openSection === "workerd"}
               onToggle={() => toggleSection("workerd")}
             >
-              <p className="text-xs text-ink/55">
+              <p className="text-xs text-ink/70">
                 Workerd CPU soft budget and egress subrequest budget. Host maxes:{" "}
                 {limits.max_cpu_ms.toLocaleString()} ms / {limits.max_subrequests.toLocaleString()}{" "}
                 subrequests.
@@ -1129,7 +1135,7 @@ export function PluginConsentDialog({
               open={openSection === "flags"}
               onToggle={() => toggleSection("flags")}
             >
-              <p className="text-xs text-ink/55">
+              <p className="text-xs text-ink/70">
                 Workerd-only. Add or remove flags relative to the plugin request.
               </p>
               <ul className="space-y-2">
@@ -1186,12 +1192,12 @@ export function PluginConsentDialog({
             </ConsentSection>
           ) : null}
 
-          <p className="border-t border-ink/10 py-4 text-xs leading-relaxed text-ink/55">
+          <p className="border-t border-ink/10 py-4 text-xs leading-relaxed text-ink/70">
             Approving enables this plugin under the grant you configure. Removing capabilities the
             guest needs may break it. Bookclerk enforces the grant; it does not guarantee guest
             behaviour afterward.
             {consent.covered ? (
-              <span className="mt-1 block text-teal">
+              <span className="mt-1 block text-teal-text">
                 A covering grant is already stored; saving updates it.
               </span>
             ) : null}

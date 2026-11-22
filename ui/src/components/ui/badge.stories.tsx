@@ -21,7 +21,7 @@ export const Tones: Story = {
   render: () => (
     <div className="flex flex-wrap gap-2">
       <Badge className="bg-teal/15 text-ink">Owned</Badge>
-      <Badge className="bg-brick/10 text-brick">Failed</Badge>
+      <Badge className="bg-brick/10 text-brick-text">Failed</Badge>
       <Badge className="bg-ink text-paper">New</Badge>
       <Badge className="bg-fold/60 text-ink">Wishlist</Badge>
     </div>

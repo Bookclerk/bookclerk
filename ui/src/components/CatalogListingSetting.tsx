@@ -77,7 +77,7 @@ export function CatalogListingSetting() {
         />
         <span>
           <span className="block font-medium">List my books to joined libraries</span>
-          <span className="block text-xs text-ink/55">
+          <span className="block text-xs text-ink/70">
             This server is a branch of {joined}. When one asks about a title, it hears that this
             branch can supply it if you have it. Nothing is sent until it asks, and only which book
             and store, never your account. Turning this off can take up to two days to reach the
@@ -86,7 +86,7 @@ export function CatalogListingSetting() {
         </span>
       </label>
       {error ? (
-        <p className="text-xs font-medium text-brick" role="alert">
+        <p className="text-xs font-medium text-brick-text" role="alert">
           {error}
         </p>
       ) : null}

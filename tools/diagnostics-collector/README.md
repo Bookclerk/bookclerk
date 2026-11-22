@@ -32,7 +32,8 @@ is under `dashboard/`, its D1 schema under `migrations/`, and its styles,
 script and fonts under `public/static/`. `visual/serve.ts` renders every page
 template from fixed sample data for the web UI's visual and accessibility
 checks (`docs/contributing/ui/visual-testing.md`); a new page template gets a
-sample there and an entry in `visual/pages.ts`.
+sample there and an entry in `visual/pages.ts`, which also lists the building
+blocks (cards, tables, forms) screenshotted on their own.
 
 Each `/submit` is assigned a **`report_id` UUID**; the B2 object is
 `diagnostics/<version>/<report_id>.json`. Triage issues list these IDs

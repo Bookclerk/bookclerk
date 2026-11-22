@@ -24,7 +24,7 @@ export function WaveformThrobber({
   return (
     <svg
       viewBox="0 0 79 114"
-      className={cn("text-brick", dim, className)}
+      className={cn("text-brick-text", dim, className)}
       aria-hidden
       focusable="false"
     >

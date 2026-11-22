@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { Ban, Settings2, X } from "lucide-react";
+import { Ban, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StoreLogo } from "@/components/StoreLogo";
 import {
@@ -26,29 +26,10 @@ import {
   ShelvesChangeRegistrationContext,
   type ShelvesListener,
 } from "@/components/preferencesContext";
-import { usePreferences } from "@/components/usePreferences";
 import { ThemePreferenceControl, useTheme } from "@/components/ThemeProvider";
 import type { ThemePreference } from "@/lib/theme";
 
 const LANG_BROWSER = "__browser__";
-
-/**
- * Header control that opens the preferences dialog — safe on every authenticated page.
- */
-export function PreferencesButton() {
-  const { openPreferences, preferencesOpen } = usePreferences();
-  return (
-    <Button
-      variant="ghost"
-      onClick={openPreferences}
-      aria-label="Preferences"
-      aria-haspopup="dialog"
-      aria-expanded={preferencesOpen}
-    >
-      <Settings2 className="h-4 w-4" />
-    </Button>
-  );
-}
 
 /**
  * Provides preferences state and dialog for authenticated app chrome.
@@ -282,7 +263,7 @@ function PreferencesDialog({
             <h2 id={titleId} className="font-display text-xl font-semibold text-ink">
               Preferences
             </h2>
-            <p className="mt-1 text-sm text-ink/55">
+            <p className="mt-1 text-sm text-ink/70">
               Saved to your Bookclerk profile for this account.
             </p>
           </div>
@@ -297,18 +278,18 @@ function PreferencesDialog({
         </div>
 
         {error ? (
-          <p className="mb-4 text-sm font-medium text-brick" role="alert">
+          <p className="mb-4 text-sm font-medium text-brick-text" role="alert">
             {error}
           </p>
         ) : null}
 
         {loading ? (
-          <p className="text-sm text-ink/50">Loading preferences…</p>
+          <p className="text-sm text-ink/70">Loading preferences…</p>
         ) : (
           <div className="space-y-6">
             <div className="space-y-2">
               <h3 className="text-base font-semibold text-ink">Appearance</h3>
-              <p className="text-sm text-ink/55">
+              <p className="text-sm text-ink/70">
                 Follows this device when set to System. Light is the designed look; Dark adapts the
                 same palette.
               </p>
@@ -321,7 +302,7 @@ function PreferencesDialog({
 
             <div className="space-y-2">
               <h3 className="text-base font-semibold text-ink">Default view</h3>
-              <p className="text-sm text-ink/55">Where this account opens after sign-in.</p>
+              <p className="text-sm text-ink/70">Where this account opens after sign-in.</p>
               <div className="flex flex-wrap gap-2">
                 {(
                   [
@@ -346,7 +327,7 @@ function PreferencesDialog({
             <div className="space-y-3">
               <div>
                 <h3 className="text-base font-semibold text-ink">Discover defaults</h3>
-                <p className="text-sm text-ink/55">
+                <p className="text-sm text-ink/70">
                   Applied when you open a catalog search. New stores stay included unless you
                   uncheck them here.
                 </p>
@@ -419,13 +400,13 @@ function PreferencesDialog({
               </div>
               <div className="space-y-2">
                 <p className="text-sm font-medium text-ink">Stores to include</p>
-                <p className="text-xs text-ink/50">
+                <p className="text-xs text-ink/70">
                   Only enabled storefront plugins appear here. Exclusions for disabled stores are
                   kept and apply again if re-enabled.
                 </p>
                 {enabledSources.length === 0 ? (
-                  <p className="flex items-center gap-2 text-sm text-ink/55">
-                    <Ban className="h-4 w-4 shrink-0 text-ink/40" aria-hidden />
+                  <p className="flex items-center gap-2 text-sm text-ink/70">
+                    <Ban className="h-4 w-4 shrink-0 text-ink/70" aria-hidden />
                     <span>None</span>
                   </p>
                 ) : (
@@ -457,7 +438,7 @@ function PreferencesDialog({
               <div className="space-y-3">
                 <div>
                   <h3 className="text-base font-semibold text-ink">Shelves to show</h3>
-                  <p className="text-sm text-ink/55">
+                  <p className="text-sm text-ink/70">
                     All shelves are on by default. Uncheck any you want to hide for this account.
                   </p>
                 </div>
@@ -476,7 +457,7 @@ function PreferencesDialog({
                           />
                           <span>
                             <span className="font-medium">{kind.label}</span>
-                            <span className="block text-xs text-ink/45">{kind.id}</span>
+                            <span className="block text-xs text-ink/70">{kind.id}</span>
                           </span>
                         </label>
                       </li>

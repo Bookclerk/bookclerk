@@ -68,7 +68,7 @@ export function DiagnosticsSharingFields({
             <label htmlFor={row.id} className="text-sm font-medium text-ink">
               {row.label}
             </label>
-            <p className="text-xs text-ink/50">{row.description}</p>
+            <p className="text-xs text-ink/70">{row.description}</p>
           </div>
           <input
             id={row.id}
@@ -106,7 +106,7 @@ export function DiagnosticsReportPanel({ lookup }: DiagnosticsReportPanelProps) 
             <li key={issue.number}>
               {isHttpsLink(issue.url) ? (
                 <a
-                  className="text-teal underline-offset-2 hover:underline"
+                  className="text-teal-text underline-offset-2 hover:underline"
                   href={issue.url}
                   target="_blank"
                   rel="noreferrer noopener"
@@ -118,7 +118,7 @@ export function DiagnosticsReportPanel({ lookup }: DiagnosticsReportPanelProps) 
                   #{issue.number} {issue.title}
                 </span>
               )}{" "}
-              <span className="text-ink/50">({issue.state})</span>
+              <span className="text-ink/70">({issue.state})</span>
             </li>
           ))}
         </ul>
@@ -132,7 +132,7 @@ export function DiagnosticsReportPanel({ lookup }: DiagnosticsReportPanelProps) 
               {" by "}
               {isHttpsLink(fix.pr_url) ? (
                 <a
-                  className="text-teal underline-offset-2 hover:underline"
+                  className="text-teal-text underline-offset-2 hover:underline"
                   href={fix.pr_url}
                   target="_blank"
                   rel="noreferrer noopener"
@@ -155,17 +155,19 @@ export function DiagnosticsReportPanel({ lookup }: DiagnosticsReportPanelProps) 
       ) : null}
       {report ? (
         <div className="space-y-1">
-          <p className="text-ink/50">
+          <p className="text-ink/70">
             {report.version} · {report.trigger} · {report.os} {report.arch} {report.distro}
           </p>
           <ol className="max-h-80 space-y-1 overflow-y-auto font-mono">
             {report.events.map((e, i) => (
               <li key={i} className="break-words">
-                <span className="text-ink/50">{formatReportTime(e.ts_unix_ms)}</span>{" "}
-                <span className={e.level === "ERROR" ? "text-brick" : undefined}>{e.level}</span>{" "}
-                <span className="text-ink/50">{e.target}</span> {e.message}
+                <span className="text-ink/70">{formatReportTime(e.ts_unix_ms)}</span>{" "}
+                <span className={e.level === "ERROR" ? "text-brick-text" : undefined}>
+                  {e.level}
+                </span>{" "}
+                <span className="text-ink/70">{e.target}</span> {e.message}
                 {e.fields.map((f) => (
-                  <span key={f.name} className="text-ink/50">
+                  <span key={f.name} className="text-ink/70">
                     {" "}
                     {f.name}={f.value}
                   </span>
@@ -276,7 +278,7 @@ export function DiagnosticsReportsList() {
 
   if (error) {
     return (
-      <div className="flex items-center justify-between gap-3 py-3 text-sm text-ink/60">
+      <div className="flex items-center justify-between gap-3 py-3 text-sm text-ink/70">
         <span>{error}</span>
         <Button type="button" variant="secondary" className="text-sm" onClick={() => void load()}>
           Try again
@@ -285,14 +287,14 @@ export function DiagnosticsReportsList() {
     );
   }
   if (reports === null) {
-    return <p className="py-3 text-sm text-ink/50">Loading the report history…</p>;
+    return <p className="py-3 text-sm text-ink/70">Loading the report history…</p>;
   }
   if (reports.length === 0) {
-    return <p className="py-3 text-sm text-ink/50">This install has not sent a report yet.</p>;
+    return <p className="py-3 text-sm text-ink/70">This install has not sent a report yet.</p>;
   }
   return (
     <div className="py-3">
-      <p className="mb-2 text-xs text-ink/50">
+      <p className="mb-2 text-xs text-ink/70">
         View reads a report back from the collector with the issues tracking it. Delete removes the
         collector's copy and keeps its summary and issue links. If this app cannot start, the ID and
         access code (also in <code>diagnostics/reports.json</code>) open the collector's lookup
@@ -308,7 +310,7 @@ export function DiagnosticsReportsList() {
               <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
                 <div className="min-w-0 space-y-0.5">
                   <code className="block break-all font-mono text-xs text-ink">{r.report_id}</code>
-                  <span className="block text-xs text-ink/50">
+                  <span className="block text-xs text-ink/70">
                     {formatReportTime(r.sent_at_unix_ms)} · {r.trigger} · {r.version}
                     {code ? (
                       <>
@@ -365,7 +367,7 @@ export function DiagnosticsReportsList() {
                     </>
                   ) : null}
                   <a
-                    className="text-xs text-teal underline-offset-2 hover:underline"
+                    className="text-xs text-teal-text underline-offset-2 hover:underline"
                     href={diagnosticsIssueSearchUrl(r.report_id)}
                     target="_blank"
                     rel="noreferrer noopener"
@@ -401,7 +403,7 @@ export function DiagnosticsReportsList() {
                 </div>
               ) : null}
               {row?.kind === "error" ? (
-                <p className="mt-2 text-xs font-medium text-brick" role="alert">
+                <p className="mt-2 text-xs font-medium text-brick-text" role="alert">
                   {row.message}
                 </p>
               ) : null}
@@ -484,16 +486,16 @@ export function DiagnosticsSetupStep({ continueLabel, onDone }: DiagnosticsSetup
           }}
         />
       </div>
-      <p className="text-xs text-ink/50">
+      <p className="text-xs text-ink/70">
         You can change these later under Settings → Server Settings.
       </p>
       {load === "failed" ? (
-        <p className="text-sm font-medium text-brick" role="alert">
+        <p className="text-sm font-medium text-brick-text" role="alert">
           Could not load the current choices.
         </p>
       ) : null}
       {error ? (
-        <p className="text-sm font-medium text-brick" role="alert">
+        <p className="text-sm font-medium text-brick-text" role="alert">
           {error}
         </p>
       ) : null}

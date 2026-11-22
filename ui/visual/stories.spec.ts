@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import { saveRecording, startRecording } from "./coverage.ts";
 
 /** One entry of Storybook's `index.json`. */
 type IndexEntry = {
@@ -43,7 +44,8 @@ function storyIds(): string[] {
 
 for (const id of storyIds()) {
   for (const theme of THEMES) {
-    test(`${id} (${theme})`, async ({ page }) => {
+    test(`${id} (${theme})`, async ({ page }, testInfo) => {
+      await startRecording(page);
       await page.goto(`/iframe.html?id=${id}&viewMode=story&globals=theme:${theme}`);
       // Rendered: the root has an element (a story may hold no text at all).
       await expect(page.locator("#storybook-root > *").first()).toBeAttached();
@@ -75,6 +77,7 @@ for (const id of storyIds()) {
       // The story's own box, not the whole viewport: the empty page background
       // would make up most of every image (and of the baselines repository).
       await expect(page.locator("#storybook-root")).toHaveScreenshot(`${id}--${theme}.png`);
+      await saveRecording(page, testInfo);
     });
   }
 }

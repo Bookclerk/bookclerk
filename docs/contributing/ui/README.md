@@ -437,8 +437,8 @@ into `ui/public/`.
 
 ## Next steps
 
-- [Visual and accessibility testing](visual-testing.md): write a Storybook
-  story for a component, and how CI checks it.
+- [Visual and accessibility testing](visual-testing.md): how CI checks the
+  app's pages and components, and when to add a page or a story.
 - [Web app and sign-in reference](../../server/sign-in.md): the screens and
   routes the UI serves.
 - [Build from source and use the CLI](../build-from-source.md): building the

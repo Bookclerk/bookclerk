@@ -83,7 +83,7 @@ export function ClerkCallbackPage({ onOpenLibrary }: ClerkCallbackPageProps) {
   if (phase.kind === "working") {
     return (
       <JoinShell title="Signing in…" lead="Finishing the sign-in with the library.">
-        <p className="text-sm text-ink/50">One moment.</p>
+        <p className="text-sm text-ink/70">One moment.</p>
       </JoinShell>
     );
   }

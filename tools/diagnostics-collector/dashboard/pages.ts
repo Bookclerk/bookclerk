@@ -582,19 +582,19 @@ export function dailySeries(now: number, days: number, byDay: Map<number, number
 function reportRows(cfg: Repo, rows: ReportListRow[], full: boolean): SafeHtml {
   return html`${rows.map(
     (r) => html`<tr>
-      ${full ? html`<td class="pick"><input type="checkbox" form="bulk-triage" name="report" value="${r.report_id}" aria-label="Select report ${String(r.report_id).slice(0, 8)}"></td>` : ""}
-      <td class="num">${fmtTime(r.received_at)}</td>
-      <td><a class="mono" href="/reports/${r.report_id}">${String(r.report_id).slice(0, 8)}</a>${reportChips(r)}</td>
-      <td class="mono">${r.version}</td>
-      <td>${`${r.os} ${r.arch}`.trim()}</td>
-      <td>${r.trigger}</td>
-      <td class="mono wrap-any">${r.signature_label ?? "none"}</td>
+      ${full ? html`<td class="pick" data-label="Select"><input type="checkbox" form="bulk-triage" name="report" value="${r.report_id}" aria-label="Select report ${String(r.report_id).slice(0, 8)}"></td>` : ""}
+      <td class="num" data-label="Received (UTC)">${fmtTime(r.received_at)}</td>
+      <td data-label="Report"><a class="mono" href="/reports/${r.report_id}">${String(r.report_id).slice(0, 8)}</a>${reportChips(r)}</td>
+      <td class="mono" data-label="Version">${r.version}</td>
+      <td data-label="Platform">${`${r.os} ${r.arch}`.trim()}</td>
+      <td data-label="Trigger">${r.trigger}</td>
+      <td class="mono wrap-any" data-label="${full ? "Signature" : "Top error or warning"}">${targetBreaks(String(r.signature_label ?? "none"))}</td>
       ${
         full
-          ? html`<td class="r num">${r.errors}</td><td class="r num">${r.warnings}</td><td class="r num">${r.peak_latency_ms == null ? "" : fmtMs(r.peak_latency_ms)}</td>`
-          : html`<td class="r num">${r.events}</td>`
+          ? html`<td class="r num" data-label="Errors">${r.errors}</td><td class="r num" data-label="Warnings">${r.warnings}</td><td class="r num" data-label="Slowest">${r.peak_latency_ms == null ? "" : fmtMs(r.peak_latency_ms)}</td>`
+          : html`<td class="r num" data-label="Events">${r.events}</td>`
       }
-      <td>${issueChip(cfg, r.issue_number, r.issue_state)}${moreIssues(r)}</td></tr>`,
+      <td data-label="Issue">${issueChip(cfg, r.issue_number, r.issue_state)}${moreIssues(r)}</td></tr>`,
   )}`;
 }
 
@@ -710,16 +710,16 @@ export function overviewPage(d: OverviewData): SafeHtml {
             html`<tr><td>${String(p.key).trim() || "unknown"}</td><td class="r num">${fmtInt(p.n)}</td><td class="bar-cell">${meter(Number(p.n) / platMax)}</td></tr>`,
         )}</tbody></table></div></section>
 
-        <section class="panel s7"><h2>Top error signatures <a href="/reports?range=${d.rangeId}${sourceParam}">Explore</a></h2><div class="tbl" tabindex="0"><table><thead><tr><th>Signature</th><th class="r">${range.label}</th><th>Trend</th><th>Tracked by</th></tr></thead><tbody>${d.signatures.map(
+        <section class="panel s7"><h2>Top error signatures <a href="/reports?range=${d.rangeId}${sourceParam}">Explore</a></h2><div class="tbl stack" tabindex="0"><table><thead><tr><th>Signature</th><th class="r">${range.label}</th><th>Trend</th><th>Tracked by</th></tr></thead><tbody>${d.signatures.map(
           (s) =>
-            html`<tr><td class="mono wrap-any"><a class="quiet" href="/reports?range=${d.rangeId}&amp;signature=${s.signature}${sourceParam}">${s.label}</a></td><td class="r num">${fmtInt(s.n)}</td><td>${sparkline(dailySeries(d.now, 14, s.days), s.issue ? "muted" : "amber")}</td><td>${issueChip(d.cfg, s.issue?.number, s.issue?.state)}</td></tr>`,
+            html`<tr><td class="mono wrap-any" data-label="Signature"><a class="quiet" href="/reports?range=${d.rangeId}&amp;signature=${s.signature}${sourceParam}">${targetBreaks(String(s.label))}</a></td><td class="r num" data-label="${range.label}">${fmtInt(s.n)}</td><td data-label="Trend">${sparkline(dailySeries(d.now, 14, s.days), s.issue ? "muted" : "amber")}</td><td data-label="Tracked by">${issueChip(d.cfg, s.issue?.number, s.issue?.state)}</td></tr>`,
         )}</tbody></table></div></section>
         <section class="panel s5"><h2>Versions</h2><div class="tbl" tabindex="0"><table><thead><tr><th>Version</th><th class="r">Reports</th><th class="r">Errors + warnings / report</th><th><span class="sr">Share</span></th></tr></thead><tbody>${d.versions.map(
           (v) =>
             html`<tr><td class="mono">${String(v.key) || "unknown"}</td><td class="r num">${fmtInt(v.n)}</td><td class="r num">${(Number(v.errors ?? 0) + Number(v.warnings ?? 0)).toFixed(1)}</td><td class="bar-cell">${meter(Number(v.n) / verMax)}</td></tr>`,
         )}</tbody></table></div></section>
 
-        <section class="panel s12"><h2>Needs triage <a href="/reports?range=${d.rangeId}&amp;triage=needs${sourceParam}">Open the queue</a></h2><div class="tbl" tabindex="0"><table><thead><tr><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th><th>Trigger</th><th>Top error or warning</th><th class="r">Events</th><th>Issue</th></tr></thead><tbody>${d.queue.length ? reportRows(d.cfg, d.queue, false) : html`<tr><td colspan="8" class="empty">Nothing needs triage in this range.</td></tr>`}</tbody></table></div></section>
+        <section class="panel s12"><h2>Needs triage <a href="/reports?range=${d.rangeId}&amp;triage=needs${sourceParam}">Open the queue</a></h2><div class="tbl stack" tabindex="0"><table><thead><tr><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th><th>Trigger</th><th>Top error or warning</th><th class="r">Events</th><th>Issue</th></tr></thead><tbody>${d.queue.length ? reportRows(d.cfg, d.queue, false) : html`<tr><td colspan="8" class="empty">Nothing needs triage in this range.</td></tr>`}</tbody></table></div></section>
         ${owner}
       </div></div>`,
   });
@@ -796,7 +796,7 @@ export function reportsPage(d: ReportsData): SafeHtml {
           <button class="button small" type="submit" name="state" value="noise">Mark noise</button>
           <button class="button small" type="submit" name="state" value="clear">Back to the queue</button>
         </form>
-        <div class="tbl" tabindex="0" data-live="rows"><table><thead><tr><th class="pick"><span class="sr">Select</span></th><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th><th>Trigger</th><th>Signature</th><th class="r">Errors</th><th class="r">Warnings</th><th class="r">Slowest</th><th>Issue</th></tr></thead>
+        <div class="tbl stack" tabindex="0" data-live="rows"><table><thead><tr><th class="pick"><span class="sr">Select</span></th><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th><th>Trigger</th><th>Signature</th><th class="r">Errors</th><th class="r">Warnings</th><th class="r">Slowest</th><th>Issue</th></tr></thead>
           <tbody>${d.rows.length ? reportRows(d.cfg, d.rows, true) : html`<tr><td colspan="11" class="empty">No reports match these filters.</td></tr>`}</tbody></table></div>
         <div class="pager" data-live="pager">${d.page > 1 ? pageLink(d.page - 1, "Newer") : ""}${d.page < pages ? pageLink(d.page + 1, "Older") : ""}</div>
       </section></div>`,
@@ -937,6 +937,17 @@ export function crateOf(target: string): string {
 }
 
 /**
+ * An event target with a line-break opportunity after each `::`, so a long
+ * module path wraps between its parts instead of mid-word.
+ *
+ * @param target - Event target (untrusted; each part is escaped).
+ * @returns The parts joined by `::<wbr>`.
+ */
+export function targetBreaks(target: string): SafeHtml {
+  return html`${target.split("::").map((part, i) => (i === 0 ? html`${part}` : html`::<wbr>${part}`))}`;
+}
+
+/**
  * Event log rows for a stored report, with level counts, the crates seen
  * and the first warning or error.
  *
@@ -981,7 +992,7 @@ export function eventLog(events: unknown): {
     const message = typeof e.message === "string" ? e.message.slice(0, 8000) : "";
     const first = !problem && (level === "ERROR" || level === "WARN");
     if (first) problem = true;
-    const row = html`<div class="row lv-${level.toLowerCase()}" data-crate="${crate}"${first ? raw(' id="first-problem"') : ""}><span class="t">${isoTime(e.ts_unix_ms).slice(11, 23)}</span><span class="lv">${level}</span><span class="tg">${target}</span><span class="msg">${message}${fields ? html` <span class="fields">${fields}</span>` : ""}</span></div>`;
+    const row = html`<div class="row lv-${level.toLowerCase()}" data-crate="${crate}"${first ? raw(' id="first-problem"') : ""}><span class="t">${isoTime(e.ts_unix_ms).slice(11, 23)}</span><span class="lv">${level}</span><span class="tg">${targetBreaks(target)}</span><span class="msg">${message}${fields ? html` <span class="fields">${fields}</span>` : ""}</span></div>`;
     return { level, crate, ms, row };
   });
   const out: SafeHtml[] = [];
@@ -1202,7 +1213,7 @@ export function issuesPage(d: IssuesData): SafeHtml {
     body: html`<div class="wrap">
       <div class="toolbar"><h1>Issues and fixes</h1><nav class="picker" aria-label="Issue state">${tab("open", "Open")}${tab("closed", "Closed")}${tab("all", "All")}</nav></div>
       <section class="panel" data-live="issues"><h2>Diagnostics issues <span class="note">${d.syncedAt ? `synced from GitHub ${fmtTime(d.syncedAt)} UTC` : "not synced from GitHub yet"}</span></h2>
-        <div class="tbl" tabindex="0"><table><thead><tr><th>Issue</th><th>State</th><th class="r">Reports</th><th>Activity, 14d</th><th>First seen</th><th>Last seen</th><th>Fix</th><th class="r">After fix</th></tr></thead><tbody>${
+        <div class="tbl stack" tabindex="0"><table><thead><tr><th>Issue</th><th>State</th><th class="r">Reports</th><th>Activity, 14d</th><th>First seen</th><th>Last seen</th><th>Fix</th><th class="r">After fix</th></tr></thead><tbody>${
           d.issues.length
             ? d.issues.map((i) => {
                 const fix = d.afterFix.get(Number(i.number));
@@ -1210,14 +1221,14 @@ export function issuesPage(d: IssuesData): SafeHtml {
                 const open = i.prs.find((p) => p.state === "open");
                 const pr = merged ?? open;
                 return html`<tr>
-                <td class="issue-cell"><a href="/issues/${i.number}"><b>#${i.number}</b> ${i.title}</a>${issueKindChip(d.cfg, i)} ${externalLink(ghUrl(d.cfg, "issues", i.number), "GitHub", "quiet")}</td>
-                <td><span class="chip ${i.state === "open" ? "open" : "closed"}">${i.state === "open" ? "Open" : "Closed"}</span></td>
-                <td class="r num">${fmtInt(i.reports)}</td>
-                <td>${sparkline(dailySeries(d.now, 14, i.days), fix && fix.after > 0 ? "brick" : "teal")}</td>
-                <td class="num">${i.first_seen ? html`${fmtDay(i.first_seen)} · <span class="mono">${i.first_version}</span>` : ""}</td>
-                <td class="num">${i.last_seen ? html`${fmtDay(i.last_seen)} · <span class="mono">${i.last_version}</span>` : ""}</td>
-                <td>${pr ? html`${externalLink(ghUrl(d.cfg, "pull", pr.pr_number), `PR #${pr.pr_number} ${pr.state}`, `chip ${pr.state}`)}` : html`<span class="fine">none linked</span>`}${fixNote(fix) ? html` <span class="fine">${fixNote(fix)}</span>` : ""}</td>
-                <td class="r num">${!fix ? html`<span class="fine">no fix yet</span>` : fix.after > 0 ? html`<span class="chip crit" title="${afterFixText(fix)}">${fmtInt(fix.after)} ${fix.fixedIn ? "regressions" : "since merge"}</span>` : "0"}</td></tr>`;
+                <td class="issue-cell" data-label="Issue"><a href="/issues/${i.number}"><b>#${i.number}</b> ${i.title}</a>${issueKindChip(d.cfg, i)} ${externalLink(ghUrl(d.cfg, "issues", i.number), "GitHub", "quiet")}</td>
+                <td data-label="State"><span class="chip ${i.state === "open" ? "open" : "closed"}">${i.state === "open" ? "Open" : "Closed"}</span></td>
+                <td class="r num" data-label="Reports">${fmtInt(i.reports)}</td>
+                <td data-label="Activity, 14d">${sparkline(dailySeries(d.now, 14, i.days), fix && fix.after > 0 ? "brick" : "teal")}</td>
+                <td class="num" data-label="First seen">${i.first_seen ? html`${fmtDay(i.first_seen)} · <span class="mono">${i.first_version}</span>` : ""}</td>
+                <td class="num" data-label="Last seen">${i.last_seen ? html`${fmtDay(i.last_seen)} · <span class="mono">${i.last_version}</span>` : ""}</td>
+                <td data-label="Fix">${pr ? html`${externalLink(ghUrl(d.cfg, "pull", pr.pr_number), `PR #${pr.pr_number} ${pr.state}`, `chip ${pr.state}`)}` : html`<span class="fine">none linked</span>`}${fixNote(fix) ? html` <span class="fine">${fixNote(fix)}</span>` : ""}</td>
+                <td class="r num" data-label="After fix">${!fix ? html`<span class="fine">no fix yet</span>` : fix.after > 0 ? html`<span class="chip crit" title="${afterFixText(fix)}">${fmtInt(fix.after)} ${fix.fixedIn ? "regressions" : "since merge"}</span>` : "0"}</td></tr>`;
               })
             : html`<tr><td colspan="8" class="empty">No diagnostics issues in this view.</td></tr>`
         }</tbody></table></div>
@@ -1254,14 +1265,14 @@ export function issuePage(d: IssueData): SafeHtml {
         )
       : html`<span class="fine">none</span>`;
   const row = (l: LedgerView, actions: SafeHtml): SafeHtml => html`<tr>
-    <td class="num">${fmtTime(l.received_at)}</td>
-    <td><a class="mono" href="/reports/${l.report_id}">${String(l.report_id).slice(0, 8)}</a></td>
-    <td class="mono">${l.version}</td>
-    <td>${`${l.os} ${l.arch}`.trim()}</td>
-    <td class="fine">${linkHow(l)}${l.source !== "excluded" && !l.tracked ? html` · <span class="chip crit" title="An older issue also lists this report, so it counts there">counts elsewhere</span>` : ""}</td>
-    <td class="actions">${actions}</td></tr>`;
+    <td class="num" data-label="Received (UTC)">${fmtTime(l.received_at)}</td>
+    <td data-label="Report"><a class="mono" href="/reports/${l.report_id}">${String(l.report_id).slice(0, 8)}</a></td>
+    <td class="mono" data-label="Version">${l.version}</td>
+    <td data-label="Platform">${`${l.os} ${l.arch}`.trim()}</td>
+    <td class="fine" data-label="How">${linkHow(l)}${l.source !== "excluded" && !l.tracked ? html` · <span class="chip crit" title="An older issue also lists this report, so it counts there">counts elsewhere</span>` : ""}</td>
+    <td class="actions" data-label="Actions">${actions}</td></tr>`;
   const table = (rows: SafeHtml[], empty: string): SafeHtml =>
-    html`<div class="tbl" tabindex="0"><table><thead><tr><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th><th>How</th><th>Actions</th></tr></thead><tbody>${rows.length ? rows : html`<tr><td colspan="6" class="empty">${empty}</td></tr>`}</tbody></table></div>`;
+    html`<div class="tbl stack" tabindex="0"><table><thead><tr><th>Received (UTC)</th><th>Report</th><th>Version</th><th>Platform</th><th>How</th><th>Actions</th></tr></thead><tbody>${rows.length ? rows : html`<tr><td colspan="6" class="empty">${empty}</td></tr>`}</tbody></table></div>`;
   const moveForm = (l: { report_id: string }): SafeHtml | string =>
     d.openIssues.length
       ? linkForm({
@@ -1619,10 +1630,10 @@ export function lookupResultPage(v: LookupView): SafeHtml {
         v.deletedAt === null
           ? html`<section class="panel s12"><h2>Delete this report</h2>
         <p>Deleting removes the stored report and its event log for good. The project keeps a one-line summary (version, system and type of error, without the log) and the link to its issue, so the problem still counts.</p>
-        <form method="post" action="/lookup/delete">
+        <form method="post" action="/lookup/delete" class="delete-form">
           <input type="hidden" name="report_id" value="${v.reportId}"><input type="hidden" name="access_code" value="${v.code}">
           <label><input type="checkbox" name="confirm" value="yes" required> I want to delete this report</label>
-          <button class="button" type="submit">Delete report</button>
+          <button class="button danger" type="submit">Delete report</button>
         </form></section>`
           : ""
       }

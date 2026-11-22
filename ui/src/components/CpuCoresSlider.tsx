@@ -80,7 +80,7 @@ export function CpuCoresSlider({
               onChange(clamp(next, minCores, selectableMax));
             }}
           />
-          <span className="text-xs text-ink/50">cores</span>
+          <span className="text-xs text-ink/70">cores</span>
         </div>
       </div>
 
@@ -126,14 +126,14 @@ export function CpuCoresSlider({
           ) : null}
         </div>
 
-        <div className="absolute inset-x-0 top-5 flex justify-between text-[11px] leading-tight text-ink/50">
+        <div className="absolute inset-x-0 top-5 flex justify-between text-[11px] leading-tight text-ink/70">
           <span>0.00</span>
           <span className="text-center">
             {manifestCores != null ? (
               <span className="block">Manifest {formatCores(manifestCores)}</span>
             ) : null}
             {globalCores != null ? (
-              <span className="block text-teal">Global {formatCores(globalCores)}</span>
+              <span className="block text-teal-text">Global {formatCores(globalCores)}</span>
             ) : (
               <span className="block">No global cap</span>
             )}

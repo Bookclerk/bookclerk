@@ -1250,6 +1250,10 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
         # local page servers, which need their packages installed and the
         # website built. The website is built from a fixed commit and date,
         # so its footer reads the same on every commit.
+        #
+        # It also opens the web app's own pages (ui/visual/app.spec.ts) from
+        # an unminified build with sample API answers, and the recording run
+        # fails when a component never rendered.
         ui = str(ctx.workspace / "ui")
         site = str(ctx.workspace / "tools" / "site")
         collector = str(ctx.workspace / "tools" / "diagnostics-collector")
@@ -1258,6 +1262,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
         cmds = [
             Command("npm ci (ui)", ["npm", "ci"], cwd=ui),
             Command("storybook build (ui)", ["npm", "run", "storybook:build"], cwd=ui),
+            Command("app build for the visual checks (ui)", ["npm", "run", "build:visual"], cwd=ui),
             Command("npm ci (tools/site)", ["npm", "ci"], cwd=site),
             Command(
                 "npm run build (tools/site)",
@@ -1270,7 +1275,13 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
                 "record screenshots + axe-core (ui)",
                 ["npm", "run", "test:visual", "--", "--update-snapshots=all"],
                 cwd=ui,
-                env={"VISUAL_OUTPUT_DIR": str(out / "record"), "VISUAL_BASELINES_DIR": str(out / "baselines")},
+                env={
+                    "VISUAL_OUTPUT_DIR": str(out / "record"),
+                    "VISUAL_BASELINES_DIR": str(out / "baselines"),
+                    # Every component under ui/src/components must have
+                    # rendered in some story or app page (visual/coverage-check.ts).
+                    "VISUAL_COVERAGE_CHECK": "1",
+                },
             ),
             # Only a set whose recording passed is complete enough to propose
             # (scripts/visual_baselines_bot.py).

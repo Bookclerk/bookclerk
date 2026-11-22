@@ -97,7 +97,7 @@ type AuthState = "loading" | "anon" | "authed";
  */
 function AppLoading() {
   return (
-    <div className="flex min-h-full items-center justify-center text-sm text-ink/60">
+    <div className="flex min-h-full items-center justify-center text-sm text-ink/70">
       Loading Bookclerk…
     </div>
   );
@@ -466,7 +466,8 @@ export default function App() {
     >
       <div className="flex h-full min-h-0 flex-col">
         {session.elevated ? (
-          <div className="sticky top-0 z-40 flex shrink-0 items-center justify-between gap-3 bg-teal px-4 py-2 text-sm text-ink">
+          <div className="sticky top-0 z-40 flex shrink-0 items-center justify-between gap-3 bg-[#2f6b66] px-4 py-2 text-sm text-white">
+            {/* Fixed colors in both themes, so the white text keeps AA contrast. */}
             <span>
               Owner elevation active
               {session.user?.display_name || session.user?.id ? (
@@ -480,7 +481,7 @@ export default function App() {
             <Button
               type="button"
               variant="secondary"
-              className="h-8 bg-white text-[#0b3553] hover:bg-white/90"
+              className="h-8 bg-white text-[#2f6b66] hover:bg-white/90"
               onClick={() => void onEndElevation()}
             >
               End elevation
@@ -488,7 +489,7 @@ export default function App() {
           </div>
         ) : null}
         {session.impersonating ? (
-          <div className="sticky top-0 z-40 flex shrink-0 items-center justify-between gap-3 bg-brick px-4 py-2 text-sm text-white">
+          <div className="sticky top-0 z-40 flex shrink-0 items-center justify-between gap-3 bg-[#a33b28] px-4 py-2 text-sm text-white">
             <span>
               Impersonating{" "}
               <strong>
@@ -500,7 +501,7 @@ export default function App() {
             <Button
               type="button"
               variant="secondary"
-              className="h-8 bg-white text-[#c84a34] hover:bg-white/90"
+              className="h-8 bg-white text-[#a33b28] hover:bg-white/90"
               onClick={() => void onStopImpersonate()}
             >
               Stop

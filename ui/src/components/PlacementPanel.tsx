@@ -44,7 +44,7 @@ export function PlacementBadge({ plugin }: { plugin: PluginSettingsGroup }) {
     <Badge
       className={
         short
-          ? "bg-brick/10 text-brick normal-case tracking-normal"
+          ? "bg-brick/10 text-brick-text normal-case tracking-normal"
           : "bg-teal/10 text-ink/70 normal-case tracking-normal"
       }
     >
@@ -124,7 +124,7 @@ export function PlacementPanel({
   return (
     <div className="mt-3 border-t border-ink/10 pt-3">
       <p className="text-xs font-medium text-ink/70">Placement</p>
-      <p className="mt-1 text-xs text-ink/50">
+      <p className="mt-1 text-xs text-ink/70">
         {placement
           ? `The library scheduler runs this instance on ${placement.placed}${
               placement.replicas === "all" ? " (every node with room)" : ` of ${placement.replicas}`
@@ -133,14 +133,16 @@ export function PlacementPanel({
             }, choosing the live nodes with the most budget headroom. The Deployed switch does not apply while it is placed.`
           : "Managed by hand: the Deployed switch runs it on this node. Place it to let the scheduler pick nodes."}
       </p>
-      {placement?.detail ? <p className="mt-1 text-xs text-brick">{placement.detail}</p> : null}
+      {placement?.detail ? (
+        <p className="mt-1 text-xs text-brick-text">{placement.detail}</p>
+      ) : null}
       {runningOn.length ? (
-        <p className="mt-1 break-all font-mono text-[11px] text-ink/45">
+        <p className="mt-1 break-all font-mono text-[11px] text-ink/70">
           Running on: {runningOn.join(", ")}
         </p>
       ) : null}
       <div className="mt-2 flex flex-wrap items-end gap-2">
-        <label className="grid gap-1 text-xs text-ink/60">
+        <label className="grid gap-1 text-xs text-ink/70">
           Replicas
           <Input
             className="w-24"
@@ -151,7 +153,7 @@ export function PlacementPanel({
             onKeyDown={onKeyDown}
           />
         </label>
-        <label className="grid min-w-[12rem] flex-1 gap-1 text-xs text-ink/60">
+        <label className="grid min-w-[12rem] flex-1 gap-1 text-xs text-ink/70">
           Node labels
           <Input
             placeholder="nas, zone=eu, !slow"

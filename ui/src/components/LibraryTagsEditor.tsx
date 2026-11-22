@@ -58,8 +58,8 @@ export function LibraryTagsEditor({ workId }: LibraryTagsEditorProps) {
 
   return (
     <section className="space-y-2 border-t border-ink/10 pt-3" aria-label="Library tags">
-      <p className="text-xs font-semibold uppercase tracking-wide text-ink/45">Library tags</p>
-      <p className="text-xs text-ink/55">
+      <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">Library tags</p>
+      <p className="text-xs text-ink/70">
         Everyone sees these, and patron scopes can show or hide books by them. Separate tags with
         commas.
       </p>
@@ -81,12 +81,12 @@ export function LibraryTagsEditor({ workId }: LibraryTagsEditorProps) {
         </Button>
       </div>
       {sidecar.length > 0 ? (
-        <p className="text-xs text-ink/55">
+        <p className="text-xs text-ink/70">
           From a sidecar file: {sidecar.map((t) => t.value).join(", ")}
         </p>
       ) : null}
       {problem || error ? (
-        <p role="alert" className="text-xs text-brick">
+        <p role="alert" className="text-xs text-brick-text">
           {problem ?? error}
         </p>
       ) : null}

@@ -7,7 +7,8 @@ const variants: Record<Variant, string> = {
   primary: "bg-ink text-paper hover:bg-ink-soft shadow-sm disabled:opacity-50",
   secondary: "bg-teal/15 text-ink border border-teal/30 hover:bg-teal/25 disabled:opacity-50",
   ghost: "bg-transparent text-ink hover:bg-ink/5 disabled:opacity-50",
-  danger: "bg-brick/10 text-brick border border-brick/30 hover:bg-brick/20 disabled:opacity-50",
+  danger:
+    "bg-brick/10 text-brick-text border border-brick/30 hover:bg-brick/20 disabled:opacity-50",
 };
 
 /**

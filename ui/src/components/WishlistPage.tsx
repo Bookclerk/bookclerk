@@ -201,20 +201,20 @@ export function WishlistPage({
               <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">
                 Your wishlist
               </h1>
-              <p className="text-sm text-ink/60">
+              <p className="text-sm text-ink/70">
                 Titles you want acquired. Click a title for details. Un-wishlist to remove them from
                 your list and the shared queue.
               </p>
             </div>
 
             {error ? (
-              <p className="text-sm font-medium text-brick" role="alert">
+              <p className="text-sm font-medium text-brick-text" role="alert">
                 {error}
               </p>
             ) : null}
 
             {mineTitles.length === 0 ? (
-              <p className="text-sm text-ink/50">
+              <p className="text-sm text-ink/70">
                 {loaded
                   ? "Nothing yet — wishlist from Discover cards or catalog search."
                   : "Loading…"}
@@ -241,13 +241,13 @@ export function WishlistPage({
                                 wishers={title.wishers ?? []}
                                 wishCount={title.wish_count}
                               />
-                              <span className="tabular-nums text-xs font-semibold text-teal">
+                              <span className="tabular-nums text-xs font-semibold text-teal-text">
                                 ×{title.wish_count ?? title.wishers?.length}
                               </span>
                             </span>
                           ) : null}
                         </div>
-                        <p className="text-xs text-ink/50">
+                        <p className="text-xs text-ink/70">
                           {[
                             title.authors ?? "Unknown author",
                             title.narrators ? `narr. ${title.narrators}` : null,
@@ -260,7 +260,7 @@ export function WishlistPage({
                             .join(" · ")}
                         </p>
                         {(title.wish_count ?? title.wishers?.length ?? 0) > 0 ? (
-                          <p className="text-[11px] text-ink/40">
+                          <p className="text-[11px] text-ink/70">
                             wishlisted by {title.wish_count ?? title.wishers?.length}{" "}
                             {(title.wish_count ?? title.wishers?.length) === 1
                               ? "person"
@@ -289,13 +289,13 @@ export function WishlistPage({
           <aside className="space-y-3 lg:border-l lg:border-ink/10 lg:pl-6">
             <div className="space-y-1">
               <h2 className="text-base font-semibold text-ink">Global queue</h2>
-              <p className="text-xs text-ink/55">
+              <p className="text-xs text-ink/70">
                 Shared household ranking: overall Discover taste, heavily boosted by how many people
                 wishlisted each title. Titles already in the library are omitted.
               </p>
             </div>
             {queueTitles.length === 0 ? (
-              <p className="text-sm text-ink/50">{loaded ? "Queue is empty." : "Loading…"}</p>
+              <p className="text-sm text-ink/70">{loaded ? "Queue is empty." : "Loading…"}</p>
             ) : (
               <ol className="space-y-3">
                 {queueTitles.map((title, i) => {
@@ -307,7 +307,7 @@ export function WishlistPage({
                         className="flex w-full gap-2.5 text-left text-sm"
                         onClick={() => setSelected(title)}
                       >
-                        <span className="w-5 shrink-0 pt-1 text-xs tabular-nums text-ink/40">
+                        <span className="w-5 shrink-0 pt-1 text-xs tabular-nums text-ink/70">
                           {i + 1}
                         </span>
                         <CoverThumb path={title.cover_path} className="h-12 w-12" />
@@ -322,13 +322,13 @@ export function WishlistPage({
                                   wishers={entry.wishers ?? []}
                                   wishCount={entry.wish_count}
                                 />
-                                <span className="tabular-nums text-xs font-semibold text-teal">
+                                <span className="tabular-nums text-xs font-semibold text-teal-text">
                                   ×{entry.wish_count}
                                 </span>
                               </span>
                             ) : null}
                           </div>
-                          <p className="text-xs text-ink/50">
+                          <p className="text-xs text-ink/70">
                             {[
                               title.authors ?? "Unknown author",
                               formatSeriesLabel(title.series, title.series_index),
@@ -339,7 +339,7 @@ export function WishlistPage({
                               .join(" · ")}
                           </p>
                           {title.reasons?.[0] ? (
-                            <p className="text-[11px] text-ink/40">{title.reasons[0]}</p>
+                            <p className="text-[11px] text-ink/70">{title.reasons[0]}</p>
                           ) : null}
                         </div>
                       </button>
