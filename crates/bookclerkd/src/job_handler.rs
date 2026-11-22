@@ -228,6 +228,9 @@ impl JobTransport for InProcessJobTransport {
             JobKind::NotifySend => {
                 crate::notify_jobs::run_notify_send(&self.state, &cmd.payload, Some(&ctx)).await
             }
+            JobKind::ChapterAlign => {
+                crate::chapter_align::run_chapter_align(&self.state, &cmd.payload, Some(&ctx)).await
+            }
             // Only its branch takes a request, over `requests.claim`; no
             // claim path of this library hands it to a worker.
             JobKind::BranchRequest => {

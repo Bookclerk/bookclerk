@@ -493,6 +493,94 @@ pub(crate) async fn delete_chapter_pin(
     Ok(current(&library, ROUTE, id).await?)
 }
 
+/// A queued chapter alignment.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct ChapterAlignJson {
+    /// The `chapter_align` job that does the work; it answers through the
+    /// jobs API. An alignment already queued for the edition is returned
+    /// rather than a second one.
+    #[schema(example = "0f3c2a9e-5b1d-4c7e-8a6f-2d4b9e1c7a35")]
+    job_id: String,
+}
+
+/// Queues the alignment of a metadata provider's chapters to the
+/// edition's stored copy.
+///
+/// The job asks the providers for the edition's chapters by its ASIN,
+/// reads a stored copy, snaps each chapter start to the spoken title, and
+/// records the provider's list and the aligned list as claims; the edition
+/// plays the aligned list unless an edit or a pin says otherwise.
+#[utoipa::path(
+    post,
+    path = "/api/library/editions/{id}/chapters/realign",
+    params(("id" = String, Path, description = "Edition id.")),
+    responses(
+        (status = 202, description = "The alignment is queued.", body = ChapterAlignJson),
+        (status = 401, description = "No one is signed in.", body = ErrorMessage, example = json!({"error": "sign in first"})),
+        (status = 403, description = "The caller is not an Administrator.", body = ErrorMessage, example = json!({"error": "only an Administrator can change chapters"})),
+        (status = 404, description = "No such edition.", body = ErrorMessage, example = json!({"error": "edition 6c1f2e8a-4b3d-4f5e-8a9b-0c1d2e3f4a5b not found"})),
+        (status = 409, description = "The edition has no ASIN to ask providers by.", body = ErrorMessage, example = json!({"error": "the edition has no ASIN to ask metadata providers by"})),
+        (status = 503, description = "The job queue is full.", body = ErrorMessage, example = json!({"error": "the job queue is full; try again later"})),
+        (status = 500, description = "The job could not be queued.", body = ErrorMessage, example = json!({"error": "the library could not be changed"})),
+    ),
+)]
+pub(crate) async fn post_chapter_realign(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> axum::response::Result<(StatusCode, Json<ChapterAlignJson>)> {
+    const ROUTE: &str = "POST /api/library/editions/{id}/chapters/realign";
+    let user_id = administrator(&state, &headers, true).await?;
+    let library = state.library_snapshot().await;
+    if library
+        .playback_edition(&id)
+        .await
+        .map_err(|err| store_failed(ROUTE, err))?
+        .is_none()
+    {
+        return Err(store_failed(ROUTE, LibraryError::not_found(EntityKind::Edition, &id)).into());
+    }
+    if library
+        .edition_asins(&id)
+        .await
+        .map_err(|err| store_failed(ROUTE, err))?
+        .is_empty()
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(ErrorMessage::new(
+                "the edition has no ASIN to ask metadata providers by",
+            )),
+        )
+            .into());
+    }
+    let admitted = crate::chapter_align::enqueue_chapter_align(
+        &state,
+        &id,
+        bookclerk_library::JobTrigger::Api,
+    )
+    .await
+    .map_err(|err| {
+        tracing::error!(error = %err, route = ROUTE, "could not queue a chapter alignment");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorMessage::new("the library could not be changed")),
+        )
+    })?;
+    let job_id = match admitted {
+        crate::jobs::AdmitJob::Created(job_id) | crate::jobs::AdmitJob::Duplicate(job_id) => job_id,
+        crate::jobs::AdmitJob::QueueFull => {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorMessage::new("the job queue is full; try again later")),
+            )
+                .into())
+        }
+    };
+    tracing::info!(edition_id = %id, ?user_id, %job_id, "chapter alignment queued");
+    Ok((StatusCode::ACCEPTED, Json(ChapterAlignJson { job_id })))
+}
+
 #[cfg(test)]
 #[path = "library_chapters_tests.rs"]
 mod tests;

@@ -4066,6 +4066,34 @@ export async function triggerConvert(body: {
   return parseJobAdmit(res);
 }
 
+/** A queued chapter alignment. */
+export interface ChapterAlignResponse {
+  /** The `chapter_align` job; an alignment already queued is returned. */
+  job_id: string;
+}
+
+/**
+ * Queues the alignment of a metadata provider's chapters to an edition's
+ * stored copy: the provider's chapters are asked for by the edition's
+ * ASIN and each start is snapped to the spoken chapter title.
+ * Administrators, Owners and the operator only.
+ *
+ * @param editionId - The stored edition.
+ * @returns The queued job.
+ */
+export async function realignChapters(editionId: string): Promise<ChapterAlignResponse> {
+  const res = await fetch(
+    `/api/library/editions/${encodeURIComponent(editionId)}/chapters/realign`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    },
+  );
+  return parseJson<ChapterAlignResponse>(res);
+}
+
 /**
  * Requests cancel of a pending job or cooperative stop of a running job.
  *

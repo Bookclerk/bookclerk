@@ -433,6 +433,32 @@ async fn an_uploaded_files_chapters_and_running_time_are_recorded() {
     let expected: Vec<_> = tags.chapters.iter().map(|c| c.title.clone()).collect();
     assert_eq!(titles, expected);
     assert_eq!(resolved.runtime_ms, tags.duration.map(|d| d.ms));
+
+    // The file names an ASIN, so a provider alignment is queued; with no
+    // provider deployed it reads the copy and records nothing.
+    let align = library
+        .list_jobs(50)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|job| job.kind == bookclerk_library::JobKind::ChapterAlign)
+        .expect("a chapter alignment is queued");
+    assert_eq!(align.payload.title.as_deref(), Some(edition.as_str()));
+    let summary = crate::chapter_align::run_chapter_align(&state, &align.payload, None)
+        .await
+        .unwrap();
+    assert!(
+        summary.contains("no provider has a chapter layout"),
+        "{summary}"
+    );
+    let scratch = state
+        .config
+        .read()
+        .await
+        .download_cache_dir()
+        .join(crate::chapter_align::SCRATCH_DIR);
+    let left = std::fs::read_dir(&scratch).map_or(0, |dir| dir.count());
+    assert_eq!(left, 0, "the copy read for alignment is removed");
 }
 
 #[tokio::test]

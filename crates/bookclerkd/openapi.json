@@ -19573,6 +19573,190 @@
         "x-bookclerk-access": "The operator, or any signed-in user."
       }
     },
+    "/api/library/editions/{id}/chapters/realign": {
+      "post": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Queues the alignment of a metadata provider's chapters to the\nedition's stored copy.",
+        "description": "The job asks the providers for the edition's chapters by its ASIN,\nreads a stored copy, snaps each chapter start to the spoken title, and\nrecords the provider's list and the aligned list as claims; the edition\nplays the aligned list unless an edit or a pin says otherwise.",
+        "operationId": "post_chapter_realign",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Edition id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "The alignment is queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChapterAlignJson"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can change chapters"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such edition.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "edition 6c1f2e8a-4b3d-4f5e-8a9b-0c1d2e3f4a5b not found"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The edition has no ASIN to ask providers by.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the edition has no ASIN to ask metadata providers by"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The job could not be queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The job queue is full. When the sign-in could not be checked because the library did not answer in time, the answer is `session_check_unavailable` instead, with `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again; sent only with `session_check_unavailable`."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "the job queue is full; try again later"
+                    }
+                  },
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
     "/api/library/editions/{id}/chapters": {
       "get": {
         "tags": [
@@ -53981,6 +54165,20 @@
           }
         }
       },
+      "ChapterAlignJson": {
+        "type": "object",
+        "description": "A queued chapter alignment.",
+        "required": [
+          "job_id"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "description": "The `chapter_align` job that does the work; it answers through the\njobs API. An alignment already queued for the edition is returned\nrather than a second one.",
+            "example": "0f3c2a9e-5b1d-4c7e-8a6f-2d4b9e1c7a35"
+          }
+        }
+      },
       "ChapterClaimJson": {
         "type": "object",
         "description": "One source's chapter claim for an edition.",
@@ -58774,6 +58972,7 @@
           "branch_request",
           "ingest_batch",
           "notify_send",
+          "chapter_align",
           "invalid"
         ]
       },

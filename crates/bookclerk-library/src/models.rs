@@ -1473,6 +1473,12 @@ pub enum JobKind {
     /// [`JobPayload::requires`]), so only a node running that instance
     /// claims it.
     NotifySend,
+    /// Align a metadata provider's chapter layout to one edition's stored
+    /// copy (`chapter_align`): the edition's id is in [`JobPayload::title`].
+    /// Any node with a destination holding the copy claims it, since it
+    /// reads the copy's audio from there; it runs only on a node that
+    /// holds the library database.
+    ChapterAlign,
     /// Terminal placeholder after an unreadable persisted command is rejected.
     Invalid,
 }
@@ -1480,7 +1486,7 @@ pub enum JobKind {
 impl JobKind {
     /// Every kind, in declaration order; the SQL plans derive their kind
     /// lists from it so a new kind cannot be left unclaimable.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::Scan,
         Self::Acquire,
         Self::ListenSync,
@@ -1496,6 +1502,7 @@ impl JobKind {
         Self::BranchRequest,
         Self::IngestBatch,
         Self::NotifySend,
+        Self::ChapterAlign,
         Self::Invalid,
     ];
 
@@ -1518,6 +1525,7 @@ impl JobKind {
             Self::BranchRequest => "branch_request",
             Self::IngestBatch => "ingest_batch",
             Self::NotifySend => "notify_send",
+            Self::ChapterAlign => "chapter_align",
             Self::Invalid => "invalid",
         }
     }
@@ -1541,6 +1549,7 @@ impl JobKind {
             "branch_request" => Some(Self::BranchRequest),
             "ingest_batch" => Some(Self::IngestBatch),
             "notify_send" => Some(Self::NotifySend),
+            "chapter_align" => Some(Self::ChapterAlign),
             "invalid" => Some(Self::Invalid),
             _ => None,
         }
@@ -1660,6 +1669,12 @@ impl JobKind {
             Self::NotifySend => {
                 notify_send_dedup_key(payload.notify_delivery.as_deref().unwrap_or("-"))
             }
+            // One queued or running alignment per edition: asking again
+            // while one waits folds into it.
+            Self::ChapterAlign => format!(
+                "chapter_align:edition={}",
+                payload.title.as_deref().unwrap_or("-")
+            ),
             Self::Invalid => "invalid".into(),
         }
     }

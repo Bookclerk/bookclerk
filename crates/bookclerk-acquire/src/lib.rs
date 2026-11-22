@@ -23,6 +23,7 @@ mod library_copies;
 mod match_storage;
 mod naming;
 mod pipeline;
+mod realign;
 mod reconcile;
 mod record;
 mod split;
@@ -50,6 +51,7 @@ pub use pipeline::{
     AcquireRequest, AcquireResult, CopyOutcome, CopyResult, CoverImages, PlannedTitleNames,
     NAME_WILDCARD, NUMBER_WILDCARD,
 };
+pub use realign::{realign_copy, CopyAudio, RealignOutcome, RealignTarget};
 pub use reconcile::{
     extract_asins_from_key, find_existing_for_request, find_existing_for_title, reconcile_library,
     ReconcileOptions, ReconcileSummary, StorageIndex,

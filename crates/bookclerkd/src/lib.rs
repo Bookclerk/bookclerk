@@ -21,6 +21,7 @@ mod branch_requests;
 mod cache_jobs;
 mod cache_policy;
 mod catalog_lookup;
+mod chapter_align;
 mod clerk_link;
 mod clerk_token;
 mod collections;

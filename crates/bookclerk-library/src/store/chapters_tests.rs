@@ -582,3 +582,22 @@ async fn a_copy_far_from_the_lists_timeline_plays_its_own_chapters_under_every_p
         assert_eq!(played.map(|p| p.list), Some(marks.clone()), "{name}");
     }
 }
+
+#[tokio::test]
+async fn an_editions_asins_are_listed_under_every_profile() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = memory(profile).await.into_store();
+        let edition = edition(&store, "B0CHAP0004").await;
+        let asins = store.edition_asins(&edition).await.unwrap();
+        assert_eq!(
+            asins.first().map(|(asin, _)| asin.as_str()),
+            Some("B0CHAP0004"),
+            "{name}"
+        );
+        assert!(
+            store.edition_asins("gone").await.unwrap().is_empty(),
+            "{name}"
+        );
+    }
+}

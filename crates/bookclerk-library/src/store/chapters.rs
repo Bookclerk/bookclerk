@@ -25,7 +25,9 @@ use sha2::{Digest as _, Sha256};
 
 use super::{now_str, LibraryStore};
 use crate::control_plane::{batch, read_paged};
-use crate::entities::{chapter_list_entries, chapter_lists, edition_chapters, metadata_claims};
+use crate::entities::{
+    chapter_list_entries, chapter_lists, edition_chapters, edition_identifiers, metadata_claims,
+};
 use crate::error::{EntityKind, LibraryError, Result};
 use crate::store::write_batches::WriteBatches;
 
@@ -1049,6 +1051,36 @@ impl LibraryStore {
             source_id: row.source_id,
             runtime_ms: row.runtime_ms.and_then(|ms| u64::try_from(ms).ok()),
         }))
+    }
+
+    /// The ASINs edition `edition_id` carries, as `(asin, marketplace)`:
+    /// strong ones first, then in value order. A provider's chapter layout
+    /// is asked for by the first.
+    ///
+    /// # Errors
+    ///
+    /// Returns the read error.
+    pub async fn edition_asins(&self, edition_id: &str) -> Result<Vec<(String, String)>> {
+        let mut rows = edition_identifiers::Entity::find()
+            .filter(edition_identifiers::Column::EditionId.eq(edition_id))
+            .filter(
+                edition_identifiers::Column::Scheme
+                    .eq(bookclerk_resolve::IdentifierScheme::Asin.as_str()),
+            )
+            .all(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        rows.sort_by(|a, b| {
+            (a.strength != "strong", &a.value, &a.marketplace).cmp(&(
+                b.strength != "strong",
+                &b.value,
+                &b.marketplace,
+            ))
+        });
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.value, row.marketplace))
+            .collect())
     }
 
     /// The chapters one stored copy plays: the edition's resolved list,

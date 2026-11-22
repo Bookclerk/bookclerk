@@ -266,3 +266,35 @@ async fn chapter_changes_refuse_members_and_bad_bodies() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn an_administrator_queues_one_realign_per_edition() {
+    let (_state, app, library) = crate::auth::tests::phase2_harness(TOKEN).await;
+    let edition = scan(&library, "B001", "Dune").await;
+    let uri = format!("/api/library/editions/{edition}/chapters/realign");
+
+    let member = crate::auth::tests::portal_cookie_for(&library, "test", "member-ext").await;
+    let (status, json) = call(&app, Some(&member), "POST", &uri, Some((JSON, "{}"))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{json}");
+
+    let (status, json) = call(&app, None, "POST", &uri, Some((JSON, "{}"))).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{json}");
+    let job_id = json["job_id"].as_str().expect("a job id").to_string();
+    let job = library.get_job(&job_id).await.expect("read").expect("job");
+    assert_eq!(job.kind, bookclerk_library::JobKind::ChapterAlign);
+    assert_eq!(job.payload.title.as_deref(), Some(edition.as_str()));
+    // Asking again while it waits folds into the queued job.
+    let (status, json) = call(&app, None, "POST", &uri, Some((JSON, "{}"))).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{json}");
+    assert_eq!(json["job_id"], job_id.as_str());
+
+    let (status, _) = call(
+        &app,
+        None,
+        "POST",
+        "/api/library/editions/gone/chapters/realign",
+        Some((JSON, "{}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
