@@ -292,9 +292,9 @@ host-managed `plugin-state/<PluginKey fs-id>/data` and
 
 Consent is keyed by `entrypoints`, the granted bindings (`[vars]`,
 `[secrets]`, `[work_fs]`, `[oauth]`, `[sockets]`, `[[kv_namespaces]]`,
-`[[databases]]`), every `[[events.producers]]` type and every
-`[triggers] crons` schedule (`cron:<schedule>`). There is no separate
-method list.
+`[[databases]]`), every `[[events.producers]]` type, every
+`[triggers] crons` schedule (`cron:<schedule>`) and every model task under
+`[ai].calls` (`ai:<task>`). There is no separate method list.
 
 ### Plugins that can message people
 
@@ -314,6 +314,22 @@ This is a flag for the operator, not a refusal: a storefront may have a
 real reason to reach such a host. A plugin that wants to tell people
 something should declare [notification types](manifest.md#notificationstypes-notifications-a-plugin-raises)
 and raise them instead.
+
+### Plugins that call models
+
+A plugin that lists a task under [`[ai].calls`](manifest.md#ai-models)
+asks for the grant `ai:<task>`, shown in the consent summary as a model
+task. With it, the plugin may send its own inputs to any model of that
+task that a plugin deployed on the same node serves, within a budget of
+240 texts a minute and 30 seconds a run. It learns nothing about the model
+plugin beyond the model's name and revision, and it never gains the model
+plugin's network or file grants.
+
+Remember what a model plugin can see: every text sent to it. The
+first-party one runs with no network grant. Before approving a
+third-party model plugin that asks for network access, treat it as a
+service that receives your library's descriptions and your patrons'
+search queries.
 
 ## Consent before enable (and every spawn)
 

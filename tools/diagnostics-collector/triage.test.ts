@@ -109,6 +109,19 @@ describe("BudgetLedger", () => {
     }
   });
 
+  it("sums the last seven UTC days and keeps each day long enough to be summed", async () => {
+    const kv = fakeKv();
+    const ledger = new BudgetLedger(kv);
+    await ledger.reserve("2026-10-17", 500, 1000); // eight days back: outside the window
+    await ledger.reserve("2026-10-18", 19, 1000); // six days back: the oldest counted
+    await ledger.reserve("2026-10-22", 13, 1000);
+    await ledger.reserve("2026-10-24", 7, 1000);
+    assert.equal(await ledger.spentOver(Date.UTC(2026, 9, 24, 12), 7), 39);
+    for (const { opts } of kv.map.values()) {
+      assert.ok(opts !== undefined && opts.expirationTtl >= 7 * 24 * 60 * 60);
+    }
+  });
+
   it("reads a missing or corrupt total as zero", async () => {
     const kv = fakeKv();
     await kv.put("triage-neurons:2026-10-23", "garbage");

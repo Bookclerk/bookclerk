@@ -74,6 +74,9 @@ a later change supersedes one, its **Status** says so.
 - [Player API](player-api.md): the host serves apps made for
   Audiobookshelf servers at `/player`, with player cards and no account
   password.
+- [Model plugins and the AI binding](ai-models.md): models run in jailed
+  plugins behind an `ai` entrypoint, every caller reaches them through
+  one `AI` binding, and the host loads no model.
 
 ## Adding a record
 

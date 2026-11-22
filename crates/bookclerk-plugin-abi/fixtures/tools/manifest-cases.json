@@ -895,6 +895,58 @@
       "top": "runtime = \"workerd\"\nentrypoints = [\"cli\"]\n",
       "tables": "[ingress]\nkind = \"relay\"\n",
       "error": "plugin.toml: `[ingress]` needs the `ingress` entrypoint"
+    },
+    {
+      "name": "model plugin serving text embeddings",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"ai\"]\n",
+      "tables": "[ai]\nserves = [\"textEmbeddings\"]\n",
+      "error": null
+    },
+    {
+      "name": "plugin calling a model",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\"]\n",
+      "tables": "[ai]\ncalls = [\"textEmbeddings\"]\n",
+      "error": null
+    },
+    {
+      "name": "model plugin that also calls models",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"ai\"]\n",
+      "tables": "[ai]\nserves = [\"textEmbeddings\"]\ncalls = [\"textEmbeddings\"]\n",
+      "error": null
+    },
+    {
+      "name": "model plugin without served tasks",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"ai\"]\n",
+      "error": "plugin.toml: `[ai].serves` is required for a plugin with the `ai` entrypoint"
+    },
+    {
+      "name": "model plugin with empty served tasks",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"ai\"]\n",
+      "tables": "[ai]\nserves = []\n",
+      "error": "plugin.toml: `[ai].serves` is required for a plugin with the `ai` entrypoint"
+    },
+    {
+      "name": "served tasks without the entrypoint",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\"]\n",
+      "tables": "[ai]\nserves = [\"textEmbeddings\"]\n",
+      "error": "plugin.toml: `[ai].serves` needs the `ai` entrypoint"
+    },
+    {
+      "name": "served task twice",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"ai\"]\n",
+      "tables": "[ai]\nserves = [\"textEmbeddings\", \"textEmbeddings\"]\n",
+      "error": "plugin.toml: `[ai].serves` names the task `textEmbeddings` twice"
+    },
+    {
+      "name": "called task twice",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\"]\n",
+      "tables": "[ai]\ncalls = [\"textEmbeddings\", \"textEmbeddings\"]\n",
+      "error": "plugin.toml: `[ai].calls` names the task `textEmbeddings` twice"
+    },
+    {
+      "name": "called tasks take the AI binding",
+      "tables": "[ai]\ncalls = [\"textEmbeddings\"]\n\n[[queues.producers]]\nbinding = \"AI\"\nqueue = \"jobs\"\n",
+      "error": "plugin.toml: [queues.producers][0] binding collides with another binding"
     }
   ]
 }

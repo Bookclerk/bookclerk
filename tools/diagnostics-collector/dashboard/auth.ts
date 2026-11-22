@@ -27,6 +27,7 @@ import {
   base64url,
   cookieValue,
   createSession,
+  currentMember,
   endSession,
   hostCookie,
   randomToken,
@@ -205,6 +206,13 @@ export async function startSignIn(request: Request, cfg: GitHubConfig): Promise<
 }
 
 /**
+ * A fresh start of the sign-in, offered wherever a sign-in could not finish:
+ * `/auth/github` sets a new state cookie, so it works however long the
+ * page sat open.
+ */
+const SIGN_IN_AGAIN = html`<p><a class="button" href="/auth/github">Sign in with GitHub again</a></p>`;
+
+/**
  * The page for a sign-in GitHub refused, naming the step and GitHub's short
  * reason so an owner can tell a wrong client secret from an expired code.
  * The reason is logged too.
@@ -220,8 +228,9 @@ function signInFailed(step: string, reason: string, clear: string): Response {
   return htmlResponse(
     messagePage(
       "Sign-in failed",
-      html`<p>GitHub refused the sign-in at the ${step} step. Start again from the sign-in page.</p>
-        <p class="notice">GitHub's reason: <code>${reason}</code></p>`,
+      html`<p>GitHub refused the sign-in at the ${step} step.</p>
+        <p class="notice">GitHub's reason: <code>${reason}</code></p>
+        ${SIGN_IN_AGAIN}`,
     ),
     400,
     {},
@@ -249,11 +258,23 @@ export async function finishSignIn(
 ): Promise<Response> {
   const clear = hostCookie(OAUTH_COOKIE, "", { maxAge: 0, sameSite: "Lax" });
   const parsed = parseCallback(new URL(request.url).search, request.headers.get("cookie") || "");
+  // Back to a callback that already signed this browser in (the Back
+  // button, a restored tab, a reload): its code is spent, so open the
+  // dashboard instead of failing. A fresh callback comes from github.com and
+  // carries no SameSite=Strict session cookie, so it never lands here.
+  if (await currentMember(env.DASHBOARD_DB, request, now)) {
+    return htmlResponse(
+      sameSiteHop("Signed in", parsed?.next ?? DEFAULT_NEXT, "You are signed in."),
+      200,
+      {},
+      [clear],
+    );
+  }
   if (!parsed) {
     return htmlResponse(
       messagePage(
         "Sign-in expired",
-        html`<p>The sign-in link was used already or took too long. Start again from the sign-in page.</p>`,
+        html`<p>This sign-in link was used already or took too long.</p>${SIGN_IN_AGAIN}`,
       ),
       400,
       {},

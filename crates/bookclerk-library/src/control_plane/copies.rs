@@ -132,17 +132,47 @@ pub enum CopyPlanned {
 }
 
 /// The titles among `titles` that `person` may take a copy of: the single
-/// place a person's right to an edition is decided, for the grant and for
-/// every download.
+/// place a person's right to an edition is decided, for the grant, every
+/// download and every stream.
 ///
-/// A library's members see every book on its store accounts, as its own
-/// Library page lists them, so today every listed title passes. Patron
-/// scopes (`docs/adr/patron-scopes.md`) narrow this here and nowhere
-/// else: a scoped Member's include and exclude rules and the Download
-/// permission apply to the titles that are not the person's own, and a
-/// person's own books always pass.
-fn visible_to(_person: i64, titles: Vec<AcquireTitle>) -> Vec<AcquireTitle> {
-    titles
+/// The person's patron scope (`docs/adr/patron-scopes.md`) decides it, as
+/// it does for the library's own pages: an Owner or Administrator, or a
+/// patron whose scope hides nothing, keeps every title; a scoped patron
+/// keeps the editions whose work passes their include and exclude rules
+/// and the explicit switch, and always keeps the books on their own store
+/// accounts. A person who is no longer a user of the library keeps
+/// nothing.
+///
+/// # Errors
+///
+/// Returns the read error; callers fail closed on it.
+async fn visible_to(
+    store: &LibraryStore,
+    person: i64,
+    titles: Vec<AcquireTitle>,
+) -> Result<Vec<AcquireTitle>> {
+    if titles.is_empty() {
+        return Ok(titles);
+    }
+    let Some(user) = store.get_user(person).await? else {
+        return Ok(Vec::new());
+    };
+    let Some(scope) = super::work_scope_for_user(store, &user).await? else {
+        return Ok(titles);
+    };
+    let mut shown: BTreeMap<String, bool> = BTreeMap::new();
+    for title in &titles {
+        if !shown.contains_key(&title.edition_id) {
+            let admitted = store
+                .edition_in_scope(&title.edition_id, Some(&scope))
+                .await?;
+            shown.insert(title.edition_id.clone(), admitted);
+        }
+    }
+    Ok(titles
+        .into_iter()
+        .filter(|title| shown.get(&title.edition_id).copied().unwrap_or(false))
+        .collect())
 }
 
 /// The person `holder` asks for, when this library gives it copies: a
@@ -425,7 +455,7 @@ pub async fn plan_copy(
     let Some(person) = person_of(store, holder).await? else {
         return Ok(CopyPlanned::Refused);
     };
-    let titles = visible_to(person, titles_of_listing(store, listing).await?);
+    let titles = visible_to(store, person, titles_of_listing(store, listing).await?).await?;
     let mut editions: Vec<String> = titles.into_iter().map(|title| title.edition_id).collect();
     editions.sort();
     editions.dedup();
@@ -639,9 +669,11 @@ pub async fn authorize_copy(
         return Ok(None);
     }
     if visible_to(
+        store,
         row.user_id,
         titles_of_edition(store, &row.edition_id).await?,
     )
+    .await?
     .is_empty()
     {
         return Ok(None);
@@ -708,11 +740,10 @@ impl PlaybackPlan {
 /// manifest, a new play session and every stream request.
 ///
 /// The edition must be a title on one of this library's store accounts
-/// (`visible_to`, which today passes every such title for every person)
-/// and one this library has acquired, with its primary audio recorded on
-/// at least one destination. Nothing here is decided per person yet:
-/// whether the person's patron scope shows them the work at all is the
-/// caller's check ([`crate::LibraryStore::work_in_scope`]).
+/// that the person's patron scope shows them (`visible_to`), and one this
+/// library has acquired, with its primary audio recorded on at least one
+/// destination. The routes also check the scope before they answer, so
+/// a hidden edition gets the same 404 as an unknown one.
 ///
 /// The Download member control ([`super::MemberControl::Download`]) is
 /// not read: it stops taking copies to keep, and anyone who can see a
@@ -736,7 +767,10 @@ pub async fn plan_playback(
     person: i64,
     edition_id: &str,
 ) -> Result<Option<PlaybackPlan>> {
-    if visible_to(person, titles_of_edition(store, edition_id).await?).is_empty() {
+    if visible_to(store, person, titles_of_edition(store, edition_id).await?)
+        .await?
+        .is_empty()
+    {
         return Ok(None);
     }
     let Some(plan) = edition_plan(store, person, edition_id).await? else {
