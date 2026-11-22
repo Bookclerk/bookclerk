@@ -41,6 +41,7 @@ pub const OPTIONAL_PLUGINS: &[&str] = &[
     "covers",
     "audnexus",
     "openlibrary",
+    "cloudflare_relay",
 ];
 
 /// Reference Echo guests staged under `$BOOKCLERK_PLUGIN_ARTIFACTS`.
