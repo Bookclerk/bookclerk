@@ -4467,6 +4467,41 @@ describe("triage state, mutes and owner close", () => {
     assert.equal(crossSite.status, 403);
   });
 
+  it("shows today's triage spend and the last seven days' on the overview", async () => {
+    const day = (offset: number) => new Date(NOW - offset * 86_400_000).toISOString().slice(0, 10);
+    const totals = new Map([
+      [`triage-neurons:${day(0)}`, "7"],
+      [`triage-neurons:${day(3)}`, "13"],
+      [`triage-neurons:${day(6)}`, "19"],
+      [`triage-neurons:${day(7)}`, "500"],
+    ]);
+    const env = makeEnv({
+      TRIAGE_BUDGET: {
+        get: (key: string) => Promise.resolve(totals.get(key) ?? null),
+        put: () => Promise.resolve(),
+      },
+    });
+    const cookie = await signedIn(env);
+    const page = await (
+      await call(env, new Request(`${ORIGIN}/dash`, { headers: { cookie } }))
+    ).text();
+    assert.match(page, /neurons used today \(UTC\), 39 in the last 7 days/);
+
+    const broken = makeEnv({
+      TRIAGE_BUDGET: {
+        get: () => Promise.reject(new Error("kv down")),
+        put: () => Promise.resolve(),
+      },
+    });
+    const fallback = await (
+      await call(
+        broken,
+        new Request(`${ORIGIN}/dash`, { headers: { cookie: await signedIn(broken) } }),
+      )
+    ).text();
+    assert.match(fallback, /neurons used today \(UTC\), 0 in the last 7 days/);
+  });
+
   it("remembers the source filter between the overview and the reports list", async () => {
     const env = makeEnv();
     await seed(env, ID1);
