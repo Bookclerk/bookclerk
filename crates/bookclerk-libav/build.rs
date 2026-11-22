@@ -276,7 +276,7 @@ fn fetch_source(host: Host, out: &Path) -> PathBuf {
 ///
 /// # Panics
 ///
-/// On a Unix cross build whose target-selecting compiler flags contain
+/// On a Unix cross or Apple build whose target-selecting compiler flags contain
 /// whitespace, which `configure` cannot pass through intact.
 fn configure_args(host: Host, prefix: &Path) -> Vec<String> {
     let msvc = host == Host::Msvc;
@@ -324,12 +324,19 @@ fn configure_args(host: Host, prefix: &Path) -> Vec<String> {
         args.push(format!("--arch={arch}"));
         args.push("--target-os=win32".to_string());
         args.push(format!("--extra-cflags={crt}"));
+        if arch != "x86_64" && arch != "x86" {
+            // On Arm, MSVC's armasm64 only takes FFmpeg's GNU-syntax
+            // assembly through gas-preprocessor.pl (Perl), which Windows
+            // builders lack; the decoders' C paths are enough here.
+            args.push("--disable-asm".to_string());
+        }
         if cross {
             args.push("--enable-cross-compile".to_string());
         }
     } else {
         let compiler = cc::Build::new().get_compiler();
         args.push(format!("--cc={}", compiler.path().display()));
+        let apple = env::var("CARGO_CFG_TARGET_VENDOR").is_ok_and(|vendor| vendor == "apple");
         if cross {
             let os = match env::var("CARGO_CFG_TARGET_OS").unwrap_or_default().as_str() {
                 "macos" => "darwin".to_string(),
@@ -338,10 +345,14 @@ fn configure_args(host: Host, prefix: &Path) -> Vec<String> {
             args.push("--enable-cross-compile".to_string());
             args.push(format!("--arch={arch}"));
             args.push(format!("--target-os={os}"));
+        }
+        if cross || apple {
             // The compiler binary alone may build for the host (Apple
-            // clang builds arm64 unless told `--target=x86_64-…`), so the
-            // target-selecting flags the `cc` crate would pass go to both
-            // compile and link steps.
+            // clang builds arm64 unless told `--target=x86_64-…`), and on
+            // Apple targets even a native build needs Rust's deployment
+            // floor (`-mmacosx-version-min=`) so FFmpeg's objects do not
+            // ask for a newer OS than the binary; the target-selecting
+            // flags the `cc` crate would pass go to compile and link.
             let target_flags = target_selecting_flags(compiler.args());
             // FFmpeg's `configure` splits these on whitespace and honours
             // no quoting, so a flag with a space (an SDK under
