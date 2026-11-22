@@ -417,7 +417,7 @@ bookclerk plugins approve echo --reset
 
 ### Platform guests
 
-Platform guests (`sqlite`, `local`) skip the consent screens and are
+Platform guests (`sqlite`, `local`, `embedder`) skip the consent screens and are
 enabled by default, **only when host-controlled provenance says they are
 verified Bookclerk platform artifacts**. The manifest id being `sqlite` or
 `local` isn't enough.

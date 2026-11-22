@@ -1,0 +1,47 @@
+[package]
+name = "bookclerk-plugin-ai-embedder"
+description = "Text-embedding model plugin: runs cut ONNX embedding models from language row packs inside the plugin jail"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+keywords = ["bookclerk", "bookclerk-plugin", "embeddings"]
+
+[package.metadata.bookclerk]
+api_version = 3
+kind = "ai"
+id = "embedder"
+display_name = "Text embeddings"
+# Staging and packaging put the pinned ONNX Runtime shared library beside
+# the plugin binary (`bookclerk-onnxruntime`).
+onnxruntime = true
+
+[[bin]]
+name = "bookclerk-plugin-ai-embedder"
+path = "src/main.rs"
+
+[dependencies]
+async-trait.workspace = true
+bookclerk-model-pack.workspace = true
+bookclerk-plugin-sdk.workspace = true
+bookclerk-sentencepiece.workspace = true
+# ONNX Runtime bindings. `load-dynamic` loads the pinned shared library that
+# ships beside this plugin (see `bookclerk-onnxruntime`), so nothing is
+# downloaded or linked at build time; `api-22` is the oldest runtime API the
+# crate may call, which the pinned release is far past.
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic", "api-22"] }
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+bookclerk-onnxruntime.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

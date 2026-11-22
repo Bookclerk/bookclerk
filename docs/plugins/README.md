@@ -124,7 +124,7 @@ jail and the workerd front door).
 
 - **Plugin host**: Crate `bookclerk-plugin-host`. Loads guests, and never ships storefront logic by default.
 - **External guest**: Any jailed subprocess plugin (platform, product, example or third-party).
-- **Platform guest**: Bundled in the installer: `sqlite` and `local` only (`plugins/platform/`).
+- **Platform guest**: Bundled in the installer: `sqlite`, `local` and `embedder` only (`plugins/platform/`).
 - **Optional plugin**: Bookclerk-maintained optional guests (storefronts, ABS, s3, d1, postgres under `plugins/optional/`).
 - **Product plugin**: Another name for optional first-party guests (packaged with `cargo package-plugins`).
 - **Reference example**: Echo samples under `examples/`. For CI and `cargo dev --examples` only, never packaged.

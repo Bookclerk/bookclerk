@@ -23,7 +23,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 /// Platform guests installed into `$BOOKCLERK_FILES_DIR/plugins/`; always checked.
-pub const PLATFORM_PLUGINS: &[&str] = &["local", "sqlite"];
+pub const PLATFORM_PLUGINS: &[&str] = &["embedder", "local", "sqlite"];
 
 /// Optional first-party guests staged under `$BOOKCLERK_PLUGIN_ARTIFACTS`.
 pub const OPTIONAL_PLUGINS: &[&str] = &[
@@ -239,10 +239,11 @@ mod tests {
         assert!(scope.includes("echo_workerd_ts"));
         assert!(scope.includes("sqlite"));
         assert!(scope.includes("local"));
+        assert!(scope.includes("embedder"));
         assert!(!scope.includes("audible"));
         assert_eq!(
             scope.required_ids(),
-            vec!["local", "sqlite", "echo_workerd_ts", "libro"]
+            vec!["embedder", "local", "sqlite", "echo_workerd_ts", "libro"]
         );
     }
 

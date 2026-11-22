@@ -50,7 +50,7 @@ def _load_reuse() -> ModuleType:
 
 # The oracle's own reading of a Rust input, written without fnmatch.
 ORACLE_NAMES = {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml"}
-ORACLE_SUFFIXES = (".rs", ".capnp", ".proto")
+ORACLE_SUFFIXES = (".rs", ".capnp", ".proto", ".cc", ".h")
 ORACLE_EXACT = {".github/workflows/codeql.yml", "scripts/codeql_languages.py", "scripts/codeql_reuse.py"}
 
 
@@ -141,7 +141,7 @@ class FuzzTests(unittest.TestCase):
             elif op < 0.6 and data:
                 del data[min(pos, len(data) - 1)]
             elif op < 0.8:
-                data[pos:pos] = rng.choice([b".rs", b"\x00", b"Cargo.toml", b".cargo/", b"/.cargo/", b".capnp", b"/"])
+                data[pos:pos] = rng.choice([b".rs", b"\x00", b"Cargo.toml", b".cargo/", b"/.cargo/", b".capnp", b".cc", b".h", b"/"])
             elif data:
                 data[min(pos, len(data) - 1)] = rng.randrange(256)
         return bytes(data)

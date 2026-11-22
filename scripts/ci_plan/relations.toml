@@ -32,6 +32,11 @@ e2e = "workerd-runtime"
 package = "bookclerkd"
 paths = ["assets/brand/svg/bookclerk-logo.svg"]
 
+# The vendored tokenizer sources the crate's build script compiles.
+[[embed]]
+package = "bookclerk-sentencepiece"
+paths = ["third_party/sentencepiece-lite/**"]
+
 # Files outside a package directory read by that package's tests.
 # The OpenAPI route-coverage test scans the portal's route sources.
 [[test_input]]
@@ -279,6 +284,28 @@ paths = [
     "fuzz/oracles/tags_read.rs",
     "fuzz/corpus/tags_wire/**",
     "fuzz/oracles/tags_wire.rs",
+]
+
+[[test_input]]
+package = "bookclerk-plugin-ai-embedder"
+# The tiny tokenizer the plugin's tests load.
+paths = ["crates/bookclerk-sentencepiece/tests/fixtures/**"]
+
+[[test_input]]
+package = "bookclerk-plugin-e2e"
+# The staged suite installs the embedder's tiny model (shared through `#[path]`).
+paths = [
+    "crates/bookclerk-plugins/platform/ai-embedder/tests/support/**",
+    "crates/bookclerk-plugins/platform/ai-embedder/tests/fixtures/**",
+    "crates/bookclerk-sentencepiece/tests/fixtures/**",
+]
+
+[[test_input]]
+package = "bookclerk-model-pack"
+# The model pack oracle is shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/model_pack/**",
+    "fuzz/oracles/model_pack.rs",
 ]
 
 [[test_input]]
@@ -728,3 +755,8 @@ paths = [
 package = "bookclerk-config"
 reference = ".git"
 reason = "build.rs reads the checkout's commit for diagnostics reports (rerun-if-changed on .git/HEAD); no test reads it"
+
+[[reviewed]]
+package = "bookclerk-plugin-ai-embedder"
+reference = "target"
+reason = "the pinned ONNX Runtime library the tests load is downloaded under the target directory, not read from the repository"

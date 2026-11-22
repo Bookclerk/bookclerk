@@ -579,7 +579,7 @@ test step excludes it (`--exclude bookclerk-plugin-e2e` on the full suite).
   every workerd-runtime guest. Shared host runtime changes add the
   `runtime_smoke` guests (native Rust, workerd TS, workerd Python).
 - **Combination.** Full wins over subsets, subsets are unioned, and
-  prerequisites add nothing. Platform guests (`sqlite`, `local`) are always
+  prerequisites add nothing. Platform guests (`sqlite`, `local`, `embedder`) are always
   installed and checked.
 
 An embedded SDK change marks `bookclerk-workerd` affected *through the
@@ -999,7 +999,8 @@ input reuses `main`'s Rust results instead:
    (`git diff -z --no-renames --name-only`).
 2. [`scripts/codeql_languages.py`](../../scripts/codeql_languages.py)
    treats a path as a Rust input when it is a `.rs` file, a `.capnp` or
-   `.proto` schema that a build script compiles into Rust, a `Cargo.toml`,
+   `.proto` schema that a build script compiles into Rust, a `.cc` or `.h`
+   file (C++ a build script compiles into a crate), a `Cargo.toml`,
    `Cargo.lock`, `rust-toolchain.toml`, anything under a `.cargo/`
    directory at any depth, the workflow, or the scripts that choose and
    reuse. A name that isn't UTF-8 also counts. A test fails when a
@@ -1045,7 +1046,7 @@ The Docker image job builds `packaging/docker/Dockerfile` and runs
 `packaging/docker/smoke.sh`, which boots the image twice on one fresh
 `/config` volume:
 
-1. The first boot must install the bundled `sqlite` and `local` plugins
+1. The first boot must install the bundled `sqlite`, `local` and `embedder` plugins
    and load the database guest under the default isolation.
 2. The second must reinstall nothing.
 3. The image must not override `BOOKCLERK_PLUGIN_ISOLATION` or

@@ -1,0 +1,33 @@
+{
+  "version": "1.32.0",
+  "assets": {
+    "linux-x86_64": {
+      "wheel_url": "https://files.pythonhosted.org/packages/92/74/1f7c51522822e93aa91f633ebcd75688e2deebeca5901b2e6da8a8c5ad7c/onnxruntime-1.32.0-cp313-cp313-manylinux_2_28_x86_64.whl",
+      "wheel_sha256_hex": "02ea12a28c069ea8510093d95a7f6ff8126bfd9fc5c0d3381c03b80fb2b424ba",
+      "member": "onnxruntime/capi/libonnxruntime.so.1.32.0",
+      "library_bytes": 34824680,
+      "library_sha256_hex": "6c1585d1bbf45b0712ea4a21b705c5fcb4ba04ff2e30f1fbf81a49faf658638f"
+    },
+    "linux-aarch64": {
+      "wheel_url": "https://files.pythonhosted.org/packages/96/c7/26be6be3ebe42597a521645a7bb18701ce0716af87af0cd2c9281d2e84a5/onnxruntime-1.32.0-cp313-cp313-manylinux_2_28_aarch64.whl",
+      "wheel_sha256_hex": "54d02baff2df38777b4c3cc7af326406fe8b8a48f54720f4c446d2d327920a79",
+      "member": "onnxruntime/capi/libonnxruntime.so.1.32.0",
+      "library_bytes": 27165936,
+      "library_sha256_hex": "49852228a93995158b2a813d4df487d47a1b76b0eaa894507ef49e91b6d7954a"
+    },
+    "macos-aarch64": {
+      "wheel_url": "https://files.pythonhosted.org/packages/f1/0c/97eb4ac42266545d7630e8231f8cc969f5c3f144d2ee6cb568ef45f81360/onnxruntime-1.32.0-cp313-cp313-macosx_14_0_arm64.whl",
+      "wheel_sha256_hex": "27bf5dad46355a8a435c9c4e1556464d99ca834ea44e0f452909712068b8821b",
+      "member": "onnxruntime/capi/libonnxruntime.1.32.0.dylib",
+      "library_bytes": 35272344,
+      "library_sha256_hex": "fa585fabbea65b823b9a8f7e27d46aee3989d1be7e36b528203d3a1fd613aae7"
+    },
+    "windows-x86_64": {
+      "wheel_url": "https://files.pythonhosted.org/packages/6f/ee/a776ccc71ba54de3739c20c7c815d9695c55db1d08e2b3c621452676c23f/onnxruntime-1.32.0-cp313-cp313-win_amd64.whl",
+      "wheel_sha256_hex": "c7f9aa98036ba2a47aa041a4a8c6d0a1f7bfe1bde44c131dcd15ce334f2f148d",
+      "member": "onnxruntime/capi/onnxruntime.dll",
+      "library_bytes": 22668600,
+      "library_sha256_hex": "bf0927ca8efb68ad67f6cad3851641dc78e21a687a3fd959ae262d3252e9fa0a"
+    }
+  }
+}
