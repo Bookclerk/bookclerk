@@ -1972,10 +1972,12 @@ jobs:
             # (docs/contributing/ci.md#superseded-merge-groups). Exit code 2
             # means the ref is missing; a transport error just retries. The
             # queue also deletes a merged group's branch, so look again for a
-            # started CI Gate first.
+            # started CI Gate first. The step shell runs with `-e`, so the
+            # exit code is caught with `||` rather than read from `$?`.
             if [ -n "$QUEUE_REF" ]; then
-              git ls-remote --exit-code "https://github.com/$GH_REPO.git" "$QUEUE_REF" >/dev/null
-              if [ $? -eq 2 ] && started=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
+              ref_status=0
+              git ls-remote --exit-code "https://github.com/$GH_REPO.git" "$QUEUE_REF" >/dev/null || ref_status=$?
+              if [ "$ref_status" -eq 2 ] && started=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
                   --jq '.jobs[] | select(.status != "queued") | .name') &&
                 ! grep -qE '^(.* / )?CI Gate$' <<<"$started"; then
                 echo "::error::cancelling the merge-group run: $QUEUE_REF no longer exists"
