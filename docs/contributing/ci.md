@@ -1874,7 +1874,10 @@ run, so it gets a runner before the jobs that fan out after `plan`. The
 queue also deletes a group's branch after merging it, so the check comes
 after the job's `CI Gate` test, and the job looks again for a started
 `CI Gate` just before it cancels. A transport error counts as the branch
-being present. A cancelled run doesn't trigger
+being present. The step shell runs with `-e`, so the script catches
+`ls-remote`'s exit code with `||`; reading `$?` afterwards ended the step
+with status 2 instead, leaving the dropped group's jobs running to the end
+and the job marked failed. A cancelled run doesn't trigger
 [re-enqueue](#merge-queue-re-enqueue), because its jobs carry no
 not-acquired annotation.
 
