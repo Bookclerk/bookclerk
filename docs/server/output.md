@@ -406,8 +406,10 @@ The `b2` plugin writes to a Backblaze B2 bucket through B2's native API.
 It works like the other object stores, with these differences:
 
 - **Large files.** A file over 8 MiB goes up in parts, with at most
-  three parts' worth of memory in use (two read ahead and the part being
-  sent). An upload that fails part way is cancelled. If the
+  three parts' worth of memory held by the B2 code (two read ahead and
+  the part being sent). When the plugin's requests go through the host's
+  network proxy, the proxy step holds one more copy of the part in
+  flight, so plan for up to four parts. An upload that fails part way is cancelled. If the
   cancel fails too, the unfinished file stays in the bucket (and is
   billed) until a later delete of that name or a lifecycle rule removes
   it.

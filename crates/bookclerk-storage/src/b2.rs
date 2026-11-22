@@ -10,7 +10,10 @@
 //!   part, then `b2_finish_large_file`. At most three part buffers are in
 //!   memory at once (two read ahead to choose between the two paths, and
 //!   the copy the request in flight owns, since the HTTP client takes its
-//!   body by value and a retry needs the bytes again), and a failed upload
+//!   body by value and a retry needs the bytes again). That is this layer's
+//!   own bound: when a plugin sends through the host's proxy, the SDK
+//!   clones the request body once more, so a fourth part-sized copy can
+//!   exist while a part is in flight. A failed upload
 //!   is cancelled (best effort). A finish whose
 //!   reply was lost is settled by reading the file back by id.
 //! - Reads and probes use the download URL (`GET` / `HEAD` on
@@ -108,12 +111,16 @@ const AUTO_CONTENT_TYPE: &str = "b2/x-auto";
 
 /// Budget for a write's file name and file info together, in bytes: B2's
 /// limit on a bucket with server-side encryption or Object Lock, the
-/// strictest one, counted as the percent-encoded name plus each
-/// `X-Bz-Info-<name>` header name and encoded value.
+/// strictest one, counted as the `X-Bz-File-Name` header name and the
+/// percent-encoded name plus each `X-Bz-Info-<name>` header name and
+/// encoded value.
 const MAX_NAME_AND_INFO_BYTES: usize = 2048;
 
 /// Length of the header-name prefix every file-info entry is sent under.
 const INFO_HEADER_PREFIX_BYTES: usize = "X-Bz-Info-".len();
+
+/// Length of the header name the file name is sent under.
+const FILE_NAME_HEADER_BYTES: usize = "X-Bz-File-Name".len();
 
 /// An application key's secret half. Its `Debug` output never shows it.
 #[derive(Clone)]
@@ -306,7 +313,7 @@ fn file_info(name: &str, meta: &ObjectMeta, sha256_hex: Option<&str>) -> BTreeMa
         INFO_HEADER_PREFIX_BYTES + key.len() + b2_api::encode_file_name(value).len()
     };
     let mut info = BTreeMap::new();
-    let mut used = b2_api::encode_file_name(name).len();
+    let mut used = FILE_NAME_HEADER_BYTES + b2_api::encode_file_name(name).len();
     let required = [
         ("sha256", sha256_hex),
         ("commit-token", meta.commit_token.as_deref()),

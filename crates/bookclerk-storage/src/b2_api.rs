@@ -958,9 +958,17 @@ struct WireVersionsPage {
 pub fn parse_versions_page(bytes: &[u8]) -> ReplyResult<VersionsPage> {
     let wire: WireVersionsPage = decode("file version listing", bytes)?;
     let files = listed(wire.files)?;
-    // B2 lists each name's versions newest first; deleting a name walks
-    // them oldest first, so a page out of that order is refused rather than
-    // risk removing the current version before an older one.
+    // B2 lists names in order and each name's versions newest first;
+    // deleting a name walks them oldest first, so a page out of that order
+    // is refused rather than risk removing the current version before an
+    // older one. Requiring names never to go backwards keeps each name's
+    // versions adjacent, so checking neighbours covers every pair.
+    if files
+        .windows(2)
+        .any(|pair| pair[0].file_name > pair[1].file_name)
+    {
+        return Err(malformed("version listing names go backwards"));
+    }
     if files.windows(2).any(|pair| {
         pair[0].file_name == pair[1].file_name
             && pair[0].upload_timestamp_ms < pair[1].upload_timestamp_ms
@@ -1515,6 +1523,13 @@ mod tests {
             {"fileId":"1","fileName":"a","contentLength":1,"uploadTimestamp":1,"action":"upload"},
             {"fileId":"2","fileName":"a","contentLength":1,"uploadTimestamp":2,"action":"upload"}]}"#;
         assert!(parse_versions_page(oldest_first).is_err());
+        // Another name between two versions of `a` would hide the old one
+        // before the new one from a neighbour-only check.
+        let interleaved = br#"{"files":[
+            {"fileId":"1","fileName":"a","contentLength":1,"uploadTimestamp":1,"action":"upload"},
+            {"fileId":"3","fileName":"b","contentLength":1,"uploadTimestamp":5,"action":"upload"},
+            {"fileId":"2","fileName":"a","contentLength":1,"uploadTimestamp":2,"action":"upload"}]}"#;
+        assert!(parse_versions_page(interleaved).is_err());
     }
 
     #[test]

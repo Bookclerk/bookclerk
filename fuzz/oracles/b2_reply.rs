@@ -24,7 +24,7 @@
 //!   naming rules, a file-name listing's continuation is past every listed
 //!   name, a file-version listing's continuation (name and id together) is
 //!   not before any listed name and its versions of one name are newest
-//!   first, and every SHA-1 is 40 lowercase hex digits;
+//!   first across the whole page, and every SHA-1 is 40 lowercase hex digits;
 //! - percent-encoding any text and decoding it gives the text back, and the
 //!   encoding matches the oracle's own encoder.
 
@@ -204,9 +204,13 @@ pub fn check(data: &[u8]) {
                     assert!(name_ok(next));
                     assert!(page.files.iter().all(|file| &file.file_name <= next));
                 }
-                for pair in page.files.windows(2) {
-                    if pair[0].file_name == pair[1].file_name {
-                        assert!(pair[0].upload_timestamp_ms >= pair[1].upload_timestamp_ms);
+                // Every earlier row of a name is at least as new as every
+                // later one, checked over all pairs, not only neighbours.
+                for (i, earlier) in page.files.iter().enumerate() {
+                    for later in &page.files[i + 1..] {
+                        if earlier.file_name == later.file_name {
+                            assert!(earlier.upload_timestamp_ms >= later.upload_timestamp_ms);
+                        }
                     }
                 }
             }

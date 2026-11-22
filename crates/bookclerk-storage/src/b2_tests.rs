@@ -1059,7 +1059,8 @@ fn file_info_keeps_the_digest_and_token_and_drops_display_fields_that_do_not_fit
     // The title alone fits B2's limit but not beside the name and the
     // required fields.
     assert!(!info.contains_key("title"));
-    let used = encode_file_name("books/a.m4b").len()
+    let used = "X-Bz-File-Name".len()
+        + encode_file_name("books/a.m4b").len()
         + info
             .iter()
             .map(|(key, value)| "X-Bz-Info-".len() + key.len() + encode_file_name(value).len())
@@ -1071,6 +1072,24 @@ fn file_info_keeps_the_digest_and_token_and_drops_display_fields_that_do_not_fit
         ..ObjectMeta::default()
     };
     assert!(file_info("a", &short, None).contains_key("title"));
+}
+
+#[test]
+fn file_info_counts_every_header_name_up_to_the_exact_limit() {
+    // Name "a": 14 for `X-Bz-File-Name` plus 1. Digest: 10 for
+    // `X-Bz-Info-`, 6 for `sha256`, 64 hex. Title: 10 + 5 + its length.
+    let digest = "0".repeat(64);
+    let room = MAX_NAME_AND_INFO_BYTES - (14 + 1) - (10 + 6 + 64) - (10 + 5);
+    let exact = ObjectMeta {
+        title: Some("t".repeat(room)),
+        ..ObjectMeta::default()
+    };
+    assert!(file_info("a", &exact, Some(&digest)).contains_key("title"));
+    let over = ObjectMeta {
+        title: Some("t".repeat(room + 1)),
+        ..ObjectMeta::default()
+    };
+    assert!(!file_info("a", &over, Some(&digest)).contains_key("title"));
 }
 
 #[tokio::test]

@@ -237,6 +237,7 @@ fn named_b2_seeds_keep_their_meaning() {
         "names_page_positional_file",
         "versions_page_positional_file",
         "versions_page_old_first",
+        "versions_page_interleaved",
         "file_no_length",
         "buckets_bad_name",
         "buckets_ipv4_name",
