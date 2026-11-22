@@ -209,6 +209,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["POST", "/api/discover/sync-listening", "allow"],
   ["POST", "/api/discover/title-meta", "allow"],
   ["POST", "/api/discover/title-meta/batch", "allow"],
+  // A store's public sample for a title: answers a signed same-origin path.
+  ["POST", "/api/discover/title-sample", "allow"],
   ["POST", "/api/discover/title-reviews", "allow"],
 
   // Events: readable; deliveries are never retried or resumed.
@@ -246,6 +248,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   // Playback: a visitor's own listening state. The demo never acquires, so
   // no edition has audio to stream.
   ["GET", "/api/library/editions/{id}/playback", "allow"],
+  // A few minutes cut from a held edition; records no listening.
+  ["GET", "/api/library/editions/{id}/sample", "allow"],
   ["GET", "/api/library/editions/{id}/bookmarks", "allow"],
   ["POST", "/api/library/editions/{id}/bookmarks", "allow"],
   ["PUT", "/api/playback/bookmarks/{id}", "allow"],
@@ -259,6 +263,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["GET", "/api/playback/sessions/{id}/tracks/{index}", "allow"],
   // Same-origin cover images; the token only names URLs the API handed out.
   ["GET", "/api/covers/{token}/{size}", "allow"],
+  // Same-origin store samples; the token only names URLs the API handed out.
+  ["GET", "/api/samples/{token}", "allow"],
   // Same-origin Gravatars (fixed host, validated hash) and store icons (from
   // a deployed plugin's brand), through the same cover service.
   ["GET", "/api/avatars/gravatar/{hash}", "allow"],
