@@ -830,9 +830,9 @@ fn is_schema_marker_visibility_race(err: &LibraryError) -> bool {
     }
 }
 
-/// True when a host table (`books`) exists without relying on schema state.
+/// True when a host table (`accounts`) exists without relying on schema state.
 async fn host_tables_present(db: &DatabaseConnection) -> Result<bool> {
-    crate::backup::util::table_exists(db, "books").await
+    crate::backup::util::table_exists(db, "accounts").await
 }
 
 /// `INSERT` for the unreleased `bookclerk_schema_migrations` row (no `PRAGMA user_version`).
@@ -1516,13 +1516,13 @@ mod tests {
         let cols = db
             .query_all_raw(Statement::from_string(
                 DbBackend::Sqlite,
-                "PRAGMA table_info(books)",
+                "PRAGMA table_info(accounts)",
             ))
             .await
             .expect("table_info");
         assert!(
             !cols.is_empty(),
-            "canonical unreleased host schema must create books"
+            "canonical unreleased host schema must create accounts"
         );
     }
 
@@ -1958,8 +1958,8 @@ mod tests {
         let err = exec_sql(
             &db,
             DbBackend::Sqlite,
-            "INSERT INTO books (uuid, plugin_key, source, account_id, product_id, marketplace, title, created_at, updated_at) \
-             VALUES ('u', 'audible', 'audible', 'missing', 'p', 'us', 't', 't', 't')",
+            "INSERT INTO account_scan_state (plugin_key, account_id, updated_at) \
+             VALUES ('audible', 'missing', 't')",
         )
         .await
         .expect_err("fk");

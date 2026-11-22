@@ -1539,44 +1539,6 @@ async fn listing_text_wider_than_one_reply_together_is_read_per_listing() {
         .all(|t| t.language.as_deref() == Some(language.as_str())));
 }
 
-/// Another account's legacy book row for the same product, too wide to
-/// read, does not keep this person's title out of the window.
-#[tokio::test]
-async fn another_accounts_wide_book_row_does_not_hide_a_title() {
-    let _lock = master_key_test_lock_async().await;
-    let dir = tempfile::tempdir().unwrap();
-    let (store, caps) = capped_store(dir.path()).await;
-    let cap = caps.reply;
-    let riley = store
-        .create_user(UserRole::Member, Some("Riley"), None)
-        .await
-        .unwrap()
-        .id;
-    let sam = store
-        .create_user(UserRole::Member, Some("Sam"), None)
-        .await
-        .unwrap()
-        .id;
-    hold(&store, riley, "riley-acct", &["B0SHARED01".into()]).await;
-    hold(&store, sam, "sam-acct", &["B0SHARED01".into()]).await;
-    add_branch(&store, BRANCH, riley).await;
-    let wide = "W".repeat(5000);
-    raw(
-        &store,
-        &format!("UPDATE books SET title = '{wide}' WHERE account_id = 'sam-acct'"),
-    )
-    .await;
-    cap.store(4096, std::sync::atomic::Ordering::SeqCst);
-
-    let listed: Vec<String> = read_all(&store, BRANCH)
-        .await
-        .into_iter()
-        .flat_map(|work| work.editions)
-        .map(|edition| edition.edition.product_id)
-        .collect();
-    assert_eq!(listed, vec!["B0SHARED01"]);
-}
-
 /// A listing cell wider than the plugin's `maxCellBytes` (stored before a
 /// smaller cap) leaves that title out of the window; the page and the
 /// titles around it are still listed.

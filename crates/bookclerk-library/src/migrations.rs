@@ -716,7 +716,11 @@ mod tests {
         prove_migration_ops(binding_bootstrap_ops()).expect("binding ops must typecheck");
         assert_eq!(unreleased_checksum().len(), 64);
         let tables = current_canonical_table_names();
-        assert!(tables.contains(&"books".into()));
+        assert!(tables.contains(&"accounts".into()));
+        assert!(
+            !tables.contains(&"books".into()),
+            "the flat books table is retired"
+        );
         assert!(tables.contains(&"bookclerk_schema_migrations".into()));
         assert!(tables.contains(&"plugin_databases".into()));
     }
@@ -766,10 +770,6 @@ mod tests {
         );
         assert!(lowered.contains(" BYTEA"), "blob columns");
         assert!(lowered.contains(" DOUBLE PRECISION"), "real columns");
-        assert!(
-            lowered.contains("lower((uuid COLLATE \"C\"))"),
-            "expression index must match the collated predicate"
-        );
         assert!(lowered.contains("UNIQUE(queue_name, account_id, source, event_type, dedup_key)"));
         // Word-boundary safety: string literals stay untouched.
         assert!(lowered.contains(r#"'["openid","profile","email"]'"#));
@@ -801,7 +801,7 @@ mod tests {
             request_hash: String::new(),
             deadline_unix_ms: 0,
             statements: vec![bookclerk_plugin_abi::TypedDbStatement {
-                sql: "SELECT title FROM books ORDER BY title".into(),
+                sql: "SELECT title FROM store_listings ORDER BY title".into(),
                 parameters: Vec::new(),
                 kind: bookclerk_plugin_abi::DbPlanStatementKind::Select,
                 max_rows: 8,

@@ -549,7 +549,7 @@ pub async fn open_library_store(
 fn granted_job_database(store: bookclerk_library::LibraryStore) -> Arc<dyn GuestDatabase> {
     granted_job_database_with_policy(
         store,
-        bookclerk_library::GuestSqlPolicy::allow_tables(["books"])
+        bookclerk_library::GuestSqlPolicy::allow_tables(["store_listings"])
             .with_sql_types(bookclerk_library::migrations::host_sql_type_env()),
     )
 }
@@ -3318,9 +3318,9 @@ mod tests {
     }
 
     /// Defense in depth: even a test-only host-library grant that allows
-    /// `books` cannot reach `jobs`. Production jobs never inject this session.
+    /// `store_listings` cannot reach `jobs`. Production jobs never inject this session.
     #[tokio::test]
-    async fn granted_job_database_allows_books_and_denies_jobs() {
+    async fn granted_job_database_allows_listings_and_denies_jobs() {
         let store = bookclerk_library::LibraryStore::from_connection(
             bookclerk_plugin_database_sqlite::open_memory()
                 .await
@@ -3330,10 +3330,10 @@ mod tests {
         let session = granted_job_database(store);
         session
             .execute(ExecuteRequest {
-                operation_id: "job-books".into(),
+                operation_id: "job-listings".into(),
                 request_hash: String::new(),
                 statements: vec![TypedDbStatement {
-                    sql: "SELECT id FROM books LIMIT 1".into(),
+                    sql: "SELECT id FROM store_listings LIMIT 1".into(),
                     parameters: vec![],
                     kind: DbPlanStatementKind::Select,
                     max_rows: 8,
@@ -3342,7 +3342,7 @@ mod tests {
                 deadline_unix_ms: 0,
             })
             .await
-            .expect("books grant");
+            .expect("listings grant");
         let err = session
             .execute(ExecuteRequest {
                 operation_id: "job-jobs".into(),
