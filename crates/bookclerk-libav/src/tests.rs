@@ -7,34 +7,71 @@ use std::io::Cursor;
 
 use super::*;
 
-/// Demuxes and decodes `bytes` to the end.
+/// Demuxes and decodes `bytes` to the end, draining the decoder there.
 ///
 /// # Returns
 ///
 /// The track, the total frames decoded, the decoded rate and channel
 /// count, and the peak absolute sample.
 fn decode_all(bytes: &[u8]) -> (Track, usize, u32, usize, f32) {
+    let (track, frames, rate, channels, peak, _) = decode_counting_drain(bytes);
+    (track, frames, rate, channels, peak)
+}
+
+/// As [`decode_all`], also returning how many of the frames only the
+/// end-of-stream drain gave.
+fn decode_counting_drain(bytes: &[u8]) -> (Track, usize, u32, usize, f32, usize) {
     let mut demuxer = Demuxer::open(Box::new(Cursor::new(bytes.to_vec()))).expect("open");
     let track = demuxer.track().clone();
     let mut decoder = Decoder::new(&track.config).expect("decoder");
     let (mut frames, mut rate, mut channels, mut peak) = (0, 0, 0, 0f32);
+    let mut on_frame = |frame: Frame<'_>| {
+        frames += frame.frames;
+        rate = frame.sample_rate;
+        channels = frame.channels;
+        peak = frame
+            .samples
+            .iter()
+            .fold(peak, |peak, sample| peak.max(sample.abs()));
+        assert_eq!(frame.samples.len(), frame.frames * frame.channels);
+        let mask = frame.channel_mask;
+        assert!(mask == 0 || mask.count_ones() as usize == frame.channels);
+    };
     while let Some(packet) = demuxer.next_packet().expect("packet") {
-        decoder
-            .decode(packet.data, |frame| {
-                frames += frame.frames;
-                rate = frame.sample_rate;
-                channels = frame.channels;
-                peak = frame
-                    .samples
-                    .iter()
-                    .fold(peak, |peak, sample| peak.max(sample.abs()));
-                assert_eq!(frame.samples.len(), frame.frames * frame.channels);
-                let mask = frame.channel_mask;
-                assert!(mask == 0 || mask.count_ones() as usize == frame.channels);
-            })
-            .expect("decode");
+        decoder.decode(packet.data, &mut on_frame).expect("decode");
     }
-    (track, frames, rate, channels, peak)
+    let mut tail = 0;
+    decoder
+        .drain(|frame| {
+            tail += frame.frames;
+            on_frame(frame);
+        })
+        .expect("drain");
+    (track, frames, rate, channels, peak, tail)
+}
+
+#[test]
+fn a_drain_hands_back_held_frames_and_resets_the_decoder() {
+    for bytes in [fixtures::WMAV2, fixtures::WMAV1, fixtures::AC3] {
+        let (track, frames, _, _, _, tail) = decode_counting_drain(bytes);
+        assert!(
+            tail < frames,
+            "{:?}: tail {tail} of {frames}",
+            track.config.codec
+        );
+    }
+    // After a drain the decoder takes packets again, as after a seek, and
+    // a second drain is harmless.
+    let mut demuxer = Demuxer::open(Box::new(Cursor::new(fixtures::AC3.to_vec()))).expect("open");
+    let mut decoder = Decoder::new(&demuxer.track().config.clone()).expect("decoder");
+    decoder.drain(|_| {}).expect("empty drain");
+    decoder.drain(|_| {}).expect("second drain");
+    let packet = demuxer.next_packet().expect("read").expect("a packet");
+    let mut frames = 0;
+    decoder
+        .decode(packet.data, |frame| frames += frame.frames)
+        .expect("decode after drain");
+    assert!(frames > 0);
 }
 
 #[test]

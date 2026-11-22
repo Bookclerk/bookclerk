@@ -905,9 +905,11 @@ If a sidecar file fails, Bookclerk logs it and still keeps the audio.
 
 An M4B normally holds AAC audio, which every audiobook player plays. When
 a store delivers Opus, FLAC, ALAC, E-AC-3 or AC-4 audio, Bookclerk
-re-encodes it to AAC for the M4B. E-AC-3 re-encodes only in builds with
-the [FFmpeg decoders](media.md#ffmpeg-decoders), and AC-4 in none, so
-those can only be kept. The advanced setting
+re-encodes it to AAC for the M4B. Two codecs are kept as they are
+whatever this setting says, because no decoder for them is built in:
+E-AC-3 in a build without the [FFmpeg decoders](media.md#ffmpeg-decoders)
+(release builds have them, so there it re-encodes), and AC-4 in every
+build. The advanced setting
 `output.keep_codec_in_m4b` (off by default; **Settings → Output →
 Advanced**) keeps that audio unchanged inside the M4B instead, with its
 own sample entry, tags and chapters:

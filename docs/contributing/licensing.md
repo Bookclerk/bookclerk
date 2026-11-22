@@ -41,10 +41,13 @@ FFmpeg is built without its GPL and nonfree parts, so the libraries the
 media worker links stay LGPL-2.1-or-later, which the AGPL can combine
 with. The build script fetches the unmodified release tarball from
 `ffmpeg.org` and checks its SHA-256; the version is `FFMPEG_VERSION` in
-`crates/bookclerk-libav/build.rs`. Anyone who gets a release build gets
-Bookclerk's source under the AGPL, which includes that build script, so
-FFmpeg's source and the means to rebuild the worker against a changed
-copy come with it.
+`crates/bookclerk-libav/build.rs`, next to the tarball's URL and digest.
+Bookclerk's source is offered under the AGPL with every release, and that
+build script names exactly which FFmpeg source a release links and how it
+was configured; the tarball itself stays downloadable from `ffmpeg.org`.
+To link the worker against a changed FFmpeg, point the build script at
+the changed tarball and its digest and rebuild with
+`--features bookclerk-media-worker/libav`.
 
 Every crate states its license in `Cargo.toml`. A new crate inherits
 AGPL-3.0-or-later from `[workspace.package]` unless it is plugin-facing.

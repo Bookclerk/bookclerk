@@ -59,11 +59,22 @@ fn main() {
     }
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap_or_default());
     let prefix = out.join("ffmpeg-install");
-    let stamp = prefix.join(format!(".built-{FFMPEG_VERSION}"));
-    if !stamp.exists() {
+    let args = configure_args(host, &prefix);
+    // The stamp records everything that decides what gets built, so a new
+    // release, digest, component list or configure flag rebuilds instead
+    // of reusing an old install in the same `OUT_DIR`.
+    let fingerprint = format!(
+        "{FFMPEG_VERSION}\n{FFMPEG_SHA256}\n{DECODERS}\n{DEMUXERS}\n{PARSERS}\n{}\n",
+        args.join("\n")
+    );
+    let stamp = prefix.join(".built");
+    if fs::read_to_string(&stamp).ok().as_deref() != Some(fingerprint.as_str()) {
+        if prefix.exists() {
+            fs::remove_dir_all(&prefix).unwrap_or_else(|err| panic!("clear install: {err}"));
+        }
         let source = fetch_source(host, &out);
-        build_ffmpeg(host, &out, &source, &prefix);
-        fs::write(&stamp, FFMPEG_VERSION).unwrap_or_else(|err| panic!("write stamp: {err}"));
+        build_ffmpeg(host, &out, &source, &args);
+        fs::write(&stamp, &fingerprint).unwrap_or_else(|err| panic!("write stamp: {err}"));
         // Only the installed libraries and headers are needed from here
         // on; the source, objects and tarball are about 150 MB.
         for leftover in [source, out.join("ffmpeg-build")] {
@@ -194,10 +205,9 @@ fn msys_command(program: &str) -> Command {
 ///
 /// When neither file exists or the copy fails.
 fn msvc_library_name(lib: &Path, name: &str) {
+    // Always copied, so a rebuilt `lib<name>.a` never sits behind a stale
+    // `<name>.lib` from an earlier build.
     let want = lib.join(format!("{name}.lib"));
-    if want.exists() {
-        return;
-    }
     let made = lib.join(format!("lib{name}.a"));
     fs::copy(&made, &want).unwrap_or_else(|err| panic!("copy {}: {err}", made.display()));
 }
@@ -243,32 +253,28 @@ fn fetch_source(host: Host, out: &Path) -> PathBuf {
     source
 }
 
-/// Configures, builds and installs the libraries from `source` under
-/// `prefix`, building in `out/ffmpeg-build`.
-fn build_ffmpeg(host: Host, out: &Path, source: &Path, prefix: &Path) {
-    let build = out.join("ffmpeg-build");
-    if build.exists() {
-        fs::remove_dir_all(&build).unwrap_or_else(|err| panic!("clear build dir: {err}"));
-    }
-    fs::create_dir_all(&build).unwrap_or_else(|err| panic!("create build dir: {err}"));
+/// The arguments `configure` runs with for `host`, installing under
+/// `prefix`.
+///
+/// # Arguments
+///
+/// * `host` - which build the target gets; never [`Host::Unsupported`].
+/// * `prefix` - the install directory, written as the build's shell
+///   spells it.
+///
+/// # Returns
+///
+/// Every argument after the `configure` script itself, in order.
+fn configure_args(host: Host, prefix: &Path) -> Vec<String> {
     let msvc = host == Host::Msvc;
-    let shell_path = |path: &Path| {
-        if msvc {
-            msys_path(path)
-        } else {
-            path.display().to_string()
-        }
-    };
-    let mut configure = if msvc {
-        msys_command("sh")
+    let prefix = if msvc {
+        msys_path(prefix)
     } else {
-        Command::new("sh")
+        prefix.display().to_string()
     };
-    configure
-        .current_dir(&build)
-        .arg(shell_path(&source.join("configure")))
-        .arg(format!("--prefix={}", shell_path(prefix)))
-        .args([
+    let mut args = vec![format!("--prefix={prefix}")];
+    args.extend(
+        [
             "--disable-everything",
             "--disable-programs",
             "--disable-doc",
@@ -286,11 +292,14 @@ fn build_ffmpeg(host: Host, out: &Path, source: &Path, prefix: &Path) {
             "--enable-static",
             "--disable-shared",
             "--enable-pic",
-        ])
-        .arg(format!("--enable-decoder={DECODERS}"))
-        .arg(format!("--enable-demuxer={DEMUXERS}"))
-        .arg(format!("--enable-parser={PARSERS}"));
+        ]
+        .map(String::from),
+    );
+    args.push(format!("--enable-decoder={DECODERS}"));
+    args.push(format!("--enable-demuxer={DEMUXERS}"));
+    args.push(format!("--enable-parser={PARSERS}"));
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let cross = env::var("HOST").unwrap_or_default() != env::var("TARGET").unwrap_or_default();
     if msvc {
         // `cl.exe` from the `cc` crate's environment is already the
         // target's compiler; the C runtime matches Rust's (`/MD` unless
@@ -298,30 +307,90 @@ fn build_ffmpeg(host: Host, out: &Path, source: &Path, prefix: &Path) {
         let static_crt = env::var("CARGO_CFG_TARGET_FEATURE")
             .is_ok_and(|features| features.split(',').any(|f| f == "crt-static"));
         let crt = if static_crt { "-MT" } else { "-MD" };
-        configure
-            .arg("--toolchain=msvc")
-            .arg(format!("--arch={arch}"))
-            .arg("--target-os=win32")
-            .arg(format!("--extra-cflags={crt}"));
-        if env::var("HOST").unwrap_or_default() != env::var("TARGET").unwrap_or_default() {
-            configure.arg("--enable-cross-compile");
+        args.push("--toolchain=msvc".to_string());
+        args.push(format!("--arch={arch}"));
+        args.push("--target-os=win32".to_string());
+        args.push(format!("--extra-cflags={crt}"));
+        if cross {
+            args.push("--enable-cross-compile".to_string());
         }
     } else {
         let compiler = cc::Build::new().get_compiler();
-        configure.arg(format!("--cc={}", compiler.path().display()));
-        let host = env::var("HOST").unwrap_or_default();
-        let target = env::var("TARGET").unwrap_or_default();
-        if host != target {
+        args.push(format!("--cc={}", compiler.path().display()));
+        if cross {
             let os = match env::var("CARGO_CFG_TARGET_OS").unwrap_or_default().as_str() {
                 "macos" => "darwin".to_string(),
                 other => other.to_string(),
             };
-            configure
-                .arg("--enable-cross-compile")
-                .arg(format!("--arch={arch}"))
-                .arg(format!("--target-os={os}"));
+            args.push("--enable-cross-compile".to_string());
+            args.push(format!("--arch={arch}"));
+            args.push(format!("--target-os={os}"));
+            // The compiler binary alone may build for the host (Apple
+            // clang builds arm64 unless told `--target=x86_64-…`), so the
+            // target-selecting flags the `cc` crate would pass go to both
+            // compile and link steps.
+            let target_flags = target_selecting_flags(compiler.args());
+            if !target_flags.is_empty() {
+                let joined = target_flags.join(" ");
+                args.push(format!("--extra-cflags={joined}"));
+                args.push(format!("--extra-ldflags={joined}"));
+            }
         }
     }
+    args
+}
+
+/// The flags in `args` (the `cc` crate's compiler arguments) that choose
+/// the target: `--target=`, `-target`, `-arch`, `-isysroot`, `--sysroot=`
+/// and the `-m…-version-min=` deployment floors.
+///
+/// # Arguments
+///
+/// * `args` - the compiler arguments, in order.
+///
+/// # Returns
+///
+/// The selected flags, with the value that follows a two-word flag kept
+/// beside it; optimization, warning and sanitizer flags are left out.
+fn target_selecting_flags(args: &[std::ffi::OsString]) -> Vec<String> {
+    let mut picked = Vec::new();
+    let mut words = args.iter().map(|arg| arg.to_string_lossy().into_owned());
+    while let Some(word) = words.next() {
+        if matches!(word.as_str(), "-target" | "-arch" | "-isysroot") {
+            if let Some(value) = words.next() {
+                picked.push(word);
+                picked.push(value);
+            }
+        } else if word.starts_with("--target=")
+            || word.starts_with("--sysroot=")
+            || (word.starts_with("-m") && word.contains("-version-min="))
+        {
+            picked.push(word);
+        }
+    }
+    picked
+}
+
+/// Configures, builds and installs the libraries from `source` with
+/// `args`, building in `out/ffmpeg-build`.
+fn build_ffmpeg(host: Host, out: &Path, source: &Path, args: &[String]) {
+    let build = out.join("ffmpeg-build");
+    if build.exists() {
+        fs::remove_dir_all(&build).unwrap_or_else(|err| panic!("clear build dir: {err}"));
+    }
+    fs::create_dir_all(&build).unwrap_or_else(|err| panic!("create build dir: {err}"));
+    let msvc = host == Host::Msvc;
+    let script = source.join("configure");
+    let mut configure = if msvc {
+        let mut sh = msys_command("sh");
+        sh.arg(msys_path(&script));
+        sh
+    } else {
+        let mut sh = Command::new("sh");
+        sh.arg(&script);
+        sh
+    };
+    configure.current_dir(&build).args(args);
     run(without_host_flags(&mut configure));
     let jobs = env::var("NUM_JOBS").unwrap_or_else(|_| "1".to_string());
     for target in [format!("-j{jobs}"), "install".to_string()] {

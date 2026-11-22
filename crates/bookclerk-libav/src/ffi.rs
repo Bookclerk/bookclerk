@@ -109,6 +109,8 @@ extern "C" {
     pub(crate) fn bc_dec_send(dec: *mut BcDec, data: *const u8, len: usize) -> i32;
     /// Takes the next decoded frame.
     pub(crate) fn bc_dec_receive(dec: *mut BcDec, out: *mut BcFrame) -> i32;
+    /// Signals end of stream so a delayed decoder gives up held frames.
+    pub(crate) fn bc_dec_drain(dec: *mut BcDec) -> i32;
     /// Drops the decoder's buffered state (after a seek).
     pub(crate) fn bc_dec_flush(dec: *mut BcDec);
     /// Frees a decoder.

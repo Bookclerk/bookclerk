@@ -329,9 +329,12 @@ WMA, AC-3, E-AC-3 and AMR decode through FFmpeg, built from source by the
   Symphonia can't read or whose audio it has no decoder for, such as AMR
   in a 3GP file.
 
-Release builds turn the feature on by themselves. Tests run with it too,
-so the first test build downloads FFmpeg and takes about half a minute
-longer (a few minutes on Windows).
+The release builds of the repository's `cargo` aliases turn the feature on
+by themselves: `cargo build-app --release`, `cargo package-platform` and
+`cargo install-platform --release`. A plain `cargo build --release` needs
+the `--features` flag shown in [Install the worker](#install-the-worker).
+Tests run with it too, so the first test build downloads FFmpeg and takes
+about half a minute longer (a few minutes on Windows).
 
 ## Configure it
 

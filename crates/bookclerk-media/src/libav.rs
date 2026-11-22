@@ -208,12 +208,16 @@ impl LibavDecoder {
         })
     }
 
-    /// Decodes one packet into [`Self::buf`].
+    /// Decodes one packet into [`Self::buf`]; an empty packet (the one
+    /// [`LibavReader`] sends at the end of the stream) drains the frames
+    /// a delayed decoder still holds instead.
     ///
     /// # Errors
     ///
     /// A decode error when FFmpeg rejects the packet, or the frames it
-    /// gives disagree on their layout or have an unusable one.
+    /// gives disagree on their layout or have an unusable one; an I/O
+    /// error of kind out-of-memory, which ends decoding, when FFmpeg
+    /// cannot allocate.
     fn decode_inner(&mut self, data: &[u8]) -> Result<()> {
         self.buf.clear();
         self.pcm.clear();
@@ -224,7 +228,7 @@ impl LibavDecoder {
         let mut spec: Option<(u32, usize, u64)> = None;
         let mut mismatch = false;
         let pcm = &mut self.pcm;
-        let decoded = decoder.decode(data, |frame| {
+        let on_frame = |frame: bookclerk_libav::Frame<'_>| {
             if frame.frames == 0 {
                 return;
             }
@@ -235,10 +239,21 @@ impl LibavDecoder {
                 Some(_) => {}
             }
             pcm.extend_from_slice(frame.samples);
-        });
+        };
+        let decoded = if data.is_empty() {
+            decoder.drain(on_frame)
+        } else {
+            decoder.decode(data, on_frame)
+        };
         match decoded {
             Ok(()) => {}
-            Err(LibavError::OutOfMemory) => return decode_error("libav: out of memory"),
+            // Not a bad packet to skip: the next one would fail the same
+            // way, so the job stops.
+            Err(LibavError::OutOfMemory) => {
+                return Err(symphonia::core::errors::Error::IoError(
+                    std::io::Error::new(std::io::ErrorKind::OutOfMemory, "libav: out of memory"),
+                ))
+            }
             Err(_) => return decode_error("libav: packet could not be decoded"),
         }
         if mismatch {
@@ -355,6 +370,12 @@ pub(crate) struct LibavReader {
     metadata: MetadataLog,
     /// The packet a seek read to learn where it landed.
     pending: Option<Pending>,
+    /// Where the packet after the last one handed out starts, in track
+    /// ticks: the timestamp of the end-of-stream packet.
+    next_ts: i64,
+    /// Whether the empty end-of-stream packet, which drains the decoder,
+    /// has been handed out since the open or the last seek.
+    drained: bool,
 }
 
 impl LibavReader {
@@ -403,7 +424,16 @@ impl LibavReader {
             media,
             metadata: MetadataLog::default(),
             pending: None,
+            next_ts: found.start,
+            drained: false,
         })
+    }
+
+    /// Hands out a demuxed packet for track 0, noting where the next one
+    /// starts.
+    fn hand_out(&mut self, data: Box<[u8]>, pts: i64, duration: u64) -> Packet {
+        self.next_ts = pts.saturating_add(i64::try_from(duration).unwrap_or(0));
+        packet(data, pts, duration)
     }
 
     /// The track's time base.
@@ -441,6 +471,7 @@ impl FormatReader for LibavReader {
             }
         };
         self.pending = None;
+        self.drained = false;
         if self.demuxer.seek(required.get()).is_err() {
             return seek_error(SeekErrorKind::Unseekable);
         }
@@ -472,10 +503,25 @@ impl FormatReader for LibavReader {
 
     fn next_packet(&mut self) -> Result<Option<Packet>> {
         if let Some(pending) = self.pending.take() {
-            return Ok(Some(packet(pending.data, pending.pts, pending.duration)));
+            return Ok(Some(self.hand_out(
+                pending.data,
+                pending.pts,
+                pending.duration,
+            )));
         }
-        match self.demuxer.next_packet() {
-            Ok(Some(found)) => Ok(Some(packet(found.data.into(), found.pts, found.duration))),
+        // Copied out of the demuxer's buffer before `self` is used again.
+        let next = self
+            .demuxer
+            .next_packet()
+            .map(|found| found.map(|found| (Box::from(found.data), found.pts, found.duration)));
+        match next {
+            Ok(Some((data, pts, duration))) => Ok(Some(self.hand_out(data, pts, duration))),
+            // One empty packet past the last real one tells the decoder
+            // the stream ended, so WMA's held-back final frames come out.
+            Ok(None) if !self.drained => {
+                self.drained = true;
+                Ok(Some(packet(Box::default(), self.next_ts, 0)))
+            }
             Ok(None) => Ok(None),
             Err(_) => decode_error("libav: container could not be read"),
         }
@@ -712,6 +758,48 @@ mod tests {
         assert!(format.media_info().time_base.is_some());
         assert!(format.metadata().current().is_none());
         let _ = format.into_inner();
+    }
+
+    #[test]
+    fn the_stream_ends_with_one_empty_packet_that_drains_the_decoder() {
+        let opened = open_audio(Box::new(Cursor::new(fixtures::WMAV2.to_vec())), true).unwrap();
+        let mut format = opened.format;
+        let track = format.tracks()[0].clone();
+        let CodecParameters::Audio(params) = track.codec_params.clone().expect("params") else {
+            panic!("an audio track");
+        };
+        let mut decoder = LibavDecoder::try_new(&params).expect("decoder");
+        let mut end = None;
+        let mut empties = 0;
+        while let Some(packet) = format.next_packet().unwrap() {
+            if packet.data.is_empty() {
+                empties += 1;
+                assert!(
+                    packet.pts.get() >= end.unwrap_or(0),
+                    "after the last packet"
+                );
+            } else {
+                end = Some(packet.pts.get() + i64::try_from(packet.dur.get()).unwrap());
+            }
+            decoder.decode(&packet).expect("decode or drain");
+        }
+        assert_eq!(empties, 1);
+        assert!(format.next_packet().unwrap().is_none());
+        // A seek starts a new run that ends with its own drain packet.
+        format
+            .seek(
+                SeekMode::Accurate,
+                SeekTo::Timestamp {
+                    ts: Timestamp::new(0),
+                    track_id: 0,
+                },
+            )
+            .expect("seek");
+        let mut last = None;
+        while let Some(packet) = format.next_packet().unwrap() {
+            last = Some(packet.data.is_empty());
+        }
+        assert_eq!(last, Some(true));
     }
 
     #[test]

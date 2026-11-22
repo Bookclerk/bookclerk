@@ -286,6 +286,44 @@ impl Decoder {
         if code < 0 {
             return Err(Error::from_code(code));
         }
+        self.receive(&mut on_frame)
+    }
+
+    /// Ends the stream: hands back the frames a delayed decoder (WMA v1,
+    /// v2 and lossless) still holds, then resets it so later packets, as
+    /// after a seek, decode from a clean state.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Decode`] when the decoder refuses the end of stream,
+    /// [`Error::Layout`] for a frame outside the shim's limits, or
+    /// [`Error::OutOfMemory`]. The decoder is reset either way.
+    pub fn drain<F>(&mut self, mut on_frame: F) -> Result<(), Error>
+    where
+        F: FnMut(Frame<'_>),
+    {
+        // SAFETY: the handle is valid for the life of `self`.
+        #[allow(unsafe_code)]
+        let code = unsafe { ffi::bc_dec_drain(self.raw) };
+        let drained = if code < 0 {
+            Err(Error::from_code(code))
+        } else {
+            self.receive(&mut on_frame)
+        };
+        self.flush();
+        drained
+    }
+
+    /// Takes every frame the decoder has ready, calling `on_frame` for
+    /// each, until it wants another packet or the stream has ended.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Decoder::decode`].
+    fn receive<F>(&mut self, on_frame: &mut F) -> Result<(), Error>
+    where
+        F: FnMut(Frame<'_>),
+    {
         loop {
             let mut frame = ffi::BcFrame {
                 samples: ptr::null(),

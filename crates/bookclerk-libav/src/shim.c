@@ -297,6 +297,18 @@ int bc_dec_receive(bc_dec *dec, bc_frame *out) {
     return BC_OK;
 }
 
+/* Signals end of stream so a decoder with delay (the WMA codecs) gives
+ * up the frames it still holds; bc_dec_receive then returns them and ends
+ * with BC_EOF. A second drain before a flush is harmless. */
+int bc_dec_drain(bc_dec *dec) {
+    if (!dec) return BC_ERR_ARGS;
+    int ret = avcodec_send_packet(dec->ctx, NULL);
+    if (ret == AVERROR_EOF) return BC_OK;
+    if (ret == AVERROR(ENOMEM)) return BC_ERR_NOMEM;
+    if (ret < 0) return BC_ERR_DECODE;
+    return BC_OK;
+}
+
 void bc_dec_flush(bc_dec *dec) {
     if (dec && dec->ctx) avcodec_flush_buffers(dec->ctx);
 }
