@@ -112,6 +112,12 @@ pub struct StorefrontCandidate {
     /// sold by different stores, so one card carries both prices.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expression_id: Option<String>,
+    /// The publisher each store listing merged into this row named, one
+    /// entry per listing that named one, in arrival order. Empty until a
+    /// second listing merges in; [`Self::publisher`] is then the name most
+    /// of them agree on (see `merge_candidate_metadata`). Never sent.
+    #[serde(skip)]
+    pub publisher_votes: Vec<String>,
 }
 
 /// Options for storefront candidate expansion.
@@ -335,6 +341,7 @@ pub(crate) fn hit_to_candidate(source_id: &str, hit: CatalogHit) -> StorefrontCa
         store_rank: None,
         work_id: None,
         expression_id: None,
+        publisher_votes: Vec::new(),
     }
 }
 
@@ -539,13 +546,23 @@ pub(crate) fn insert_candidate(
     insert_keyed(map, c);
 }
 
+/// Most minutes two stores' runtimes for one recording may differ by.
+///
+/// Stores round a recording's length differently (Audible to the nearest
+/// minute, Chirp down from milliseconds, Libro.fm from seconds), so the
+/// same files read 370 and 370.5 minutes: rounding alone moves a runtime
+/// by less than one minute. Two recordings of one book by the same
+/// narrator, such as an abridgement, differ by hours.
+pub(crate) const RUNTIME_TOLERANCE_MINUTES: i64 = 1;
+
 /// The key of the candidate in `map` that lists the same recording as `c`.
 ///
 /// Two listings are one recording when the shared listing pool resolved
 /// both into the same expression, when they share an ISBN or ASIN, or when
-/// they are the same store product. Titles and authors are never compared:
-/// listings of one work in different recordings stay apart, so their
-/// covers, narrators and prices are not mixed.
+/// they are the same store product. Failing all of those, listings from two
+/// different stores are one recording when [`same_recording_by_runtime`]
+/// holds: same book, same narrators, matching runtime and nothing that
+/// tells them apart. A shared identifier always wins over a runtime match.
 ///
 /// # Arguments
 ///
@@ -562,32 +579,138 @@ pub(crate) fn same_recording_key(
 ) -> Option<String> {
     // ISBN and ASIN are compared each on their own: a listing with both
     // and one with only the ASIN are still one recording.
-    let isbn = |v: Option<&str>| {
-        v.map(bookclerk_enrich::canonicalize_isbn)
-            .filter(|s| !s.is_empty())
+    let (c_isbn, c_asin) = (isbn_of(c), asin_of(c));
+    map.iter()
+        .find_map(|(key, existing)| {
+            let shares =
+                |mine: &Option<String>, theirs: Option<String>| mine.is_some() && *mine == theirs;
+            if shares(&c_isbn, isbn_of(existing)) || shares(&c_asin, asin_of(existing)) {
+                return Some(key.clone());
+            }
+            let same_listing = c.source.eq_ignore_ascii_case(&existing.source)
+                && c.product_id.eq_ignore_ascii_case(&existing.product_id);
+            let same_expression = matches!(
+                (c.expression_id.as_deref(), existing.expression_id.as_deref()),
+                (Some(a), Some(b)) if !a.trim().is_empty() && a == b
+            );
+            (same_listing || same_expression).then(|| key.clone())
+        })
+        .or_else(|| {
+            map.iter()
+                .find(|(_, existing)| same_recording_by_runtime(existing, c))
+                .map(|(key, _)| key.clone())
+        })
+}
+
+/// The candidate's ISBN, canonical, when it has one.
+fn isbn_of(c: &StorefrontCandidate) -> Option<String> {
+    c.isbn
+        .as_deref()
+        .map(bookclerk_enrich::canonicalize_isbn)
+        .filter(|s| !s.is_empty())
+}
+
+/// The candidate's ASIN, upper-cased, when it has one.
+fn asin_of(c: &StorefrontCandidate) -> Option<String> {
+    c.asin
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_ascii_uppercase)
+}
+
+/// Whether two values that are both known differ.
+fn known_and_different<T: PartialEq>(a: Option<T>, b: Option<T>) -> bool {
+    matches!((a, b), (Some(a), Some(b)) if a != b)
+}
+
+/// Sorted, cleaned names from a display string of names, joined; empty
+/// when it names nobody.
+fn name_set_key(display: Option<&str>) -> String {
+    let set: std::collections::BTreeSet<String> =
+        bookclerk_resolve::names::split_display_names(display.unwrap_or(""))
+            .iter()
+            .map(|n| bookclerk_resolve::normalize::clean_author(n))
+            .filter(|n| !n.is_empty())
+            .collect();
+    set.into_iter().collect::<Vec<_>>().join("\u{1e}")
+}
+
+/// Whether two listings from different stores are one recording though
+/// they share no identifier.
+///
+/// Stores rarely share a record number: Chirp lists no ISBN and Audible
+/// gives one only for some titles. Listings are one recording when all of
+/// these hold:
+///
+/// * no store lists both (one store's own products stay apart, each with
+///   its own price, and a row already merged from several stores counts as
+///   each of them);
+/// * both report a runtime, within [`RUNTIME_TOLERANCE_MINUTES`];
+/// * they name the same work: the resolver's work key (cleaned title
+///   without edition markers such as ` - Abridged`, and authors) matches;
+/// * they credit the same, non-empty set of narrators;
+/// * nothing tells them apart: no two different ISBNs or ASINs, no
+///   abridged against unabridged, no two different languages, and no two
+///   different expressions in the shared listing pool.
+///
+/// # Arguments
+///
+/// * `a` - One listing.
+/// * `b` - The other listing.
+///
+/// # Returns
+///
+/// `true` when the two listings are one recording.
+pub(crate) fn same_recording_by_runtime(a: &StorefrontCandidate, b: &StorefrontCandidate) -> bool {
+    // A merged row lists every store it holds in its store editions.
+    let stores = |c: &StorefrontCandidate| -> HashSet<String> {
+        c.store_editions
+            .iter()
+            .map(|e| e.source.to_ascii_lowercase())
+            .chain(std::iter::once(c.source.to_ascii_lowercase()))
+            .collect()
     };
-    let asin = |v: Option<&str>| {
-        v.map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_ascii_uppercase)
+    if !stores(a).is_disjoint(&stores(b)) {
+        return false;
+    }
+    let (Some(len_a), Some(len_b)) = (a.length_minutes, b.length_minutes) else {
+        return false;
     };
-    let (c_isbn, c_asin) = (isbn(c.isbn.as_deref()), asin(c.asin.as_deref()));
-    map.iter().find_map(|(key, existing)| {
-        let shares =
-            |mine: &Option<String>, theirs: Option<String>| mine.is_some() && *mine == theirs;
-        if shares(&c_isbn, isbn(existing.isbn.as_deref()))
-            || shares(&c_asin, asin(existing.asin.as_deref()))
-        {
-            return Some(key.clone());
-        }
-        let same_listing = c.source.eq_ignore_ascii_case(&existing.source)
-            && c.product_id.eq_ignore_ascii_case(&existing.product_id);
-        let same_expression = matches!(
-            (c.expression_id.as_deref(), existing.expression_id.as_deref()),
-            (Some(a), Some(b)) if !a.trim().is_empty() && a == b
-        );
-        (same_listing || same_expression).then(|| key.clone())
-    })
+    if (len_a - len_b).abs() > RUNTIME_TOLERANCE_MINUTES {
+        return false;
+    }
+    let language = |c: &StorefrontCandidate| {
+        c.language
+            .as_deref()
+            .and_then(bookclerk_resolve::normalize_language)
+    };
+    let expression = |c: &StorefrontCandidate| {
+        c.expression_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    if known_and_different(isbn_of(a), isbn_of(b))
+        || known_and_different(asin_of(a), asin_of(b))
+        || known_and_different(a.is_abridged, b.is_abridged)
+        || known_and_different(language(a), language(b))
+        || known_and_different(expression(a), expression(b))
+    {
+        return false;
+    }
+    let work_key = |c: &StorefrontCandidate| {
+        let authors =
+            bookclerk_resolve::names::split_display_names(c.authors.as_deref().unwrap_or(""));
+        bookclerk_resolve::work_match_key(&c.title, authors.iter().map(String::as_str))
+    };
+    let work = work_key(a);
+    let narrators = name_set_key(a.narrators.as_deref());
+    !work.is_empty()
+        && work == work_key(b)
+        && !narrators.is_empty()
+        && narrators == name_set_key(b.narrators.as_deref())
 }
 
 /// Inserts `c` under its map key, kept apart from another candidate
@@ -753,6 +876,7 @@ mod tests {
                 store_rank: None,
                 work_id: None,
                 expression_id: Some("x-hail".into()),
+                publisher_votes: Vec::new(),
             },
             &owned_asins,
             &owned_isbns,
@@ -793,6 +917,7 @@ mod tests {
                 store_rank: None,
                 work_id: None,
                 expression_id: Some("x-hail".into()),
+                publisher_votes: Vec::new(),
             },
             &owned_asins,
             &owned_isbns,
@@ -833,6 +958,7 @@ mod tests {
                 store_rank: None,
                 work_id: None,
                 expression_id: Some("x-hail".into()),
+                publisher_votes: Vec::new(),
             },
             &owned_asins,
             &owned_isbns,
@@ -889,6 +1015,7 @@ mod tests {
             store_rank: None,
             work_id: Some("w-sunlit".into()),
             expression_id: Some(format!("x-{product_id}")),
+            publisher_votes: Vec::new(),
         };
         let none = HashSet::new();
         let mut map = HashMap::new();
@@ -946,6 +1073,7 @@ mod tests {
             expression_id: language
                 .filter(|l| *l == "Spanish")
                 .map(|_| String::from("x-es")),
+            publisher_votes: Vec::new(),
         };
         let none = HashSet::new();
         let mut map = HashMap::new();

@@ -208,19 +208,33 @@ query BookclerkAuthorSummary($slug: String!) {
 "#;
 
 /// Typeahead query returning matching audiobooks and authors for a search term.
+///
+/// It asks for the runtime, publisher and series as catalog search does:
+/// page one of a search leads with the typeahead's rows, and a row without
+/// them showed a title with no runtime or series and could not be matched
+/// with the same recording at another store by its runtime.
 const TYPEAHEAD: &str = r#"
 query BookclerkTypeahead($searchTerm: String!) {
   typeahead(searchTerm: $searchTerm) {
     audiobooks {
       id
       displayTitle
+      subTitle
       displayAuthors
       displayNarrators
       url
       coverUrl: optimizedCoverUrl(format: "f_jpg", quality: "q_auto:eco", sizePixels: 200)
+      durationMs
+      publisher
+      releasedOn
       language
       abridged
       promotedTags { displayName }
+      seriesAudiobook {
+        number
+        displayNumber
+        series { id name slug }
+      }
     }
     authors { id name slug }
   }

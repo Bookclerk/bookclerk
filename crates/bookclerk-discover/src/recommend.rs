@@ -2256,6 +2256,7 @@ mod tests {
                 store_rank: None,
                 work_id: None,
                 expression_id: None,
+                publisher_votes: Vec::new(),
             };
         let opts = RecommendOptions {
             include_purchase_hints: false,

@@ -18,6 +18,7 @@
 pub mod fuzzing;
 pub mod identifiers;
 pub mod kinds;
+pub mod labels;
 pub mod language;
 pub mod listing;
 pub mod memory;
@@ -31,6 +32,7 @@ pub use kinds::{
     Abridgement, CreditRole, Entitlement, ExpressionKind, IdentifierScheme, Level, MediaKind,
     Strength, WorkKind,
 };
+pub use labels::{clean_series_name, series_key, strip_edition_marker};
 pub use language::normalize_language;
 pub use listing::{
     stored_marketplace, stored_product_id, work_match_key, Credit, Holder, HoldingDraft, Listing,

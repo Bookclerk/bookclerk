@@ -31,6 +31,7 @@ import {
   CATALOG_LANGUAGE_ALL,
   CATALOG_SORT_OPTIONS,
   catalogFilterValues,
+  seriesKey,
   catalogLanguageSearchOpts,
   catalogLanguageSelectOptions,
   catalogTitleFromHit,
@@ -773,7 +774,11 @@ export function DiscoverPage({
   const facetOptions = useMemo(() => {
     const withSeed = (kind: CatalogFilterKind, selected: string[]) => {
       const opts = catalogFilterValues(resultTitles, kind);
-      const missing = selected.filter((v) => !opts.some((o) => o.value === v));
+      // A selected series stays one choice when the results spell it
+      // differently (`King & Maxwell` for `King and Maxwell`).
+      const same = (a: string, b: string) =>
+        kind === "series" ? seriesKey(a) === seriesKey(b) : a === b;
+      const missing = selected.filter((v) => !opts.some((o) => same(o.value, v)));
       return [...missing.map((v) => ({ value: v, label: v })), ...opts];
     };
     return {
