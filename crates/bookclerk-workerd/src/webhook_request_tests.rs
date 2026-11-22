@@ -22,6 +22,11 @@ fn signed(encoding: SignatureEncoding, prefix: &str) -> WebhookManifest {
     }))
 }
 
+/// A fresh random signing key, so no test key is a literal in the source.
+fn random_key() -> [u8; 32] {
+    rand::random()
+}
+
 fn sign(secret: &[u8], body: &[u8]) -> Vec<u8> {
     let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(secret).unwrap();
     mac.update(body);
@@ -95,7 +100,8 @@ fn unsigned_rows_keep_the_listed_headers() {
 
 #[test]
 fn hmac_signatures_are_checked_in_both_encodings() {
-    let secret = b"shared-secret";
+    let key = random_key();
+    let secret = &key[..];
     let body = br#"{"events":[]}"#;
     let digest = sign(secret, body);
     let hex_row = signed(SignatureEncoding::Hex, "v1=");
@@ -120,7 +126,7 @@ fn hmac_signatures_are_checked_in_both_encodings() {
     for (value, refusal) in [
         (hex::encode(&digest), WebhookRefusal::BadSignature),
         (
-            format!("v1={}", hex::encode(sign(b"other", body))),
+            format!("v1={}", hex::encode(sign(&random_key(), body))),
             WebhookRefusal::BadSignature,
         ),
         ("v1=zz".to_string(), WebhookRefusal::BadSignature),
