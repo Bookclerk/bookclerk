@@ -27,8 +27,14 @@
 //!   An upload's deadline covers sending its body too, so it grows with
 //!   the body's size (one second per 64 KiB on top of five minutes).
 //!
-//! Conditional writes are not declared: B2 has none, so the host checks
-//! before it writes and reports that the write was not atomic.
+//! B2 has no conditional writes, so the backend declares checked ones
+//! instead: it writes, then reads the name's versions and withdraws its
+//! own write when another writer got in first (see
+//! [`StorageCapabilities::checked_write`]).
+//!
+//! The change feed is B2's event notifications posted to the host's
+//! webhook (`crate::b2_feed`); the rules that send them are managed here
+//! (`b2_get_bucket_notification_rules` / `b2_set_bucket_notification_rules`).
 
 use std::collections::BTreeMap;
 use std::pin::Pin;
@@ -48,13 +54,14 @@ use tokio::io::{AsyncRead, AsyncReadExt, ReadBuf};
 use tokio::sync::Mutex;
 
 use crate::b2_api::{
-    self, ApiError, Authorization, DownloadHead, FileAction, FileVersion, ReplyResult,
+    self, ApiError, Authorization, DownloadHead, FileAction, FileId, FileVersion, ReplyResult,
     UploadTarget, MAX_B2_REPLY_BYTES,
 };
+use crate::b2_events::{self, B2SigningSecret, NotificationRule};
 use crate::bounded::{ReadSpan, MULTIPART_PART_SIZE};
 use crate::{
     ByteRange, ListPage, ObjectInfo, ObjectMeta, ObjectProbe, PutStreamResult, Result,
-    StorageBackend, StorageCapabilities, StorageError, MAX_SUPPORTED_OBJECT_BYTES,
+    StorageBackend, StorageCapabilities, StorageError, WriteCondition, MAX_SUPPORTED_OBJECT_BYTES,
 };
 
 /// Where `b2_authorize_account` lives; every other URL comes from its
@@ -63,6 +70,10 @@ pub const B2_AUTHORIZE_URL: &str = "https://api.backblazeb2.com";
 
 /// Path of the version 3 API calls under an API URL.
 const API_PATH: &str = "/b2api/v3/";
+
+/// Path of the version 4 API calls under an API URL: the event
+/// notification rules are only in version 4.
+const API_V4_PATH: &str = "/b2api/v4/";
 
 /// Tries per call, counting the first, for retryable failures.
 const ATTEMPTS: u32 = 4;
@@ -642,6 +653,18 @@ impl B2Backend {
         body: &Value,
         parse: impl Fn(&[u8]) -> ReplyResult<T> + Send,
     ) -> Result<T> {
+        self.call_at(API_PATH, op, body, parse).await
+    }
+
+    /// [`Self::call`] for an operation under `path` (an API version's
+    /// path, such as [`API_V4_PATH`]).
+    async fn call_at<T>(
+        &self,
+        path: &str,
+        op: &str,
+        body: &Value,
+        parse: impl Fn(&[u8]) -> ReplyResult<T> + Send,
+    ) -> Result<T> {
         let mut session = self.session().await?;
         let mut refreshed = false;
         let mut attempt = 0;
@@ -650,7 +673,7 @@ impl B2Backend {
             let request = self
                 .inner
                 .http
-                .post(format!("{}{API_PATH}{op}", session.auth.api_url.as_str()))
+                .post(format!("{}{path}{op}", session.auth.api_url.as_str()))
                 .header("Authorization", session.auth.token.expose())
                 .json(body);
             let settled = match send(request, op).await {
@@ -1125,6 +1148,187 @@ impl B2Backend {
         Err(remote("version listing", "the listing did not end"))
     }
 
+    /// Whether the version `ours` of `name` may stand under `condition`,
+    /// judged by the version listed just before it (the one it replaced).
+    ///
+    /// Every writer reads the same listing order, so of two writes racing
+    /// under one condition at most the one listed first can see the state
+    /// it expected; a later one finds the earlier write in its place and
+    /// loses. A losing write that is still being withdrawn counts as
+    /// present, so a race can also make both lose, never both win.
+    ///
+    /// # Errors
+    ///
+    /// Returns listing errors, and [`StorageError::Remote`] when `ours` is
+    /// not in the listing.
+    async fn write_stands(
+        &self,
+        name: &str,
+        ours: &FileId,
+        condition: &WriteCondition,
+    ) -> Result<bool> {
+        let versions = self.versions_of(name).await?;
+        let at = versions
+            .iter()
+            .position(|version| version.file_id.as_ref() == Some(ours))
+            .ok_or_else(|| {
+                remote(
+                    "conditional write",
+                    "the write is not in the version listing",
+                )
+            })?;
+        // An unfinished large file is not readable, so it replaced nothing.
+        let replaced = versions[at + 1..]
+            .iter()
+            .find(|version| !matches!(version.action, FileAction::Start));
+        Ok(match condition {
+            WriteCondition::IfNoneMatch => match replaced.map(|version| version.action) {
+                None | Some(FileAction::Hide | FileAction::Folder | FileAction::Start) => true,
+                Some(FileAction::Upload | FileAction::Copy) => false,
+            },
+            WriteCondition::IfMatch(expected) => replaced.is_some_and(|version| {
+                matches!(version.action, FileAction::Upload | FileAction::Copy)
+                    && version.file_id.as_ref().map(FileId::as_str) == Some(expected.as_str())
+            }),
+        })
+    }
+
+    /// Deletes the version `file_id` of `name`; a version already gone is
+    /// not an error.
+    async fn delete_version(&self, name: &str, file_id: &FileId) -> Result<()> {
+        match self
+            .call(
+                "b2_delete_file_version",
+                &json!({ "fileName": name, "fileId": file_id.as_str() }),
+                |_| Ok(()),
+            )
+            .await
+        {
+            Ok(()) | Err(StorageError::NotFound(_)) => Ok(()),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// The prefix every key is stored under (empty or ending in `/`).
+    pub(crate) fn prefix(&self) -> &str {
+        &self.inner.settings.prefix
+    }
+
+    /// The bucket's name.
+    pub(crate) fn bucket(&self) -> &str {
+        &self.inner.settings.bucket
+    }
+
+    /// The bucket's event notification rules
+    /// (`b2_get_bucket_notification_rules`; the key needs
+    /// `readBucketNotifications`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Remote`] when the call fails or its reply is
+    /// not a rule list.
+    pub(crate) async fn notification_rules(&self) -> Result<Vec<NotificationRule>> {
+        let bucket_id = self.session().await?.bucket_id.clone();
+        self.call_at(
+            API_V4_PATH,
+            "b2_get_bucket_notification_rules",
+            &json!({ "bucketId": bucket_id }),
+            b2_events::parse_notification_rules,
+        )
+        .await
+    }
+
+    /// Replaces the bucket's event notification rules with `rules`
+    /// (`b2_set_bucket_notification_rules`; the key needs
+    /// `writeBucketNotifications`), returning the rules B2 kept.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Remote`] when B2 refuses the rules or its
+    /// reply is not a rule list.
+    async fn set_notification_rules(&self, rules: Vec<Value>) -> Result<Vec<NotificationRule>> {
+        let bucket_id = self.session().await?.bucket_id.clone();
+        self.call_at(
+            API_V4_PATH,
+            "b2_set_bucket_notification_rules",
+            &json!({ "bucketId": bucket_id, "eventNotificationRules": rules }),
+            b2_events::parse_notification_rules,
+        )
+        .await
+    }
+
+    /// Makes sure the destination's rules for its prefix post to `url`,
+    /// signed with `secret`, keeping every other rule of the bucket.
+    ///
+    /// Setting rules replaces them all, so the bucket's other rules are
+    /// read first and sent back unchanged. A suspended rule of the
+    /// destination's can only be deleted, so it is removed in one call and
+    /// added again in the next.
+    ///
+    /// # Returns
+    ///
+    /// `true` when the rules were (re)written, `false` when they were
+    /// already in place.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Remote`] when a call fails or B2's reply
+    /// does not hold the rules as written.
+    pub(crate) async fn keep_notification_rules(
+        &self,
+        url: &str,
+        secret: &B2SigningSecret,
+    ) -> Result<bool> {
+        let prefix = self.prefix().to_string();
+        let mut existing = self.notification_rules().await?;
+        if b2_events::own_rules_in_place(&existing, &prefix, url, secret) {
+            return Ok(false);
+        }
+        let names = b2_events::rule_names(&prefix);
+        if existing
+            .iter()
+            .any(|rule| rule.is_suspended && names.contains(&rule.name))
+        {
+            existing = self
+                .set_notification_rules(b2_events::rules_with(&existing, &prefix, Vec::new()))
+                .await?;
+        }
+        let own = b2_events::own_rules(&prefix, url, secret);
+        let kept = self
+            .set_notification_rules(b2_events::rules_with(&existing, &prefix, own))
+            .await?;
+        if b2_events::own_rules_in_place(&kept, &prefix, url, secret) {
+            Ok(true)
+        } else {
+            Err(remote(
+                "notification rules",
+                "B2 did not keep the rules as written",
+            ))
+        }
+    }
+
+    /// Removes the destination's rules for its prefix, keeping every other
+    /// rule of the bucket.
+    ///
+    /// # Returns
+    ///
+    /// `true` when rules were removed, `false` when there were none.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Remote`] when a call fails.
+    pub(crate) async fn drop_notification_rules(&self) -> Result<bool> {
+        let prefix = self.prefix().to_string();
+        let existing = self.notification_rules().await?;
+        let names = b2_events::rule_names(&prefix);
+        if !existing.iter().any(|rule| names.contains(&rule.name)) {
+            return Ok(false);
+        }
+        self.set_notification_rules(b2_events::rules_with(&existing, &prefix, Vec::new()))
+            .await?;
+        Ok(true)
+    }
+
     /// Server-side copy of `from` to `to`, returning the bytes copied.
     async fn copy_file(&self, from: &str, to: &str) -> Result<u64> {
         let source = self
@@ -1217,6 +1421,7 @@ impl StorageBackend for B2Backend {
     fn capabilities(&self) -> StorageCapabilities {
         StorageCapabilities {
             translate_keys: true,
+            checked_write: true,
             ..StorageCapabilities::default()
         }
     }
@@ -1442,6 +1647,36 @@ impl StorageBackend for B2Backend {
         meta: ObjectMeta,
     ) -> Result<PutStreamResult> {
         self.write(key, body, meta).await.map(|(put, _)| put)
+    }
+
+    /// B2 has no conditional upload, so this writes, then reads the name's
+    /// versions and withdraws the write when the version it replaced is not
+    /// the one the condition expects. Until then a reader may see the
+    /// write, so the result is never atomic.
+    async fn put_stream_conditional(
+        &self,
+        key: &str,
+        body: Pin<Box<dyn AsyncRead + Send>>,
+        meta: ObjectMeta,
+        condition: &WriteCondition,
+    ) -> Result<crate::ConditionalPutResult> {
+        let name = self.name_for(key)?;
+        let (put, version) = self.write(key, body, meta).await?;
+        let ours = version
+            .file_id
+            .ok_or_else(|| remote("conditional write", "the stored file has no id"))?;
+        let verdict = self.write_stands(&name, &ours, condition).await;
+        if matches!(verdict, Ok(true)) {
+            return Ok(crate::ConditionalPutResult { put, atomic: false });
+        }
+        // A lost race, or a check that could not finish: the write must not
+        // stay, since nothing proves it may.
+        self.delete_version(&name, &ours).await?;
+        verdict?;
+        Err(StorageError::Conflict(match condition {
+            WriteCondition::IfNoneMatch => format!("{key} already exists"),
+            WriteCondition::IfMatch(_) => format!("{key} changed since it was read"),
+        }))
     }
 
     fn supports_server_copy(&self) -> bool {

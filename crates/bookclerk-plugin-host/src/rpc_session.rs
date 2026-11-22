@@ -4774,7 +4774,7 @@ impl PluginStorage {
 
     /// Streamed write with optional `ifMatch` / `ifNoneMatch` conditions,
     /// which are sent only to a guest that declared
-    /// `storage.conditionalWrite`.
+    /// `storage.conditionalWrite` or `storage.checkedWrite`.
     ///
     /// # Errors
     ///
@@ -5137,7 +5137,11 @@ impl StorageBackend for PluginStorage {
         meta: ObjectMeta,
         condition: &bookclerk_storage::WriteCondition,
     ) -> bookclerk_storage::Result<bookclerk_storage::ConditionalPutResult> {
-        if !self.capabilities().conditional_write {
+        let capabilities = self.capabilities();
+        // A guest that checks after writing enforces the condition, but a
+        // reader may briefly see a losing write, so it is not atomic.
+        let atomic = capabilities.conditional_write;
+        if !atomic && !capabilities.checked_write {
             return bookclerk_storage::intent::fallback_put_conditional(
                 self, key, body, meta, condition,
             )
@@ -5150,7 +5154,7 @@ impl StorageBackend for PluginStorage {
         let put = self
             .put_stream_with(key, body, meta, if_match, if_none_match)
             .await?;
-        Ok(bookclerk_storage::ConditionalPutResult { put, atomic: true })
+        Ok(bookclerk_storage::ConditionalPutResult { put, atomic })
     }
 
     async fn list_hinted(

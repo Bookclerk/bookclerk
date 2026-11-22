@@ -38,6 +38,12 @@ pub struct StorageCapabilities {
     /// Conditional writes enforced by the backend
     /// ([`StorageBackend::put_stream_conditional`]).
     pub conditional_write: bool,
+    /// Conditional writes the backend enforces without an atomic
+    /// primitive: it writes, then checks and withdraws its write when
+    /// another got in first, so a reader may briefly see the losing write
+    /// ([`StorageBackend::put_stream_conditional`] reports `atomic: false`).
+    /// Ignored when [`Self::conditional_write`] is set.
+    pub checked_write: bool,
     /// A change feed ([`StorageBackend::changes`]).
     pub changes: bool,
     /// Its own translation of host keys ([`StorageBackend::translate_keys`]);
@@ -208,7 +214,8 @@ pub async fn fallback_move<B: StorageBackend + ?Sized>(
             already_moved: false,
         });
     }
-    if options.no_overwrite && backend.capabilities().conditional_write {
+    let capabilities = backend.capabilities();
+    if options.no_overwrite && (capabilities.conditional_write || capabilities.checked_write) {
         copy_streamed(backend, &source, to, Some(&WriteCondition::IfNoneMatch)).await?;
     } else {
         if options.no_overwrite && backend.head(to).await?.is_some() {

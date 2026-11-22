@@ -83,6 +83,7 @@ except ImportError:  # authoring / unit tests outside the isolate
 from ._abi import (  # noqa: E402  (re-export)
     FEATURE_SCALAR_LIMITS,
     FEATURE_STORAGE_CHANGES,
+    FEATURE_STORAGE_CHECKED_WRITE,
     FEATURE_STORAGE_CONDITIONAL_WRITE,
     FEATURE_STORAGE_COPY,
     FEATURE_STORAGE_DELETE_MANY,
@@ -113,6 +114,7 @@ from ._abi import (  # noqa: E402  (re-export)
 __all__ = [
     "FEATURE_SCALAR_LIMITS",
     "FEATURE_STORAGE_CHANGES",
+    "FEATURE_STORAGE_CHECKED_WRITE",
     "FEATURE_STORAGE_CONDITIONAL_WRITE",
     "FEATURE_STORAGE_COPY",
     "FEATURE_STORAGE_DELETE_MANY",

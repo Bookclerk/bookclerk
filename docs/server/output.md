@@ -402,6 +402,7 @@ The `b2` plugin writes to a Backblaze B2 bucket through B2's native API.
 | `prefix` | `library/` | |
 | `naming_profile`, `folder_template`, `file_template`, `chapter_file_template` | from `core.output` | Naming for this destination only |
 | `application_key_id`, `application_key` | none | Required secrets: a B2 application key |
+| `webhook_signing_secret` | none | Secret: turns on the change feed (see [Following changes in a B2 bucket](#following-changes-in-a-b2-bucket)) |
 
 It works like the other object stores, with these differences:
 
@@ -423,12 +424,13 @@ It works like the other object stores, with these differences:
   Object Lock). The checksum and commit token are always stored; the
   ASIN, file times and title follow only while they fit, so a very long
   title is left out of the metadata rather than failing the upload.
-- **No conditional writes.** B2 cannot write a file only if it is
-  unchanged. Bookclerk checks just before such a write instead, so
-  another program writing the same file at the same moment can still win.
-  Moves are a copy and then a delete.
-- **No change feed yet.** Bookclerk lists the bucket on a schedule to find
-  files other programs add, change or remove.
+- **Checked writes.** B2 cannot write a file only if it is new or
+  unchanged. For such a write the plugin writes first, then reads the
+  name's versions, and withdraws its own version when another program's
+  write got in first; the write then fails as a conflict. Of two writers
+  racing, the one B2 lists first stands. A reader can see the withdrawn
+  version for that moment, so Bookclerk treats these writes as not
+  atomic. Moves are a copy and then a delete.
 
 ### Set up a B2 bucket
 
@@ -460,6 +462,54 @@ It works like the other object stores, with these differences:
 
 The plugin signs in to B2 on its first call, not when it starts. A wrong
 key or bucket shows up as an error on the first write or listing.
+
+### Following changes in a B2 bucket
+
+Without a change feed, Bookclerk lists the bucket on a schedule to find
+files that other programs add, change or remove. With one, B2 tells
+Bookclerk what changed through
+[event notifications](https://www.backblaze.com/docs/cloud-storage-event-notifications)
+posted to the library's webhook.
+
+The feed needs:
+
+- A library that outside services can reach: `integrations.public_origin`
+  set to an `https` address on the Internet, and `plugins.webhooks` left
+  at `auto` (see [Inbound webhooks](../plugins/abi.md#inbound-webhooks-webhooks)).
+  The node that origin reaches must run the destination.
+- An application key that may also manage the bucket's notifications
+  (`readBucketNotifications` and `writeBucketNotifications`). Event
+  notifications may need turning on for the account by Backblaze first.
+
+To turn it on, pick 32 random letters and digits as the signing secret,
+and enter them. The command reads the value from stdin:
+
+```sh
+bookclerk plugins config set b2 webhook_signing_secret --secret
+```
+
+On its next check the plugin adds three event notification rules to the
+bucket, named `bookclerk-<16 hex digits>-created`, `-deleted` and
+`-hidden`, for the destination's `prefix`. They send every object event
+to the webhook URL, signed with the secret, and Bookclerk refuses any
+request whose signature does not match. The bucket's other rules are
+kept as they are.
+
+- **Rules follow the settings.** The plugin checks the rules every hour
+  and rewrites them when they are missing, suspended by B2, or point at
+  an old URL or secret. A bucket holds at most 25 rules; when the three
+  don't fit, or B2 refuses them, Bookclerk keeps listing.
+- **Turning it off removes them.** Unset the secret, or let the library
+  lose its public address, and the plugin removes the rules it added on
+  its next check.
+- **Listing stays the backstop.** After the rules are first added or
+  rewritten, or when the host dropped requests it could not keep,
+  Bookclerk lists the bucket once and carries on from there. B2 sends
+  each event at least once but gives up on a request after a few
+  seconds, so an event lost while the library was unreachable is found
+  by the next scheduled listing.
+- **Test events fail.** The **Test rule** button in the Backblaze web app
+  may sign its event with another key, so Bookclerk refuses it with 401.
 
 ## Choosing which books a destination takes
 
@@ -748,8 +798,9 @@ Each destination is followed in one of two ways:
 - **A change feed**, when the destination has one turned on: the
   [folder watch](#watching-the-folder) on a local disk, or the
   [bucket's notification queue](#following-changes-in-the-bucket) on
-  Amazon S3, or the [Cloudflare Queue](#following-changes-in-an-r2-bucket)
-  on R2. Bookclerk reads what changed since its last check, so
+  Amazon S3, the [Cloudflare Queue](#following-changes-in-an-r2-bucket)
+  on R2, or [event notifications](#following-changes-in-a-b2-bucket) on
+  B2. Bookclerk reads what changed since its last check, so
   changes show up within about five minutes.
 - **A listing**, which every destination has: Bookclerk lists every file
   and compares the list with the last one. It runs every 6 hours, or once

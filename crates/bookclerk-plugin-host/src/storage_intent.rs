@@ -94,6 +94,7 @@ pub(crate) fn capabilities_from_features(has: impl Fn(&str) -> bool) -> StorageC
         delete_many: has(bookclerk_plugin_sdk::FEATURE_STORAGE_DELETE_MANY),
         head_many: has(bookclerk_plugin_sdk::FEATURE_STORAGE_HEAD_MANY),
         conditional_write: has(bookclerk_plugin_sdk::FEATURE_STORAGE_CONDITIONAL_WRITE),
+        checked_write: has(bookclerk_plugin_sdk::FEATURE_STORAGE_CHECKED_WRITE),
         changes: has(bookclerk_plugin_sdk::FEATURE_STORAGE_CHANGES),
         translate_keys: has(bookclerk_plugin_sdk::FEATURE_STORAGE_TRANSLATE_KEYS),
     }
@@ -492,5 +493,9 @@ mod tests {
             f == bookclerk_plugin_sdk::FEATURE_STORAGE_TRANSLATE_KEYS
         });
         assert!(caps.translate_keys);
+        let caps = capabilities_from_features(|f| {
+            f == bookclerk_plugin_sdk::FEATURE_STORAGE_CHECKED_WRITE
+        });
+        assert!(caps.checked_write && !caps.conditional_write);
     }
 }

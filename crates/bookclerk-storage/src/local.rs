@@ -63,6 +63,7 @@ impl LocalFsBackend {
         delete_many: true,
         head_many: true,
         conditional_write: true,
+        checked_write: false,
         changes: false,
         translate_keys: true,
     };
