@@ -225,6 +225,8 @@ paths = [
     "fuzz/oracles/cache_settings.rs",
     "fuzz/corpus/destination_filter/**",
     "fuzz/oracles/destination_filter.rs",
+    "fuzz/corpus/intake_settings/**",
+    "fuzz/oracles/intake_settings.rs",
     "fuzz/corpus/destination_id/**",
     "fuzz/oracles/destination_id.rs",
     "fuzz/corpus/output_copies/**",
@@ -262,6 +264,14 @@ paths = [
 ]
 
 [[test_input]]
+package = "bookclerk-intake"
+# The intake_items oracle is shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/intake_items/**",
+    "fuzz/oracles/intake_items.rs",
+]
+
+[[test_input]]
 package = "bookclerk-tags"
 # The tag oracles are shared with the replay test through `#[path]`.
 paths = [
@@ -287,6 +297,14 @@ package = "bookclerk-media"
 paths = [
     "fuzz/corpus/media_decode/**",
     "fuzz/oracles/media_decode.rs",
+]
+
+[[test_input]]
+package = "bookclerk-media"
+# The media_keep_codec oracle is shared with the replay test through `#[path]`.
+paths = [
+    "fuzz/corpus/media_keep_codec/**",
+    "fuzz/oracles/media_keep_codec.rs",
 ]
 
 [[test_input]]

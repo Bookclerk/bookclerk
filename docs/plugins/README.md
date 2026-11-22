@@ -216,6 +216,11 @@ The staged suite lives in `crates/bookclerk-plugin-e2e`, so ordinary
 
 - Set `BOOKCLERK_STAGED_PLUGINS=libro,echo_workerd_ts` to check a subset.
   Platform guests are always checked.
+- A new first-party plugin joins the crate's id list (`PLATFORM_PLUGINS`,
+  `OPTIONAL_PLUGINS` or `EXAMPLE_PLUGINS`). A unit test fails while a
+  `plugin.toml` under `crates/bookclerk-plugins/` or `examples/` is
+  missing from its list, because a run that selects an unlisted id stops
+  with "unknown plugin id".
 - Set `BOOKCLERK_REQUIRE_STAGED_PLUGINS=1` to fail, instead of skipping,
   when staging roots are missing.
 

@@ -2574,6 +2574,27 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         r"CREATE INDEX IF NOT EXISTS idx_plugin_webhook_chunks_expiry
         ON plugin_webhook_chunks(instance_id, name, expires_at_ms)",
     ),
+    // One row per item seen in a drop folder (`control_plane::intake_items`):
+    // a storage instance with the intake role. `item_hash` is the SHA-256 of
+    // `item_key` (the item's top-level path, at most 1,024 bytes), so the
+    // key stays short however long the name is. `signature` is the item's
+    // `bookclerk_intake::ItemSignature`; an item is ingested once it has
+    // stayed the same since `quiet_since_ms` for the folder's quiet period.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS intake_items (
+        plugin_instance_id TEXT NOT NULL,
+        item_hash TEXT NOT NULL,
+        item_key TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('settling', 'queued', 'done', 'failed')),
+        signature TEXT NOT NULL,
+        quiet_since_ms INTEGER NOT NULL,
+        batch_id TEXT,
+        error TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (plugin_instance_id, item_hash),
+        FOREIGN KEY (plugin_instance_id) REFERENCES plugin_instances(plugin_instance_id) ON DELETE CASCADE
+    )",
+    ),
 ];
 
 #[cfg(test)]

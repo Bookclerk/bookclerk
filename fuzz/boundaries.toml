@@ -315,6 +315,13 @@ input_from = "store"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.media_keep_codec]
+crate = "bookclerk-media"
+boundary = "Audio parts the media worker copies into an M4B without re-encoding (output.keep_codec_in_m4b): MP4 sample entries and tables, Ogg and FLAC headers and packets"
+input_from = "store"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.media_pcm_wire]
 crate = "bookclerk-media"
 boundary = "PCM worker frames (requests the worker reads, replies and reply streams the host reads while a player plays)"
@@ -382,6 +389,20 @@ artifacts = ["bookclerk"]
 crate = "bookclerk-config"
 boundary = "A storage destination's filter as an operator sends it: the body of PUT /api/config/plugin-instances/{id}/filter and the stored core.destination document"
 input_from = "operator"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.intake_settings]
+crate = "bookclerk-config"
+boundary = "A drop folder's settings as an operator sends them: the body of PUT /api/config/plugin-instances/{id}/intake and the stored core.intake document"
+input_from = "operator"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.intake_items]
+crate = "bookclerk-intake"
+boundary = "A drop folder's listing: object keys, sizes and change signatures grouped into items and settled"
+input_from = "storage"
 side = "host"
 artifacts = ["bookclerk"]
 

@@ -1,4 +1,6 @@
-//! Minimal progressive AAC-LC → M4B muxer (single audio track).
+//! Minimal progressive single-track M4B muxer: AAC-LC from the encoder, or
+//! any audio whose MP4 sample entry the caller supplies (Opus, FLAC, ALAC,
+//! E-AC-3, AC-4 copied without re-encoding).
 //!
 //! The finished file is faststart (`ftyp`, `moov`, `mdat`), so a player or
 //! the web app can start a book after reading its first bytes instead of
@@ -46,12 +48,15 @@ pub struct AacM4bWriter {
     size_field: u64,
     /// File offset of the first AAC access unit inside `mdat`.
     first_sample: u64,
-    /// Audio sample rate in Hz, used as the media timescale.
-    sample_rate: u32,
-    /// Channel count written into the `mp4a` sample entry.
-    channels: u16,
-    /// MPEG-4 AudioSpecificConfig bytes embedded in `esds`.
-    asc: Vec<u8>,
+    /// Media timescale in ticks per second (the audio's sample rate, or
+    /// 48 000 for Opus).
+    timescale: u32,
+    /// The whole sample entry box written into `stsd` (`mp4a` with its
+    /// `esds`, or another codec's entry).
+    entry: Vec<u8>,
+    /// Ticks of decoded audio at the start that are not played (Opus
+    /// pre-skip), written as an edit list; 0 writes none.
+    skip: u32,
     /// Per-access-unit payload sizes in bytes, in encode order.
     sizes: Vec<u32>,
     /// The duration the first unit claimed, and the one the rest are compared to.
@@ -65,16 +70,37 @@ pub struct AacM4bWriter {
 }
 
 impl AacM4bWriter {
-    /// Opens `output`, writes `ftyp`, and reserves a 64-bit `mdat` size field.
+    /// Opens `output` for AAC with an `mp4a` sample entry, writes `ftyp`,
+    /// and reserves a 64-bit `mdat` size field.
     pub fn create(output: &Path, sample_rate: u32, channels: u16, asc: &[u8]) -> Result<Self> {
-        if sample_rate == 0 {
-            return Err(MediaError::Mp4("sample rate must be non-zero".into()));
-        }
         if channels == 0 {
             return Err(MediaError::Mp4("channel count must be non-zero".into()));
         }
         if asc.is_empty() {
             return Err(MediaError::Mp4("AudioSpecificConfig is empty".into()));
+        }
+        let entry = encode_mp4a_entry(sample_rate, channels, asc)?;
+        Self::create_with_entry(output, sample_rate, entry)
+    }
+
+    /// Opens `output` for audio described by `entry`, a whole MP4 sample
+    /// entry box, with sample durations in `timescale` ticks per second.
+    ///
+    /// # Errors
+    ///
+    /// [`MediaError::Mp4`] for a zero timescale or an entry that is not a
+    /// box of its stated size; an I/O error when the file cannot be opened.
+    pub fn create_with_entry(output: &Path, timescale: u32, entry: Vec<u8>) -> Result<Self> {
+        if timescale == 0 {
+            return Err(MediaError::Mp4("sample rate must be non-zero".into()));
+        }
+        let stated = entry
+            .get(..4)
+            .and_then(|size| <[u8; 4]>::try_from(size).ok())
+            .map(u32::from_be_bytes)
+            .and_then(|size| usize::try_from(size).ok());
+        if entry.len() < 8 || stated != Some(entry.len()) {
+            return Err(MediaError::Mp4("sample entry is not one whole box".into()));
         }
         if let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
@@ -100,9 +126,9 @@ impl AacM4bWriter {
             out,
             size_field: mdat + 8,
             first_sample: mdat + MDAT_HEADER_BYTES,
-            sample_rate,
-            channels,
-            asc: asc.to_vec(),
+            timescale,
+            entry,
+            skip: 0,
             sizes: Vec::new(),
             uniform: None,
             durations: Vec::new(),
@@ -133,6 +159,12 @@ impl AacM4bWriter {
         Ok(())
     }
 
+    /// Marks the first `skip` ticks of decoded audio as not played (Opus
+    /// pre-skip): the file gets an edit list that starts the track there.
+    pub fn set_skip(&mut self, skip: u32) {
+        self.skip = skip;
+    }
+
     /// Number of AAC access units written so far.
     pub fn samples(&self) -> usize {
         self.sizes.len()
@@ -158,9 +190,9 @@ impl AacM4bWriter {
         let mut moov_len = 0u64;
         let moov = loop {
             let mut moov = build_moov(
-                self.sample_rate,
-                self.channels,
-                &self.asc,
+                self.timescale,
+                &self.entry,
+                self.skip,
                 &self.sizes,
                 timing,
                 &[self.first_sample + moov_len],
@@ -260,18 +292,19 @@ fn build_m4b_ftyp() -> Vec<u8> {
 
 /// Builds a single-track `moov` (`mvhd`/`trak`/`mdia`/`stbl`) for the streamed `mdat`.
 fn build_moov(
-    sample_rate: u32,
-    channels: u16,
-    asc: &[u8],
+    timescale: u32,
+    entry: &[u8],
+    skip: u32,
     sample_sizes: &[u32],
     timing: AuTiming<'_>,
     chunk_offsets: &[u64],
     media_duration: u64,
 ) -> Result<Vec<u8>> {
-    let timescale = sample_rate;
-    let movie_duration = media_duration;
+    let skip = u64::from(skip).min(media_duration);
+    // The movie plays what follows the skipped start.
+    let movie_duration = media_duration - skip;
 
-    let stsd = encode_stsd_mp4a(sample_rate, channels, asc)?;
+    let stsd = encode_stsd(entry);
     let stts = match timing {
         AuTiming::Uniform(duration) => encode_stts_uniform(sample_sizes.len() as u32, duration),
         AuTiming::Variable(durations) => encode_stts_variable(durations),
@@ -292,38 +325,80 @@ fn build_moov(
     let hdlr = encode_hdlr();
     let mdia = wrap_box(b"mdia", &[mdhd, hdlr, minf].concat());
     let tkhd = encode_tkhd(1, movie_duration);
-    let trak = wrap_box(b"trak", &[tkhd, mdia].concat());
+    let trak = if skip > 0 {
+        let edts = wrap_box(b"edts", &encode_elst(movie_duration, skip));
+        wrap_box(b"trak", &[tkhd, edts, mdia].concat())
+    } else {
+        wrap_box(b"trak", &[tkhd, mdia].concat())
+    };
     let mvhd = encode_mvhd(timescale, movie_duration);
     Ok(wrap_box(b"moov", &[mvhd, trak].concat()))
 }
 
-/// Encodes `stsd` with one `mp4a` sample entry and an `esds` AudioSpecificConfig.
-fn encode_stsd_mp4a(sample_rate: u32, channels: u16, asc: &[u8]) -> Result<Vec<u8>> {
+/// Encodes an `mp4a` sample entry with an `esds` AudioSpecificConfig.
+fn encode_mp4a_entry(sample_rate: u32, channels: u16, asc: &[u8]) -> Result<Vec<u8>> {
     let esds = encode_esds(asc)?;
-    // AudioSampleEntry (`mp4a`) body after size+type.
-    let mut entry = Vec::new();
-    entry.extend_from_slice(&0u32.to_be_bytes()); // size placeholder
-    entry.extend_from_slice(b"mp4a");
-    entry.extend_from_slice(&[0u8; 6]); // reserved
-    entry.extend_from_slice(&1u16.to_be_bytes()); // data_reference_index
-    entry.extend_from_slice(&[0u8; 8]); // reserved
-    entry.extend_from_slice(&channels.to_be_bytes());
-    entry.extend_from_slice(&16u16.to_be_bytes()); // sample_size
-    entry.extend_from_slice(&0u16.to_be_bytes()); // pre_defined
-    entry.extend_from_slice(&0u16.to_be_bytes()); // reserved
-    entry.extend_from_slice(&(sample_rate << 16).to_be_bytes()); // sample_rate 16.16
-    entry.extend_from_slice(&esds);
-    let entry_size = entry.len() as u32;
-    entry[0..4].copy_from_slice(&entry_size.to_be_bytes());
+    Ok(audio_sample_entry(*b"mp4a", channels, sample_rate, &esds))
+}
 
+/// An AudioSampleEntry box of type `kind` (ISO/IEC 14496-12): the
+/// reserved fields, `channels`, 16-bit samples, `sample_rate` in 16.16
+/// fixed point (0 when it does not fit 16 bits), then `children` (the
+/// codec's configuration box).
+pub(crate) fn audio_sample_entry(
+    kind: [u8; 4],
+    channels: u16,
+    sample_rate: u32,
+    children: &[u8],
+) -> Vec<u8> {
+    let rate = if sample_rate <= u32::from(u16::MAX) {
+        sample_rate << 16
+    } else {
+        0
+    };
+    let mut body = Vec::with_capacity(28 + children.len());
+    body.extend_from_slice(&[0u8; 6]); // reserved
+    body.extend_from_slice(&1u16.to_be_bytes()); // data_reference_index
+    body.extend_from_slice(&[0u8; 8]); // reserved
+    body.extend_from_slice(&channels.to_be_bytes());
+    body.extend_from_slice(&16u16.to_be_bytes()); // sample_size
+    body.extend_from_slice(&0u16.to_be_bytes()); // pre_defined
+    body.extend_from_slice(&0u16.to_be_bytes()); // reserved
+    body.extend_from_slice(&rate.to_be_bytes()); // sample_rate 16.16
+    body.extend_from_slice(children);
+    wrap_box(&kind, &body)
+}
+
+/// Encodes `stsd` with the one sample entry `entry`.
+fn encode_stsd(entry: &[u8]) -> Vec<u8> {
     let mut stsd = Vec::new();
     let size = 8 + 4 + 4 + entry.len();
     stsd.extend_from_slice(&(size as u32).to_be_bytes());
     stsd.extend_from_slice(b"stsd");
     stsd.extend_from_slice(&0u32.to_be_bytes()); // version+flags
     stsd.extend_from_slice(&1u32.to_be_bytes()); // entry_count
-    stsd.extend_from_slice(&entry);
-    Ok(stsd)
+    stsd.extend_from_slice(entry);
+    stsd
+}
+
+/// Encodes an `elst` with one edit that plays `duration` ticks from media
+/// time `skip` at normal rate (version 1 when either needs 64 bits).
+fn encode_elst(duration: u64, skip: u64) -> Vec<u8> {
+    let mut b = Vec::new();
+    if duration > u64::from(u32::MAX) || skip > u64::from(u32::MAX >> 1) {
+        b.extend_from_slice(&0x0100_0000u32.to_be_bytes()); // version 1
+        b.extend_from_slice(&1u32.to_be_bytes());
+        b.extend_from_slice(&duration.to_be_bytes());
+        b.extend_from_slice(&skip.to_be_bytes());
+    } else {
+        b.extend_from_slice(&0u32.to_be_bytes());
+        b.extend_from_slice(&1u32.to_be_bytes());
+        b.extend_from_slice(&(duration as u32).to_be_bytes());
+        b.extend_from_slice(&(skip as u32).to_be_bytes());
+    }
+    b.extend_from_slice(&1u16.to_be_bytes()); // media_rate_integer
+    b.extend_from_slice(&0u16.to_be_bytes()); // media_rate_fraction
+    wrap_box(b"elst", &b)
 }
 
 /// Minimal `esds` with ES_Descriptor → DecoderConfigDescriptor → DecoderSpecificInfo.
@@ -616,7 +691,7 @@ fn encode_mvhd(timescale: u32, duration: u64) -> Vec<u8> {
 }
 
 /// Prefixes `content` with a 32-bit size and a fourcc to form an ISO-BMFF box.
-fn wrap_box(kind: &[u8; 4], content: &[u8]) -> Vec<u8> {
+pub(crate) fn wrap_box(kind: &[u8; 4], content: &[u8]) -> Vec<u8> {
     let size = 8 + content.len();
     let mut b = Vec::with_capacity(size);
     b.extend_from_slice(&(size as u32).to_be_bytes());

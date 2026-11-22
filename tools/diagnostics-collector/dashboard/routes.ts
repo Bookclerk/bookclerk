@@ -14,8 +14,18 @@ import {
   BudgetLedger,
   DEFAULT_DAILY_NEURONS,
   MAX_DAILY_NEURONS,
+  handleTriage,
   utcDay,
 } from "../triage.ts";
+import { asObject } from "../json.ts";
+import {
+  decodeProposal,
+  encodeProposal,
+  issueBody,
+  proposalFor,
+  triageItem,
+  type StoredProposal,
+} from "./triage-now.ts";
 import { DEFAULT_NEXT, finishSignIn, safeNext, sameSiteHop, signOut, startSignIn } from "./auth.ts";
 import { metered } from "./budget.ts";
 import {
@@ -58,6 +68,7 @@ import {
   reportWhere,
   run,
   setState,
+  takeState,
   signatureDays,
   topBy,
   topSignatures,
@@ -69,6 +80,7 @@ import {
 } from "./db.ts";
 import {
   closeIssue,
+  createIssue,
   githubConfig,
   writeSummaryComment,
   type AttachLink,
@@ -100,6 +112,7 @@ import {
   reportPage,
   reportsPage,
   signInPage,
+  type ProposalView,
   type ReportFix,
 } from "./pages.ts";
 import {
@@ -137,6 +150,8 @@ const PATHS = new Set([
   "/admin/update-issue",
   "/admin/close-issue",
   "/reports/triage",
+  "/reports/ai-triage",
+  "/reports/ai-triage/file",
   "/signatures/mute",
   "/live",
 ]);
@@ -497,6 +512,21 @@ export async function dashboardFetch(
     return correctLinks(request, env, member, now);
   }
 
+  if (method === "POST" && (path === "/reports/ai-triage" || path === "/reports/ai-triage/file")) {
+    if (!sameOrigin(request)) {
+      return htmlResponse(
+        messagePage(
+          "Request refused",
+          html`<p>Triage is started from the report page's own button.</p>`,
+        ),
+        403,
+      );
+    }
+    return path === "/reports/ai-triage"
+      ? requestTriage(request, env, b2, member, now)
+      : fileProposal(request, env, cfg, member, now);
+  }
+
   if (method === "POST" && (path === "/reports/triage" || path === "/signatures/mute")) {
     if (!sameOrigin(request)) {
       return htmlResponse(
@@ -816,7 +846,11 @@ export async function dashboardFetch(
       .sort((a, b) => Number(b.merged_at) - Number(a.merged_at))[0];
     // A report no issue tracks gets a picker to attach it; one issue is the
     // normal case and needs none.
-    const openIssues = found.issues.length === 0 ? await openIssueOptions(db) : [];
+    const [openIssues, triageNote, proposal] = await Promise.all([
+      found.issues.length === 0 ? openIssueOptions(db) : Promise.resolve([]),
+      getState(db, TRIAGE_NOTE).then((s) => triageNoteFor(s, String(r.report_id), now)),
+      getState(db, proposalKey(String(r.report_id))).then((s) => liveProposal(s, now)),
+    ]);
     return htmlResponse(
       reportPage({
         cfg,
@@ -835,6 +869,8 @@ export async function dashboardFetch(
         signatureIssues: sameSignature,
         mute,
         installs,
+        triageNote,
+        proposal: proposal ? await proposalView(db, proposal) : null,
         now,
       }),
     );
@@ -1007,6 +1043,292 @@ async function correctLinks(
   await announceChange(env);
   const back = safeNext(formField(body, "back"));
   return redirect(back ?? `/issues/${change.action === "merge" ? change.to : change.issue}`);
+}
+
+/**
+ * Cursor holding what the last **Triage now** press said, as
+ * `<report id>\t<unix ms>\t<text>`, shown on that report's page for
+ * `UPDATE_NOTE_TTL_MS`.
+ */
+const TRIAGE_NOTE = "triage_request_note";
+
+/** A report waits this long between two **Triage now** presses. */
+export const TRIAGE_REQUEST_GAP_MS = 10 * 60_000;
+
+/**
+ * Most **Triage now** presses across the dashboard per rolling day: each
+ * runs the model once, and the neuron budget caps what they spend.
+ */
+export const TRIAGE_REQUESTS_PER_DAY = 20;
+
+/**
+ * The note of the last **Triage now** press when it concerns this report
+ * and is recent.
+ *
+ * @param stored - The `TRIAGE_NOTE` cursor.
+ * @param report - Report ID of the page.
+ * @param now - Unix time in milliseconds.
+ * @returns The note text, or null.
+ */
+function triageNoteFor(stored: string | null, report: string, now: number): string | null {
+  const [forReport, at, ...rest] = (stored ?? "").split("\t");
+  const when = Number(at);
+  if (
+    forReport !== report ||
+    !Number.isFinite(when) ||
+    now - when > UPDATE_NOTE_TTL_MS ||
+    rest.length === 0
+  )
+    return null;
+  return rest.join("\t");
+}
+
+/** How long a triage proposal waits on the report page for a member to file it. */
+export const PROPOSAL_TTL_MS = 60 * 60_000;
+
+/**
+ * The `sync_state` key holding a report's triage proposal.
+ *
+ * @param report - Lowercase report UUID.
+ * @returns The key.
+ */
+function proposalKey(report: string): string {
+  return `triage_proposal:${report}`;
+}
+
+/**
+ * A stored proposal when it is still fresh enough to file.
+ *
+ * @param raw - The stored value, or null.
+ * @param now - Unix time in milliseconds.
+ * @returns The proposal, or null.
+ */
+function liveProposal(raw: string | null, now: number): StoredProposal | null {
+  const got = decodeProposal(raw);
+  return got && now - got.at <= PROPOSAL_TTL_MS ? got : null;
+}
+
+/**
+ * What the report page shows of a proposal: the proposal, and for an
+ * attachment the issue's title from the index.
+ *
+ * @param db - Database.
+ * @param stored - The live proposal.
+ * @returns The view.
+ */
+async function proposalView(db: D1Database, stored: StoredProposal): Promise<ProposalView> {
+  const p = stored.proposal;
+  if (p.kind !== "attach") return { proposal: p, issueTitle: null };
+  const row = await first(db, "SELECT title FROM issues WHERE number = ?", p.issue);
+  return { proposal: p, issueTitle: row ? String(row.title) : null };
+}
+
+/**
+ * Whether a **Triage now** press may run the model, from the earlier presses
+ * in the access log.
+ *
+ * @param db - Database.
+ * @param report - Report ID.
+ * @param now - Unix time in milliseconds.
+ * @returns Null when it may, else the note that says why not.
+ */
+async function triageRefusal(db: D1Database, report: string, now: number): Promise<string | null> {
+  const row = await first(
+    db,
+    "SELECT COUNT(*) AS day, SUM(CASE WHEN report_id = ? AND at > ? THEN 1 ELSE 0 END) AS recent FROM access_log WHERE action = 'ai-triage' AND at > ?",
+    report,
+    now - TRIAGE_REQUEST_GAP_MS,
+    now - DAY_MS,
+  );
+  if (Number(row?.recent ?? 0) > 0) {
+    return "Triage ran on this report in the last 10 minutes; press again after that.";
+  }
+  if (Number(row?.day ?? 0) >= TRIAGE_REQUESTS_PER_DAY) {
+    return `The dashboard has run triage ${TRIAGE_REQUESTS_PER_DAY} times in the last day, its most; the daily ingest run still triages this report.`;
+  }
+  return null;
+}
+
+/**
+ * What the page says when the triage call itself failed.
+ *
+ * @param status - HTTP status `handleTriage` answered.
+ * @returns One sentence.
+ */
+function triageFailure(status: number): string {
+  switch (status) {
+    case 429:
+      return "Today's triage budget is spent; try again after midnight UTC.";
+    case 503:
+      return "Triage is not configured on this collector (Workers AI or its budget namespace is missing).";
+    case 413:
+      return "This report is too large for the triage model.";
+    default:
+      return "The triage model did not answer; try again later.";
+  }
+}
+
+/**
+ * `POST /reports/ai-triage` (members, same origin): runs the triage model on
+ * one report no issue lists yet, under the daily neuron budget, and keeps
+ * its proposal (a new issue, an open issue to attach to, or nothing) on the
+ * report page for a member to file. The press is logged under the member's
+ * name, and what happened is noted on the page.
+ *
+ * @param request - The form post.
+ * @param env - Worker bindings.
+ * @param b2 - Storage, for the report's stored copy.
+ * @param member - The signed-in member.
+ * @param now - Unix time in milliseconds.
+ * @returns A redirect back to the report page.
+ */
+async function requestTriage(
+  request: Request,
+  env: DashboardEnv,
+  b2: B2Access,
+  member: Member,
+  now: number,
+): Promise<Response> {
+  const db = env.DASHBOARD_DB;
+  const body = await readForm(request);
+  const raw = (formField(body, "report") ?? "").toLowerCase();
+  const found = REPORT_PATH.test(`/reports/${raw}`) ? await getReport(db, raw) : null;
+  if (!found) {
+    return htmlResponse(
+      messagePage("Request not understood", html`<p>The form names no indexed report.</p>`),
+      400,
+    );
+  }
+  const r = found.report;
+  let note: string | null = null;
+  if (found.issues.length > 0) {
+    note = "An issue already lists this report, so there is nothing to triage.";
+  } else if (r.deleted_at) {
+    note = "Its sender deleted the stored copy, so there is nothing for triage to read.";
+  } else if (!env.AI || !env.TRIAGE_BUDGET) {
+    note = triageFailure(503);
+  } else {
+    note = await triageRefusal(db, raw, now);
+  }
+  if (note === null) {
+    const stored = await readStoredReport(b2, String(r.object_key)).catch(() => null);
+    if (!stored) {
+      note = "The stored report could not be read; try again later.";
+    } else {
+      await logAccess(db, member, "ai-triage", raw, now);
+      const batch = JSON.stringify([triageItem(raw, String(r.object_key), stored)]);
+      const res = await handleTriage(
+        new Request("https://collector.internal/triage", { method: "POST", body: batch }),
+        env,
+        { now: () => now },
+      );
+      if (!res.ok) {
+        note = triageFailure(res.status);
+      } else {
+        const answer = asObject(await res.json().catch(() => null));
+        const offered = Array.isArray(answer.open_issues)
+          ? answer.open_issues.filter((n): n is number => Number.isSafeInteger(n))
+          : [];
+        const proposal = proposalFor(String(answer.plan_text ?? ""), raw, offered);
+        if (proposal === null) {
+          note =
+            "The triage model's answer could not be used; try again, or leave the report to the daily run.";
+        } else {
+          await setState(db, proposalKey(raw), encodeProposal({ at: now, proposal }));
+          note = null;
+        }
+      }
+    }
+  }
+  if (note !== null) await setState(db, TRIAGE_NOTE, `${raw}\t${now}\t${note}`);
+  return redirect(`/reports/${raw}`);
+}
+
+/**
+ * `POST /reports/ai-triage/file` (members, same origin): files the report's
+ * stored triage proposal, a member's confirmation: a new issue, filed with
+ * an `issues: write` token as the ingest run files one and linked at once,
+ * or the report attached to the open issue the model chose. Nothing from
+ * the form but the report ID is used; the proposal is the stored one.
+ *
+ * @param request - The form post.
+ * @param env - Worker bindings.
+ * @param cfg - Settings.
+ * @param member - The signed-in member.
+ * @param now - Unix time in milliseconds.
+ * @returns A redirect back to the report page.
+ */
+async function fileProposal(
+  request: Request,
+  env: DashboardEnv,
+  cfg: GitHubConfig,
+  member: Member,
+  now: number,
+): Promise<Response> {
+  const db = env.DASHBOARD_DB;
+  const body = await readForm(request);
+  const raw = (formField(body, "report") ?? "").toLowerCase();
+  const found = REPORT_PATH.test(`/reports/${raw}`) ? await getReport(db, raw) : null;
+  if (!found) {
+    return htmlResponse(
+      messagePage("Request not understood", html`<p>The form names no indexed report.</p>`),
+      400,
+    );
+  }
+  const key = proposalKey(raw);
+  const saved = await getState(db, key);
+  const stored = liveProposal(saved, now);
+  let note: string;
+  // Claiming the proposal first means two presses never file it twice.
+  if (
+    !stored ||
+    stored.proposal.kind === "none" ||
+    saved === null ||
+    !(await takeState(db, key, saved))
+  ) {
+    note = "There is no triage proposal to file; press Triage now again.";
+  } else if (found.issues.length > 0) {
+    note = "An issue already lists this report, so nothing was filed.";
+  } else if (stored.proposal.kind === "attach") {
+    const issue = stored.proposal.issue;
+    const result = await announceIfLinksChanged(env, () =>
+      attachByTriage(db, [{ issue, reportIds: [raw] }], now),
+    );
+    note =
+      result.linked > 0 || result.existing > 0
+        ? `Attached to #${issue}.`
+        : `#${issue} is no longer open, so the report was not attached; press Triage now again.`;
+    if (result.linked > 0) await logAccess(db, member, "attach", raw, now);
+  } else {
+    const p = stored.proposal;
+    try {
+      const number = await createIssue(cfg, now, {
+        title: p.title,
+        body: issueBody(p.body, raw),
+        labels: p.bug ? ["diagnostics", "bug"] : ["diagnostics"],
+      });
+      await logAccess(db, member, "file-issue", raw, now);
+      try {
+        await announceIfLinksChanged(env, () => syncIssueNow(env, cfg, number, now));
+        note = `Filed #${number}.`;
+      } catch (err) {
+        console.error(
+          `filed issue sync failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        note = `Filed #${number}; it shows here after the next issue sync.`;
+      }
+    } catch (err) {
+      const text = err instanceof Error ? err.message : String(err);
+      console.error(`issue create failed: ${text}`);
+      // Nothing was filed, so the proposal is there for another try.
+      await setState(db, key, saved);
+      note = text.startsWith("installation token failed")
+        ? `GitHub refused the token to file the issue (${text}); the App needs Issues: write on the repository.`
+        : `GitHub did not take the issue (${text}); try again later.`;
+    }
+  }
+  await setState(db, TRIAGE_NOTE, `${raw}\t${now}\t${note}`);
+  return redirect(`/reports/${raw}`);
 }
 
 /**

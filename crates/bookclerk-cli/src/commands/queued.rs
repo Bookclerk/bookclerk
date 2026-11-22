@@ -318,6 +318,20 @@ pub(crate) struct AcquireArgs<'a> {
     pub wait: bool,
 }
 
+/// `library convert` arguments.
+pub(crate) struct ConvertArgs<'a> {
+    /// Title ids of stored books; at least one.
+    pub titles: &'a [String],
+    /// `--account`.
+    pub account: Option<&'a str>,
+    /// `--to`: the copy to add.
+    pub copy: &'a bookclerk_config::OutputCopy,
+    /// `--force`.
+    pub force: bool,
+    /// Wait for the jobs.
+    pub wait: bool,
+}
+
 /// Queues `library scan`'s jobs and, with `wait`, waits for them.
 ///
 /// # Returns
@@ -400,6 +414,53 @@ pub(crate) async fn acquire(
     node_bound.extend(local_output_keys_from_instances(store).await?);
     let queued = admit(store, config, JobKind::Acquire, plan, &node_bound).await?;
     settle("acquire", store, queued, args.wait).await
+}
+
+/// Queues `library convert`'s jobs (acquire jobs that add a copy to each
+/// stored book) and, with `wait`, waits for them.
+///
+/// # Returns
+///
+/// As [`scan`].
+///
+/// # Errors
+///
+/// Returns an error when no title is named, the copy is `original`, and
+/// otherwise as [`scan`].
+pub(crate) async fn convert(
+    store: &LibraryStore,
+    config: &Config,
+    args: ConvertArgs<'_>,
+) -> anyhow::Result<bool> {
+    if args.titles.is_empty() {
+        anyhow::bail!("name the books to convert by title id");
+    }
+    if args.copy.format == bookclerk_config::CopyFormat::Original {
+        anyhow::bail!("a convert makes a new encoding; `original` is not one");
+    }
+    if args.wait {
+        require_live_node(store).await?;
+    }
+    let account = match args.account {
+        Some(needle) => Some(resolve_account(store, needle, None).await?),
+        None => None,
+    };
+    let mut plan = plan_acquire(
+        store,
+        ScanRequester::Operator,
+        account.as_deref(),
+        args.titles,
+        None,
+    )
+    .await?;
+    for payload in &mut plan {
+        payload.force = args.force;
+        payload.convert = Some(args.copy.clone());
+    }
+    let mut node_bound = node_bound_output_keys(config)?;
+    node_bound.extend(local_output_keys_from_instances(store).await?);
+    let queued = admit(store, config, JobKind::Acquire, plan, &node_bound).await?;
+    settle("convert", store, queued, args.wait).await
 }
 
 /// Reports `queued`, then waits (with `wait`) and reports each outcome.
@@ -591,7 +652,9 @@ mod tests {
     use bookclerk_config::Config;
     use bookclerk_library::{JobKind, LibraryStore};
 
-    use super::{acquire, resolve_account, resolve_pin, scan, AcquireArgs, ScanArgs};
+    use super::{
+        acquire, convert, resolve_account, resolve_pin, scan, AcquireArgs, ConvertArgs, ScanArgs,
+    };
 
     /// An in-memory library with the test accounts.
     async fn store() -> LibraryStore {
@@ -725,6 +788,60 @@ mod tests {
                 (Some("a1".into()), Some("B0TWO".into()), true),
             ]
         );
+    }
+
+    /// A convert queues one acquire job per title carrying the copy, and
+    /// refuses no titles and `original` copies before queuing anything.
+    #[tokio::test]
+    async fn a_convert_queues_jobs_that_carry_the_copy() {
+        let store = store().await;
+        let copy = bookclerk_config::OutputCopy::parse("mp3:64k-mono").unwrap();
+        let original = bookclerk_config::OutputCopy::parse("original:original").unwrap();
+        let titles = ["B0ONE".to_string()];
+        for (titles, copy, said) in [
+            (&[][..], &copy, "name the books"),
+            (&titles[..], &original, "new encoding"),
+        ] {
+            let err = convert(
+                &store,
+                &Config::default(),
+                ConvertArgs {
+                    titles,
+                    account: None,
+                    copy,
+                    force: false,
+                    wait: false,
+                },
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains(said), "{err}");
+        }
+        assert!(pending(&store, JobKind::Acquire).await.is_empty());
+
+        let queued = convert(
+            &store,
+            &Config::default(),
+            ConvertArgs {
+                titles: &titles,
+                account: Some("Riley"),
+                copy: &copy,
+                force: true,
+                wait: false,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!queued, "only queued");
+        let jobs = store.list_jobs(10).await.unwrap();
+        let [job] = jobs.as_slice() else {
+            panic!("one job: {jobs:?}");
+        };
+        assert_eq!(job.kind, JobKind::Acquire);
+        assert_eq!(job.payload.convert.as_ref(), Some(&copy));
+        assert_eq!(job.payload.account.as_deref(), Some("a1"));
+        assert!(job.payload.force);
     }
 
     /// Pins and account names resolve to one target or fail.

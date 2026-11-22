@@ -44,6 +44,32 @@ fn fuzz_corpus_media_decode_holds_invariants() {
     assert!(accepted >= 4, "only {accepted} seeds decoded");
 }
 
+#[path = "../../../fuzz/oracles/media_keep_codec.rs"]
+mod media_keep_codec_oracle;
+
+#[test]
+fn fuzz_corpus_media_keep_codec_holds_invariants() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fuzz/corpus/media_keep_codec")
+        .canonicalize()
+        .expect("canonicalize corpus");
+    let (mut count, mut kept) = (0, 0);
+    for entry in std::fs::read_dir(&dir).expect("fuzz corpus") {
+        let Ok(path) = entry.expect("entry").path().canonicalize() else {
+            continue;
+        };
+        if path.starts_with(&dir) && path.is_file() {
+            kept += usize::from(media_keep_codec_oracle::check(
+                &std::fs::read(&path).expect("read"),
+            ));
+            count += 1;
+        }
+    }
+    assert!(count >= 6, "only {count} seeds");
+    // The Opus, FLAC and ALAC seeds exercise the success invariants.
+    assert!(kept >= 4, "only {kept} seeds were kept");
+}
+
 #[path = "../../../fuzz/oracles/media_pcm_wire.rs"]
 mod media_pcm_wire_oracle;
 

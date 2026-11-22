@@ -57,8 +57,12 @@ pub(crate) struct OpusHead {
 }
 
 impl OpusHead {
-    /// Reads the header Symphonia's Ogg reader hands over as the track's
-    /// extra data.
+    /// Reads the header Symphonia hands over as the track's extra data.
+    ///
+    /// The Ogg reader passes the stream's `OpusHead` (version 1, fields
+    /// little-endian). The MP4 reader passes the `dOps` box body behind an
+    /// `OpusHead` magic: version 0 and fields big-endian (ISO/IEC 23003-5
+    /// style Opus-in-ISOBMFF), so version 0 reads the fields big-endian.
     ///
     /// # Errors
     ///
@@ -92,10 +96,21 @@ impl OpusHead {
                         .all(|(index, expected)| *index == expected) => {}
             _ => return unsupported_error("opus: multistream (surround) Opus is not decoded"),
         }
+        let (pre_skip, output_gain) = if *version == 0 {
+            (
+                u16::from_be_bytes([*pre0, *pre1]),
+                i16::from_be_bytes([*gain0, *gain1]),
+            )
+        } else {
+            (
+                u16::from_le_bytes([*pre0, *pre1]),
+                i16::from_le_bytes([*gain0, *gain1]),
+            )
+        };
         Ok(Self {
             channels: *channels,
-            pre_skip: u16::from_le_bytes([*pre0, *pre1]),
-            output_gain: i16::from_le_bytes([*gain0, *gain1]),
+            pre_skip,
+            output_gain,
         })
     }
 
@@ -293,6 +308,14 @@ mod tests {
             }
         );
         assert!(OpusHead::parse(&head(1, 1, &[1, 0, 0])).is_ok());
+        // An MP4 `dOps` behind the magic: version 0, big-endian fields.
+        let mut dops = b"OpusHead".to_vec();
+        dops.extend([0, 2]);
+        dops.extend(312u16.to_be_bytes());
+        dops.extend(44_100u32.to_be_bytes());
+        dops.extend((-256i16).to_be_bytes());
+        dops.push(0);
+        assert_eq!(OpusHead::parse(&dops).expect("dOps"), stereo);
         assert!(OpusHead::parse(&head(2, 1, &[1, 1, 0, 1])).is_ok());
     }
 

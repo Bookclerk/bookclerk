@@ -37,6 +37,7 @@ rand.workspace = true
 zeroize.workspace = true
 base64.workspace = true
 hex.workspace = true
+bookclerk-intake.workspace = true
 sha2.workspace = true
 hmac.workspace = true
 tar.workspace = true

@@ -155,6 +155,61 @@ fn a_digest_names_the_exact_list() {
 }
 
 #[test]
+fn spans_end_at_the_next_start_and_the_last_at_the_timeline_end() {
+    let tree = ChapterList::new(
+        vec![
+            ChapterInput {
+                title: "Part One".into(),
+                start_ms: 0,
+                depth: 0,
+            },
+            ChapterInput {
+                title: "One".into(),
+                start_ms: 0,
+                depth: 1,
+            },
+            ChapterInput {
+                title: "Two".into(),
+                start_ms: 60_000,
+                depth: 1,
+            },
+            ChapterInput {
+                title: "Part Two".into(),
+                start_ms: 120_000,
+                depth: 0,
+            },
+        ],
+        ChapterCheck::Strict,
+    )
+    .unwrap();
+    let ends: Vec<(u64, u64, u32)> = tree
+        .spans(Some(200_000))
+        .iter()
+        .map(|s| (s.start_ms, s.end_ms, s.depth))
+        .collect();
+    assert_eq!(
+        ends,
+        vec![
+            (0, 0, 0),
+            (0, 60_000, 1),
+            (60_000, 120_000, 1),
+            (120_000, 200_000, 0)
+        ]
+    );
+    let last = tree.spans(None);
+    assert_eq!(
+        last[3].end_ms, 120_000,
+        "no runtime: the last ends at its start"
+    );
+    let short = tree.spans(Some(10));
+    assert_eq!(
+        short[3].end_ms, 120_000,
+        "a runtime before the start is ignored"
+    );
+    assert!(ChapterList::default().spans(Some(5)).is_empty());
+}
+
+#[test]
 fn stored_spellings_round_trip() {
     for kind in ChapterSourceKind::ALL {
         assert_eq!(ChapterSourceKind::parse(kind.as_str()), Some(kind));

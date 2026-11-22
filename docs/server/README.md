@@ -18,6 +18,8 @@ Bookclerk on your own computer first, see
 - [Stores reference](stores.md): store plugins, formats and settings.
 - [Output and destinations reference](output.md): local and S3
   destinations, naming and packaging.
+- [Drop folders](drop-folders.md): a watched folder whose books Bookclerk
+  adds to the library.
 - [Web app and sign-in reference](sign-in.md): roles, sign-in methods,
   routes and screens.
 - [Integrations and sign-in](integrations.md): Audiobookshelf, invites and

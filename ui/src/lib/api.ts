@@ -4026,6 +4026,46 @@ export async function triggerAcquire(body: {
   return parseJobAdmit(res);
 }
 
+/** One copy of a book: a format at a quality, as `output.copies` names it. */
+export interface OutputCopy {
+  /** `m4b`, `mp3`, `mp3_chapters`, `opus` (or `original`, which a convert refuses). */
+  format: string;
+  /** `original`, a bitrate such as `64k` or `64k-mono`, or an MP3 VBR level such as `v2`. */
+  quality: string;
+}
+
+/**
+ * The editions of `work` a convert can read from: the ones already stored.
+ *
+ * @param work - The work's detail.
+ * @returns Edition ids.
+ */
+export function storedEditions(work: WorkDetail): string[] {
+  return work.editions.filter((e) => e.acquire_status === "acquired").map((e) => e.id);
+}
+
+/**
+ * Queues a convert: each named edition gets `copy` beside its original,
+ * made from the copy the library stores. Owners, Administrators and the
+ * operator only.
+ *
+ * @param body - The editions, the copy, and `force` to make it again.
+ * @returns Action ack including `job_id`.
+ */
+export async function triggerConvert(body: {
+  editions: string[];
+  copy: OutputCopy;
+  force?: boolean;
+}): Promise<ActionResponse> {
+  const res = await fetch("/api/library/convert", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseJobAdmit(res);
+}
+
 /**
  * Requests cancel of a pending job or cooperative stop of a running job.
  *

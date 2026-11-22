@@ -5141,6 +5141,262 @@
         "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
       }
     },
+    "/api/library/convert": {
+      "post": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Queues a convert of stored books into another copy; returns the\naccepted job ids.",
+        "description": "Each book gets the copy beside its original, made from the copy the\nlibrary already stores, on every destination whose filter takes that\ncopy; the original is left as it is. No store is asked. One job per\ntitle, run like an acquire on a node with the media worker and the\nlibrary database. Operator, Owners and Administrators only.",
+        "operationId": "trigger_convert",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConvertRequestBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The convert jobs were accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanPlanResponse"
+                },
+                "example": {
+                  "job_id": "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
+                  "job_ids": [
+                    "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+                  ],
+                  "message": "convert job acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b accepted",
+                  "ok": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The copy is not one a convert makes, or the body names no book. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "error": "invalid",
+                  "job_id": "",
+                  "message": "a convert makes a new encoding; `original` is not one",
+                  "ok": false
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller may not convert these books. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ActionResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "forbidden",
+                      "job_id": "",
+                      "message": "that title is not in a store account linked to this user",
+                      "ok": false
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The same convert is already pending or running, or no node can run it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanConflict"
+                },
+                "example": {
+                  "error": "conflict",
+                  "job_id": "acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                  "job_ids": [
+                    "acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
+                  ],
+                  "message": "convert already pending or running",
+                  "ok": false
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `copy` at line 1 column 2"
+              }
+            }
+          },
+          "429": {
+            "description": "The job queue is full.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanPlanResponse"
+                },
+                "example": {
+                  "error": "queue_full",
+                  "job_id": "",
+                  "job_ids": [],
+                  "message": "job queue is full",
+                  "ok": false
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The jobs could not be queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "job_id": "",
+                  "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection",
+                  "ok": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Job admission is paused. When the sign-in could not be checked because the library did not answer in time, the answer is `session_check_unavailable` instead, with `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again; sent only with `session_check_unavailable`."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ActionResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "admission_paused": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "admission_paused",
+                      "job_id": "",
+                      "message": "job admission paused (database reload in progress)",
+                      "ok": false
+                    }
+                  },
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
+      }
+    },
     "/api/jobs": {
       "get": {
         "tags": [
@@ -8464,6 +8720,449 @@
           },
           "500": {
             "description": "The filter could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator (token or session) only."
+      }
+    },
+    "/api/config/plugin-instances/{id}/intake": {
+      "get": {
+        "tags": [
+          "Plugins"
+        ],
+        "summary": "`GET /api/config/plugin-instances/{id}/intake`: whether the storage\ninstance is a drop folder, and its settings.",
+        "operationId": "get_intake",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin instance id of the storage instance.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The instance's drop folder settings, or `null` for a destination.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntakeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The id is not a plugin instance id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "invalid plugin instance id: expected a UUID"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role does not allow this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such instance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The settings could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "invalid core.intake: intake settings: unknown field `colour`"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator (token or session) only."
+      },
+      "put": {
+        "tags": [
+          "Plugins"
+        ],
+        "summary": "`PUT /api/config/plugin-instances/{id}/intake`: makes the storage\ninstance a drop folder with these settings, or changes a drop folder's\nsettings. Turning a destination into a drop folder is refused while the\ninstance is deployed on any node.",
+        "description": "Operator principal only. The route is mounted on the operator router.",
+        "operationId": "put_intake",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin instance id of the storage instance.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IntakeSettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The settings after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntakeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not JSON (text), or the patron is not an active user (JSON). As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "intake settings: patron 4242 is not an active user"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such instance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The instance is deployed, or the document kept changing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "storage instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b is deployed on node-a; undeploy it before changing whether it is a drop folder"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is over 16 KiB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the body is at most 16384 bytes"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not sent as `application/json`. As `text/plain`, when the request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "examples": {
+                  "extractor": {
+                    "summary": "The JSON extractor's refusal",
+                    "value": "Expected request with `Content-Type: application/json`"
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The settings are invalid: an unknown or repeated key, a value of the wrong type or out of range, or settings over 12 KiB written out.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: intake settings: attribute_to = owner needs a patron user id at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The settings could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator (token or session) only."
+      },
+      "delete": {
+        "tags": [
+          "Plugins"
+        ],
+        "summary": "`DELETE /api/config/plugin-instances/{id}/intake`: makes a drop folder a\ndestination again. Refused while the instance is deployed on any node.",
+        "description": "Operator principal only. The route is mounted on the operator router.",
+        "operationId": "delete_intake",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin instance id of the storage instance.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The instance is a destination.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntakeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The id is not a plugin instance id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "invalid plugin instance id: expected a UUID"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such instance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The instance is deployed, or the document kept changing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "storage instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b is deployed on node-a; undeploy it before changing whether it is a drop folder"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The document could not be read or written.",
             "content": {
               "application/json": {
                 "schema": {
@@ -50819,6 +51518,15 @@
           "default"
         ]
       },
+      "AfterIngest": {
+        "type": "string",
+        "description": "What happens to a drop folder item once it has been ingested.",
+        "enum": [
+          "move",
+          "delete",
+          "leave"
+        ]
+      },
       "ApiError": {
         "type": "object",
         "description": "An error. `error` is a stable slug; bodies the error middleware writes also carry `message` and `status`, and some routes add fields of their own.",
@@ -53239,31 +53947,37 @@
       },
       "Chapter": {
         "type": "object",
-        "description": "One chapter of a checked list.",
+        "description": "A chapter of a book.",
         "required": [
-          "title",
-          "start_ms",
-          "depth"
+          "id",
+          "start",
+          "end",
+          "title"
         ],
         "properties": {
-          "title": {
-            "type": "string",
-            "description": "Chapter title; never empty, at most 512 bytes, no control\ncharacters.",
-            "example": "Chapter 1: The Boy Who Lived"
-          },
-          "start_ms": {
+          "id": {
             "type": "integer",
             "format": "int64",
-            "description": "Start, in milliseconds from the start of the edition's timeline.",
-            "example": 33000,
+            "description": "The chapter's place, from 0.",
+            "example": 1,
             "minimum": 0
           },
-          "depth": {
-            "type": "integer",
-            "format": "int32",
-            "description": "Nesting depth; 0 for a top-level chapter, at most 7. A chapter at\ndepth n + 1 is nested under the nearest earlier chapter at depth n.",
-            "example": 0,
-            "minimum": 0
+          "start": {
+            "type": "number",
+            "format": "double",
+            "description": "Where it starts, in seconds.",
+            "example": 0.0
+          },
+          "end": {
+            "type": "number",
+            "format": "double",
+            "description": "Where it ends, in seconds.",
+            "example": 600.0
+          },
+          "title": {
+            "type": "string",
+            "description": "Its title.",
+            "example": "The First"
           }
         }
       },
@@ -53304,7 +54018,7 @@
               "null"
             ],
             "items": {
-              "$ref": "#/components/schemas/Chapter"
+              "$ref": "#/components/schemas/EditionChapter"
             },
             "description": "The claimed chapters; absent while the list's write is unfinished."
           },
@@ -53464,6 +54178,44 @@
           "file",
           "part_names"
         ]
+      },
+      "ChapterSpan": {
+        "type": "object",
+        "description": "One chapter as a player seeks between them: where it starts and ends\non the edition's timeline ([`ChapterList::spans`]).",
+        "required": [
+          "title",
+          "start_ms",
+          "end_ms",
+          "depth"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Chapter title.",
+            "example": "Chapter 1: The Boy Who Lived"
+          },
+          "start_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Start, in milliseconds from the start of the edition's timeline.",
+            "example": 33000,
+            "minimum": 0
+          },
+          "end_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "End, in milliseconds: the next chapter's start, or the end of the\ntimeline for the last chapter; never before `start_ms`.",
+            "example": 1215000,
+            "minimum": 0
+          },
+          "depth": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Nesting depth; 0 for a top-level chapter. A chapter at depth n + 1\nis nested under the nearest earlier chapter at depth n.",
+            "example": 0,
+            "minimum": 0
+          }
+        }
       },
       "ChoiceBody": {
         "type": "object",
@@ -54452,6 +55204,45 @@
             ],
             "description": "Overrides [`MemberControls::see_prices`].",
             "example": null
+          }
+        },
+        "additionalProperties": false
+      },
+      "ConvertRequestBody": {
+        "type": "object",
+        "description": "Body for `POST /api/library/convert`.",
+        "required": [
+          "copy"
+        ],
+        "properties": {
+          "copy": {
+            "$ref": "#/components/schemas/OutputCopy",
+            "description": "The copy to add: a format and a quality, as `output.copies` lists\nthem. `original` is refused: a convert makes a new encoding."
+          },
+          "titles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Title ids (uuid, ASIN, ISBN, product id) of stored books; each\nbecomes its own job.",
+            "example": [
+              "8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f"
+            ]
+          },
+          "editions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Editions to convert (`id` of an edition in a work's detail); each\nbecomes one job for the title that acquired it.",
+            "example": [
+              "0f3a5c7e-2b4d-4f6a-8c1e-3d5b7f9a1c2e"
+            ]
+          },
+          "force": {
+            "type": "boolean",
+            "description": "Make the copy again when the book already has it.",
+            "example": false
           }
         },
         "additionalProperties": false
@@ -55814,6 +56605,36 @@
           }
         }
       },
+      "EditionChapter": {
+        "type": "object",
+        "description": "One chapter of a checked list.\n\nNamed `EditionChapter` in the OpenAPI documents, apart from the player\napps' `Chapter`.",
+        "required": [
+          "title",
+          "start_ms",
+          "depth"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "description": "Chapter title; never empty, at most 512 bytes, no control\ncharacters.",
+            "example": "Chapter 1: The Boy Who Lived"
+          },
+          "start_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Start, in milliseconds from the start of the edition's timeline.",
+            "example": 33000,
+            "minimum": 0
+          },
+          "depth": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Nesting depth; 0 for a top-level chapter, at most 7. A chapter at\ndepth n + 1 is nested under the nearest earlier chapter at depth n.",
+            "example": 0,
+            "minimum": 0
+          }
+        }
+      },
       "EditionChaptersJson": {
         "type": "object",
         "description": "The chapters an edition plays.",
@@ -55830,7 +56651,7 @@
           "chapters": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Chapter"
+              "$ref": "#/components/schemas/EditionChapter"
             },
             "description": "The chapters in pre-order, starts never decreasing; empty when the\nedition has none or an Administrator cleared them."
           },
@@ -57508,6 +58329,178 @@
             "type": "string",
             "description": "`encrypted_secrets.name` for this instance.",
             "example": "api_token"
+          }
+        }
+      },
+      "IntakeAttribution": {
+        "type": "string",
+        "description": "Who holds the books a drop folder ingests.",
+        "enum": [
+          "owner",
+          "subfolder"
+        ]
+      },
+      "IntakeResponse": {
+        "type": "object",
+        "description": "`GET`, `PUT` and `DELETE /api/config/plugin-instances/{id}/intake` body:\nwhether a storage instance is a drop folder, and its settings.",
+        "required": [
+          "plugin_instance_id",
+          "revision"
+        ],
+        "properties": {
+          "plugin_instance_id": {
+            "type": "string",
+            "description": "The storage instance's plugin instance id.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Revision of the instance's `core.intake` document; `0` when none was\nwritten, so the instance is a destination.",
+            "example": 1
+          },
+          "intake": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/IntakeSettings",
+                "description": "The drop folder's settings; `null` when the instance is a\ndestination."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "IntakeSettings": {
+        "type": "object",
+        "description": "The settings of one drop folder (`core.intake`).\n\nEvery field has a default, so `{}` is a valid body only when\n`attribute_to` is `subfolder`; `owner` needs a `patron`.",
+        "required": [
+          "settle_seconds",
+          "scan_interval_seconds",
+          "after_ingest",
+          "attribute_to",
+          "ignore"
+        ],
+        "properties": {
+          "settle_seconds": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Seconds an item's files must stay unchanged before it is ingested,\n5 to 86,400 (default 60).",
+            "example": 60,
+            "maximum": 86400,
+            "minimum": 5
+          },
+          "scan_interval_seconds": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Seconds between two full listings of the folder, 30 to 86,400\n(default 300). A change feed starts a listing sooner.",
+            "example": 300,
+            "maximum": 86400,
+            "minimum": 30
+          },
+          "after_ingest": {
+            "$ref": "#/components/schemas/AfterIngest",
+            "description": "What happens to an item once it is ingested (default `move`)."
+          },
+          "attribute_to": {
+            "$ref": "#/components/schemas/IntakeAttribution",
+            "description": "Who holds the ingested books (default `owner`)."
+          },
+          "patron": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The user id that holds every book in `owner` mode; required there\nand refused in `subfolder` mode.",
+            "example": 2,
+            "minimum": 1
+          },
+          "ignore": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Extra file name patterns to ignore, at most 64, each 1 to 128 bytes\nwith no `/`: `*` matches any run of characters and `?` one\ncharacter, compared without ASCII case. The built-in list always\napplies too ([`BUILTIN_IGNORE_PATTERNS`]).",
+            "example": [
+              "*.nzb"
+            ],
+            "maxItems": 64
+          },
+          "prune_imported_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "With `after_ingest = move`, delete `_imported` day folders older than\nthis many days, 1 to 3,650; absent keeps them.",
+            "example": 30,
+            "maximum": 3650,
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "IntakeSettingsRequest": {
+        "type": "object",
+        "description": "The drop folder settings as a request body may send them: every field\nmay be left out and takes the default [`IntakeSettings`] names. Only the\npublished API schema uses it; the body is read as [`IntakeSettings`].",
+        "properties": {
+          "settle_seconds": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Seconds an item's files must stay unchanged before it is ingested,\n5 to 86,400 (default 60).",
+            "example": 60,
+            "maximum": 86400,
+            "minimum": 5
+          },
+          "scan_interval_seconds": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Seconds between two full listings of the folder, 30 to 86,400\n(default 300).",
+            "example": 300,
+            "maximum": 86400,
+            "minimum": 30
+          },
+          "after_ingest": {
+            "$ref": "#/components/schemas/AfterIngest",
+            "description": "What happens to an item once it is ingested (default `move`)."
+          },
+          "attribute_to": {
+            "$ref": "#/components/schemas/IntakeAttribution",
+            "description": "Who holds the ingested books (default `owner`)."
+          },
+          "patron": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The user id that holds every book in `owner` mode; required there\nand refused in `subfolder` mode. It must name an active user.",
+            "example": 2,
+            "minimum": 1
+          },
+          "ignore": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Extra file name patterns to ignore, at most 64, each 1 to 128 bytes\nwith no `/` (default none).",
+            "example": [
+              "*.nzb"
+            ],
+            "maxItems": 64
+          },
+          "prune_imported_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "With `after_ingest = move`, delete `_imported` day folders older than\nthis many days, 1 to 3,650; absent keeps them.",
+            "example": 30,
+            "maximum": 3650,
+            "minimum": 1
           }
         }
       },
@@ -61888,6 +62881,11 @@
             "description": "Write a `.cue` sidecar.",
             "example": false
           },
+          "keep_codec_in_m4b": {
+            "type": "boolean",
+            "description": "Keep Opus, FLAC, ALAC, E-AC-3 and AC-4 audio unchanged inside an M4B\ninstead of encoding it to AAC (advanced; off by default).",
+            "example": false
+          },
           "fixup_metadata": {
             "type": "boolean",
             "description": "Embed tags, cover, and chapters natively.",
@@ -63274,7 +64272,8 @@
           "title",
           "playable",
           "tracks",
-          "bookmarks"
+          "bookmarks",
+          "chapters"
         ],
         "properties": {
           "edition_id": {
@@ -63334,6 +64333,13 @@
               "$ref": "#/components/schemas/BookmarkJson"
             },
             "description": "The caller's bookmarks, in timeline order."
+          },
+          "chapters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChapterSpan"
+            },
+            "description": "The chapters the edition plays, in pre-order, each ending where the\nnext starts and the last at `duration_ms`; empty when it has none."
           }
         }
       },

@@ -1129,6 +1129,30 @@ pub struct AcquireRequestBody {
     pub pdf_only: bool,
 }
 
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+/// Body for `POST /api/library/convert`.
+pub struct ConvertRequestBody {
+    /// The copy to add: a format and a quality, as `output.copies` lists
+    /// them. `original` is refused: a convert makes a new encoding.
+    #[schema(example = json!({"format": "mp3", "quality": "64k-mono"}))]
+    pub copy: bookclerk_config::OutputCopy,
+    /// Title ids (uuid, ASIN, ISBN, product id) of stored books; each
+    /// becomes its own job.
+    #[serde(default)]
+    #[schema(example = json!(["8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f"]))]
+    pub titles: Vec<String>,
+    /// Editions to convert (`id` of an edition in a work's detail); each
+    /// becomes one job for the title that acquired it.
+    #[serde(default)]
+    #[schema(example = json!(["0f3a5c7e-2b4d-4f6a-8c1e-3d5b7f9a1c2e"]))]
+    pub editions: Vec<String>,
+    /// Make the copy again when the book already has it.
+    #[serde(default)]
+    #[schema(example = false)]
+    pub force: bool,
+}
+
 #[derive(Debug, Deserialize, Default, utoipa::ToSchema)]
 /// Optional body for `POST /integrations/{id}/scan`.
 pub struct IntegrationScanRequest {
@@ -1220,6 +1244,7 @@ fn operator_or_admin_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(trigger_integration_scan))
         .routes(routes!(status))
         .routes(routes!(crate::media_capabilities::media_capabilities))
+        .routes(routes!(trigger_convert))
         .routes(routes!(list_jobs))
         .routes(routes!(cancel_job))
         .routes(routes!(list_events))
@@ -1271,6 +1296,11 @@ fn operator_only_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(
             crate::config_authority::get_destination_filter,
             crate::config_authority::put_destination_filter
+        ))
+        .routes(routes!(
+            crate::config_authority::get_intake,
+            crate::config_authority::put_intake,
+            crate::config_authority::delete_intake
         ))
         .routes(routes!(crate::config_authority::put_plugin_deployment))
         .routes(routes!(
@@ -5153,9 +5183,102 @@ async fn trigger_acquire(
         pdf_only: body.pdf_only,
         // A person asked for it: counted against the pace, never held.
         paced: false,
+        convert: None,
     };
     match enqueue_acquire(state, requester, ask, JobTrigger::Api).await {
         Ok(admits) => plan_response("acquire", admits),
+        Err(err) => match err.downcast_ref::<LibraryError>() {
+            Some(LibraryError::Forbidden(message)) => planner_error_response(None, message),
+            Some(LibraryError::Invalid(message)) => {
+                planner_error_response(Some(StatusCode::BAD_REQUEST), message)
+            }
+            _ => enqueue_error_response(err),
+        },
+    }
+}
+
+/// Queues a convert of stored books into another copy; returns the
+/// accepted job ids.
+///
+/// Each book gets the copy beside its original, made from the copy the
+/// library already stores, on every destination whose filter takes that
+/// copy; the original is left as it is. No store is asked. One job per
+/// title, run like an acquire on a node with the media worker and the
+/// library database. Operator, Owners and Administrators only.
+#[utoipa::path(
+    post,
+    path = "/api/library/convert",
+    request_body = ConvertRequestBody,
+    responses(
+        (status = 200, description = "The convert jobs were accepted.", body = ScanPlanResponse, example = json!({"ok": true, "message": "convert job acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b accepted", "job_id": "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b", "job_ids": ["acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"]})),
+        (status = 400, description = "The copy is not one a convert makes, or the body names no book.", body = ActionResponse, example = json!({"ok": false, "message": "a convert makes a new encoding; `original` is not one", "job_id": "", "error": "invalid"})),
+        (status = 403, description = "The caller may not convert these books.", body = ActionResponse, example = json!({"ok": false, "message": "that title is not in a store account linked to this user", "job_id": "", "error": "forbidden"})),
+        (status = 409, description = "The same convert is already pending or running, or no node can run it.", body = PlanConflict, example = json!({"ok": false, "message": "convert already pending or running", "job_id": "acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f", "job_ids": ["acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"], "error": "conflict"})),
+        (status = 429, description = "The job queue is full.", body = ScanPlanResponse, example = json!({"ok": false, "message": "job queue is full", "job_id": "", "job_ids": [], "error": "queue_full"})),
+        (status = 503, description = "Job admission is paused.", body = ActionResponse, example = json!({"ok": false, "message": "job admission paused (database reload in progress)", "job_id": "", "error": "admission_paused"})),
+        (status = 500, description = "The jobs could not be queued.", body = ActionResponse, example = json!({"ok": false, "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection", "job_id": "", "error": "internal_error"})),
+    ),
+)]
+pub(crate) async fn trigger_convert(
+    State(state): State<Arc<AppState>>,
+    requester: Option<axum::Extension<ScanRequester>>,
+    Json(body): Json<ConvertRequestBody>,
+) -> Response {
+    let Some(axum::Extension(requester)) = requester else {
+        return planner_error_response(None, "convert requester unknown");
+    };
+    if let Err(err) = body.copy.validate() {
+        return planner_error_response(Some(StatusCode::BAD_REQUEST), &err.to_string());
+    }
+    if body.copy.format == bookclerk_config::CopyFormat::Original {
+        return planner_error_response(
+            Some(StatusCode::BAD_REQUEST),
+            "a convert makes a new encoding; `original` is not one",
+        );
+    }
+    let mut titles: Vec<String> = body
+        .titles
+        .into_iter()
+        .map(|title| title.trim().to_owned())
+        .filter(|title| !title.is_empty())
+        .collect();
+    if !body.editions.is_empty() {
+        let library = state.library_snapshot().await;
+        match bookclerk_library::control_plane::acquire_titles_of_editions(
+            &library,
+            requester,
+            None,
+            None,
+            &body.editions,
+        )
+        .await
+        {
+            Ok(of_editions) => titles.extend(of_editions),
+            Err(LibraryError::Forbidden(message)) => return planner_error_response(None, &message),
+            Err(LibraryError::Invalid(message)) => {
+                return planner_error_response(Some(StatusCode::BAD_REQUEST), &message)
+            }
+            Err(err) => return enqueue_error_response(err.into()),
+        }
+    }
+    if titles.is_empty() {
+        return planner_error_response(
+            Some(StatusCode::BAD_REQUEST),
+            "name the books to convert (titles or editions)",
+        );
+    }
+    let ask = crate::jobs::AcquireAsk {
+        titles,
+        account: None,
+        plugin_instance_id: None,
+        force: body.force,
+        pdf_only: false,
+        // No store is asked: nothing to pace.
+        paced: false,
+        convert: Some(body.copy),
+    };
+    match enqueue_acquire(state, requester, ask, JobTrigger::Api).await {
+        Ok(admits) => plan_response("convert", admits),
         Err(err) => match err.downcast_ref::<LibraryError>() {
             Some(LibraryError::Forbidden(message)) => planner_error_response(None, message),
             Some(LibraryError::Invalid(message)) => {

@@ -42,6 +42,9 @@ pub struct DownloadOptions {
     pub create_cue: bool,
     /// When true, embed tags, cover, and chapters after packaging.
     pub fixup_metadata: bool,
+    /// When true, an M4B keeps Opus, FLAC, ALAC, E-AC-3 or AC-4 audio as it
+    /// is instead of encoding it to AAC (`output.keep_codec_in_m4b`).
+    pub keep_codec_in_m4b: bool,
     /// Which chapter JSON sidecars to write (`off` / `flat` / `tree` / `both`).
     pub chapter_json: ChapterJsonMode,
     /// When true, persist raw catalog API JSON as `metadata.json`.
@@ -117,6 +120,7 @@ impl From<&OutputConfig> for DownloadOptions {
             download_pdf: cfg.download_pdf,
             create_cue: cfg.create_cue,
             fixup_metadata: cfg.fixup_metadata,
+            keep_codec_in_m4b: cfg.keep_codec_in_m4b,
             chapter_json: cfg.effective_chapter_json(),
             save_metadata_json: cfg.save_metadata_json,
             cover_size: cfg.cover_size.clone(),
