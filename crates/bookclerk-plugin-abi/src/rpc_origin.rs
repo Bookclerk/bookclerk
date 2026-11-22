@@ -18,10 +18,9 @@ use super::{
 };
 use crate::generated::{
     read_ingress_health_reply, read_ingress_start_reply, read_origin_connect_reply,
-    read_origin_header, read_origin_request, write_ingress_health_reply,
-    write_ingress_start_reply, write_origin_connect_reply, write_origin_header,
-    write_origin_request, IngressHealth, IngressStarted, OriginConnected, OriginHeader,
-    OriginRequest,
+    read_origin_header, read_origin_request, write_ingress_health_reply, write_ingress_start_reply,
+    write_origin_connect_reply, write_origin_header, write_origin_request, IngressHealth,
+    IngressStarted, OriginConnected, OriginHeader, OriginRequest,
 };
 use crate::limits::MAX_SOCKET_ATTACHMENT_BYTES;
 use crate::origin::{

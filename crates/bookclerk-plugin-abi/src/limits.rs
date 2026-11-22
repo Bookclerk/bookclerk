@@ -73,8 +73,7 @@ pub const MAX_INGRESS_ORIGIN_BYTES: u32 = crate::plugin_capnp::MAX_INGRESS_ORIGI
 
 /// Largest body of an [`crate::OriginRefusal`]: the library's answer to a
 /// WebSocket upgrade it did not accept. A longer body is cut to this.
-pub const MAX_ORIGIN_REFUSAL_BODY_BYTES: u32 =
-    crate::plugin_capnp::MAX_ORIGIN_REFUSAL_BODY_BYTES;
+pub const MAX_ORIGIN_REFUSAL_BODY_BYTES: u32 = crate::plugin_capnp::MAX_ORIGIN_REFUSAL_BODY_BYTES;
 
 /// Most deliveries one `Webhooks.pull` returns.
 pub const MAX_WEBHOOK_PULL_BATCH: u32 = crate::plugin_capnp::MAX_WEBHOOK_PULL_BATCH;

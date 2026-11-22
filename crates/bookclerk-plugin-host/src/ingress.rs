@@ -9,13 +9,19 @@
 //! background task checks `health` every [`INGRESS_HEALTH_INTERVAL`], and the
 //! guest is asked to `stop` before it is retired or replaced.
 
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use bookclerk_plugin_abi::{IngressHealth, IngressStarted, SocketMessageOk};
+use bookclerk_plugin_abi::origin::CheckedOriginRequest;
+use bookclerk_plugin_abi::{
+    IngressHealth, IngressStarted, Origin, OriginConnected, OriginRefusal, OriginReply,
+    PluginError as AbiError, Result as AbiResult, SocketMessageOk,
+};
+use tokio::io::AsyncRead;
 
-use crate::socket_broker::{SocketEvent, SocketSink};
+use crate::socket_broker::{LocalSocket, SocketBroker, SocketEvent, SocketSink};
 use crate::PluginSession;
 
 /// How often a running ingress is asked whether it is serving.
@@ -34,7 +40,7 @@ pub trait IngressHost: Send + Sync {
     async fn admit(&self, plugin_instance_id: &str) -> Result<(), String>;
 
     /// The library as relay plugins reach it (`ORIGIN`).
-    fn origin(&self) -> Arc<dyn bookclerk_plugin_abi::Origin + Send + Sync>;
+    fn origin(&self) -> Arc<dyn LibraryOrigin>;
 
     /// `plugin_instance_id` started and reported `started`.
     ///
@@ -50,6 +56,80 @@ pub trait IngressHost: Send + Sync {
 
     /// `plugin_instance_id` stopped serving: retired, replaced, or refused.
     async fn stopped(&self, plugin_instance_id: &str);
+}
+
+/// The library's answer to one WebSocket upgrade a relay plugin carries.
+pub enum OriginUpgrade {
+    /// The library accepted: its side of the socket.
+    Accepted(LocalSocket),
+    /// The library answered without upgrading.
+    Refused(OriginRefusal),
+}
+
+/// The library as the daemon serves it to a relay plugin: plain requests
+/// ([`Origin::fetch`]) and WebSocket upgrades ([`LibraryOrigin::upgrade`]).
+///
+/// The host wraps it with the instance's socket broker
+/// ([`BrokeredOrigin`]) to serve the plugin's `Origin.connect`, so the
+/// daemon never sees socket ids.
+#[async_trait(?Send)]
+pub trait LibraryOrigin: Origin + Send + Sync {
+    /// Opens a WebSocket to the library for one checked upgrade request.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` for a request the router cannot take;
+    /// `unavailable` while the library cannot serve.
+    async fn upgrade(&self, request: CheckedOriginRequest) -> AbiResult<OriginUpgrade>;
+}
+
+/// The `ORIGIN` binding a relay plugin's session hands out: the library,
+/// with accepted upgrades made sockets of the instance's broker.
+pub struct BrokeredOrigin {
+    /// The library.
+    library: Arc<dyn LibraryOrigin>,
+    /// The instance's broker; `None` without `[sockets]` or its grant.
+    sockets: Option<SocketBroker>,
+}
+
+impl BrokeredOrigin {
+    /// The binding for `library`, putting upgrades on `sockets`.
+    #[must_use]
+    pub fn new(library: Arc<dyn LibraryOrigin>, sockets: Option<SocketBroker>) -> Self {
+        Self { library, sockets }
+    }
+}
+
+#[async_trait(?Send)]
+impl Origin for BrokeredOrigin {
+    async fn fetch(
+        &self,
+        request: CheckedOriginRequest,
+        body: Option<Pin<Box<dyn AsyncRead + Send>>>,
+    ) -> AbiResult<OriginReply> {
+        self.library.fetch(request, body).await
+    }
+
+    async fn connect(
+        &self,
+        request: CheckedOriginRequest,
+        attachment: Vec<u8>,
+    ) -> AbiResult<OriginConnected> {
+        let Some(sockets) = &self.sockets else {
+            return Err(AbiError::forbidden(
+                "carrying WebSocket upgrades needs [sockets] and its grant",
+            ));
+        };
+        // Refuse before the library does any work for a socket that cannot
+        // be held.
+        sockets.check_room()?;
+        match self.library.upgrade(request).await? {
+            OriginUpgrade::Accepted(socket) => sockets
+                .adopt_local(socket, attachment)
+                .map(OriginConnected::Socket),
+            OriginUpgrade::Refused(refusal) => Ok(OriginConnected::Refused(refusal)),
+        }
+    }
 }
 
 /// The calls an [`IngressGuest`] makes on its guest; [`PluginSession`] in

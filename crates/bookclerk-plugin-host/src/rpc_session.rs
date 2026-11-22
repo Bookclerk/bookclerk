@@ -643,7 +643,7 @@ pub struct SessionServices {
     /// instance. The session hands it out only when the manifest also
     /// exports `ingress` with `[ingress] kind = "relay"`; `None` never
     /// exposes `ORIGIN`.
-    pub origin: Option<Arc<dyn bookclerk_plugin_abi::Origin + Send + Sync>>,
+    pub origin: Option<Arc<dyn crate::LibraryOrigin>>,
     /// The deployed instance whose inbound webhooks back the `WEBHOOKS`
     /// binding. The session hands the binding out only when the manifest
     /// declares `[[webhooks]]`, the covering grant has the `webhooks` token
@@ -933,7 +933,10 @@ impl PluginSession {
         let sockets = crate::socket_broker::granted(services.sockets, &manifest, &grant);
         // `ORIGIN` needs the deployment's origin (the active ingress only)
         // and a manifest exporting a relay `ingress`.
-        let origin = granted_origin(services.origin, &manifest);
+        let origin = granted_origin(services.origin, &manifest).map(|library| {
+            Arc::new(crate::BrokeredOrigin::new(library, sockets.clone()))
+                as Arc<dyn bookclerk_plugin_abi::Origin + Send + Sync>
+        });
         let network = spawned.network.clone();
         // `AI` needs the node's model router, tasks under `[ai].calls` and
         // their `ai:<task>` grant tokens.
@@ -2702,9 +2705,9 @@ impl PrimaryState {
 /// or any other plugin never reaches the library this way, whatever the
 /// caller passed.
 fn granted_origin(
-    origin: Option<Arc<dyn bookclerk_plugin_abi::Origin + Send + Sync>>,
+    origin: Option<Arc<dyn crate::LibraryOrigin>>,
     manifest: &crate::PluginManifest,
-) -> Option<Arc<dyn bookclerk_plugin_abi::Origin + Send + Sync>> {
+) -> Option<Arc<dyn crate::LibraryOrigin>> {
     let relay = manifest.has_entrypoint(bookclerk_plugin_manifest::Entrypoint::Ingress)
         && manifest
             .ingress
@@ -5449,10 +5452,19 @@ mode = "deny"
         }
     }
 
+    #[async_trait::async_trait(?Send)]
+    impl crate::LibraryOrigin for Refusing {
+        async fn upgrade(
+            &self,
+            _request: bookclerk_plugin_abi::origin::CheckedOriginRequest,
+        ) -> bookclerk_plugin_abi::Result<crate::OriginUpgrade> {
+            Err(bookclerk_plugin_abi::PluginError::unavailable("test"))
+        }
+    }
+
     #[test]
     fn only_a_relay_ingress_gets_origin() {
-        let origin =
-            || Some(Arc::new(Refusing) as Arc<dyn bookclerk_plugin_abi::Origin + Send + Sync>);
+        let origin = || Some(Arc::new(Refusing) as Arc<dyn crate::LibraryOrigin>);
         assert!(granted_origin(origin(), &ingress_manifest("relay")).is_some());
         assert!(granted_origin(None, &ingress_manifest("relay")).is_none());
         assert!(granted_origin(origin(), &ingress_manifest("direct")).is_none());

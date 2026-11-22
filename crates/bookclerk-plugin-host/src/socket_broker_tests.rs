@@ -5,7 +5,7 @@ use bookclerk_config::Paths;
 use bookclerk_plugin_abi::PluginErrorCode;
 
 /// A broker handle for a `[sockets]` plugin installed under `files`.
-fn idle_broker(files: &std::path::Path) -> SocketBroker {
+pub(crate) fn idle_broker(files: &std::path::Path) -> SocketBroker {
     let paths = Paths::from_files_dir(files.to_path_buf());
     let root = paths.files_dir.join("plugins").join("sockets");
     std::fs::create_dir_all(&root).expect("install dir");
@@ -399,4 +399,247 @@ fn guest_socket_ids_round_trip_and_reject_foreign_ids() {
     for foreign in ["s1", "g_s1", "gx_s1", "g1_", "g1"] {
         assert_eq!(broker_socket(foreign), None, "{foreign}");
     }
+}
+
+/// Sink double that records every event and signals each one.
+struct EventLog {
+    /// Events in arrival order.
+    events: std::sync::Mutex<Vec<SocketEvent>>,
+    /// Signalled once per event.
+    arrived: tokio::sync::mpsc::UnboundedSender<()>,
+}
+
+#[async_trait]
+impl SocketSink for EventLog {
+    async fn deliver_socket_event(
+        &self,
+        event: SocketEvent,
+    ) -> std::result::Result<SocketMessageOk, String> {
+        self.events.lock().unwrap().push(event);
+        let _ = self.arrived.send(());
+        Ok(SocketMessageOk::default())
+    }
+}
+
+/// The library's side of one local socket, as a test drives it.
+struct LibrarySide {
+    /// What the guest sent or asked.
+    outbound: mpsc::Receiver<LocalOutbound>,
+    /// What the library delivers.
+    inbound: mpsc::Sender<LocalInbound>,
+}
+
+/// A local socket on the current runtime and the test's side of it.
+fn local_pair() -> (LocalSocket, LibrarySide) {
+    let (out_tx, out_rx) = mpsc::channel(4);
+    let (in_tx, in_rx) = mpsc::channel(4);
+    (
+        LocalSocket {
+            runtime: tokio::runtime::Handle::current(),
+            url: "https://library.example/api/live".into(),
+            protocol: Some("bookclerk.v1".into()),
+            outbound: out_tx,
+            inbound: in_rx,
+        },
+        LibrarySide {
+            outbound: out_rx,
+            inbound: in_tx,
+        },
+    )
+}
+
+#[tokio::test]
+async fn a_local_socket_carries_both_ways_and_reports_its_close() {
+    let files = tempfile::tempdir().expect("files");
+    let broker = idle_broker(files.path());
+    let (arrived_tx, mut arrived) = tokio::sync::mpsc::unbounded_channel();
+    let recorder = Arc::new(EventLog {
+        events: std::sync::Mutex::new(Vec::new()),
+        arrived: arrived_tx,
+    });
+    let sink: Arc<dyn SocketSink> = recorder.clone();
+    broker.set_sink(Arc::downgrade(&sink));
+
+    let (socket, mut library) = local_pair();
+    let info = broker
+        .adopt_local(socket, b"pair:r1".to_vec())
+        .expect("adopt");
+    assert_eq!(info.socket, "o1");
+    assert_eq!(info.protocol.as_deref(), Some("bookclerk.v1"));
+    assert_eq!(broker.open_sockets(), vec!["o1".to_string()]);
+    let listed = broker.list().await.expect("list");
+    assert_eq!(listed, vec![info.clone()]);
+    assert!(
+        broker.inner.link.lock().await.is_none(),
+        "no broker process"
+    );
+
+    broker
+        .send("o1".into(), SocketFrame::Text("hello".into()))
+        .await
+        .expect("send");
+    assert_eq!(
+        library.outbound.recv().await,
+        Some(LocalOutbound::Frame(SocketFrame::Text("hello".into())))
+    );
+
+    broker
+        .set_attachment("o1".into(), b"pair:r2".to_vec())
+        .await
+        .expect("attach");
+    library
+        .inbound
+        .send(LocalInbound::Frame(SocketFrame::Binary(vec![1, 2])))
+        .await
+        .unwrap();
+    arrived.recv().await.unwrap();
+    library
+        .inbound
+        .send(LocalInbound::Closed {
+            code: 1001,
+            reason: Some("going away".into()),
+            clean: true,
+        })
+        .await
+        .unwrap();
+    arrived.recv().await.unwrap();
+    let events = recorder.events.lock().unwrap().clone();
+    assert_eq!(
+        events,
+        vec![
+            SocketEvent::Message(SocketMessage {
+                socket: "o1".into(),
+                frame: SocketFrame::Binary(vec![1, 2]),
+                attachment: b"pair:r2".to_vec(),
+            }),
+            SocketEvent::Closed(SocketClosed {
+                socket: "o1".into(),
+                code: 1001,
+                reason: Some("going away".into()),
+                clean: true,
+                attachment: b"pair:r2".to_vec(),
+            }),
+        ]
+    );
+    assert!(broker.open_sockets().is_empty());
+    let err = broker
+        .send("o1".into(), SocketFrame::Text("late".into()))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, PluginErrorCode::NotFound);
+}
+
+#[tokio::test]
+async fn a_local_socket_checks_what_the_guest_asks() {
+    let files = tempfile::tempdir().expect("files");
+    let broker = idle_broker(files.path());
+    let (socket, mut library) = local_pair();
+    let too_big = vec![0u8; bookclerk_plugin_abi::MAX_SOCKET_ATTACHMENT_BYTES as usize + 1];
+    let (refused, _library) = local_pair();
+    assert_eq!(
+        broker
+            .adopt_local(refused, too_big.clone())
+            .unwrap_err()
+            .code,
+        PluginErrorCode::PayloadTooLarge
+    );
+    assert!(broker.open_sockets().is_empty());
+
+    broker.adopt_local(socket, Vec::new()).expect("adopt");
+    let frame = SocketFrame::Binary(vec![
+        0;
+        bookclerk_plugin_abi::MAX_SOCKET_FRAME_BYTES as usize
+            + 1
+    ]);
+    assert_eq!(
+        broker.send("o1".into(), frame).await.unwrap_err().code,
+        PluginErrorCode::PayloadTooLarge
+    );
+    assert_eq!(
+        broker
+            .set_attachment("o1".into(), too_big)
+            .await
+            .unwrap_err()
+            .code,
+        PluginErrorCode::PayloadTooLarge
+    );
+    assert_eq!(
+        broker
+            .close("o1".into(), 1006, String::new())
+            .await
+            .unwrap_err()
+            .code,
+        PluginErrorCode::InvalidParams
+    );
+    broker
+        .close("o1".into(), 0, "done".into())
+        .await
+        .expect("close");
+    assert_eq!(
+        library.outbound.recv().await,
+        Some(LocalOutbound::Close {
+            code: 1000,
+            reason: "done".into()
+        })
+    );
+}
+
+#[tokio::test]
+async fn local_sockets_count_toward_the_instance_cap() {
+    let files = tempfile::tempdir().expect("files");
+    let broker = idle_broker(files.path());
+    let mut held = Vec::new();
+    for _ in 0..MAX_SOCKETS_PER_INSTANCE {
+        let (socket, library) = local_pair();
+        broker.adopt_local(socket, Vec::new()).expect("adopt");
+        held.push(library);
+    }
+    let (socket, _library) = local_pair();
+    assert_eq!(
+        broker.adopt_local(socket, Vec::new()).unwrap_err().code,
+        PluginErrorCode::LimitExceeded
+    );
+    assert_eq!(
+        broker.check_room().unwrap_err().code,
+        PluginErrorCode::LimitExceeded
+    );
+    let err = broker
+        .connect(SocketConnectRequest {
+            url: "wss://abs.example.com/socket".into(),
+            ..SocketConnectRequest::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, PluginErrorCode::LimitExceeded);
+    assert!(
+        broker.inner.link.lock().await.is_none(),
+        "no broker process"
+    );
+}
+
+#[tokio::test]
+async fn a_library_side_that_vanishes_reads_as_an_abnormal_close() {
+    let files = tempfile::tempdir().expect("files");
+    let broker = idle_broker(files.path());
+    let (arrived_tx, mut arrived) = tokio::sync::mpsc::unbounded_channel();
+    let recorder = Arc::new(EventLog {
+        events: std::sync::Mutex::new(Vec::new()),
+        arrived: arrived_tx,
+    });
+    let sink: Arc<dyn SocketSink> = recorder.clone();
+    broker.set_sink(Arc::downgrade(&sink));
+    let (socket, library) = local_pair();
+    broker.adopt_local(socket, b"a".to_vec()).expect("adopt");
+    drop(library);
+    arrived.recv().await.unwrap();
+    let events = recorder.events.lock().unwrap().clone();
+    assert!(matches!(
+        &events[..],
+        [SocketEvent::Closed(SocketClosed {
+            code: 1006,
+            clean: false,
+            ..
+        })]
+    ));
+    assert!(broker.open_sockets().is_empty());
 }
