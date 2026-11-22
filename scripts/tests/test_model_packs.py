@@ -217,6 +217,24 @@ class FetchTest(unittest.TestCase):
                 mp.fetch(self.pin, self.dir, lambda _url, body=body: io.BytesIO(body))
             self.assertEqual(list(self.dir.iterdir()), [])
 
+    def test_a_download_that_breaks_off_leaves_nothing(self) -> None:
+        class Broken(io.BytesIO):
+            def read(self, *_args: object) -> bytes:
+                raise OSError("connection reset")
+
+        with self.assertRaises(OSError):
+            mp.fetch(self.pin, self.dir, lambda _url: Broken())
+        self.assertEqual(list(self.dir.iterdir()), [])
+
+    def test_a_failed_fetch_leaves_another_fetch_alone(self) -> None:
+        # Two fetches of one file never share a temporary name: one failing
+        # must not touch what another is writing.
+        other = self.dir / "a file.onnx.part"
+        other.write_bytes(b"someone else's")
+        with self.assertRaises(mp.PackError):
+            mp.fetch(self.pin, self.dir, lambda _url: io.BytesIO(b"hellp"))
+        self.assertEqual({path.name: path.read_bytes() for path in self.dir.iterdir()}, {other.name: b"someone else's"})
+
     def test_a_stale_copy_is_downloaded_again(self) -> None:
         (self.dir / "a file.onnx").write_bytes(b"old")
         self.assertEqual(mp.fetch(self.pin, self.dir, lambda _url: io.BytesIO(self.body)).read_bytes(), self.body)
@@ -416,6 +434,12 @@ class CheckHelpersTest(unittest.TestCase):
             with self.subTest(found=found), self.assertRaises(mp.PackError):
                 mp.largest_difference([[0.0, 1.0]], found)
 
+    def test_a_number_that_is_not_finite_is_refused_wherever_it_is(self) -> None:
+        for bad in (float("nan"), float("inf")):
+            for found in ([[bad, 1.0], [0.5, 0.5]], [[0.0, 1.0], [0.5, bad]]):
+                with self.subTest(found=found), self.assertRaises(mp.PackError):
+                    mp.largest_difference([[0.0, 1.0], [0.5, 0.5]], found)
+
 
 class FakeRegistry:
     """An in-memory registry speaking the calls the client makes."""
@@ -479,6 +503,11 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(sum(1 for _, url in self.fake.log if "/token?" in url), 1)
         self.assertIn("scope=repository:owner/models/tiny:pull,push", self.fake.log[0][1])
         self.assertFalse(any("secret" in url for _, url in self.fake.log))
+
+    def test_the_manifest_pushed_is_the_one_measured(self) -> None:
+        (self.out / "tiny.oci-manifest.json").write_bytes(self.manifest.replace(b"example", b"another"))
+        result = mp.publish(self.spec, self.built, self.registry)
+        self.assertEqual(self.fake.manifests, {result["tag"]: self.manifest})
 
     def test_publishing_again_sends_no_blob(self) -> None:
         mp.publish(self.spec, self.built, self.registry)
@@ -741,8 +770,14 @@ class ConverterPinsTest(unittest.TestCase):
         vendor = (ROOT / "scripts" / "vendor-sentencepiece-lite.sh").read_text(encoding="utf-8")
         build = (ROOT / "scripts" / "model-packs" / "build-spm-to-fb.sh").read_text(encoding="utf-8")
         flatbuffers = vendor.split('FLATBUFFERS_COMMIT="', 1)[1].split('"', 1)[0]
-        self.assertIn(f'[flatbuffers-src]="{flatbuffers}"', build)
+        self.assertIn(f'"flatbuffers https://github.com/google/flatbuffers {flatbuffers}"', build)
+        self.assertIn(f'flatbuffers_pinned="{flatbuffers}"', build)
         self.assertIn("pin SENTENCEPIECE_COMMIT", build)
+
+    def test_the_converter_build_fetches_nothing_while_configuring(self) -> None:
+        build = (ROOT / "scripts" / "model-packs" / "build-spm-to-fb.sh").read_text(encoding="utf-8")
+        self.assertIn("-DFETCHCONTENT_FULLY_DISCONNECTED=ON", build)
+        self.assertLess(build.index('fetch_commit "$work/deps/$name"'), build.index('cmake -S "$work/sentencepiece/lite"'))
 
 
 if __name__ == "__main__":

@@ -303,8 +303,10 @@ first appear after the nightly run or a manual run (see
 [`.github/workflows/model-packs.yml`](../../.github/workflows/model-packs.yml)
 builds the embedding models the `embedder` plugin serves and publishes
 each as an OCI artifact, `ghcr.io/bookclerk/models/<model id>`. A model
-pack is not part of a release package: a node downloads the model its
-library uses.
+pack is not part of a release package. Publishing only makes the packs
+available: a node does not download them yet, and the plugin lists no
+models until it does (see
+[Model packs](../internals/model-packs.md)).
 
 - The upstream files, and the digests the build must produce, are pinned
   in `scripts/model-packs/models.json`. A build that produces other
@@ -313,9 +315,10 @@ library uses.
   or the plugin builds and checks both models, once it is ready for
   review. A push to `main` on the same paths, and a manual run from
   `main`, also publish and attest them.
-- The build job holds `contents: read`. Only the publish job gets
-  `packages: write`, and only the attest job `id-token: write` and
-  `attestations: write`.
+- The build job holds `contents: read`. The publish and attest jobs get
+  `packages: write`: one uploads the pack, the other stores the
+  attestation beside it in the registry. Only the attest job gets
+  `id-token: write` and `attestations: write`.
 - The first publish creates the packages `models/bekko-a8m` and
   `models/harrier-270m-q4` as private. An organization owner makes each
   public once, as for the images

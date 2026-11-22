@@ -182,7 +182,8 @@ The build is reproducible: the same pinned inputs give the same bytes, so
 the digests in `models.json` are reviewed with the change that produces
 them. `spm_to_fb` is built from the google/sentencepiece commit the
 vendored runtime comes from, by `scripts/model-packs/build-spm-to-fb.sh`,
-which also checks the commit of every source that build fetches.
+which fetches every other source that build needs by a pinned commit
+itself and lets CMake fetch nothing.
 
 To build a pack on a development machine (Linux):
 

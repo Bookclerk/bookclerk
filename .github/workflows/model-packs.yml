@@ -20,8 +20,9 @@
 # through Sigstore with this workflow's OIDC identity:
 #   gh attestation verify oci://ghcr.io/<owner>/models/<model id>@sha256:<digest> --owner <owner>
 #
-# Only the publish job gets `packages: write`; only the attest job gets
-# `id-token: write` and `attestations: write`.
+# The build job holds `contents: read` only. The publish and attest jobs get
+# `packages: write` (the pack, and its attestation stored beside it); only
+# the attest job gets `id-token: write` and `attestations: write`.
 name: Model packs
 
 on:
@@ -56,9 +57,13 @@ on:
 permissions:
   contents: read
 
-# Publishes never cancel each other; a pull request's run does.
+# A pull request's newer run cancels its older one. Runs that are not for a
+# pull request never cancel each other and queue by branch, so a manual run
+# from another branch (which publishes nothing) cannot take the place of a
+# publish waiting on main. A publish waiting on main can only be replaced by
+# a newer one from main, which publishes what main then pins.
 concurrency:
-  group: model-packs-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
+  group: model-packs-${{ github.event_name == 'pull_request' && 'pr' || 'push' }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -256,8 +261,24 @@ jobs:
         with:
           name: model-pack-published-${{ matrix.model }}
 
-      # An artifact that already has an attestation (a publish of the same
-      # pack again) is left alone; the API answers 404 when there is none.
+      # `actions/attest` stores the attestation beside the artifact with the
+      # registry credentials Docker holds.
+      - name: Log in to the registry
+        env:
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$REGISTRY_PASSWORD" | docker login ghcr.io --username "$REGISTRY_USERNAME" --password-stdin
+
+      # An artifact that is already attested (a publish of the same pack
+      # again) is left alone. That takes both halves: GitHub's record (the
+      # API answers 404 when there is none) and the copy in the registry,
+      # looked for under the tag `sha256-<the artifact's digest>`, where a
+      # registry without the referrers API keeps it. When either is not
+      # found the artifact is attested again, so a run that failed between
+      # the two is repaired by the next one; a second attestation of the
+      # same artifact is harmless.
       - name: Digest
         id: digest
         env:
@@ -272,7 +293,7 @@ jobs:
           [[ "$name" =~ ^ghcr\.io/[a-z0-9._/-]+$ ]]
           count="$(gh api "repos/$GH_REPO/attestations/$digest" --jq '.attestations | length' 2>/dev/null)" || count=0
           [[ "$count" =~ ^[0-9]+$ ]] || count=0
-          if [[ "$count" -gt 0 ]]; then
+          if [[ "$count" -gt 0 ]] && docker manifest inspect "$name:sha256-${digest#sha256:}" >/dev/null 2>&1; then
             echo "$name@$digest is already attested"
             digest=""
           fi

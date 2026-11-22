@@ -35,11 +35,13 @@ import base64
 import dataclasses
 import hashlib
 import json
+import math
 import os
 import re
 import struct
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -359,7 +361,8 @@ def fetch(pin: SourcePin, directory: Path, opener: Callable[[str], BinaryIO] | N
 
     The file is written under a temporary name and renamed only once its
     size and digest match the pin, so a partial or altered download is never
-    left where the build would read it.
+    left where the build would read it. Each call writes under a name of
+    its own.
 
     Args:
         pin: The file and what it must hash to.
@@ -376,20 +379,25 @@ def fetch(pin: SourcePin, directory: Path, opener: Callable[[str], BinaryIO] | N
     if target.is_file() and sha256_file(target) == pin.pin:
         return target
     directory.mkdir(parents=True, exist_ok=True)
-    partial = target.with_name(target.name + ".part")
     open_url = opener or (lambda url: urllib.request.urlopen(url, timeout=120))  # noqa: S310 - https only, pinned digest
     digest, size = hashlib.sha256(), 0
-    with open_url(pin.url) as response, partial.open("wb") as handle:
-        while chunk := response.read(CHUNK):
-            size += len(chunk)
-            if size > pin.pin.bytes:
-                break
-            digest.update(chunk)
-            handle.write(chunk)
-    if FilePin(size, digest.hexdigest()) != pin.pin:
+    # A name of this call's own, so two fetches of one file cannot write
+    # through each other.
+    descriptor, name = tempfile.mkstemp(prefix=target.name + ".", suffix=".part", dir=directory)
+    partial = Path(name)
+    try:
+        with open_url(pin.url) as response, os.fdopen(descriptor, "wb") as handle:
+            while chunk := response.read(CHUNK):
+                size += len(chunk)
+                if size > pin.pin.bytes:
+                    break
+                digest.update(chunk)
+                handle.write(chunk)
+        if FilePin(size, digest.hexdigest()) != pin.pin:
+            raise PackError(f"{pin.url} does not match its pin")
+        partial.replace(target)
+    finally:
         partial.unlink(missing_ok=True)
-        raise PackError(f"{pin.url} does not match its pin")
-    partial.replace(target)
     return target
 
 
@@ -793,12 +801,31 @@ class Built:
         model_json: Size and digest of `model.json`.
         manifest: Size and digest of the OCI manifest.
         files: Name, size and digest of every file, in layer order.
+        manifest_bytes: The OCI manifest itself, the bytes `manifest`
+            measures, so what is pushed is what was measured.
     """
 
     directory: Path
     model_json: FilePin
     manifest: FilePin
     files: tuple[tuple[str, FilePin], ...]
+    manifest_bytes: bytes
+
+
+def verify_sources(spec: ModelSpec, work: Path) -> None:
+    """Checks every fetched upstream file against its pin, before any is parsed.
+
+    Args:
+        spec: The model.
+        work: Directory holding the fetched files.
+
+    Raises:
+        PackError: A file is missing or is not the pinned one.
+    """
+    for pin in spec.sources():
+        path = work / pin.local_name
+        if not path.is_file() or sha256_file(path) != pin.pin:
+            raise PackError(f"{path} is missing or does not match its pin; run `fetch` first")
 
 
 def build(spec: ModelSpec, source: str, work: Path, out: Path, spm_to_fb: Path) -> Built:
@@ -818,10 +845,7 @@ def build(spec: ModelSpec, source: str, work: Path, out: Path, spm_to_fb: Path) 
         PackError: An upstream file is missing or the graph or tokenizer is
             not one the build understands.
     """
-    for pin in spec.sources():
-        path = work / pin.local_name
-        if not path.is_file() or sha256_file(path) != pin.pin:
-            raise PackError(f"{path} is missing or does not match its pin; run `fetch` first")
+    verify_sources(spec, work)
     directory = out / spec.model_id
     directory.mkdir(parents=True, exist_ok=True)
 
@@ -845,7 +869,7 @@ def build(spec: ModelSpec, source: str, work: Path, out: Path, spm_to_fb: Path) 
     files = ((MANIFEST_NAME, sha256_bytes(model_json)), *measured.items())
     manifest = oci_manifest(spec, source, files)
     (out / f"{spec.model_id}.{OCI_MANIFEST_NAME}").write_bytes(manifest)
-    return Built(directory, sha256_bytes(model_json), sha256_bytes(manifest), tuple(files))
+    return Built(directory, sha256_bytes(model_json), sha256_bytes(manifest), tuple(files), manifest)
 
 
 def read_built(spec: ModelSpec, out: Path) -> Built:
@@ -878,7 +902,7 @@ def read_built(spec: ModelSpec, out: Path) -> Built:
         files.append((name, pin))
     if not files or files[0][0] != MANIFEST_NAME:
         raise PackError("the manifest's first layer must be model.json")
-    return Built(directory, files[0][1], sha256_bytes(manifest), tuple(files))
+    return Built(directory, files[0][1], sha256_bytes(manifest), tuple(files), manifest)
 
 
 def pin_report(spec: ModelSpec, built: Built) -> list[str]:
@@ -955,11 +979,15 @@ def largest_difference(expected: Sequence[Sequence[float]], found: Sequence[Sequ
         The largest difference in any number.
 
     Raises:
-        PackError: The sets differ in shape.
+        PackError: The sets differ in shape, or a number is not finite.
     """
     if len(expected) != len(found) or any(len(a) != len(b) for a, b in zip(expected, found)):
         raise PackError("the plugin's vectors are not the shape of the published model's")
-    return max((abs(x - y) for a, b in zip(expected, found) for x, y in zip(a, b)), default=0.0)
+    differences = [abs(x - y) for a, b in zip(expected, found) for x, y in zip(a, b)]
+    # `max` would pass over a NaN that follows a finite number.
+    if not all(math.isfinite(difference) for difference in differences):
+        raise PackError("a vector holds a number that is not finite")
+    return max(differences, default=0.0)
 
 
 def _run_example(command: Sequence[str], texts: Sequence[dict[str, Any]]) -> dict[str, Any]:
@@ -992,13 +1020,15 @@ def check(spec: ModelSpec, work: Path, out: Path, examples: Path, library: Path)
         A summary: text count, largest vector difference, revision.
 
     Raises:
-        PackError: A token id differs, a text fell back to single
-            characters, or a vector differs by more than `VECTOR_TOLERANCE`.
+        PackError: An upstream file is not the pinned one, a token id
+            differs, a text fell back to single characters, or a vector
+            differs by more than `VECTOR_TOLERANCE`.
     """
     import numpy as np
     import onnxruntime
     from tokenizers import Tokenizer
 
+    verify_sources(spec, work)
     texts = load_check_texts()
     tokenizer = Tokenizer.from_file(str(work / spec.tokenizer.local_name))
     tokenizer.no_padding()
@@ -1117,14 +1147,16 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 def _urllib_transport(request: urllib.request.Request) -> tuple[int, dict[str, str], bytes]:
     """Sends a request with `urllib`, returning error statuses as values.
 
-    Redirects are not followed: the reply's own status comes back.
+    Redirects are not followed: the reply's own status comes back. No more
+    of a body is read than one byte past `MAX_REPLY_BYTES`, enough for the
+    token parser to refuse an oversized reply.
     """
     opener = urllib.request.build_opener(_NoRedirect)
     try:
         with opener.open(request, timeout=600) as response:
-            return response.status, {k.lower(): v for k, v in response.headers.items()}, response.read()
+            return response.status, {k.lower(): v for k, v in response.headers.items()}, response.read(MAX_REPLY_BYTES + 1)
     except urllib.error.HTTPError as error:
-        return error.code, {k.lower(): v for k, v in error.headers.items()}, error.read()
+        return error.code, {k.lower(): v for k, v in error.headers.items()}, error.read(MAX_REPLY_BYTES + 1)
 
 
 class Registry:
@@ -1252,12 +1284,11 @@ def publish(spec: ModelSpec, built: Built, registry: Registry) -> dict[str, Any]
     Returns:
         The artifact's name, digest and tag, and how many blobs were sent.
     """
-    manifest = (built.directory.parent / f"{spec.model_id}.{OCI_MANIFEST_NAME}").read_bytes()
     uploaded = int(registry.push_blob(sha256_bytes(OCI_EMPTY_BLOB), OCI_EMPTY_BLOB))
     for name, pin in built.files:
         uploaded += int(registry.push_blob(pin, built.directory / name))
     tag = f"sha256-{built.manifest.sha256[:12]}"
-    digest = registry.push_manifest(manifest, tag)
+    digest = registry.push_manifest(built.manifest_bytes, tag)
     return {"name": f"{registry.host}/{registry.repository}", "digest": digest, "tag": tag, "uploaded": uploaded}
 
 
