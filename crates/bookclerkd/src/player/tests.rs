@@ -610,6 +610,74 @@ async fn play_sync_close_and_progress() {
     assert!(stored.is_finished);
 }
 
+/// A patron's apps learn only of the progress and bookmarks of books
+/// their scope shows them: the signed-in user lists none of a hidden
+/// book's, and its progress route answers as for an unknown item.
+#[tokio::test]
+async fn progress_of_a_book_outside_the_scope_is_not_listed() {
+    use bookclerk_library::control_plane::{
+        set_patron_scope, PatronScope, RuleEffect, ScopeField, ScopeRule,
+    };
+    let world = world().await;
+    let (access, _) = sign_in(&world).await;
+    let patched = send(
+        &world,
+        Method::PATCH,
+        &format!("/player/api/me/progress/{}", world.item),
+        As::Card(&access),
+        Some(json!({ "currentTime": 42, "duration": 36000 })),
+        &[],
+    )
+    .await;
+    assert_eq!(patched.status, StatusCode::OK);
+    let marked = send(
+        &world,
+        Method::POST,
+        &format!("/player/api/me/item/{}/bookmark", world.item),
+        As::Card(&access),
+        Some(json!({ "title": "Here", "time": 42 })),
+        &[],
+    )
+    .await;
+    assert_eq!(marked.status, StatusCode::OK);
+    let me = get(&world, &access, "/player/api/me").await;
+    assert_eq!(me.json()["mediaProgress"].as_array().map(Vec::len), Some(1));
+    assert_eq!(me.json()["bookmarks"].as_array().map(Vec::len), Some(1));
+
+    let riley = world
+        .store
+        .upsert_portal_identity("test", "riley-ext", Some("Riley"))
+        .await
+        .unwrap()
+        .user_id
+        .unwrap();
+    set_patron_scope(
+        &world.store,
+        riley,
+        Some(PatronScope {
+            rules: vec![ScopeRule {
+                field: ScopeField::Author,
+                value: "Ann Author".into(),
+                effect: RuleEffect::Exclude,
+            }],
+            explicit: Default::default(),
+        }),
+    )
+    .await
+    .unwrap();
+    let me = get(&world, &access, "/player/api/me").await;
+    assert_eq!(me.status, StatusCode::OK);
+    assert_eq!(me.json()["mediaProgress"], json!([]));
+    assert_eq!(me.json()["bookmarks"], json!([]));
+    let progress = get(
+        &world,
+        &access,
+        &format!("/player/api/me/progress/{}", world.item),
+    )
+    .await;
+    assert_eq!(progress.status, StatusCode::NOT_FOUND);
+}
+
 #[tokio::test]
 async fn bookmarks_are_found_by_time() {
     let world = world().await;
