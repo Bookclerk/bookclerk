@@ -198,6 +198,52 @@ test("a request no socket takes in time gets 503, and one never answered gets 50
   assert.ok(notices.length >= 1);
 });
 
+test("a head that arrives after the 504 is refused instead of hanging the push", async () => {
+  const hub = new RelayHub(TOKEN, { queueMs: 1000, headMs: 40 });
+  const auth = { authorization: `Bearer ${TOKEN}` };
+  let push: Promise<Response> | undefined;
+  hub.attach({
+    send(text: string) {
+      const notice = parseNotice(text);
+      if (typeof notice === "string") return;
+      void (async () => {
+        const pulled = await hub.fetch(
+          new Request(`https://${HOST}${RELAY_PULL_PATH}${notice.id}`, { headers: auth }),
+        );
+        await pulled.body?.cancel();
+        // Start the push, but hold the head back past the wait.
+        const head = encodeFrame({ status: 200, headers: [] });
+        let sent = false;
+        const body = new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            if (sent) {
+              controller.enqueue(new TextEncoder().encode("late body"));
+              return;
+            }
+            sent = true;
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            controller.enqueue(head);
+          },
+        });
+        push = hub.fetch(
+          new Request(`https://${HOST}${RELAY_PUSH_PATH}${notice.id}`, {
+            method: "POST",
+            body,
+            headers: auth,
+            duplex: "half",
+          } as RequestInit),
+        );
+      })();
+    },
+  });
+  const response = await hub.fetch(new Request("https://lib.example/"));
+  assert.equal(response.status, 504);
+  await response.body?.cancel();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(push);
+  assert.equal((await push).status, 410);
+});
+
 test("a socket that closes mid-request answers 502, and detach frees the request", async () => {
   const hub = new RelayHub(TOKEN, { queueMs: 1000, headMs: 1000 });
   const socket: RelaySocket = { send: () => queueMicrotask(() => hub.detach(socket)) };

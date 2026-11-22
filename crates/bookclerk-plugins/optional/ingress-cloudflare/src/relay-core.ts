@@ -437,6 +437,12 @@ export class RelayHub {
       this.#fail(id, problem(502, "bad_gateway", "The library sent a malformed answer."));
       return problem(400, "bad_frame", head);
     }
+    if (pending.answered || this.#pending.get(id) !== pending) {
+      // The wait for the head ran out while it was arriving; the client
+      // already has its 504 and nobody would read this body.
+      await frame.body.cancel().catch(() => {});
+      return problem(410, "gone", "The request was answered before its head arrived.");
+    }
     const headers = new Headers();
     for (const field of head.headers) {
       // The relay re-frames the body, so its length is the runtime's to set.
