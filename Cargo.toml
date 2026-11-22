@@ -192,7 +192,7 @@ indexmap = { version = "2", features = ["serde"] }
 # (`>=0.30.1, <0.38`). rusqlite 0.40 needs libsqlite3-sys ^0.38 and cannot
 # coexist in one binary. Vendored audible-rs under third_party/ matches this
 # pin on its optional `cli` feature.
-rusqlite = { version = "0.41", features = ["bundled", "column_decltype", "hooks"] }
+rusqlite = { version = "0.43", features = ["bundled", "column_decltype", "hooks"] }
 sea-orm = { version = "2.0.0", default-features = false, features = [
     "macros",
     "with-chrono",
