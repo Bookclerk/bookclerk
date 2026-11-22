@@ -79,8 +79,15 @@ are judged by what the store says about them (authors, narrators,
 series, genres and the explicit mark), because the library doesn't hold
 them. A title can't carry a library tag or a collection, so a scope that
 only includes certain tags or collections shows no store titles at all.
-A person's own wishlist, downloads and library cards don't apply the
-scope yet.
+
+The scope also decides what a patron can take with them. Playing a book,
+downloading a copy to a branch or a clerk, and a player app signed in
+with a library card all see only the books inside the scope, and an app
+only learns of listening progress and bookmarks for those books. The
+library checks this itself, so a clerk or branch never hears of the
+rest. Books that only a branch holds are judged by what the branch says
+about them, as Discover judges store titles. A person's own wishlist
+doesn't apply the scope yet.
 
 From the command line, `bookclerk users scope get` and
 `bookclerk users scope set` do the same (see the

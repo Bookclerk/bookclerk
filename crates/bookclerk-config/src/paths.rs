@@ -27,8 +27,6 @@ pub struct Paths {
     pub log_dir: PathBuf,
     /// The node's Tantivy works search index (`search_index_works/`).
     pub search_index_dir: PathBuf,
-    /// Downloaded ONNX embedding models (`discovery.embeddings_enabled`).
-    pub models_dir: PathBuf,
 }
 
 impl Paths {
@@ -40,7 +38,6 @@ impl Paths {
         let cache_dir = files_dir.join("cache");
         let log_dir = files_dir.join("logs");
         let search_index_dir = files_dir.join("search_index_works");
-        let models_dir = files_dir.join("models");
         Self {
             files_dir,
             config_file,
@@ -48,7 +45,6 @@ impl Paths {
             cache_dir,
             log_dir,
             search_index_dir,
-            models_dir,
         }
     }
 
@@ -62,7 +58,6 @@ impl Paths {
         std::fs::create_dir_all(&self.cache_dir)?;
         std::fs::create_dir_all(&self.log_dir)?;
         std::fs::create_dir_all(&self.search_index_dir)?;
-        std::fs::create_dir_all(&self.models_dir)?;
         // Install root for third-party plugins (`plugin.toml` + binary).
         std::fs::create_dir_all(self.files_dir.join("plugins"))?;
         Ok(())
@@ -153,6 +148,5 @@ mod tests {
             paths.search_index_dir,
             PathBuf::from("/data/search_index_works")
         );
-        assert_eq!(paths.models_dir, PathBuf::from("/data/models"));
     }
 }

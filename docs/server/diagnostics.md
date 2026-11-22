@@ -115,7 +115,9 @@ not pull the reports.
 The daemon makes these calls on the operator's behalf with
 `GET /api/diagnostics/reports/{id}` and
 `DELETE /api/diagnostics/reports/{id}` (operator only), so the web app's
-CSP and the collector's closed CORS stay as they are.
+CSP and the collector's closed CORS stay as they are. The hosted demo
+lets a visitor view the reports their copy sent, but not delete them,
+because other people may be working on the demo's bug.
 
 Reports sent before the collector issued codes, or past its daily index
 cap, have none: their rows show the ID only. A collector without the
@@ -580,10 +582,15 @@ costs at most a few hundred neurons.
 
 1. Each call reserves its worst case (input bytes plus the 2,048-token
    output cap) in the `TRIAGE_BUDGET` KV namespace (one key per UTC day,
-   expiring after two days) before the model runs.
+   expiring after eight days) before the model runs.
 2. After the call it settles to the reported usage.
 3. A call that would exceed the cap gets `429`, and ingest files one issue
    listing the report IDs instead.
+
+The overview's **Triage budget** panel shows today's spend against the
+cap and the total for the last 7 days. Triage runs once a day from the
+ingest workflow and today's figure starts again at midnight UTC, so the
+weekly total is what shows that it ran.
 
 KV has no atomic increment, and its reads can be up to a minute stale. So
 two calls close together (concurrent, or back-to-back runs such as a
@@ -612,9 +619,15 @@ in with GitHub, and these pages are member-only:
 | `/issues/<number>` | One issue's reports, with the [corrections](#corrections) below, a **Copy branch command** button, and for owners the [close buttons](#closing-issues) |
 | `/demo` | The [hosted demo's runs](#hosted-demo-runs): runs open now, and runs, hours of use, run length and startup time per day over 30, 90 or 365 days |
 
-The overview and the reports list show reports from real installs by
-default. A **Source** switch shows the hosted demo's reports instead, or
-both. Demo reports carry a **Demo** chip wherever they are listed.
+The overview and the reports list show every report by default. A
+**Source** switch narrows them to real installs or to the hosted demo, and
+the choice is remembered between the two pages (in a `__Host-bc_source`
+cookie holding only `all`, `installs` or `demo`). Demo reports carry a
+**Demo** chip wherever they are listed.
+
+A report page shows the app's version, build commit and Rust toolchain.
+The index keeps the commit and toolchain, so they still show after the
+sender deletes the stored copy.
 
 The event log on a report page is built for reading a flood:
 
@@ -656,6 +669,17 @@ that user can sign in.
 The page the member opened rides along as a `next` path in the same
 cookie, so sign-in returns to it. That covers dashboard pages only:
 `/dash`, `/reports`, `/issues` and `/reports/<id>`, with a filter query.
+
+Coming back to a sign-in later doesn't strand the member:
+
+- A callback that returns to a browser already signed in (the Back button,
+  a restored tab, a reload) opens the dashboard, because its code is spent.
+- A callback whose 10-minute cookie has gone says the link was used or
+  took too long, with a **Sign in with GitHub again** button.
+- An open dashboard page that finds its session ended, when its live
+  socket closes or a refresh is sent to sign-in, moves to the sign-in
+  page with itself as `next`. A page that was hidden for more than 15
+  minutes refreshes when it is shown again.
 
 ### Links from other sites
 
@@ -719,7 +743,10 @@ SHA-256, with the member, their role and the session's times.
   organization loses access within 8 hours.
 - Sign-out deletes the row, and owners can sign everyone out.
 - State-changing requests are POSTs that also need a same-origin `Origin`
-  header.
+  header. The dashboard sends `Referrer-Policy: no-referrer`, under which
+  browsers send `Origin: null` on its own forms (such as **Sign out**), so
+  `null` is accepted only with `Sec-Fetch-Site: same-origin`, which pages
+  cannot set.
 - Pages carry a strict Content-Security-Policy (only this origin's
   styles, script, fonts and images; no inline script or style),
   `no-store`, and `frame-ancestors 'none'`.

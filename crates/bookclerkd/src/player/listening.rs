@@ -9,7 +9,7 @@
 //! permission does, so only the file download route adds
 //! [`may_save_offline`].
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -21,8 +21,9 @@ use bookclerk_library::control_plane::{
     load_or_create_node_identity, plan_playback, user_may, LiveTopic, MemberControl, PlaybackPlan,
 };
 use bookclerk_library::{
-    Bookmark, ChapterSpan, NewPlaybackSession, PlaybackEvent, PlaybackMs, PlaybackProgress,
-    PlaybackProgressEdit, PlaybackSession as StoredSession, PlaybackSync, PlayerItem, PlayerKind,
+    Bookmark, ChapterSpan, LibraryStore, NewPlaybackSession, PlaybackEvent, PlaybackMs,
+    PlaybackProgress, PlaybackProgressEdit, PlaybackSession as StoredSession, PlaybackSync,
+    PlayerItem, PlayerKind, WorkScope,
 };
 use bookclerk_player_api::ids::{file_ino, is_entity_id, parse_file_ino, WHOLE_LIBRARY_ID};
 use bookclerk_player_api::request::{
@@ -1064,6 +1065,27 @@ pub(crate) async fn patch_progress_batch(
     }
     crate::live::poke(LiveTopic::Playback);
     Ok(ok())
+}
+
+/// The editions among `editions` that `scope` shows: every one when the
+/// scope hides nothing. Progress and bookmarks only name editions, but a
+/// patron's apps still learn only of the books their scope shows them.
+///
+/// # Errors
+///
+/// Returns the read error; callers fail closed on it.
+pub(crate) async fn editions_in_scope(
+    library: &LibraryStore,
+    scope: Option<&WorkScope>,
+    editions: Vec<String>,
+) -> bookclerk_library::Result<HashSet<String>> {
+    let mut shown = HashSet::new();
+    for edition in editions {
+        if !shown.contains(&edition) && library.edition_in_scope(&edition, scope).await? {
+            shown.insert(edition);
+        }
+    }
+    Ok(shown)
 }
 
 /// The patron's progress rows by edition, newest first.

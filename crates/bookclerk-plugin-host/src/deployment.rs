@@ -852,6 +852,10 @@ pub struct LiveDeploymentRuntime {
     pub integrations: Arc<tokio::sync::RwLock<bookclerk_integrations::IntegrationRegistry>>,
     /// Destination sessions the reconciler owns.
     pub destinations: Arc<tokio::sync::RwLock<crate::DestinationRegistry>>,
+    /// The node's model router over [`Self::integrations`]: behind every
+    /// granted `AI` binding, and what the host's own features run models
+    /// through.
+    pub ai: Arc<bookclerk_integrations::AiRouter>,
     /// Sessions keyed by plugin instance id.
     guests: std::sync::Mutex<HashMap<String, TrackedGuest>>,
     /// Lifecycle context for integrations this process starts.
@@ -890,6 +894,9 @@ impl LiveDeploymentRuntime {
             config,
             store,
             sources,
+            ai: Arc::new(bookclerk_integrations::AiRouter::new(Arc::clone(
+                &integrations,
+            ))),
             integrations,
             destinations,
             guests: std::sync::Mutex::new(HashMap::new()),
@@ -1274,7 +1281,8 @@ impl DeploymentRuntime for LiveDeploymentRuntime {
     async fn spawn_and_health(&self, request: &DeploymentSpawn) -> SpawnHealth {
         let config = self.config.read().await.clone();
         let store = self.store.read().await.clone();
-        let services = crate::SessionServices::with_event_outbox(store.clone());
+        let mut services = crate::SessionServices::with_event_outbox(store.clone());
+        services.ai = Some(Arc::clone(&self.ai));
         let Some(root) = request.plugin_root.as_deref() else {
             return SpawnHealth::SpawnFailed {
                 detail: "installed plugin was not discovered".into(),

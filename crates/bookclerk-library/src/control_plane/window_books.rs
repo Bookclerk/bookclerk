@@ -58,6 +58,7 @@ use crate::entities::{
 use crate::error::{LibraryError, Result};
 use crate::models::AcquireStatus;
 use crate::store::holdings::find_holdings;
+use crate::store::library_index::{UnheldItem, WorkScope};
 use crate::store::{AcquireTitle, FileRole, LibraryStore};
 
 /// Most holdings one [`window_books_page`] reads.
@@ -356,6 +357,10 @@ async fn window_books_page_by(
 /// [`Availability::Reachable`], for the person to ask the library for with
 /// its member request route (`POST /api/branch-requests`).
 ///
+/// Both parts follow the person's patron scope: only books it shows them
+/// are listed, judged on this library, so a clerk never learns of the
+/// rest.
+///
 /// # Arguments
 ///
 /// * `user_id` - The person: the card's user on this library.
@@ -595,6 +600,18 @@ fn branch_edition(row: &store_listings::Model) -> Option<LookupEdition> {
     edition.problem().is_none().then_some(edition)
 }
 
+/// A store listing as a book the library does not hold, for
+/// [`WorkScope::admits_unheld`].
+fn unheld_listing(row: &store_listings::Model) -> UnheldItem<'_> {
+    UnheldItem {
+        authors: row.authors.as_deref(),
+        narrators: row.narrators.as_deref(),
+        series: row.series.as_deref(),
+        genres: row.categories.as_deref(),
+        is_explicit: row.is_explicit.map(|flag| flag != 0),
+    }
+}
+
 /// One page of the branch part of a clerk's pages: the editions a branch
 /// this library trusts listed within [`BRANCH_LISTING_TTL`] (the same
 /// listings Discover and search show as available through a branch, and
@@ -608,6 +625,10 @@ fn branch_edition(row: &store_listings::Model) -> Option<LookupEdition> {
 /// no branch: the library picks one when the person asks. The next cursor
 /// is the last edition the page covered.
 ///
+/// A scoped person (`scope`) learns only of the branch listings their
+/// scope admits by the listing's own metadata ([`WorkScope::admits_unheld`]),
+/// as Discover judges books the library does not hold.
+///
 /// # Errors
 ///
 /// Returns the read error.
@@ -615,6 +636,7 @@ async fn branch_books_page(
     store: &LibraryStore,
     after: Option<&str>,
     page: u64,
+    scope: Option<&WorkScope>,
 ) -> Result<(Vec<WindowWork>, Option<WindowCursor>)> {
     let mut limit = WINDOW_BOOKS_READ.min(page.max(1));
     let mut select = store_listings::Entity::find()
@@ -677,7 +699,11 @@ async fn branch_books_page(
             // Several branches can list the same store listing: each goes on
             // the page once, so duplicates never use up its budget.
             let mut listings: Vec<LookupEdition> = Vec::new();
-            for edition in rows.iter().filter_map(branch_edition) {
+            for edition in rows
+                .iter()
+                .filter(|row| scope.is_none_or(|scope| scope.admits_unheld(&unheld_listing(row))))
+                .filter_map(branch_edition)
+            {
                 if !listings.iter().any(|seen| same_edition(seen, &edition)) {
                     listings.push(edition);
                 }
@@ -746,13 +772,20 @@ async fn person_books_page_by(
     page: u64,
     branch_books: BranchBooks,
 ) -> Result<(Vec<WindowWork>, Option<WindowCursor>)> {
+    // A person the library no longer has learns of nothing; a scoped
+    // person learns only of the books their patron scope shows them, and
+    // always of the ones on their own store accounts.
+    let Some(user) = store.get_user(person).await? else {
+        return Ok((Vec::new(), None));
+    };
+    let scope = super::work_scope_for_user(store, &user).await?;
     if branch_books == BranchBooks::Include {
         if let Some(edition) = branch_phase_after(after) {
-            return branch_books_page(store, edition, page).await;
+            return branch_books_page(store, edition, page, scope.as_ref()).await;
         }
     }
-    // The person sees every book on the library's store accounts, as the
-    // library's own Library page lists them; the ones on an account of
+    // The person sees the books on the library's store accounts that the
+    // library's own Library page lists for them; the ones on an account of
     // their own are marked theirs.
     let accounts = person_accounts(store, person).await?;
     let mut limit = WINDOW_BOOKS_READ.min(page.max(1));
@@ -793,6 +826,12 @@ async fn person_books_page_by(
         .into_iter()
         .collect();
     let identifiers = identifiers_of(store, &work_ids).await?;
+    let mut shown: HashMap<String, bool> = HashMap::new();
+    if let Some(scope) = scope.as_ref() {
+        for work_id in &work_ids {
+            shown.insert(work_id.clone(), store.work_in_scope(work_id, scope).await?);
+        }
+    }
 
     let mut builder = PageBuilder::default();
     let mut last: Option<String> = None;
@@ -808,6 +847,16 @@ async fn person_books_page_by(
             yours: yours.contains(&title.holding_id),
             copy: copies.get(&title.edition_id).cloned(),
         };
+        let hidden = scope.is_some()
+            && !work_of_edition
+                .get(&title.edition_id)
+                .and_then(|work| shown.get(work))
+                .copied()
+                .unwrap_or(false);
+        if hidden {
+            last = Some(title.holding_id.clone());
+            continue;
+        }
         let work = work_of_edition
             .get(&title.edition_id)
             .cloned()

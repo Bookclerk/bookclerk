@@ -1,55 +1,21 @@
-//! Local text embeddings stored as f32 LE blobs in SQLite.
-
-use std::panic::{self, AssertUnwindSafe};
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+//! Text vectors for taste matching, stored as f32 LE blobs in the library
+//! database.
+//!
+//! The host loads no model. The embedder here is the stand-in used while no
+//! plugin serves text embeddings: a hash of the words of a text, which
+//! carries no meaning (`docs/adr/ai-models.md`).
 
 use bookclerk_library::{LibraryStore, WorkRecord};
 use sha2::{Digest, Sha256};
 
 use crate::error::{DiscoverError, Result};
 
-/// Quantized MiniLM-L6-v2 — ~22 MB ONNX, ~50 MB RAM, 384 dims.
-pub const MODEL_ALL_MINILM_L6_V2_Q: &str = "all-minilm-l6-v2-q";
-
-/// Local hash embedder id used when ONNX is unavailable / disabled.
+/// Model id stored beside hash vectors. They are never compared with a
+/// model's vectors.
 pub const MODEL_LOCAL_HASH_V1: &str = "local-hash-v1";
 
-/// Set once loading ONNX has failed or panicked in this process.
-///
-/// A failed load can take many seconds (a missing runtime library, a model
-/// download that times out), so it is attempted once per process: after a
-/// failure, [`open_embedder`] goes straight to the hash embedder until the
-/// process restarts, and no later request waits on ONNX again. A panic is
-/// covered too: `ort` panics instead of returning an error when
-/// `libonnxruntime` cannot be loaded, and the panic poisons its global mutex,
-/// so every later attempt would panic with "Mutex poisoned".
-static ONNX_UNAVAILABLE: AtomicBool = AtomicBool::new(false);
-
-/// Resolve the configured model id.
-///
-/// # Arguments
-///
-/// * `configured` - Configured model id from config/env; empty selects the build default.
-///
-/// # Returns
-///
-/// String result for this operation.
-#[must_use]
-pub fn embedding_model_id(configured: &str) -> &str {
-    let trimmed = configured.trim();
-    if trimmed.is_empty() {
-        default_embedding_model_id()
-    } else {
-        trimmed
-    }
-}
-
-/// Preferred model id for this build (ONNX MiniLM; runtime may fall back).
-#[must_use]
-pub fn default_embedding_model_id() -> &'static str {
-    MODEL_ALL_MINILM_L6_V2_Q
-}
+/// Numbers in one hash vector.
+pub const LOCAL_HASH_DIMENSIONS: usize = 384;
 
 /// Produce dense vectors for recommendation / similarity search.
 pub trait Embedder: Send {
@@ -67,9 +33,9 @@ pub trait Embedder: Send {
 
 /// Deterministic offline embedder for discovery similarity.
 ///
-/// Not semantic like MiniLM — used when ONNX fails to load or when
-/// `prefer_onnx` is false. Still enables the full pipeline (hash → store →
-/// cosine) for CI and constrained hosts.
+/// It carries no meaning: two texts score alike only when they share
+/// words. It keeps the whole pipeline (hash → store → cosine) working while
+/// no plugin serves text embeddings.
 #[derive(Debug, Default)]
 pub struct HashEmbedder {
     /// Embedding length after clamp to `8..=384`.
@@ -121,91 +87,6 @@ fn hash_embed(text: &str, dims: usize) -> Vec<f32> {
     }
     l2_normalize(&mut out);
     out
-}
-
-/// ONNX MiniLM embedder (fastembed). Loaded on demand; drop to free RAM.
-///
-/// Only built with the `onnx` feature (the hosts' `onnx-embeddings`).
-#[cfg(feature = "onnx")]
-pub struct OnnxEmbedder {
-    /// Loaded ONNX MiniLM session (dropped to free RAM).
-    model: fastembed::TextEmbedding,
-    /// Stable id stored beside vectors in SQLite (`all-minilm-l6-v2-q`).
-    model_id: String,
-    /// Output length of each MiniLM vector (384).
-    dims: usize,
-}
-
-#[cfg(feature = "onnx")]
-impl OnnxEmbedder {
-    /// Download (if needed) and load quantized MiniLM into `cache_dir`.
-    ///
-    /// # Arguments
-    ///
-    /// * `cache_dir` - Directory used to cache downloaded model weights.
-    /// * `intra_threads` - ONNX intra-op thread count (clamped to at least 1).
-    ///
-    /// # Returns
-    ///
-    /// On success, the inner `Self` value.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the underlying I/O, parse, network, or store operation fails.
-    pub fn open(cache_dir: &Path, intra_threads: usize) -> Result<Self> {
-        std::fs::create_dir_all(cache_dir).map_err(|e| DiscoverError::Embed(e.to_string()))?;
-        // Load the runtime library first, the way `ort` would: `ort` panics
-        // when it cannot, while this returns the error.
-        drop(
-            ort::init_from(onnx_runtime_library())
-                .map_err(|e| DiscoverError::Embed(format!("ONNX Runtime library: {e}")))?,
-        );
-        let options = fastembed::TextInitOptions::new(fastembed::EmbeddingModel::AllMiniLML6V2Q)
-            .with_cache_dir(cache_dir.to_path_buf())
-            .with_show_download_progress(true)
-            .with_intra_threads(intra_threads.max(1));
-        let model = fastembed::TextEmbedding::try_new(options)
-            .map_err(|e| DiscoverError::Embed(e.to_string()))?;
-        Ok(Self {
-            model,
-            model_id: MODEL_ALL_MINILM_L6_V2_Q.to_string(),
-            dims: 384,
-        })
-    }
-}
-
-/// The ONNX Runtime library `ort` loads: `ORT_DYLIB_PATH` when set, else
-/// the platform's library name (found beside the executable or on the
-/// loader's search path).
-#[cfg(feature = "onnx")]
-fn onnx_runtime_library() -> std::path::PathBuf {
-    match std::env::var_os("ORT_DYLIB_PATH") {
-        Some(path) if !path.is_empty() => path.into(),
-        _ if cfg!(target_os = "windows") => "onnxruntime.dll".into(),
-        _ if cfg!(target_os = "macos") => "libonnxruntime.dylib".into(),
-        _ => "libonnxruntime.so".into(),
-    }
-}
-
-#[cfg(feature = "onnx")]
-impl Embedder for OnnxEmbedder {
-    fn model_id(&self) -> &str {
-        &self.model_id
-    }
-
-    fn dimensions(&self) -> usize {
-        self.dims
-    }
-
-    fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
-        let docs: Vec<&str> = texts.iter().map(String::as_str).collect();
-        self.model
-            .embed(docs, Some(8))
-            .map_err(|e| DiscoverError::Embed(e.to_string()))
-    }
 }
 
 /// Build the text blob embedded for a work.
@@ -472,139 +353,14 @@ pub async fn similar_works(
     Ok(hits)
 }
 
-/// Open an embedder for the current build / config.
-///
-/// When `prefer_onnx` is true, tries quantized MiniLM via fastembed/ort and
-/// **warns + falls back** to the local-hash embedder if load/download fails
-/// (missing glibc symbols, offline host, corrupt cache, …).
-///
-/// # Arguments
-///
-/// * `models_dir` - Directory that holds (or will hold) embedding model files.
-/// * `intra_threads` - ONNX intra-op thread count (clamped to at least 1).
-/// * `prefer_onnx` - When true, try MiniLM ONNX first and fall back to hash embeddings on failure.
+/// Opens the embedder the host uses while no plugin serves text embeddings.
 ///
 /// # Returns
 ///
-/// On success, the inner `Box<dyn Embedder>` value.
-///
-/// # Errors
-///
-/// Returns an error when the underlying I/O, parse, network, or store operation fails.
-pub fn open_embedder(
-    models_dir: &Path,
-    intra_threads: usize,
-    prefer_onnx: bool,
-) -> Result<Box<dyn Embedder>> {
-    open_embedder_with(&ONNX_UNAVAILABLE, models_dir, intra_threads, prefer_onnx)
-}
-
-/// [`open_embedder`] with the "ONNX unavailable" flag passed in, so tests can
-/// use their own flag instead of the process-wide one.
-///
-/// # Arguments
-///
-/// * `onnx_unavailable` - Set once an ONNX load failed or panicked; when set, ONNX is skipped.
-/// * `models_dir` - Directory that holds (or will hold) embedding model files.
-/// * `intra_threads` - ONNX intra-op thread count (clamped to at least 1).
-/// * `prefer_onnx` - When true, try MiniLM ONNX first and fall back to hash embeddings on failure.
-///
-/// # Returns
-///
-/// The ONNX embedder when it loads, otherwise the local-hash embedder.
-///
-/// # Errors
-///
-/// Currently never fails; the `Result` matches [`open_embedder`].
-fn open_embedder_with(
-    onnx_unavailable: &AtomicBool,
-    models_dir: &Path,
-    intra_threads: usize,
-    prefer_onnx: bool,
-) -> Result<Box<dyn Embedder>> {
-    if prefer_onnx && !onnx_unavailable.load(Ordering::Acquire) {
-        // The model and cache path are owned by the closure's caller and are
-        // not reused after a panic, so asserting unwind safety is sound.
-        match panic::catch_unwind(AssertUnwindSafe(|| open_onnx(models_dir, intra_threads))) {
-            Ok(Ok(e)) => return Ok(e),
-            Ok(Err(err)) => {
-                onnx_unavailable.store(true, Ordering::Release);
-                tracing::warn!(
-                    error = %err,
-                    "ONNX MiniLM embedder unavailable; using local-hash embeddings until restart"
-                );
-            }
-            Err(payload) => {
-                onnx_unavailable.store(true, Ordering::Release);
-                tracing::warn!(
-                    error = panic_message(payload.as_ref()),
-                    "ONNX runtime failed to load; using local-hash embeddings until restart"
-                );
-            }
-        }
-    }
-    Ok(Box::new(HashEmbedder::new(384)))
-}
-
-/// Loads the ONNX MiniLM embedder.
-///
-/// # Arguments
-///
-/// * `models_dir` - Directory that holds (or will hold) embedding model files.
-/// * `intra_threads` - ONNX intra-op thread count (clamped to at least 1).
-///
-/// # Returns
-///
-/// The loaded embedder.
-///
-/// # Errors
-///
-/// Returns [`DiscoverError::Embed`] when the runtime library or the model
-/// cannot be loaded.
-#[cfg(feature = "onnx")]
-fn open_onnx(models_dir: &Path, intra_threads: usize) -> Result<Box<dyn Embedder>> {
-    Ok(Box::new(OnnxEmbedder::open(models_dir, intra_threads)?))
-}
-
-/// Stand-in for the ONNX loader in a build without the `onnx` feature.
-///
-/// # Arguments
-///
-/// * `_models_dir` - Unused; the signature matches the ONNX build's loader.
-/// * `_intra_threads` - Unused; the signature matches the ONNX build's loader.
-///
-/// # Returns
-///
-/// Never returns an embedder.
-///
-/// # Errors
-///
-/// Always returns [`DiscoverError::Embed`] naming the missing feature, so
-/// [`open_embedder`] warns once and uses the local-hash embedder.
-#[cfg(not(feature = "onnx"))]
-fn open_onnx(_models_dir: &Path, _intra_threads: usize) -> Result<Box<dyn Embedder>> {
-    Err(DiscoverError::Embed(String::from(
-        "this build has no ONNX embedder (built without the `onnx-embeddings` feature)",
-    )))
-}
-
-/// Text of a caught panic payload, for the fallback warning.
-///
-/// # Arguments
-///
-/// * `payload` - Payload returned by [`panic::catch_unwind`].
-///
-/// # Returns
-///
-/// The panic message when it was a string, otherwise a fixed placeholder.
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
-    if let Some(s) = payload.downcast_ref::<&str>() {
-        s
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s
-    } else {
-        "non-string panic payload"
-    }
+/// The local-hash embedder, [`LOCAL_HASH_DIMENSIONS`] numbers a vector.
+#[must_use]
+pub fn open_embedder() -> Box<dyn Embedder> {
+    Box::new(HashEmbedder::new(LOCAL_HASH_DIMENSIONS))
 }
 
 #[cfg(test)]
@@ -673,41 +429,10 @@ mod tests {
     }
 
     #[test]
-    fn panic_message_reads_string_payloads() {
-        let caught = panic::catch_unwind(|| panic!("Mutex poisoned")).unwrap_err();
-        assert_eq!(panic_message(caught.as_ref()), "Mutex poisoned");
-        let owned = panic::catch_unwind(|| panic!("{}", String::from("dylib"))).unwrap_err();
-        assert_eq!(panic_message(owned.as_ref()), "dylib");
-    }
-
-    #[cfg(feature = "onnx")]
-    #[test]
-    fn a_missing_onnx_runtime_is_an_error_not_a_panic() {
-        // Only this test sets the variable; no other test loads ONNX.
-        std::env::set_var("ORT_DYLIB_PATH", "/nonexistent/libonnxruntime.so");
-        let dir = std::env::temp_dir().join("bookclerk-discover-onnx-missing");
-        let opened = panic::catch_unwind(|| open_onnx(&dir, 1));
-        std::env::remove_var("ORT_DYLIB_PATH");
-        assert!(matches!(opened, Ok(Err(DiscoverError::Embed(_)))));
-    }
-
-    #[cfg(not(feature = "onnx"))]
-    #[test]
-    fn a_build_without_onnx_falls_back_to_local_hash_and_remembers_it() {
-        let unavailable = AtomicBool::new(false);
-        let dir = std::env::temp_dir().join("bookclerk-discover-onnx-not-built");
-        let embedder = open_embedder_with(&unavailable, &dir, 1, true).unwrap();
+    fn the_stand_in_embedder_is_local_hash() {
+        let embedder = open_embedder();
         assert_eq!(embedder.model_id(), MODEL_LOCAL_HASH_V1);
-        assert!(unavailable.load(Ordering::Acquire));
-        assert!(matches!(open_onnx(&dir, 1), Err(DiscoverError::Embed(_))));
-    }
-
-    #[test]
-    fn open_embedder_skips_onnx_after_a_failed_load() {
-        let unavailable = AtomicBool::new(true);
-        let dir = std::env::temp_dir().join("bookclerk-discover-onnx-panicked");
-        let embedder = open_embedder_with(&unavailable, &dir, 1, true).unwrap();
-        assert_eq!(embedder.model_id(), MODEL_LOCAL_HASH_V1);
+        assert_eq!(embedder.dimensions(), LOCAL_HASH_DIMENSIONS);
     }
 
     use bookclerk_library::NewBook;
