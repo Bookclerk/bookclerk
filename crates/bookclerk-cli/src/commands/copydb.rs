@@ -753,3 +753,71 @@ CREATE TABLE IF NOT EXISTS "CategoryCategoryLadder" (
     PRIMARY KEY ("_categoriesCategoryId", "_categoryLaddersCategoryLadderId")
 );
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::{load_flat_books, split_title_subtitle};
+    use bookclerk_library::{AcquireStatus, LibraryStore, NewBook};
+
+    /// The export reads every account title from the library model, with
+    /// its acquire state, and numbers the rows from 1.
+    #[tokio::test]
+    async fn the_export_reads_each_account_title_from_the_library() {
+        let store = LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .expect("sqlite memory"),
+        );
+        assert!(load_flat_books(&store).await.unwrap().is_empty());
+        for account in ["a-acct", "b-acct"] {
+            store
+                .upsert_account("audible", account, "us", None, true, "audible")
+                .await
+                .unwrap();
+        }
+        let mut dune = NewBook::minimal("B0DUNE", "a-acct", "us", "Dune: Deluxe");
+        dune.authors = Some("Frank Herbert".into());
+        dune.series = Some("Dune".into());
+        dune.series_index = Some("1".into());
+        dune.length_minutes = Some(1260);
+        let held = store.upsert_book(&dune).await.unwrap();
+        store
+            .upsert_book(&NewBook::minimal("B0EMMA", "b-acct", "us", "Emma"))
+            .await
+            .unwrap();
+        store
+            .set_holding_acquire_status(
+                &held.holding_id,
+                AcquireStatus::Acquired,
+                Some("Frank Herbert/Dune.m4b"),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let books = load_flat_books(&store).await.unwrap();
+        assert_eq!(books.len(), 2);
+        let mut ids: Vec<i64> = books.iter().map(|b| b.id).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, [1, 2]);
+        let dune = books.iter().find(|b| b.product_id == "B0DUNE").unwrap();
+        assert_eq!(dune.uuid, held.holding_id);
+        assert_eq!(dune.account_id, "a-acct");
+        assert_eq!(dune.asin.as_deref(), Some("B0DUNE"));
+        assert_eq!(dune.authors.as_deref(), Some("Frank Herbert"));
+        assert_eq!(dune.series.as_deref(), Some("Dune"));
+        assert_eq!(dune.length_minutes, Some(1260));
+        assert_eq!(dune.acquire_status, AcquireStatus::Acquired.as_str());
+        assert_eq!(dune.storage_key.as_deref(), Some("Frank Herbert/Dune.m4b"));
+        assert_eq!(dune.pdf_status, AcquireStatus::NotAcquired.as_str());
+        assert_eq!(dune.tags, None);
+        assert!(!dune.is_finished);
+        assert_eq!(
+            split_title_subtitle(&dune.title, dune.subtitle.as_deref()),
+            ("Dune".to_string(), "Deluxe".to_string())
+        );
+        let emma = books.iter().find(|b| b.product_id == "B0EMMA").unwrap();
+        assert_eq!(emma.acquire_status, AcquireStatus::NotAcquired.as_str());
+        assert_eq!(emma.storage_key, None);
+    }
+}
