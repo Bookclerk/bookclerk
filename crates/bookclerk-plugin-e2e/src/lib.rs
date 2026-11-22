@@ -37,6 +37,9 @@ pub const OPTIONAL_PLUGINS: &[&str] = &[
     "d1",
     "postgres",
     "metadata_files",
+    "covers",
+    "audnexus",
+    "openlibrary",
 ];
 
 /// Reference Echo guests staged under `$BOOKCLERK_PLUGIN_ARTIFACTS`.
@@ -247,6 +250,48 @@ mod tests {
     fn unknown_id_is_rejected() {
         let err = StagedScope::parse(Some("libro,libr0")).unwrap_err();
         assert!(err.contains("libr0"), "{err}");
+    }
+
+    /// Ids of every guest directory one level under `rel` (workspace-relative).
+    fn tier_ids(rel: &str) -> BTreeSet<String> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(rel);
+        let mut ids = BTreeSet::new();
+        for entry in std::fs::read_dir(&root).unwrap() {
+            let manifest = entry.unwrap().path().join("plugin.toml");
+            let Ok(text) = std::fs::read_to_string(&manifest) else {
+                continue;
+            };
+            let parsed = bookclerk_plugin_manifest::parse(&text)
+                .unwrap_or_else(|e| panic!("{}: {e}", manifest.display()));
+            ids.insert(parsed.id);
+        }
+        ids
+    }
+
+    /// Asserts that a tier's guests and its list name the same ids.
+    fn assert_tier_listed(rel: &str, listed: &[&str]) {
+        let on_disk = tier_ids(rel);
+        let listed: BTreeSet<String> = listed.iter().map(|s| s.to_string()).collect();
+        let unlisted: Vec<_> = on_disk.difference(&listed).collect();
+        let missing: Vec<_> = listed.difference(&on_disk).collect();
+        assert!(
+            unlisted.is_empty(),
+            "plugins under {rel} missing from the e2e list (a staged run naming them fails \
+             with \"unknown plugin id\"): {unlisted:?}"
+        );
+        assert!(
+            missing.is_empty(),
+            "e2e list names ids with no plugin under {rel}: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn every_first_party_guest_is_listed() {
+        assert_tier_listed("crates/bookclerk-plugins/platform", PLATFORM_PLUGINS);
+        assert_tier_listed("crates/bookclerk-plugins/optional", OPTIONAL_PLUGINS);
+        assert_tier_listed("examples", EXAMPLE_PLUGINS);
     }
 
     #[test]
