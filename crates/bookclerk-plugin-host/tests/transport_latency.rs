@@ -138,6 +138,7 @@ async fn measure(
         local_output_root: None,
         deployed_endpoint: None,
         sockets: None,
+        ai: None,
         origin: None,
         webhooks: None,
     };

@@ -57,6 +57,7 @@ Entrypoint = Literal[
     "metadataFiles",
     "notifier",
     "ingress",
+    "ai",
 ]
 """Named entrypoint a plugin exports (Cloudflare Workers named-entrypoint
 analogue). Each value is a capability the host calls over RPC; triggers on
@@ -199,6 +200,16 @@ close incidents.
 
 NotifyDestinationKind = Literal["channel", "personal"]
 """Kind of destination a `Notifier` sends to."""
+
+AiTask = Literal["textEmbeddings"]
+"""What a model does. A model has exactly one task, and the task fixes the
+shape of `AiRunParams.input` and of the reply.
+"""
+
+AiTextRole = Literal["document", "query"]
+"""What a text is to an embedding model. Some models embed a search query
+differently from the documents it is matched against.
+"""
 
 DbType = Literal["unspecified", "bool", "int64", "float64", "text", "bytes"]
 """Universal database cell/parameter domain. Engine-native arrays, enums,
@@ -811,6 +822,9 @@ class Bindings(TypedDict):
         origin: `ORIGIN`: the library itself, for a relay `ingress` plugin to send the
             public requests it carries to; null unless the plugin is the library's
             active relay ingress. Null when the guest does not export this capability.
+        ai: `AI`: runs models other plugins serve; null unless `[ai]` names the tasks
+            the plugin calls and the operator granted them. Null when the guest does not
+            export this capability.
         webhooks: `WEBHOOKS`: the instance's inbound webhooks, their URLs and the
             deliveries the host stored; null unless `[[webhooks]]` is declared and
             granted. Null when the guest does not export this capability.
@@ -829,6 +843,7 @@ class Bindings(TypedDict):
     notify: NotRequired[NotificationRaiser | None]
     network: NetworkGrant
     origin: NotRequired[Origin | None]
+    ai: NotRequired[AiRunner | None]
     webhooks: NotRequired[Webhooks | None]
 
 
@@ -910,6 +925,7 @@ class Entrypoints(TypedDict):
             capability.
         ingress: `ingress` entrypoint. Null when the guest does not export this
             capability.
+        ai: `ai` entrypoint. Null when the guest does not export this capability.
         webhookHandler: `[[webhooks]]` handler: called after the host stores deliveries.
             Null when the guest does not export this capability.
     """
@@ -930,6 +946,7 @@ class Entrypoints(TypedDict):
     metadataFiles: NotRequired[MetadataFiles | None]
     notifier: NotRequired[Notifier | None]
     ingress: NotRequired[Ingress | None]
+    ai: NotRequired[AiModels | None]
     webhookHandler: NotRequired[WebhookHandler | None]
 
 
@@ -3417,6 +3434,62 @@ class NotificationRaiser(Protocol):
 
         Returns:
             ``NotifyRaiseReply``
+        """
+        ...
+
+
+class AiModels(Protocol):
+    """`ai` entrypoint: serves models. The plugin lists the models it serves,
+    each with one task, and runs one model on one input. The host routes
+    every call (its own and other plugins' through the `AI` binding) to the
+    deployed plugin that serves the named model; a model plugin never learns
+    who asked. Bulk work arrives as many `run` calls from a host job, each
+    within the per-call caps.
+    """
+
+    async def health(self) -> HealthReply:
+        """Liveness / readiness probe: model files present and loadable.
+
+        Returns:
+            ``HealthReply``
+        """
+        ...
+
+    async def models(self) -> AiModelsReply:
+        """The models this plugin serves right now, under its current settings.
+
+        Returns:
+            ``AiModelsReply``
+        """
+        ...
+
+    async def run(self, params: AiRunParams) -> AiRunReply:
+        """Run one model on one input.
+
+        Args:
+            params: Model name and the task's input.
+
+        Returns:
+            ``AiRunReply``
+        """
+        ...
+
+
+class AiRunner(Protocol):
+    """`AI` binding: runs a model by name, as `env.AI.run(model, input)` does on
+    Cloudflare Workers. The host checks the caller's `[ai]` grant for the
+    model's task, applies the call's deadline and the caller's budget, and
+    forwards to the serving plugin's `AiModels.run`.
+    """
+
+    async def run(self, params: AiRunParams) -> AiRunReply:
+        """Run one model on one input.
+
+        Args:
+            params: Model name or task alias, and the task's input.
+
+        Returns:
+            ``AiRunReply``
         """
         ...
 
@@ -6527,6 +6600,208 @@ NotifyRaiseReply = Union[
 """Result union of `NotificationRaiser.raise`."""
 
 
+class AiModel(TypedDict):
+    """One model an `ai` plugin serves.
+
+    Attributes:
+        modelId: Model id within the plugin (`bekko-a8m`): lowercase letters, digits,
+            `.`, `_` and `-`. Callers name it `@<plugin id>/<model id>`; the whole name
+            is at most `maxAiModelNameBytes`.
+        task: The model's one task.
+        revision: Digest of everything that decides the output: weights, tokenizer and
+            the language packs loaded. Outputs are comparable only when it matches.
+        dimensions: Text embeddings: numbers per vector, at most `maxAiEmbedDimensions`.
+            Omitted when absent (wire zero value).
+        maxTokens: Text embeddings: tokens read from one text; the rest is cut off.
+            Omitted when absent (wire zero value).
+        languages: BCP 47 tags of the languages the model is loaded for, at most
+            `maxAiLanguages`; empty when it has no language packs.
+    """
+
+    modelId: str
+    task: AiTask
+    revision: str
+    dimensions: NotRequired[int]
+    maxTokens: NotRequired[int]
+    languages: list[str]
+
+
+class AiModelList(TypedDict):
+    """Success payload of `AiModels.models`.
+
+    Attributes:
+        models: Served models, at most `maxAiModels`, each `modelId` once.
+    """
+
+    models: list[AiModel]
+
+
+class AiModelsReplyOk(TypedDict):
+    """``AiModelsReply`` member ``ok``.
+
+    The served models.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: The served models.
+    """
+
+    kind: Literal["ok"]
+    value: AiModelList
+
+
+class AiModelsReplyErr(TypedDict):
+    """``AiModelsReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+AiModelsReply = Union[
+    AiModelsReplyOk,
+    AiModelsReplyErr,
+]
+"""Result union of `AiModels.models`."""
+
+
+class AiEmbedText(TypedDict):
+    """One text to embed.
+
+    Attributes:
+        text: The text, at most `maxAiEmbedTextBytes`; never empty.
+        role: Document or query.
+    """
+
+    text: str
+    role: AiTextRole
+
+
+class AiTextEmbeddingsInput(TypedDict):
+    """Input of the `textEmbeddings` task.
+
+    Attributes:
+        texts: Texts to embed, 1 to `maxAiEmbedTexts`.
+    """
+
+    texts: list[AiEmbedText]
+
+
+class AiTextEmbeddingsOutput(TypedDict):
+    """Output of the `textEmbeddings` task.
+
+    Attributes:
+        dimensions: Numbers per vector; equals the model's `AiModel.dimensions`.
+        vectors: One vector per input text, in input order: `dimensions` little-endian
+            IEEE 754 32-bit floats each, concatenated. Every number is finite.
+        revision: `AiModel.revision` of the model that made the vectors.
+        fallbacks: Indexes (into the input texts, ascending, each once) of the texts
+            where the tokenizer met text outside the loaded language packs and fell back
+            to smaller pieces; such a vector should be recomputed after the missing pack
+            is added.
+    """
+
+    dimensions: int
+    vectors: bytes
+    revision: str
+    fallbacks: list[int]
+
+
+class AiInput(TypedDict):
+    """Input to one model run: one field per `AiTask`, and exactly one is set
+    (the others are null). A new task appends a field.
+
+    Attributes:
+        textEmbeddings: `textEmbeddings` task.
+    """
+
+    textEmbeddings: AiTextEmbeddingsInput
+
+
+class AiOutput(TypedDict):
+    """Output of one model run: one field per `AiTask`, and exactly one is set
+    (the others are null). A new task appends a field.
+
+    Attributes:
+        textEmbeddings: `textEmbeddings` task.
+    """
+
+    textEmbeddings: AiTextEmbeddingsOutput
+
+
+class AiRunParams(TypedDict):
+    """Params of `AiModels.run` and `AiRunner.run`.
+
+    Attributes:
+        model: On `AiModels.run`, the plugin's own `AiModel.modelId`. On `AiRunner.run`,
+            `@<plugin id>/<model id>` or a task alias (`@library/text-embeddings`: the
+            model the library chose for the task).
+        input: The input; the field set must match the model's task.
+    """
+
+    model: str
+    input: AiInput
+
+
+class AiRunOk(TypedDict):
+    """Success payload of a model run.
+
+    Attributes:
+        output: The output; the field set matches the model's task.
+        model: Full name of the model that ran (`@<plugin id>/<model id>`), so a caller
+            that used a task alias knows what answered. Set by the host on
+            `AiRunner.run`; empty on `AiModels.run`. Omitted when absent (wire zero
+            value).
+    """
+
+    output: AiOutput
+    model: NotRequired[str]
+
+
+class AiRunReplyOk(TypedDict):
+    """``AiRunReply`` member ``ok``.
+
+    The model ran.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: The model ran.
+    """
+
+    kind: Literal["ok"]
+    value: AiRunOk
+
+
+class AiRunReplyErr(TypedDict):
+    """``AiRunReply`` member ``err``.
+
+    Typed failure; `code` is a `PluginErrorCode` wire string.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `code` is a `PluginErrorCode` wire string.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+AiRunReply = Union[
+    AiRunReplyOk,
+    AiRunReplyErr,
+]
+"""Result union of `AiModels.run` and `AiRunner.run`. A model the plugin
+does not serve is `not_found`; an input for another task is
+`invalid_params`; a caller without the grant gets `forbidden`.
+"""
+
+
 class SocketFrameText(TypedDict):
     """``SocketFrame`` member ``text``.
 
@@ -8450,6 +8725,8 @@ __all__ = [
     "NotificationAudience",
     "NotificationAlertAction",
     "NotifyDestinationKind",
+    "AiTask",
+    "AiTextRole",
     "DbType",
     "DbStatementKind",
     "DbResultSelection",
@@ -8626,6 +8903,8 @@ __all__ = [
     "MetadataFiles",
     "Notifier",
     "NotificationRaiser",
+    "AiModels",
+    "AiRunner",
     "EventConsumerSpec",
     "PluginCapabilities",
     "CatalogCapabilities",
@@ -8822,6 +9101,21 @@ __all__ = [
     "NotifyRaiseReplyOk",
     "NotifyRaiseReplyErr",
     "NotifyRaiseReply",
+    "AiModel",
+    "AiModelList",
+    "AiModelsReplyOk",
+    "AiModelsReplyErr",
+    "AiModelsReply",
+    "AiEmbedText",
+    "AiTextEmbeddingsInput",
+    "AiTextEmbeddingsOutput",
+    "AiInput",
+    "AiOutput",
+    "AiRunParams",
+    "AiRunOk",
+    "AiRunReplyOk",
+    "AiRunReplyErr",
+    "AiRunReply",
     "SocketFrameText",
     "SocketFrameBinary",
     "SocketFrame",

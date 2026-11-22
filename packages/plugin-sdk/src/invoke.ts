@@ -18,6 +18,8 @@ import { PluginError } from "./errors.js";
 import type {
   AdapterDatabaseSession as WireAdapterDatabaseSession,
   AdapterExecuteRequest,
+  AiModel,
+  AiTextEmbeddingsOutput,
   CatalogHit,
   DbBootstrap,
   DbCapabilities,
@@ -322,6 +324,50 @@ const okFileBytes = (value: unknown) => {
     );
   }
   return okValue({ bytes: value });
+};
+/**
+ * Wraps a model plugin's `models` return as `AiModelList`. The Rust client
+ * checks every model.
+ *
+ * @param value - The author method's return value.
+ * @returns The `ok` arm carrying the listing.
+ * @throws {PluginError} `internal` when `value` has no `models` list.
+ */
+const okAiModels = (value: unknown) => {
+  const v = (value ?? {}) as { models?: unknown };
+  if (!Array.isArray(v.models)) {
+    throw PluginError.fromWire("internal", "models must return an object with a models list");
+  }
+  return okValue({ models: v.models as AiModel[] });
+};
+/**
+ * Wraps a model plugin's `run` return as `AiRunOk`. The host checks the
+ * output against the model's listing.
+ *
+ * @param value - The author method's return value.
+ * @returns The `ok` arm carrying the output.
+ * @throws {PluginError} `internal` when `value` has no text-embedding output
+ *   with `vectors` bytes.
+ */
+const okAiRun = (value: unknown) => {
+  const out = ((value ?? {}) as { output?: { textEmbeddings?: AiTextEmbeddingsOutput } }).output
+    ?.textEmbeddings;
+  if (!out || !(out.vectors instanceof Uint8Array)) {
+    throw PluginError.fromWire(
+      "internal",
+      "run must return output.textEmbeddings with vectors as a Uint8Array",
+    );
+  }
+  return okValue({
+    output: {
+      textEmbeddings: {
+        dimensions: Number(out.dimensions),
+        vectors: out.vectors,
+        revision: String(out.revision ?? ""),
+        fallbacks: Array.isArray(out.fallbacks) ? out.fallbacks.map(Number) : [],
+      },
+    },
+  });
 };
 /**
  * Wraps a notifier's `send` return as `NotifySent`; `undefined` means the
@@ -1088,6 +1134,23 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       },
       ok: okCoverImages,
     }),
+  },
+  AiModels: {
+    health: withoutParams(
+      "ai",
+      "health",
+      W.AiModelsHealthParamsCodec,
+      W.AiModelsHealthResultsCodec,
+      okHealth,
+    ),
+    models: withoutParams(
+      "ai",
+      "models",
+      W.AiModelsModelsParamsCodec,
+      W.AiModelsModelsResultsCodec,
+      okAiModels,
+    ),
+    run: withParams("ai", "run", W.AiModelsRunParamsCodec, W.AiModelsRunResultsCodec, okAiRun),
   },
   Notifier: {
     health: withoutParams(

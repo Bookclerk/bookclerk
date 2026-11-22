@@ -6,17 +6,17 @@ use std::pin::Pin;
 use tokio::io::AsyncRead;
 
 use crate::generated::{
-    AuthenticateUserParams, CatalogDetailParams, CatalogHit, CliInvokeParams, CliInvokeResult,
-    CliSchema, CoverFetchParams, CoverImage, DatabaseAdapterConfig, ExpandCandidatesParams,
-    ExternalUser, FetchTitleParams, IngressHealth, Invocation, ListDealsParams, ListeningProgress,
-    LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, MetadataChapters,
-    MetadataChaptersParams, MetadataFileParseParams, MetadataFileParsed, MetadataFileRenderParams,
-    MetadataFileRendered, MetadataLookupParams, MetadataRecord, MetadataSearchParams,
-    NotifyRaiseParams, NotifyRaised, NotifySendParams, NotifySent, NotifyValidateParams,
-    NotifyValidated, OriginHeader, PlainFetch, PluginEvent, PublishOk, PurchaseHint,
-    PurchaseHintParams, PurchaseHintResult, PurchaseHintsParams, QualityOffersParams,
-    QualityOffersResult, RevokeAccountParams, ScanLibraryParams, ScanPage, ScanParams,
-    SearchCatalogParams, SocketClosed, SocketConnectRequest, SocketFrame, SocketInfo,
+    AiModelList, AiRunOk, AiRunParams, AuthenticateUserParams, CatalogDetailParams, CatalogHit,
+    CliInvokeParams, CliInvokeResult, CliSchema, CoverFetchParams, CoverImage,
+    DatabaseAdapterConfig, ExpandCandidatesParams, ExternalUser, FetchTitleParams, IngressHealth,
+    Invocation, ListDealsParams, ListeningProgress, LoginCompleteParams, LoginParams, LoginResult,
+    LoginStartResult, MetadataChapters, MetadataChaptersParams, MetadataFileParseParams,
+    MetadataFileParsed, MetadataFileRenderParams, MetadataFileRendered, MetadataLookupParams,
+    MetadataRecord, MetadataSearchParams, NotifyRaiseParams, NotifyRaised, NotifySendParams,
+    NotifySent, NotifyValidateParams, NotifyValidated, OriginHeader, PlainFetch, PluginEvent,
+    PublishOk, PurchaseHint, PurchaseHintParams, PurchaseHintResult, PurchaseHintsParams,
+    QualityOffersParams, QualityOffersResult, RevokeAccountParams, ScanLibraryParams, ScanPage,
+    ScanParams, SearchCatalogParams, SocketClosed, SocketConnectRequest, SocketFrame, SocketInfo,
     SocketMessage, SocketMessageOk, SourceAccount, WebhookAckRequest, WebhookDelivered,
     WebhookPullPage, WebhookPullRequest,
 };
@@ -402,6 +402,23 @@ pub trait NotificationRaiser {
     /// names a patron inside the invocation's account scope. Raises are
     /// rate-limited per instance (`rate_limited`).
     async fn raise(&self, params: NotifyRaiseParams) -> Result<NotifyRaised>;
+}
+
+/// `AI` binding: runs a model served by a deployed model plugin
+/// ([`Bindings::ai`]).
+///
+/// The host routes the run to the plugin that serves the named model, or
+/// to the model the library chose when the name is a task alias
+/// (`@library/text-embeddings`). The caller must hold a grant for the
+/// model's task. Each run has a deadline and counts against the calling
+/// plugin's budget; work over many items belongs in a job.
+#[async_trait::async_trait(?Send)]
+pub trait AiRunner {
+    /// Runs `params.model` on `params.input`. `not_found` when nothing
+    /// deployed serves the model, `forbidden` without the grant for its
+    /// task, `rate_limited` over budget, `unavailable` when the model
+    /// plugin cannot answer in time.
+    async fn run(&self, params: AiRunParams) -> Result<AiRunOk>;
 }
 
 /// `[[queues.consumers]]` handler ([`Entrypoints::queue_consumer`]).
@@ -947,6 +964,39 @@ pub trait Notifier {
     }
 }
 
+/// `ai` entrypoint: serves models to the host and, through the `AI`
+/// binding, to every plugin with the grant.
+///
+/// The host checks the listing ([`crate::ai::check_models`]), each run
+/// before it reaches the plugin
+/// ([`crate::ai::check_entrypoint_run_params`]) and each reply
+/// ([`crate::ai::check_run_output`]). Outputs are comparable only while
+/// the model's revision stays the same, so a plugin changes the revision
+/// whenever weights, tokenizer or loaded language packs change.
+#[async_trait::async_trait(?Send)]
+pub trait AiModels {
+    /// Liveness / readiness probe: model files present and loadable.
+    async fn health(&self) -> Result<crate::rpc_types::HealthOk> {
+        Ok(crate::rpc_types::HealthOk {
+            ok: true,
+            detail: String::new(),
+        })
+    }
+
+    /// Lists the models this plugin serves now. Cheap: it must not load a
+    /// model.
+    async fn models(&self) -> Result<AiModelList> {
+        Ok(AiModelList { models: Vec::new() })
+    }
+
+    /// Runs the plugin's model `params.model` on `params.input`.
+    /// `not_found` for a model it does not serve, `invalid_params` for an
+    /// input of another task.
+    async fn run(&self, _params: AiRunParams) -> Result<AiRunOk> {
+        Err(PluginError::unsupported("run"))
+    }
+}
+
 /// `cli` entrypoint: guest commands under `bookclerk plugins <id> <command>`.
 #[async_trait::async_trait(?Send)]
 pub trait PluginCli {
@@ -1189,6 +1239,9 @@ pub struct Bindings {
     /// `ORIGIN`: the library, for the active relay `ingress` plugin; `None`
     /// for every other plugin.
     pub origin: Option<Box<dyn Origin>>,
+    /// `AI`: runs models served by model plugins; `None` unless the
+    /// manifest declares `[ai] calls` and the operator approved it.
+    pub ai: Option<Box<dyn AiRunner>>,
 }
 
 impl Bindings {
@@ -1211,6 +1264,7 @@ impl Bindings {
             webhooks: None,
             notify: None,
             origin: None,
+            ai: None,
         }
     }
 
@@ -1288,6 +1342,8 @@ pub struct Entrypoints {
     pub notifier: Option<Box<dyn Notifier>>,
     /// `ingress` entrypoint.
     pub ingress: Option<Box<dyn Ingress>>,
+    /// `ai` entrypoint.
+    pub ai: Option<Box<dyn AiModels>>,
 }
 
 /// Root `PluginWorker` capability (`describe` / `open` / `shutdown`).

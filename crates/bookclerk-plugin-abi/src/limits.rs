@@ -140,6 +140,25 @@ pub const MAX_NOTIFICATION_FIELD_BYTES: u32 = crate::plugin_capnp::MAX_NOTIFICAT
 /// Longest notifier destination address document, in UTF-8 bytes.
 pub const MAX_NOTIFIER_ADDRESS_BYTES: u32 = crate::plugin_capnp::MAX_NOTIFIER_ADDRESS_BYTES;
 
+/// Longest model name on the `AI` binding (`@<plugin id>/<model id>`), in
+/// UTF-8 bytes.
+pub const MAX_AI_MODEL_NAME_BYTES: u32 = crate::plugin_capnp::MAX_AI_MODEL_NAME_BYTES;
+
+/// Most models one plugin lists on its `ai` entrypoint.
+pub const MAX_AI_MODELS: u32 = crate::plugin_capnp::MAX_AI_MODELS;
+
+/// Most texts in one text-embedding run.
+pub const MAX_AI_EMBED_TEXTS: u32 = crate::plugin_capnp::MAX_AI_EMBED_TEXTS;
+
+/// Longest text in a text-embedding run, in UTF-8 bytes.
+pub const MAX_AI_EMBED_TEXT_BYTES: u32 = crate::plugin_capnp::MAX_AI_EMBED_TEXT_BYTES;
+
+/// Most numbers in one embedding vector.
+pub const MAX_AI_EMBED_DIMENSIONS: u32 = crate::plugin_capnp::MAX_AI_EMBED_DIMENSIONS;
+
+/// Most language tags on one listed model.
+pub const MAX_AI_LANGUAGES: u32 = crate::plugin_capnp::MAX_AI_LANGUAGES;
+
 /// Parses a `CoverFetcher.fetchCovers` sink key into the URL index it names.
 ///
 /// The guest puts the body for `urls[i]` under the key `i`. Only the

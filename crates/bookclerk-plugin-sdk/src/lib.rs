@@ -102,6 +102,7 @@ pub use sockets::{
     SocketHandler, SocketHeader, SocketInfo, SocketMessage, Sockets,
 };
 
+pub use bookclerk_plugin_abi::ai;
 pub use bookclerk_plugin_abi::{
     byte_source_from_async_read, canonical_execute_request_hash, connect_plugin,
     database_adapter_config_from_bindings, decode_db_value_bytes, decode_execute_request_bytes,
@@ -152,6 +153,12 @@ pub use bookclerk_plugin_abi::{
     MAX_PLUGIN_MIGRATION_TOTAL_OPS, MAX_REFRESHED_CREDENTIAL_BYTES, MAX_SCALAR_BYTES,
     MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS, MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
     SQL_CONTRACT_VERSION, STORAGE_OPERATION_FEATURES,
+};
+pub use bookclerk_plugin_abi::{
+    AiEmbedText, AiInput, AiModel, AiModelList, AiModels, AiModelsClient, AiOutput, AiRunOk,
+    AiRunParams, AiRunner, AiRunnerClient, AiTask, AiTextEmbeddingsInput, AiTextEmbeddingsOutput,
+    AiTextRole, MAX_AI_EMBED_DIMENSIONS, MAX_AI_EMBED_TEXTS, MAX_AI_EMBED_TEXT_BYTES,
+    MAX_AI_LANGUAGES, MAX_AI_MODELS, MAX_AI_MODEL_NAME_BYTES,
 };
 
 /// Serves a [`PluginWorker`] on stdin/stdout (Cap'n Proto RPC).

@@ -1624,6 +1624,76 @@ export interface NotificationRaiserRaiseResults {
 }
 
 /**
+ * Params envelope of `AiModels.health`.
+ *
+ * @internal
+ */
+export interface AiModelsHealthParams {
+}
+
+/**
+ * Results envelope of `AiModels.health`.
+ *
+ * @internal
+ */
+export interface AiModelsHealthResults {
+  result: T.HealthReply;
+}
+
+/**
+ * Params envelope of `AiModels.models`.
+ *
+ * @internal
+ */
+export interface AiModelsModelsParams {
+}
+
+/**
+ * Results envelope of `AiModels.models`.
+ *
+ * @internal
+ */
+export interface AiModelsModelsResults {
+  result: T.AiModelsReply;
+}
+
+/**
+ * Params envelope of `AiModels.run`.
+ *
+ * @internal
+ */
+export interface AiModelsRunParams {
+  params: T.AiRunParams;
+}
+
+/**
+ * Results envelope of `AiModels.run`.
+ *
+ * @internal
+ */
+export interface AiModelsRunResults {
+  result: T.AiRunReply;
+}
+
+/**
+ * Params envelope of `AiRunner.run`.
+ *
+ * @internal
+ */
+export interface AiRunnerRunParams {
+  params: T.AiRunParams;
+}
+
+/**
+ * Results envelope of `AiRunner.run`.
+ *
+ * @internal
+ */
+export interface AiRunnerRunResults {
+  result: T.AiRunReply;
+}
+
+/**
  * Params envelope of `Database.openSession`.
  *
  * @internal
@@ -2811,13 +2881,13 @@ export const ExtensibleConfigCodec: StructCodec<T.ExtensibleConfig> = {
 };
 
 /**
- * Wire codec for `Bindings` (0 data words, 14 pointers).
+ * Wire codec for `Bindings` (0 data words, 15 pointers).
  *
  * @internal
  */
 export const BindingsCodec: StructCodec<T.Bindings> = {
   dataWords: 0,
-  pointerCount: 14,
+  pointerCount: 15,
   write(s, v, caps) {
     if (v.config != null) {
       ExtensibleConfigCodec.write(s.initStruct(0, 1, 2), v.config, caps);
@@ -2870,8 +2940,11 @@ export const BindingsCodec: StructCodec<T.Bindings> = {
     if (v.origin != null) {
       s.setCap(12, caps.exportCap(v.origin));
     }
+    if (v.ai != null) {
+      s.setCap(13, caps.exportCap(v.ai));
+    }
     if (v.webhooks != null) {
-      s.setCap(13, caps.exportCap(v.webhooks));
+      s.setCap(14, caps.exportCap(v.webhooks));
     }
   },
   read(s, caps) {
@@ -2908,7 +2981,11 @@ export const BindingsCodec: StructCodec<T.Bindings> = {
     if (!(originValue == null)) {
       out.origin = originValue;
     }
-    const webhooksValue = caps.importCap(s.getCapIndex(13)) as T.Webhooks;
+    const aiValue = caps.importCap(s.getCapIndex(13)) as T.AiRunner;
+    if (!(aiValue == null)) {
+      out.ai = aiValue;
+    }
+    const webhooksValue = caps.importCap(s.getCapIndex(14)) as T.Webhooks;
     if (!(webhooksValue == null)) {
       out.webhooks = webhooksValue;
     }
@@ -2986,13 +3063,13 @@ export const SettingNetworkGrantCodec: StructCodec<T.SettingNetworkGrant> = {
 };
 
 /**
- * Wire codec for `Entrypoints` (0 data words, 17 pointers).
+ * Wire codec for `Entrypoints` (0 data words, 18 pointers).
  *
  * @internal
  */
 export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
   dataWords: 0,
-  pointerCount: 17,
+  pointerCount: 18,
   write(s, v, caps) {
     if (v.eventConsumer != null) {
       s.setCap(0, caps.exportCap(v.eventConsumer));
@@ -3042,8 +3119,11 @@ export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
     if (v.ingress != null) {
       s.setCap(15, caps.exportCap(v.ingress));
     }
+    if (v.ai != null) {
+      s.setCap(16, caps.exportCap(v.ai));
+    }
     if (v.webhookHandler != null) {
-      s.setCap(16, caps.exportCap(v.webhookHandler));
+      s.setCap(17, caps.exportCap(v.webhookHandler));
     }
   },
   read(s, caps) {
@@ -3113,7 +3193,11 @@ export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
     if (!(ingressValue == null)) {
       out.ingress = ingressValue;
     }
-    const webhookHandlerValue = caps.importCap(s.getCapIndex(16)) as T.WebhookHandler;
+    const aiValue = caps.importCap(s.getCapIndex(16)) as T.AiModels;
+    if (!(aiValue == null)) {
+      out.ai = aiValue;
+    }
+    const webhookHandlerValue = caps.importCap(s.getCapIndex(17)) as T.WebhookHandler;
     if (!(webhookHandlerValue == null)) {
       out.webhookHandler = webhookHandlerValue;
     }
@@ -3134,7 +3218,7 @@ export const EntrypointsReplyCodec: StructCodec<T.EntrypointsReply> = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          EntrypointsCodec.write(s.initStruct(0, 0, 17), v.value, caps);
+          EntrypointsCodec.write(s.initStruct(0, 0, 18), v.value, caps);
         }
         break;
       case "err":
@@ -3151,7 +3235,7 @@ export const EntrypointsReplyCodec: StructCodec<T.EntrypointsReply> = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: EntrypointsCodec.read(s.getStruct(0, 0, 17), caps) };
+        return { kind: "ok", value: EntrypointsCodec.read(s.getStruct(0, 0, 18), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
@@ -9727,6 +9811,311 @@ export const NotifyRaiseReplyCodec: StructCodec<T.NotifyRaiseReply> = {
 };
 
 /**
+ * Wire codec for `AiModel` (2 data words, 3 pointers).
+ *
+ * @internal
+ */
+export const AiModelCodec: StructCodec<T.AiModel> = {
+  dataWords: 2,
+  pointerCount: 3,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.modelId ?? "");
+    s.setUint16(0, ord(A.AI_TASKS, v.task ?? A.AI_TASKS[0]!, "AiTask"));
+    s.setText(1, v.revision ?? "");
+    if (v.dimensions !== undefined) {
+      s.setUint32(1, v.dimensions ?? 0);
+    }
+    if (v.maxTokens !== undefined) {
+      s.setUint32(2, v.maxTokens ?? 0);
+    }
+    s.setTextList(2, v.languages ?? []);
+  },
+  read(s, caps) {
+    void caps;
+    const out: T.AiModel = {
+      modelId: s.getText(0),
+      task: fromOrd(A.AI_TASKS, s.getUint16(0), "AiTask"),
+      revision: s.getText(1),
+      languages: s.getTextList(2),
+    };
+    const dimensionsValue = s.getUint32(1);
+    if (!(dimensionsValue === 0)) {
+      out.dimensions = dimensionsValue;
+    }
+    const maxTokensValue = s.getUint32(2);
+    if (!(maxTokensValue === 0)) {
+      out.maxTokens = maxTokensValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `AiModelList` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const AiModelListCodec: StructCodec<T.AiModelList> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.models ?? [];
+      const items = s.initStructList(0, list.length, 2, 3);
+      for (let i = 0; i < items.length; i++) {
+        AiModelCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      models: s.getStructList(0, 2, 3).map((item) => AiModelCodec.read(item, caps)),
+    };
+  },
+};
+
+/**
+ * Wire codec for `AiModelsReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const AiModelsReplyCodec: StructCodec<T.AiModelsReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          AiModelListCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("AiModelsReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: AiModelListCodec.read(s.getStruct(0, 0, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("AiModelsReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `AiEmbedText` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const AiEmbedTextCodec: StructCodec<T.AiEmbedText> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.text ?? "");
+    s.setUint16(0, ord(A.AI_TEXT_ROLES, v.role ?? A.AI_TEXT_ROLES[0]!, "AiTextRole"));
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      text: s.getText(0),
+      role: fromOrd(A.AI_TEXT_ROLES, s.getUint16(0), "AiTextRole"),
+    };
+  },
+};
+
+/**
+ * Wire codec for `AiTextEmbeddingsInput` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const AiTextEmbeddingsInputCodec: StructCodec<T.AiTextEmbeddingsInput> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    {
+      const list = v.texts ?? [];
+      const items = s.initStructList(0, list.length, 1, 1);
+      for (let i = 0; i < items.length; i++) {
+        AiEmbedTextCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      texts: s.getStructList(0, 1, 1).map((item) => AiEmbedTextCodec.read(item, caps)),
+    };
+  },
+};
+
+/**
+ * Wire codec for `AiTextEmbeddingsOutput` (1 data words, 3 pointers).
+ *
+ * @internal
+ */
+export const AiTextEmbeddingsOutputCodec: StructCodec<T.AiTextEmbeddingsOutput> = {
+  dataWords: 1,
+  pointerCount: 3,
+  write(s, v, caps) {
+    void caps;
+    s.setUint32(0, v.dimensions ?? 0);
+    s.setData(0, v.vectors ?? EMPTY_BYTES);
+    s.setText(1, v.revision ?? "");
+    s.setUint32List(2, v.fallbacks ?? []);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      dimensions: s.getUint32(0),
+      vectors: s.getData(0),
+      revision: s.getText(1),
+      fallbacks: s.getUint32List(2),
+    };
+  },
+};
+
+/**
+ * Wire codec for `AiInput` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const AiInputCodec: StructCodec<T.AiInput> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.textEmbeddings != null) {
+      AiTextEmbeddingsInputCodec.write(s.initStruct(0, 0, 1), v.textEmbeddings, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      textEmbeddings: AiTextEmbeddingsInputCodec.read(s.getStruct(0, 0, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for `AiOutput` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const AiOutputCodec: StructCodec<T.AiOutput> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.textEmbeddings != null) {
+      AiTextEmbeddingsOutputCodec.write(s.initStruct(0, 1, 3), v.textEmbeddings, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      textEmbeddings: AiTextEmbeddingsOutputCodec.read(s.getStruct(0, 1, 3), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for `AiRunParams` (0 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const AiRunParamsCodec: StructCodec<T.AiRunParams> = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    s.setText(0, v.model ?? "");
+    if (v.input != null) {
+      AiInputCodec.write(s.initStruct(1, 0, 1), v.input, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      model: s.getText(0),
+      input: AiInputCodec.read(s.getStruct(1, 0, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for `AiRunOk` (0 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const AiRunOkCodec: StructCodec<T.AiRunOk> = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    if (v.output != null) {
+      AiOutputCodec.write(s.initStruct(0, 0, 1), v.output, caps);
+    }
+    if (v.model !== undefined) {
+      s.setText(1, v.model ?? "");
+    }
+  },
+  read(s, caps) {
+    const out: T.AiRunOk = {
+      output: AiOutputCodec.read(s.getStruct(0, 0, 1), caps),
+    };
+    const modelValue = s.getText(1);
+    if (!(modelValue === "")) {
+      out.model = modelValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `AiRunReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const AiRunReplyCodec: StructCodec<T.AiRunReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          AiRunOkCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("AiRunReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: AiRunOkCodec.read(s.getStruct(0, 0, 2), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("AiRunReply", disc);
+    }
+  },
+};
+
+/**
  * Wire codec for `SocketFrame` (1 data words, 1 pointers).
  *
  * @internal
@@ -15396,6 +15785,166 @@ export const NotificationRaiserRaiseResultsCodec: StructCodec<NotificationRaiser
 };
 
 /**
+ * Wire codec for the `AiModels.health` params envelope (0 data words, 0 pointers).
+ *
+ * @internal
+ */
+export const AiModelsHealthParamsCodec: StructCodec<AiModelsHealthParams> = {
+  dataWords: 0,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void s;
+    void v;
+    void caps;
+  },
+  read(s, caps) {
+    void caps;
+    void s;
+    return {};
+  },
+};
+
+/**
+ * Wire codec for the `AiModels.health` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const AiModelsHealthResultsCodec: StructCodec<AiModelsHealthResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      HealthReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: HealthReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `AiModels.models` params envelope (0 data words, 0 pointers).
+ *
+ * @internal
+ */
+export const AiModelsModelsParamsCodec: StructCodec<AiModelsModelsParams> = {
+  dataWords: 0,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void s;
+    void v;
+    void caps;
+  },
+  read(s, caps) {
+    void caps;
+    void s;
+    return {};
+  },
+};
+
+/**
+ * Wire codec for the `AiModels.models` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const AiModelsModelsResultsCodec: StructCodec<AiModelsModelsResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      AiModelsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: AiModelsReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `AiModels.run` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const AiModelsRunParamsCodec: StructCodec<AiModelsRunParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      AiRunParamsCodec.write(s.initStruct(0, 0, 2), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: AiRunParamsCodec.read(s.getStruct(0, 0, 2), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `AiModels.run` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const AiModelsRunResultsCodec: StructCodec<AiModelsRunResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      AiRunReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: AiRunReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `AiRunner.run` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const AiRunnerRunParamsCodec: StructCodec<AiRunnerRunParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      AiRunParamsCodec.write(s.initStruct(0, 0, 2), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: AiRunParamsCodec.read(s.getStruct(0, 0, 2), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `AiRunner.run` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const AiRunnerRunResultsCodec: StructCodec<AiRunnerRunResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      AiRunReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: AiRunReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
  * Wire codec for the `Database.openSession` params envelope (0 data words, 0 pointers).
  *
  * @internal
@@ -16132,13 +16681,13 @@ export const PluginWorkerOpenParamsCodec: StructCodec<PluginWorkerOpenParams> = 
       InvocationCodec.write(s.initStruct(0, 1, 4), v.invocation, caps);
     }
     if (v.bindings != null) {
-      BindingsCodec.write(s.initStruct(1, 0, 14), v.bindings, caps);
+      BindingsCodec.write(s.initStruct(1, 0, 15), v.bindings, caps);
     }
   },
   read(s, caps) {
     return {
       invocation: InvocationCodec.read(s.getStruct(0, 1, 4), caps),
-      bindings: BindingsCodec.read(s.getStruct(1, 0, 14), caps),
+      bindings: BindingsCodec.read(s.getStruct(1, 0, 15), caps),
     };
   },
 };

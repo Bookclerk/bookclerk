@@ -240,6 +240,7 @@ export const NAV: NavSpec[] = [
       "adr/ingress-plugins",
       "adr/notifications",
       "adr/player-api",
+      "adr/ai-models",
     ],
   },
 ];

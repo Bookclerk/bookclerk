@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 /// Every entrypoint in declaration order (mirrors the Cap'n Proto enum).
-pub const ALL_ENTRYPOINTS: [Entrypoint; 11] = [
+pub const ALL_ENTRYPOINTS: [Entrypoint; 12] = [
     Entrypoint::Storefront,
     Entrypoint::Storage,
     Entrypoint::DatabaseAdapter,
@@ -26,6 +26,7 @@ pub const ALL_ENTRYPOINTS: [Entrypoint; 11] = [
     Entrypoint::MetadataFiles,
     Entrypoint::Notifier,
     Entrypoint::Ingress,
+    Entrypoint::Ai,
 ];
 
 /// Entrypoints the host loads into their own registry (sources,
@@ -59,7 +60,8 @@ pub fn entrypoint_family(entrypoint: Entrypoint) -> PluginFamily {
         | Entrypoint::Metadata
         | Entrypoint::Covers
         | Entrypoint::MetadataFiles
-        | Entrypoint::Notifier => PluginFamily::Integration,
+        | Entrypoint::Notifier
+        | Entrypoint::Ai => PluginFamily::Integration,
     }
 }
 
@@ -75,8 +77,8 @@ pub enum PluginFamily {
     /// Storefront / library source (`Storefront` entrypoint).
     Source,
     /// Event consumer, job runner, remote library, CLI, OIDC bridge,
-    /// metadata provider, cover fetcher, metadata file dialects, or
-    /// notifier.
+    /// metadata provider, cover fetcher, metadata file dialects,
+    /// notifier, or model plugin.
     Integration,
     /// Destination / output backend (`Storage` entrypoint).
     Output,
@@ -533,6 +535,32 @@ pub struct NotificationTypeManifest {
     pub title: String,
 }
 
+/// `[ai]`: the model tasks a plugin serves on its `ai` entrypoint and the
+/// tasks it calls through its `AI` binding.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AiManifest {
+    /// Tasks the plugin's models perform (`serves = ["textEmbeddings"]`).
+    /// Required, and never empty, for a plugin with the `ai` entrypoint;
+    /// forbidden without it. The plugin may list only models of these
+    /// tasks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub serves: Vec<bookclerk_plugin_abi::AiTask>,
+    /// Tasks the plugin runs through `AI` (`calls = ["textEmbeddings"]`).
+    /// The operator approves them like any capability; a plugin that
+    /// lists none has no `AI` binding.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub calls: Vec<bookclerk_plugin_abi::AiTask>,
+}
+
+impl AiManifest {
+    /// Whether neither list names a task (the table is then omitted).
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        self.serves.is_empty() && self.calls.is_empty()
+    }
+}
+
 /// Hosts of chat, push and email services that notifier plugins talk to.
 /// A plugin that is not a notifier but asks for one of these is flagged:
 /// its consent screen says it can send messages outside Bookclerk.
@@ -910,6 +938,10 @@ pub const DEFAULT_SOCKETS_BINDING: &str = "SOCKETS";
 /// The `NOTIFY` binding a plugin with `[[notifications.types]]` receives;
 /// its name is fixed, so no other binding may take it.
 pub const NOTIFY_BINDING: &str = "NOTIFY";
+
+/// The `AI` binding a plugin with `[ai].calls` receives; its name is
+/// fixed, so no other binding may take it.
+pub const AI_BINDING: &str = "AI";
 /// Default `binding` for `[[kv_namespaces]]`.
 pub const DEFAULT_KV_BINDING: &str = "KV";
 /// Default `binding` for `[[events.producers]]`.
@@ -1539,6 +1571,10 @@ pub struct PluginManifest {
     /// every other plugin; see [`IngressManifest`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ingress: Option<IngressManifest>,
+    /// Model tasks the plugin serves and calls (`[ai]`); see
+    /// [`AiManifest`].
+    #[serde(default, skip_serializing_if = "AiManifest::is_default")]
+    pub ai: AiManifest,
     /// Declared network capability (consent has no Wrangler analogue).
     pub capabilities: CapabilitiesManifest,
     /// Optional CLI schema advertised to `bookclerk plugins <id>` (from
@@ -1922,6 +1958,7 @@ impl PluginManifest {
                         || self.has_entrypoint(Entrypoint::Covers)
                         || self.has_entrypoint(Entrypoint::MetadataFiles)
                         || self.has_entrypoint(Entrypoint::Notifier)
+                        || self.has_entrypoint(Entrypoint::Ai)
                         || (self.has_entrypoint(Entrypoint::Cli) && !self.has_registry_entrypoint())
                 }
             };
@@ -2544,6 +2581,65 @@ impl PluginManifest {
         Ok(())
     }
 
+    /// Checks the `[ai]` table against the plugin's entrypoints.
+    ///
+    /// The same rules, with the same messages, run in the TypeScript and
+    /// Python author tools (`manifest-cases.json`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Message`] when a plugin with the `ai` entrypoint
+    /// serves no task or another plugin serves one, when either list names
+    /// a task twice, or when a model plugin takes the id that names task
+    /// aliases (`library`).
+    fn validate_ai(&self) -> Result<()> {
+        let exported = self.has_entrypoint(Entrypoint::Ai);
+        if exported && self.ai.serves.is_empty() {
+            return Err(Error::message(
+                "plugin.toml: `[ai].serves` is required for a plugin with the `ai` entrypoint",
+            ));
+        }
+        if !exported && !self.ai.serves.is_empty() {
+            return Err(Error::message(
+                "plugin.toml: `[ai].serves` needs the `ai` entrypoint",
+            ));
+        }
+        if exported && self.id == bookclerk_plugin_abi::ai::AI_ALIAS_NAMESPACE {
+            return Err(Error::message(format!(
+                "plugin.toml: a plugin with the `ai` entrypoint cannot have the id `{}`, which \
+                 names task aliases",
+                bookclerk_plugin_abi::ai::AI_ALIAS_NAMESPACE
+            )));
+        }
+        for (list, tasks) in [("serves", &self.ai.serves), ("calls", &self.ai.calls)] {
+            let mut seen = std::collections::HashSet::new();
+            for task in tasks {
+                if !seen.insert(*task) {
+                    return Err(Error::message(format!(
+                        "plugin.toml: `[ai].{list}` names the task `{}` twice",
+                        task.wire_name()
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the plugin may run models of `task` through its `AI`
+    /// binding (`[ai].calls`).
+    ///
+    /// # Arguments
+    ///
+    /// * `task` - The task of the model a run names.
+    ///
+    /// # Returns
+    ///
+    /// True when the manifest declares the task.
+    #[must_use]
+    pub fn calls_ai_task(&self, task: bookclerk_plugin_abi::AiTask) -> bool {
+        self.ai.calls.contains(&task)
+    }
+
     /// Notification hosts a plugin that is not a notifier asks to reach.
     ///
     /// Nothing technical stops a plugin with a network grant from posting
@@ -2615,6 +2711,7 @@ impl PluginManifest {
         self.validate_notifier()?;
         self.validate_notification_types()?;
         self.validate_ingress()?;
+        self.validate_ai()?;
         if self.credentials.is_some() && !self.has_entrypoint(Entrypoint::Storefront) {
             return Err(Error::message(
                 "plugin.toml: `credentials` needs the `storefront` entrypoint (only storefronts connect store accounts)",
@@ -2810,6 +2907,9 @@ impl PluginManifest {
             }
             if !self.notifications.types.is_empty() {
                 named.push(("notifications", NOTIFY_BINDING, 0));
+            }
+            if !self.ai.calls.is_empty() {
+                named.push(("ai", AI_BINDING, 0));
             }
             if !self.webhooks.is_empty() {
                 named.push(("webhooks", crate::WEBHOOKS_BINDING, 0));
@@ -3133,6 +3233,7 @@ mod tests {
                 PluginFamily::Integration,
                 PluginFamily::Integration,
                 PluginFamily::Ingress,
+                PluginFamily::Integration,
             ]
         );
     }

@@ -56,6 +56,7 @@ mod enrollment_tests;
 static PROCESS_DEK_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 mod activation;
+mod ai_binding;
 mod authority;
 mod bundled_platform;
 mod callback_proxy;
@@ -107,6 +108,7 @@ pub use bookclerk_plugin_sdk::{
 };
 
 pub use activation::OnDemandStatus;
+pub use ai_binding::{AI_BINDING_RUN_TIMEOUT, AI_ITEMS_PER_MINUTE};
 pub use authority::{
     apply_grant_store, authority_revision, fence_plugin_key, fence_stale_grant_revisions,
     fence_stale_sessions, is_fenced, live_session_count, notify_grants_changed,
@@ -122,23 +124,23 @@ pub use bookclerk_plugin_sdk::{JobCheckpoint, JobInvocationLease, JobOutcome};
 pub use bundled_platform::install_bundled_platform_plugins;
 pub use callback_proxy::CallbackProxy;
 pub use consent::{
-    active_processes_for, canonical_event_filter, consent_request, consent_request_alias,
-    consent_summary, consumers_cover, cores_to_percent, cron_grant, database_binding_name,
-    effective_cpu_cores, effective_cpu_rate_percent, effective_disk_budget_bytes,
-    effective_disk_mib, effective_extra_processes, effective_grant, effective_memory_mib,
-    format_cpu_cores, grant_covers, grant_has_binding, grant_revision, grant_within_ceiling,
-    granted_consumers_from_manifest, granted_database_bindings, granted_jobs_from_manifest,
-    granted_queue_consumers, host_cpu_cores_max, host_cpu_rate_max, host_overlay_config_digest,
-    inject_workerd_grant_env, is_platform_envelope, jail_process_overhead, network_compatible,
-    node_logical_cpus, overlay_host_implied_network, pending_structural, percent_to_cores,
-    queue_consumer_grant, queue_producer_grant, reapprove_grant, reconcile_host_overlay_authority,
-    require_binding, require_grant, spawn_config_for_grant, spawn_grant, validate_approved_grant,
-    validate_described_capabilities, validate_described_config_options, validate_described_media,
-    windows_session_active_processes, GrantedEventConsumer, PendingStructural, PluginGrant,
-    PluginGrantStore, SettingNetworkOverlay, GRANTS_FILE, GRANT_SCHEMA_VERSION,
-    KNOWN_HOST_BINDINGS, PENDING_HEADER, PLUGIN_JAIL_ACTIVE_PROCESSES_MAX,
-    PLUGIN_JAIL_CPU_CORES_DEFAULT, PLUGIN_JAIL_CPU_RATE_DEFAULT, PLUGIN_JAIL_CPU_RATE_MAX,
-    PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT, PLUGIN_JAIL_EXTRA_PROCESSES_MAX,
+    active_processes_for, ai_task_grant, canonical_event_filter, consent_request,
+    consent_request_alias, consent_summary, consumers_cover, cores_to_percent, cron_grant,
+    database_binding_name, effective_cpu_cores, effective_cpu_rate_percent,
+    effective_disk_budget_bytes, effective_disk_mib, effective_extra_processes, effective_grant,
+    effective_memory_mib, format_cpu_cores, grant_covers, grant_has_binding, grant_revision,
+    grant_within_ceiling, granted_consumers_from_manifest, granted_database_bindings,
+    granted_jobs_from_manifest, granted_queue_consumers, host_cpu_cores_max, host_cpu_rate_max,
+    host_overlay_config_digest, inject_workerd_grant_env, is_platform_envelope,
+    jail_process_overhead, network_compatible, node_logical_cpus, overlay_host_implied_network,
+    pending_structural, percent_to_cores, queue_consumer_grant, queue_producer_grant,
+    reapprove_grant, reconcile_host_overlay_authority, require_binding, require_grant,
+    spawn_config_for_grant, spawn_grant, validate_approved_grant, validate_described_capabilities,
+    validate_described_config_options, validate_described_media, windows_session_active_processes,
+    GrantedEventConsumer, PendingStructural, PluginGrant, PluginGrantStore, SettingNetworkOverlay,
+    AI_TASK_BINDING_PREFIX, GRANTS_FILE, GRANT_SCHEMA_VERSION, KNOWN_HOST_BINDINGS, PENDING_HEADER,
+    PLUGIN_JAIL_ACTIVE_PROCESSES_MAX, PLUGIN_JAIL_CPU_CORES_DEFAULT, PLUGIN_JAIL_CPU_RATE_DEFAULT,
+    PLUGIN_JAIL_CPU_RATE_MAX, PLUGIN_JAIL_EXTRA_PROCESSES_DEFAULT, PLUGIN_JAIL_EXTRA_PROCESSES_MAX,
     PLUGIN_JAIL_MEMORY_MIB_DEFAULT, PLUGIN_JAIL_MEMORY_MIB_MAX, PLUGIN_STATE_BUDGET_MIB_DEFAULT,
     PLUGIN_STATE_BUDGET_MIB_MAX, QUEUE_CONSUMER_BINDING_PREFIX, QUEUE_PRODUCER_BINDING_PREFIX,
     WINDOWS_SESSION_PROCESS_BASELINE, WORKERD_GRANT_CPU_MS_ENV, WORKERD_GRANT_DOMAINS_ENV,

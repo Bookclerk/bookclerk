@@ -26,7 +26,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bookclerk_plugin_abi::{
-    require_plugin_migration_registration, GuestSqlPolicy, PluginError, Result as AbiResult,
+    require_plugin_migration_registration, AiModels, AiModelsClient, GuestSqlPolicy, PluginError,
+    Result as AbiResult,
 };
 use bookclerk_plugin_abi::{
     serve_plugin_stdio, Bindings, ByteRange, ContentSource, ContentSourceClient, CopyResult,
@@ -191,6 +192,7 @@ impl WorkerdRoot {
             network: bindings.network.clone(),
             notify_token: None,
             origin_token: None,
+            ai_token: None,
         };
         let requested = self.manifest_families();
         let reply: OpenReply = call(
@@ -241,6 +243,7 @@ impl WorkerdRoot {
                 .origin
                 .filter(|_| self.exports(Entrypoint::Ingress))
                 .map(Arc::from),
+            ai: bindings.ai.map(Arc::from),
         };
         let opened = client.open(&invocation, host_bindings).await?;
         Ok(native_entrypoints(opened, &allowed))
@@ -439,6 +442,29 @@ impl WorkerdRoot {
             }
             None => (None, None),
         };
+        // An ai-only grant token for the `AI` binding: the adapter isolate
+        // runs models through `/ai/run` with it and installs `env.AI` on
+        // the author's `env`.
+        let (ai_token, ai_grant) = match bindings.ai {
+            Some(runner) => {
+                let token = format!("{:032x}", rand::random::<u128>());
+                self.table.borrow_mut().insert(
+                    token.clone(),
+                    GrantedSlot::ai_only(
+                        Rc::from(runner),
+                        grant_expiry(invocation.deadline_unix_ms),
+                    ),
+                );
+                (
+                    Some(token.clone()),
+                    Some(RevokeGrant {
+                        table: Rc::clone(&self.table),
+                        grant: token,
+                    }),
+                )
+            }
+            None => (None, None),
+        };
         let ctx = BridgeContext {
             invocation,
             config: bindings.config,
@@ -452,6 +478,7 @@ impl WorkerdRoot {
             network: bindings.network,
             notify_token,
             origin_token,
+            ai_token,
         };
         let ctx_json = context_header(&ctx)?;
         let grants = Rc::new(OpenGrants {
@@ -463,6 +490,7 @@ impl WorkerdRoot {
             _webhooks: webhooks_grant,
             _notify: notify_grant,
             _origin: origin_grant,
+            _ai: ai_grant,
         });
         let keepalive: Option<Rc<dyn std::any::Any>> =
             Some(Rc::clone(&grants) as Rc<dyn std::any::Any>);
@@ -510,6 +538,9 @@ impl WorkerdRoot {
         }
         if self.exports(Entrypoint::Notifier) {
             exported.notifier = Some(Box::new(NotifierClient::new(invoke.typed())));
+        }
+        if self.exports(Entrypoint::Ai) {
+            exported.ai = Some(Box::new(AiModelsClient::new(invoke.typed())));
         }
         if self.capabilities.sockets {
             exported.socket_handler = Some(Box::new(SocketHandlerClient::new(invoke.typed())));
@@ -560,6 +591,7 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         metadata_files,
         notifier,
         ingress,
+        ai,
     } = opened;
     Entrypoints {
         event_consumer: event_consumer
@@ -613,6 +645,9 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         ingress: ingress
             .filter(|_| allow(Entrypoint::Ingress.wire_name()))
             .map(|c| Box::new(c) as Box<dyn Ingress>),
+        ai: ai
+            .filter(|_| allow(Entrypoint::Ai.wire_name()))
+            .map(|c| Box::new(c) as Box<dyn AiModels>),
     }
 }
 
@@ -677,6 +712,10 @@ struct BridgeContext {
     /// active relay ingress plugin.
     #[serde(skip_serializing_if = "Option::is_none")]
     origin_token: Option<String>,
+    /// Ai-only bearer for `/ai/run`, when the manifest declares
+    /// `[ai].calls` and the operator approved it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ai_token: Option<String>,
 }
 
 /// `JobRunner.job` context: the durable job id on top of the open context.
@@ -700,6 +739,7 @@ struct OpenGrants {
     _webhooks: Option<RevokeGrant>,
     _notify: Option<RevokeGrant>,
     _origin: Option<RevokeGrant>,
+    _ai: Option<RevokeGrant>,
 }
 
 /// Grant expiry for an `open`: the invocation deadline when it has one,
@@ -948,6 +988,7 @@ impl JobRunner for InvokeJobRunner {
                 webhooks: None,
                 notify: None,
                 origin: None,
+                ai: None,
             },
         );
         let _revoke = RevokeGrant {
@@ -1098,6 +1139,7 @@ mod tests {
             network: bookclerk_plugin_abi::NetworkGrant::default(),
             notify_token: None,
             origin_token: Some("otok".into()),
+            ai_token: None,
         };
         let json = context_header(&JobBridgeContext {
             job_id: &base.invocation.id,
