@@ -1,4 +1,4 @@
-"""Rebuilds the tokenizer test fixture: `tiny.spm.fb` and `tiny.ids.json`.
+"""Rebuilds the tokenizer test fixtures: `<name>.spm.fb` and `<name>.ids.json`.
 
 Trains a tiny SentencePiece BPE model with byte fallback (the kind the
 embedding models use) on the sentences below, converts it to the Lite
@@ -6,12 +6,16 @@ FlatBuffers format with upstream's `spm_to_fb`, and records the ids full
 SentencePiece gives for the probe texts. The Rust tests check that the
 Lite runtime gives the same ids.
 
+There are two fixtures: `tiny` puts a word boundary before every text, as
+bekko's tokenizer does; `plain` does not and keeps every space, as Gemma's
+does.
+
 Usage:
     python3 make_fixture.py /path/to/spm_to_fb
 
 Needs `pip install sentencepiece` and `spm_to_fb` built from the commit
 pinned in `third_party/sentencepiece-lite/README.md`
-(`cmake -S lite -B build && cmake --build build --target spm_to_fb`).
+(`scripts/model-packs/build-spm-to-fb.sh <directory>`).
 """
 
 from __future__ import annotations
@@ -65,22 +69,32 @@ PROBES = [
 ]
 
 
-def main() -> None:
-    """Writes the two fixture files beside this script."""
-    here = pathlib.Path(__file__).resolve().parent
-    spm_to_fb = sys.argv[1]
+def write_fixture(here: pathlib.Path, spm_to_fb: str, name: str, add_dummy_prefix: bool) -> None:
+    """Trains one fixture model and writes its two files beside this script.
+
+    Args:
+        here: The fixtures directory.
+        spm_to_fb: Path of upstream's converter.
+        name: The fixture's file stem.
+        add_dummy_prefix: Whether the model puts a word boundary before a
+            text.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         work = pathlib.Path(tmp)
         corpus = work / "corpus.txt"
         corpus.write_text("\n".join(CORPUS * 4) + "\n", encoding="utf-8")
         spm.SentencePieceTrainer.train(
             input=str(corpus),
-            model_prefix=str(work / "tiny"),
+            model_prefix=str(work / name),
             model_type="bpe",
             vocab_size=640,
             byte_fallback=True,
             character_coverage=0.98,
             normalization_rule_name="identity",
+            add_dummy_prefix=add_dummy_prefix,
+            # Gemma's model keeps every space; the default drops leading,
+            # trailing and doubled ones.
+            remove_extra_whitespaces=add_dummy_prefix,
             pad_id=0,
             eos_id=1,
             bos_id=2,
@@ -91,12 +105,12 @@ def main() -> None:
         subprocess.run(
             [
                 spm_to_fb,
-                f"--model={work / 'tiny.model'}",
-                f"--output={here / 'tiny.spm.fb'}",
+                f"--model={work / f'{name}.model'}",
+                f"--output={here / f'{name}.spm.fb'}",
             ],
             check=True,
         )
-        reference = spm.SentencePieceProcessor(model_file=str(work / "tiny.model"))
+        reference = spm.SentencePieceProcessor(model_file=str(work / f"{name}.model"))
         record = {
             "vocab_size": reference.GetPieceSize(),
             "special": {
@@ -107,9 +121,16 @@ def main() -> None:
             },
             "texts": [{"text": text, "ids": reference.encode(text)} for text in PROBES],
         }
-    (here / "tiny.ids.json").write_text(
+    (here / f"{name}.ids.json").write_text(
         json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+
+
+def main() -> None:
+    """Writes both fixtures beside this script."""
+    here = pathlib.Path(__file__).resolve().parent
+    write_fixture(here, sys.argv[1], "tiny", add_dummy_prefix=True)
+    write_fixture(here, sys.argv[1], "plain", add_dummy_prefix=False)
 
 
 if __name__ == "__main__":

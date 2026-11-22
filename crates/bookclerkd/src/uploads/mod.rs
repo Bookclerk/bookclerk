@@ -13,6 +13,7 @@
 //! `$BOOKCLERK_FILES_DIR/uploads/` ([`staging`]) and are pruned when a
 //! batch idles, finishes or loses its row.
 
+pub(crate) mod chapters;
 pub(crate) mod identify;
 pub(crate) mod intake_copy;
 pub(crate) mod job;

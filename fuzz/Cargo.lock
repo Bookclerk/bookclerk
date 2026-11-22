@@ -576,6 +576,7 @@ dependencies = [
  "bookclerk-cover",
  "bookclerk-db-exec",
  "bookclerk-discover",
+ "bookclerk-intake",
  "bookclerk-library",
  "bookclerk-media",
  "bookclerk-model-pack",
@@ -609,6 +610,15 @@ dependencies = [
  "tempfile",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "bookclerk-intake"
+version = "0.1.0"
+dependencies = [
+ "bookclerk-config",
+ "hex",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -646,6 +656,7 @@ dependencies = [
  "bookclerk-archive",
  "bookclerk-config",
  "bookclerk-db-exec",
+ "bookclerk-intake",
  "bookclerk-keystore",
  "bookclerk-naming",
  "bookclerk-node-proto",

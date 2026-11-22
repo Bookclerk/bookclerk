@@ -55,9 +55,10 @@ export function WorkRow({
         onClick={() => onOpen?.(work)}
         aria-label={`Open details for ${work.title}`}
       >
-        {/* The local sidecar of the cover edition (only acquired editions
-            have one) first, then the storefront's cover through the daemon,
-            then the Bookclerk mark. */}
+        {/* The storefront's cover through the daemon's cover cache first
+            (already thumbnail-sized and cached by the browser), then the
+            local sidecar of the cover edition (only acquired editions have
+            one; full size), then the Bookclerk mark. */}
         <CoverThumb
           path={work.cover_path}
           sources={
@@ -65,6 +66,7 @@ export function WorkRow({
               ? [editionCoverUrl(work.cover_edition_id)]
               : []
           }
+          sourcesLast
           className="h-full w-full rounded-none bg-transparent shadow-none"
         />
       </button>

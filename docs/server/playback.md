@@ -174,6 +174,14 @@ Players read the list from the database:
   flattened, as Audiobookshelf answers: an expanded item's
   `media.chapters` and a play session's `chapters`, in seconds.
 
+A list is only true on the timeline it was measured on. Each claim keeps
+that running time, and an uploaded copy records the chapters its own files
+carry as a claim of their own. When the copy a player is given runs more
+than 2 seconds longer or shorter than the list's timeline, and its files
+carry chapters, the manifest and `/player` serve the copy's own chapters
+instead. A copy whose files were never probed, or that carries no
+chapters, keeps the edition's list.
+
 ## Events and live updates
 
 Plugins can consume three host events (see

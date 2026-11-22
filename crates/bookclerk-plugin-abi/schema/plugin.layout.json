@@ -19030,6 +19030,11 @@
       "file": "plugin.capnp",
       "value": "storage.changes"
     },
+    "featureStorageCheckedWrite": {
+      "name": "featureStorageCheckedWrite",
+      "file": "plugin.capnp",
+      "value": "storage.checkedWrite"
+    },
     "featureStorageConditionalWrite": {
       "name": "featureStorageConditionalWrite",
       "file": "plugin.capnp",

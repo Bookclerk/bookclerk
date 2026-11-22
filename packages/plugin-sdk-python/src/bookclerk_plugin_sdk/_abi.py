@@ -248,6 +248,12 @@ FEATURE_STORAGE_HEAD_MANY: str = "storage.headMany"
 FEATURE_STORAGE_CONDITIONAL_WRITE: str = "storage.conditionalWrite"
 """Guest enforces `WriteOptions.ifMatch` / `ifNoneMatch` (`storage.conditionalWrite`)."""
 
+FEATURE_STORAGE_CHECKED_WRITE: str = "storage.checkedWrite"
+"""Guest enforces `WriteOptions.ifMatch` / `ifNoneMatch` by writing, then
+checking and withdrawing its write when another got in first
+(`storage.checkedWrite`); a reader may briefly see the losing write.
+"""
+
 FEATURE_STORAGE_CHANGES: str = "storage.changes"
 """Guest implements `Destination.changes` (`storage.changes`)."""
 
@@ -566,6 +572,7 @@ __all__ = [
     "FEATURE_STORAGE_DELETE_MANY",
     "FEATURE_STORAGE_HEAD_MANY",
     "FEATURE_STORAGE_CONDITIONAL_WRITE",
+    "FEATURE_STORAGE_CHECKED_WRITE",
     "FEATURE_STORAGE_CHANGES",
     "FEATURE_STORAGE_TRANSLATE_KEYS",
     "OBJECT_CHANGE_KINDS",

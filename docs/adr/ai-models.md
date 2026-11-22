@@ -1,6 +1,6 @@
 # ADR: Models run in plugins and are called through one `AI` binding
 
-- **Status:** Accepted; the entrypoint, the binding, the router and the first-party model plugin are built, model delivery is not
+- **Status:** Accepted; the entrypoint, the binding, the router, the first-party model plugin and the workflow that builds and publishes its models are built; the host does not download models yet
 - **Date:** 2026-11-21
 - **Related:** [Plugin Workers RPC on workerd](plugin-workers-rpc-workerd.md),
   [Plugin capabilities](plugin-capabilities-v3.md),
@@ -96,17 +96,20 @@ Bookclerk ships one model plugin for text embeddings:
   that acceptable: the libraries never enter the host.
 - It sleeps when idle, like every plugin, so its memory is held only
   while it works.
-- It serves the models found in its data directory. Which model and
-  languages a library uses is chosen in the host, which delivers the
-  files.
+- It serves the models found in its data directory. Which model a
+  library uses is chosen in the host, which delivers the files.
 
-Models are delivered as a cut graph, a tokenizer, the rows every text
-needs and one row pack per language
-([Embedding model packs](../internals/model-packs.md)). A workflow builds
-them from pinned upstream revisions, checks token ids against the
-reference tokenizer, and signs what it publishes. The host downloads and
-verifies packs against pinned digests, and the guest checks every file
-against the model description before it loads it.
+Models are delivered as a cut graph, a tokenizer and the token rows
+([Embedding model packs](../internals/model-packs.md)). The layout can
+split the rows into one pack per language. The published packs hold the
+whole vocabulary instead: measured on real descriptions, language packs
+saved about 55 MB for a one-language library, overlapped heavily, and
+left most descriptions with a word that had no row. A workflow builds
+the packs from pinned upstream revisions, checks token ids and vectors
+against the published tokenizer and model, and signs what it publishes.
+The host downloads and verifies packs against pinned digests, and the
+guest checks every file against the model description before it loads
+it.
 
 ### Vectors are stored once and searched in memory
 

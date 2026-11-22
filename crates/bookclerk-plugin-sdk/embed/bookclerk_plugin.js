@@ -45,6 +45,7 @@ var FEATURE_STORAGE_MOVE_MANY = "storage.moveMany";
 var FEATURE_STORAGE_DELETE_MANY = "storage.deleteMany";
 var FEATURE_STORAGE_HEAD_MANY = "storage.headMany";
 var FEATURE_STORAGE_CONDITIONAL_WRITE = "storage.conditionalWrite";
+var FEATURE_STORAGE_CHECKED_WRITE = "storage.checkedWrite";
 var FEATURE_STORAGE_CHANGES = "storage.changes";
 var OBJECT_CHANGE_KINDS = ["changed", "upserted", "removed"];
 var PLUGIN_ERROR_CODES = ["invalid_params", "unauthorized", "forbidden", "not_found", "unavailable", "unsupported", "internal", "payload_too_large", "deadline_exceeded", "invalid_cursor", "cancelled", "conflict", "limit_exceeded", "rate_limited", "network_not_granted"];
@@ -15907,6 +15908,7 @@ export {
   ExecuteStreamDecoder,
   FEATURE_SCALAR_LIMITS,
   FEATURE_STORAGE_CHANGES,
+  FEATURE_STORAGE_CHECKED_WRITE,
   FEATURE_STORAGE_CONDITIONAL_WRITE,
   FEATURE_STORAGE_COPY,
   FEATURE_STORAGE_DELETE_MANY,

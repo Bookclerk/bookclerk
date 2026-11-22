@@ -264,6 +264,13 @@ export const FEATURE_STORAGE_HEAD_MANY = "storage.headMany" as const;
 /** Guest enforces `WriteOptions.ifMatch` / `ifNoneMatch` (`storage.conditionalWrite`). */
 export const FEATURE_STORAGE_CONDITIONAL_WRITE = "storage.conditionalWrite" as const;
 
+/**
+ * Guest enforces `WriteOptions.ifMatch` / `ifNoneMatch` by writing, then
+ * checking and withdrawing its write when another got in first
+ * (`storage.checkedWrite`); a reader may briefly see the losing write.
+ */
+export const FEATURE_STORAGE_CHECKED_WRITE = "storage.checkedWrite" as const;
+
 /** Guest implements `Destination.changes` (`storage.changes`). */
 export const FEATURE_STORAGE_CHANGES = "storage.changes" as const;
 

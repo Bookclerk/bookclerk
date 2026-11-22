@@ -200,10 +200,11 @@ pub use store::{
         RecordedListings, CATALOG_LISTING_REFRESH,
     },
     chapters::{
-        resolve_chapters, Chapter, ChapterCheck, ChapterClaim, ChapterClaimWrite, ChapterDigest,
-        ChapterInput, ChapterList, ChapterSource, ChapterSourceKind, ChapterSpan, ChaptersOutcome,
-        ClaimQuality, EditionChapters, MarkerKind, ProviderQuality, MAX_CHAPTERS,
-        MAX_CHAPTER_DEPTH, MAX_CHAPTER_START_MS, MAX_CHAPTER_TITLE_BYTES,
+        copy_source_id, resolve_chapters, Chapter, ChapterCheck, ChapterClaim, ChapterClaimWrite,
+        ChapterDigest, ChapterInput, ChapterList, ChapterSource, ChapterSourceKind, ChapterSpan,
+        ChaptersOutcome, ClaimQuality, EditionChapters, MarkerKind, ProviderQuality,
+        COPY_RUNTIME_TOLERANCE_MS, MAX_CHAPTERS, MAX_CHAPTER_DEPTH, MAX_CHAPTER_START_MS,
+        MAX_CHAPTER_TITLE_BYTES,
     },
     chapters_request::{
         parse_chapter_edit_request, parse_chapter_pin_request, ChapterEditBody, ChapterEditEntry,

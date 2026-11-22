@@ -4,6 +4,7 @@
 use super::*;
 use crate::entities::domain_events;
 use crate::test_support::{sqlite::memory, Profile};
+use crate::{AudioStream, FileOwner};
 
 /// A list of `n` top-level chapters a minute apart, titled with `prefix`.
 fn list(prefix: &str, n: u64) -> ChapterList {
@@ -453,5 +454,131 @@ async fn a_long_list_is_stored_and_read_in_pages_under_every_profile() {
             read.list.is_empty(),
             "{name}: an Administrator cleared them"
         );
+    }
+}
+
+#[test]
+fn a_copy_is_named_by_its_destination_and_keys_in_any_order() {
+    let keys = |k: &[&str]| k.iter().map(|k| (*k).to_string()).collect::<Vec<_>>();
+    let id = copy_source_id("local", &keys(&["B/Part 2.mp3", "B/Part 1.mp3"]));
+    assert_eq!(
+        id,
+        copy_source_id("local", &keys(&["B/Part 1.mp3", "B/Part 2.mp3"]))
+    );
+    assert_ne!(
+        id,
+        copy_source_id("s3", &keys(&["B/Part 1.mp3", "B/Part 2.mp3"]))
+    );
+    // The separator keeps a key's text from moving into its neighbour.
+    assert_ne!(
+        copy_source_id("local", &keys(&["ab", "c"])),
+        copy_source_id("local", &keys(&["a", "bc"]))
+    );
+    assert_eq!(id.len(), "copy-".len() + 32);
+    assert!(id.starts_with("copy-"));
+}
+
+#[tokio::test]
+async fn a_copy_far_from_the_lists_timeline_plays_its_own_chapters_under_every_profile() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = memory(profile).await.into_store();
+        let edition = edition(&store, "B0CHAP0003").await;
+        let owner = FileOwner::Edition(edition.clone());
+        let key = "B/Book.m4b".to_string();
+        assert!(store
+            .record_edition_file("local", &key, &owner, crate::FileRole::Audio)
+            .await
+            .unwrap());
+        let keys = vec![key.clone()];
+        let copy = copy_source_id("local", &keys);
+
+        // No chapters at all: nothing to play.
+        assert_eq!(
+            store
+                .chapters_for_copy(&edition, "local", &keys)
+                .await
+                .unwrap(),
+            None,
+            "{name}"
+        );
+
+        // The store's list, measured on an hour; the file's own list on 50
+        // minutes, which ranks below it.
+        let marks = list("Store", 3);
+        store
+            .record_chapter_claim(&edition, &claim(store_chapters(), &marks))
+            .await
+            .unwrap();
+        let own = list("Own", 2);
+        store
+            .record_chapter_claim(
+                &edition,
+                &ChapterClaimWrite {
+                    source: ChapterSource::File { copy: copy.clone() },
+                    list: own.clone(),
+                    runtime_ms: Some(3_000_000),
+                },
+            )
+            .await
+            .unwrap();
+        let resolved = store.edition_chapters(&edition).await.unwrap().unwrap();
+        assert_eq!(
+            resolved.list, marks,
+            "{name}: a store's chapters outrank a file's"
+        );
+
+        // Not probed yet: the resolved list stands.
+        let played = store
+            .chapters_for_copy(&edition, "local", &keys)
+            .await
+            .unwrap();
+        assert_eq!(played.map(|p| p.list), Some(marks.clone()), "{name}");
+
+        // Probed within two seconds of the hour: still the resolved list.
+        let stream = |ms| AudioStream {
+            duration_ms: Some(ms),
+            ..AudioStream::default()
+        };
+        store
+            .set_edition_file_stream("local", &key, &owner, &stream(3_601_500))
+            .await
+            .unwrap();
+        let played = store
+            .chapters_for_copy(&edition, "local", &keys)
+            .await
+            .unwrap();
+        assert_eq!(played.map(|p| p.list), Some(marks.clone()), "{name}");
+
+        // Fifty minutes long: the copy plays the chapters in its own file.
+        store
+            .set_edition_file_stream("local", &key, &owner, &stream(3_000_000))
+            .await
+            .unwrap();
+        let played = store
+            .chapters_for_copy(&edition, "local", &keys)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(played.list, own, "{name}");
+        assert_eq!(played.source_kind, ChapterSourceKind::File, "{name}");
+        assert_eq!(played.source_id, copy, "{name}");
+        assert_eq!(played.runtime_ms, Some(3_000_000), "{name}");
+
+        // Another copy with no chapters of its own keeps the resolved list.
+        let other = vec!["B/Other.m4b".to_string()];
+        assert!(store
+            .record_edition_file("local", &other[0], &owner, crate::FileRole::Audio)
+            .await
+            .unwrap());
+        store
+            .set_edition_file_stream("local", &other[0], &owner, &stream(3_000_000))
+            .await
+            .unwrap();
+        let played = store
+            .chapters_for_copy(&edition, "local", &other)
+            .await
+            .unwrap();
+        assert_eq!(played.map(|p| p.list), Some(marks.clone()), "{name}");
     }
 }
