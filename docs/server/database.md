@@ -376,7 +376,10 @@ bookclerk config master-key import --from ./bookclerk-recovery.key
 `export` wraps the copy with a password read from stdin (never argv).
 `import` restores it, or a copied `master.key`, on an install that has no
 key yet, into that install's store. `bookclerk config master-key status`
-shows the store and whether the key is wrapped.
+shows the store and whether the key is wrapped. When the key's store
+can't be read (a locked keychain, or a `systemd-creds` credential that no
+longer unseals), it prints why, includes it as `read_error` in `--format
+json`, and exits non-zero, so a health check can catch it.
 
 The operator can also save a recovery copy from the web app:
 
@@ -1020,7 +1023,7 @@ batch that lost a race answers `retry` and the title is resolved again, up
 to three times. Its contributors, credits, series and series entries follow
 in separate batches, so a scan that stops between them can leave a linked
 title without them; the next scan writes what is missing. A title that still cannot be resolved
-keeps its `books` row, is logged as a warning, and is resolved again on
+is not stored, is logged as a warning, and is resolved again on
 the next scan, so one title never stops the rest of a scan. A work takes
 its titles' description, subjects, categories and cover where it has none
 yet, and an episode stored before its show is linked to the show once the

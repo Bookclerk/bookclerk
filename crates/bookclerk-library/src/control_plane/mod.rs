@@ -222,10 +222,10 @@ pub use instances::{
 };
 pub use job_routing::{
     account_semaphore, claim_routed_job, class_semaphore, common_deployment_nodes,
-    instance_semaphore, job_permit_holder_prefix, job_plugin_keys, job_semaphores,
-    job_source_plugin_key, node_can_run_job, resolve_job_requirements, JobClaimFilter,
-    JobClaimLimits, JobClaimRequest, RoutedJobClaim, ACCOUNT_SEMAPHORE_LIMIT,
-    ROUTED_CLAIM_CANDIDATES,
+    instance_running_on_database_node, instance_semaphore, job_permit_holder_prefix,
+    job_plugin_keys, job_semaphores, job_source_plugin_key, node_can_run_job,
+    resolve_job_requirements, JobClaimFilter, JobClaimLimits, JobClaimRequest, RoutedJobClaim,
+    ACCOUNT_SEMAPHORE_LIMIT, ROUTED_CLAIM_CANDIDATES,
 };
 pub use keeper::{
     apply_keeper_update, confirmed_keeping_branch, keeping_branch, keeps_for_link, kept_shares,

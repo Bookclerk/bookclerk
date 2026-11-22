@@ -445,23 +445,14 @@ async fn rename_settled(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
-/// True when `a` and `b` are names of one file (same device and inode on
-/// Unix). Always false elsewhere, where callers only reach this after a
-/// failed hard link, which left no second name.
+/// True when `a` and `b` are names of one file: the same device and inode
+/// on Unix, the same volume and file index on Windows. A path that cannot
+/// be opened is not the same file as anything.
 async fn same_file(a: &Path, b: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        match (fs::metadata(a).await, fs::metadata(b).await) {
-            (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
-            _ => false,
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (a, b);
-        false
-    }
+    let (a, b) = (a.to_path_buf(), b.to_path_buf());
+    tokio::task::spawn_blocking(move || ::same_file::is_same_file(a, b).unwrap_or(false))
+        .await
+        .unwrap_or(false)
 }
 
 /// Flushes a directory's entries to disk after a rename into it, so the new
@@ -1350,6 +1341,26 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(backend.get("A/B.m4b").await.unwrap().as_ref(), b"from-file");
+    }
+
+    /// Writing a file again onto the key that is already a link to it
+    /// leaves it whole: the backend sees one file instead of copying it
+    /// onto itself (which truncates on Unix and is refused on Windows).
+    #[tokio::test]
+    async fn put_file_onto_its_own_link_keeps_the_file() {
+        let dir = tempdir().unwrap();
+        let backend = LocalFsBackend::new(dir.path().join("store")).unwrap();
+        let src = dir.path().join("src.m4b");
+        std::fs::write(&src, b"from-file").unwrap();
+        for _ in 0..2 {
+            backend
+                .put_file("A/B.m4b", &src, ObjectMeta::default())
+                .await
+                .unwrap();
+        }
+        assert_eq!(backend.get("A/B.m4b").await.unwrap().as_ref(), b"from-file");
+        assert!(same_file(&src, &dir.path().join("store/A/B.m4b")).await);
+        assert!(!same_file(&src, &dir.path().join("missing")).await);
     }
 
     /// A `:` in a key is a title character on POSIX, but a drive or an

@@ -64,7 +64,6 @@ async fn start(host: &LibraryStore, link: &LibraryLink) -> (HostClientHandle, wa
 /// An Audible book with [`ASIN`] on `account_id`.
 fn audible_book(plugin: &str, account_id: &str) -> NewBook {
     NewBook {
-        uuid: None,
         product_id: ASIN.into(),
         plugin_key: plugin.into(),
         source: "audible".into(),
@@ -112,7 +111,11 @@ async fn hold(store: &LibraryStore, user: Option<i64>, account_id: &str) -> Stri
         .upsert_book(&audible_book(plugin, account_id))
         .await
         .unwrap();
-    store.work_id_for_book(&record.uuid).await.unwrap().unwrap()
+    store
+        .work_of_holding(&record.holding_id)
+        .await
+        .unwrap()
+        .unwrap()
 }
 
 #[tokio::test]

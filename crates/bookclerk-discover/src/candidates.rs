@@ -89,6 +89,10 @@ pub struct StorefrontCandidate {
     /// Abridged flag when the storefront provided one.
     #[serde(default)]
     pub is_abridged: Option<bool>,
+    /// Whether the storefront marks the edition explicit (adult) content;
+    /// `None` when it did not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_explicit: Option<bool>,
     /// The storefront's own 1-based search rank for this hit (its declared
     /// `CatalogHit.rankHint`); catalog search merges stores by it for
     /// relevance and popularity sorts. `None` when no store ranked it.
@@ -327,6 +331,7 @@ pub(crate) fn hit_to_candidate(source_id: &str, hit: CatalogHit) -> StorefrontCa
         rating_overall: hit.rating_overall,
         rating_count: hit.rating_count,
         is_abridged: hit.is_abridged,
+        is_explicit: hit.is_explicit,
         store_rank: None,
         work_id: None,
         expression_id: None,
@@ -744,6 +749,7 @@ mod tests {
                 rating_overall: None,
                 rating_count: None,
                 is_abridged: None,
+                is_explicit: None,
                 store_rank: None,
                 work_id: None,
                 expression_id: Some("x-hail".into()),
@@ -783,6 +789,7 @@ mod tests {
                 rating_overall: None,
                 rating_count: None,
                 is_abridged: None,
+                is_explicit: None,
                 store_rank: None,
                 work_id: None,
                 expression_id: Some("x-hail".into()),
@@ -822,6 +829,7 @@ mod tests {
                 rating_overall: None,
                 rating_count: None,
                 is_abridged: None,
+                is_explicit: None,
                 store_rank: None,
                 work_id: None,
                 expression_id: Some("x-hail".into()),
@@ -877,6 +885,7 @@ mod tests {
             rating_overall: None,
             rating_count: None,
             is_abridged: None,
+            is_explicit: None,
             store_rank: None,
             work_id: Some("w-sunlit".into()),
             expression_id: Some(format!("x-{product_id}")),
@@ -931,6 +940,7 @@ mod tests {
             rating_overall: None,
             rating_count: None,
             is_abridged: None,
+            is_explicit: None,
             store_rank: None,
             work_id: None,
             expression_id: language

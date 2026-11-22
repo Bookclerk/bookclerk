@@ -884,9 +884,11 @@ links account for the measured header height so headings remain visible
 when navigation wraps.
 
 Docs pages are read from this checkout's `docs/` through a local server
-(`tools/site/audit/entry.ts`), not from the docs repository. So the audit
-covers the docs as the pull request has them, and needs no network. A docs
-key the local server fails renders the docs-unavailable page.
+(`tools/site/audit/serve.ts` and `entry.ts`), not from the docs repository.
+So the audit covers the docs as the pull request has them, and needs no
+network. A docs key the local server fails renders the docs-unavailable
+page. The [visual checks](ui/visual-testing.md#website-and-collector-pages)
+screenshot the site through the same server.
 
 | Pages | Lighthouse (mobile and desktop) |
 | --- | --- |

@@ -25,7 +25,7 @@ async fn title(
     if acquired {
         store
             .set_acquire_status(
-                &saved.uuid,
+                &saved.holding_id,
                 "acct",
                 AcquireStatus::Acquired,
                 Some("k.m4b"),
@@ -34,12 +34,20 @@ async fn title(
             .await
             .unwrap();
     }
-    let work = store.work_id_for_book(&saved.uuid).await.unwrap().unwrap();
+    let work = store
+        .work_of_holding(&saved.holding_id)
+        .await
+        .unwrap()
+        .unwrap();
     store
         .refresh_library_works(std::slice::from_ref(&work))
         .await
         .unwrap();
-    let edition = store.edition_of_book(&saved.uuid).await.unwrap().unwrap();
+    let edition = store
+        .edition_of_holding(&saved.holding_id)
+        .await
+        .unwrap()
+        .unwrap();
     (work, edition)
 }
 

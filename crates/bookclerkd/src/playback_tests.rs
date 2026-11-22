@@ -100,7 +100,7 @@ async fn edition(
             .unwrap();
         let owner = world
             .store
-            .file_owner_of_book(&saved.uuid)
+            .file_owner_of_holding(&saved.holding_id)
             .await
             .unwrap()
             .unwrap();
@@ -112,14 +112,14 @@ async fn edition(
     }
     let work = world
         .store
-        .work_id_for_book(&saved.uuid)
+        .work_of_holding(&saved.holding_id)
         .await
         .unwrap()
         .expect("a work");
     world.store.refresh_library_works(&[work]).await.unwrap();
     world
         .store
-        .edition_of_book(&saved.uuid)
+        .edition_of_holding(&saved.holding_id)
         .await
         .unwrap()
         .expect("an edition")
@@ -821,13 +821,13 @@ async fn the_routes_refuse_what_the_caller_may_not_play() {
     // one lists both tracks.
     let book = world
         .store
-        .get_book("B0PLAY0001", "acct")
+        .held_title("B0PLAY0001", "acct")
         .await
         .unwrap()
         .unwrap();
     let owner = world
         .store
-        .file_owner_of_book(&book.uuid)
+        .file_owner_of_holding(&book.holding_id)
         .await
         .unwrap()
         .unwrap();

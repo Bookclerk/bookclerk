@@ -87,6 +87,8 @@ paths = [
     "fuzz/oracles/metadata_file_record.rs",
     "fuzz/corpus/notifier_reply/**",
     "fuzz/oracles/notifier_reply.rs",
+    "fuzz/corpus/notify_address_body/**",
+    "fuzz/oracles/notify_address_body.rs",
     "fuzz/corpus/notify_raise/**",
     "fuzz/oracles/notify_raise.rs",
     "fuzz/corpus/event_read/**",
@@ -106,6 +108,8 @@ paths = [
 [[test_input]]
 package = "bookclerk-library"
 paths = [
+    "fuzz/corpus/notify_cursor/**",
+    "fuzz/oracles/notify_cursor.rs",
     "fuzz/corpus/guest_sql_authz/**",
     "fuzz/oracles/guest_sql_authz.rs",
     "fuzz/corpus/plan_authz/**",

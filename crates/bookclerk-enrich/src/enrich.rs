@@ -237,8 +237,8 @@ fn better_match(
 /// expression the language it lacks, and its own cover when it has none.
 /// The edition then records `audible` as its enrichment source.
 ///
-/// While the flat `books` table exists, each of the edition's rows also
-/// takes the match as before: catalog fields win for display metadata
+/// Each held title of the edition's listings also takes the match: catalog
+/// fields win for display metadata
 /// (title, contributors, series, ISBN, genres, publish date), an existing
 /// `asin` is kept, and a store-native `length_minutes` is kept because
 /// Audible runtimes include brand intro/outro that plain Acquire files
@@ -286,12 +286,11 @@ pub async fn apply_enrichment_to_edition(
     Ok(())
 }
 
-/// Merges a catalog match onto one held title's listing (and the flat
-/// `books` row it still mirrors, until that table is retired).
+/// Merges a catalog match onto one held title's listing.
 ///
 /// Preserves `source`, `product_id`, `account_id`, an existing `asin` and
 /// a store-native `length_minutes`; catalog fields win for the rest of the
-/// display metadata. A title with no flat row is skipped.
+/// display metadata.
 ///
 /// # Arguments
 ///
@@ -307,11 +306,6 @@ async fn merge_into_title(
     existing: &AcquireTitle,
     enrichment: &Enrichment,
 ) -> Result<()> {
-    // The metadata write still goes through the flat row (book model step
-    // 6, until 4g-3); a title without one is left as before.
-    if existing.book_uuid.is_none() {
-        return Ok(());
-    }
     let title = if enrichment.title.is_empty() {
         existing.title.clone()
     } else {
@@ -325,7 +319,6 @@ async fn merge_into_title(
         .or(existing.published_at);
 
     let book = NewBook {
-        uuid: existing.book_uuid.clone(),
         product_id: existing.product_id.clone(),
         plugin_key: existing.plugin_key.clone(),
         source: existing.source.clone(),
@@ -690,7 +683,11 @@ mod tests {
             language: Some("english".into()),
             confidence: Some(0.95),
         };
-        let edition = store.edition_of_book(&row.uuid).await.unwrap().unwrap();
+        let edition = store
+            .edition_of_holding(&row.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
         let matched = ScoredMatch {
             enrichment,
             confidence: 0.95,
@@ -698,10 +695,12 @@ mod tests {
         apply_enrichment_to_edition(&store, &edition, "us", &matched)
             .await
             .unwrap();
-        let updated = store.get_book_by_uuid(&row.uuid).await.unwrap().unwrap();
+        let updated = store
+            .acquire_title_of_holding(&row.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(updated.asin.as_deref(), Some("B00TEST01"));
-        assert_eq!(updated.enrich_source.as_deref(), Some("audible"));
-        assert_eq!(updated.description.as_deref(), Some("Blurb"));
         let page = store.enrich_candidates_page(None, 10).await.unwrap();
         let held = &page.candidates[0];
         assert_eq!(held.edition_id, edition);
@@ -717,7 +716,7 @@ mod tests {
         assert_eq!(updated.length_minutes, Some(900), "Libro runtime must win");
         assert_eq!(updated.series.as_deref(), Some("Foundation"));
         assert_eq!(updated.series_index.as_deref(), Some("2"));
-        assert_eq!(updated.series_asin.as_deref(), Some("B00SERIES1"));
+        assert_eq!(updated.series_product_id.as_deref(), Some("B00SERIES1"));
         assert_eq!(updated.isbn.as_deref(), Some("9781234567890"));
         assert_eq!(updated.subtitle.as_deref(), Some("A Subtitle"));
         assert_eq!(
@@ -761,7 +760,11 @@ mod tests {
             language: None,
             confidence: Some(0.95),
         };
-        let edition = store.edition_of_book(&row.uuid).await.unwrap().unwrap();
+        let edition = store
+            .edition_of_holding(&row.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
         let matched = ScoredMatch {
             enrichment,
             confidence: 0.95,
@@ -769,7 +772,11 @@ mod tests {
         apply_enrichment_to_edition(&store, &edition, "us", &matched)
             .await
             .unwrap();
-        let updated = store.get_book_by_uuid(&row.uuid).await.unwrap().unwrap();
+        let updated = store
+            .acquire_title_of_holding(&row.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(updated.asin.as_deref(), Some("B00EXIST01"));
         assert_eq!(updated.title, "Audible Title");
     }
@@ -975,21 +982,34 @@ mod tests {
             book.asin = asin.map(str::to_string);
             book.authors = Some("Ann Author".into());
             book.length_minutes = Some(320);
-            uuids.push(store.upsert_book(&book).await.unwrap().uuid);
+            uuids.push(store.upsert_book(&book).await.unwrap().holding_id);
         }
         let providers = ByAsin(vec![("B00TEST001".into(), full_record())]);
         let matched = enrich_editions_from_audible(&store, &providers, 0)
             .await
             .unwrap();
         assert_eq!(matched, 2, "only the editions with a provider record");
-        let first = store.get_book_by_uuid(&uuids[0]).await.unwrap().unwrap();
-        assert_eq!(first.asin.as_deref(), Some("B00TEST001"));
-        assert_eq!(first.enrich_source.as_deref(), Some("audible"));
-        let unmatched = store.get_book_by_uuid(&uuids[1]).await.unwrap().unwrap();
-        assert_eq!(unmatched.enrich_source, None);
-        let kept = store.get_book_by_uuid(&uuids[2]).await.unwrap().unwrap();
+        let marked = |holding: &str| {
+            let store = &store;
+            let holding = holding.to_owned();
+            async move {
+                let edition = store.edition_of_holding(&holding).await.unwrap().unwrap();
+                store
+                    .enrich_candidates_page(None, 10)
+                    .await
+                    .unwrap()
+                    .candidates
+                    .into_iter()
+                    .find(|c| c.edition_id == edition)
+                    .unwrap()
+                    .enrich_source
+            }
+        };
+        assert_eq!(marked(&uuids[0]).await.as_deref(), Some("audible"));
+        assert_eq!(marked(&uuids[1]).await, None);
         assert_eq!(
-            kept.enrich_source, None,
+            marked(&uuids[2]).await,
+            None,
             "an edition with an ASIN is skipped"
         );
         // The last edition matched the same ASIN, which stays with the

@@ -645,6 +645,10 @@ BUNDLE_DIR_ENV = "CI_BUNDLE_DIR"
 # Directory holding the checked-out visual baselines for the `ui_visual`
 # check; unset, the check records a new set instead of comparing.
 VISUAL_BASELINES_ENV = "CI_VISUAL_BASELINES"
+# The commit and build date the `ui_visual` check builds the website with:
+# fixed, so the footer's "built from" line never differs between commits.
+VISUAL_SITE_COMMIT = "0000000"
+VISUAL_SITE_BUILT_ON = "2026-01-01"
 # The nextest profile (.config/nextest.toml) that writes a JUnit report, and
 # where it writes it, relative to the workspace. The workflow copies the
 # report into the coverage directory even when tests fail.
@@ -1240,12 +1244,28 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
         # baselines); with baselines checked out (`CI_VISUAL_BASELINES`), a
         # second run compares against them and fails on any difference
         # (docs/contributing/ui/visual-testing.md).
+        #
+        # The same run covers the website and the diagnostics collector
+        # (ui/visual/workers.spec.ts): the Playwright config starts their
+        # local page servers, which need their packages installed and the
+        # website built. The website is built from a fixed commit and date,
+        # so its footer reads the same on every commit.
         ui = str(ctx.workspace / "ui")
+        site = str(ctx.workspace / "tools" / "site")
+        collector = str(ctx.workspace / "tools" / "diagnostics-collector")
         out = ctx.tmp / "ui-visual"
         baselines = os.environ.get(VISUAL_BASELINES_ENV)
         cmds = [
             Command("npm ci (ui)", ["npm", "ci"], cwd=ui),
             Command("storybook build (ui)", ["npm", "run", "storybook:build"], cwd=ui),
+            Command("npm ci (tools/site)", ["npm", "ci"], cwd=site),
+            Command(
+                "npm run build (tools/site)",
+                ["npm", "run", "build"],
+                cwd=site,
+                env={"SITE_COMMIT": VISUAL_SITE_COMMIT, "SITE_BUILT_ON": VISUAL_SITE_BUILT_ON},
+            ),
+            Command("npm ci (tools/diagnostics-collector)", ["npm", "ci"], cwd=collector),
             Command(
                 "record screenshots + axe-core (ui)",
                 ["npm", "run", "test:visual", "--", "--update-snapshots=all"],

@@ -202,8 +202,8 @@ pub async fn accept_scan_rows(
     let mut listed: std::collections::BTreeMap<String, Vec<String>> =
         std::collections::BTreeMap::new();
     let mut upserted = 0u64;
-    for mut title in books {
-        let book = &mut title.book;
+    for title in books {
+        let book = &title.book;
         // Authority is confirmed again right before each row is written, so
         // a lease lost or trust withdrawn mid-batch stops the rest of it.
         match still_authorized(store, node_id, &fence).await? {
@@ -216,7 +216,6 @@ pub async fn accept_scan_rows(
             Some(_) => {}
         }
         let source = sources.get(&book.account_id).cloned().unwrap_or_default();
-        book.uuid = None;
         store
             .scope(plugin_key, source.as_str())
             .upsert_scanned_title(&title)

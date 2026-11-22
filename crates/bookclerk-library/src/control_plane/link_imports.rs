@@ -5,7 +5,7 @@
 //! its own destinations when the title is its owner's
 //! ([`bookclerk_node_proto::WorkJob::for_node_owner`]). Once the library has
 //! committed the title, [`import_link_title`] records it here as an
-//! ordinary local change: the flat row and its listing, an account holding
+//! ordinary local change: its listing, an account holding
 //! for the store account that bought it, the acquire status and the copy's
 //! files, with the book-acquired event that change publishes. The import is
 //! also recorded for that library in `link_imports`, once per library a
@@ -31,9 +31,9 @@ use super::carried_accounts::branch_person;
 use super::trust::accounts_owned_by;
 use crate::entities::{account_links, link_imports};
 use crate::error::{LibraryError, Result};
-use crate::models::{AcquireStatus, BookRecord};
+use crate::models::AcquireStatus;
 use crate::store::AcquiredTitleKey;
-use crate::store::{FileRole, LibraryStore, NewBook};
+use crate::store::{AcquireTitle, FileRole, LibraryStore, NewBook};
 
 /// Rows per read of [`books_imported_from_link`] when the database plugin
 /// advertises no smaller `maxResultRows`.
@@ -44,8 +44,7 @@ const IMPORT_PAGE: u64 = 256;
 pub struct LinkImport<'a> {
     /// The library this branch acquired the title for.
     pub library_id: &'a str,
-    /// The title as the library sent it (its `uuid`, when set, is the
-    /// library's and is not reused here).
+    /// The title as the library sent it.
     pub book: &'a NewBook,
     /// Storage key of the primary audio file, the same on every
     /// destination of the copy.
@@ -60,8 +59,8 @@ pub struct LinkImport<'a> {
 /// What [`import_link_title`] did.
 #[derive(Debug, Clone)]
 pub enum LinkImportOutcome {
-    /// The title is in this library now, as this row.
-    Imported(Box<BookRecord>),
+    /// The title is in this library now, as this account's title.
+    Imported(Box<AcquireTitle>),
     /// The store account that bought it is not connected here to the
     /// branch's person; nothing was written.
     AccountNotHere,
@@ -69,8 +68,8 @@ pub enum LinkImportOutcome {
     /// active Owner, or several); nothing was written.
     NoPerson,
     /// Another live edition here holds the copy's primary file key, so the
-    /// copy is not this title's: its row stays (not acquired) and nothing
-    /// else was recorded.
+    /// copy is not this title's: its holding stays (not acquired) and
+    /// nothing else was recorded.
     KeyHeldElsewhere,
 }
 
@@ -98,21 +97,14 @@ pub async fn import_link_title(
     if !accounts_owned_by(store, person).await?.contains(&account) {
         return Ok(LinkImportOutcome::AccountNotHere);
     }
-    let record = store.upsert_book(&new_book(book)).await?;
+    let record = store.upsert_book(book).await?;
     // The files first, the primary one before the rest: a primary file
     // another live edition here holds is not this copy's, so the title is
-    // not marked acquired at it and no other file is claimed for it.
+    // not marked acquired at it and no other file is claimed for it. The
+    // import's account holding is what its writes are recorded under.
+    let holding = record.holding_id.as_str();
     let mut pdf_refused = false;
-    // The import's account holding, which its writes are recorded under.
-    let holding = store
-        .title_holding_of_book(&record.uuid)
-        .await?
-        .map(|title| title.holding_id);
-    let owner = match holding.as_deref() {
-        Some(holding) => store.file_owner_of_holding(holding).await?,
-        None => None,
-    };
-    if let Some(owner) = owner {
+    if let Some(owner) = store.file_owner_of_holding(holding).await? {
         let mut files = import.files.to_vec();
         files.sort_by_key(|(_, key)| *key != import.primary_key);
         for (destination, key) in files {
@@ -124,7 +116,7 @@ pub async fn import_link_title(
                 continue;
             }
             tracing::warn!(
-                book_uuid = %record.uuid,
+                holding_id = %holding,
                 %destination,
                 %key,
                 "another edition here holds this key; the imported copy leaves it unrecorded"
@@ -135,61 +127,25 @@ pub async fn import_link_title(
             pdf_refused |= import.pdf_key == Some(key);
         }
     }
-    match holding.as_deref() {
-        Some(holding) => {
-            store
-                .set_holding_acquire_status(
-                    holding,
-                    AcquireStatus::Acquired,
-                    Some(import.primary_key),
-                    None,
-                )
-                .await?;
-            if let Some(pdf_key) = import.pdf_key.filter(|_| !pdf_refused) {
-                store
-                    .set_holding_pdf_status(holding, AcquireStatus::Acquired, Some(pdf_key))
-                    .await?;
-            }
-        }
-        // A title that resolved to no listing has no holding: only its
-        // flat row records the copy.
-        None => {
-            store
-                .set_acquire_status(
-                    &record.uuid,
-                    &record.account_id,
-                    AcquireStatus::Acquired,
-                    Some(import.primary_key),
-                    None,
-                )
-                .await?;
-            if let Some(pdf_key) = import.pdf_key.filter(|_| !pdf_refused) {
-                store
-                    .set_pdf_status(
-                        &record.uuid,
-                        &record.account_id,
-                        AcquireStatus::Acquired,
-                        Some(pdf_key),
-                    )
-                    .await?;
-            }
-        }
+    store
+        .set_holding_acquire_status(
+            holding,
+            AcquireStatus::Acquired,
+            Some(import.primary_key),
+            None,
+        )
+        .await?;
+    if let Some(pdf_key) = import.pdf_key.filter(|_| !pdf_refused) {
+        store
+            .set_holding_pdf_status(holding, AcquireStatus::Acquired, Some(pdf_key))
+            .await?;
     }
     record_import(store, import.library_id, &record).await?;
     let stored = store
-        .get_book_by_uuid(&record.uuid)
+        .acquire_title_of_holding(holding)
         .await?
         .unwrap_or(record);
     Ok(LinkImportOutcome::Imported(Box::new(stored)))
-}
-
-/// The library's title as an insert here: the same store identity and
-/// metadata under this library's own uuid.
-fn new_book(book: &NewBook) -> NewBook {
-    NewBook {
-        uuid: None,
-        ..book.clone()
-    }
 }
 
 /// Records that `book` was imported from the library `library_id`. A book
@@ -199,7 +155,7 @@ fn new_book(book: &NewBook) -> NewBook {
 /// # Errors
 ///
 /// Returns an error when the write fails.
-async fn record_import(store: &LibraryStore, library_id: &str, book: &BookRecord) -> Result<()> {
+async fn record_import(store: &LibraryStore, library_id: &str, book: &AcquireTitle) -> Result<()> {
     record_copy_taken_from_link(
         store,
         library_id,

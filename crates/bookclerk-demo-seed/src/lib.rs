@@ -37,7 +37,7 @@ use bookclerk_library::control_plane::{
     CatalogBegin, ConfigActor, DeploymentReplace, DesiredState,
 };
 use bookclerk_library::entities::{node_credentials, nodes};
-use bookclerk_library::CatalogEnrichmentFields;
+use bookclerk_library::EditionEnrichment;
 use bookclerk_library::{
     AcquireStatus, LibraryStore, ListingDetail, NewBook, NewTitleRequest, RequestStatus, UserRole,
 };
@@ -677,9 +677,8 @@ pub async fn seed(
             .await
             .with_context(|| format!("add {}", sample.title))?;
         store
-            .set_acquire_status(
-                &record.uuid,
-                SAMPLE_ACCOUNT,
+            .set_holding_acquire_status(
+                &record.holding_id,
                 AcquireStatus::Acquired,
                 Some(&storage_key(sample)),
                 None,
@@ -688,7 +687,7 @@ pub async fn seed(
             .with_context(|| format!("mark {} acquired", sample.title))?;
         if let Some(hit) = hit {
             store
-                .update_catalog_enrichment(&record.uuid, &enrichment(sample.store.id, hit, when))
+                .enrich_edition(&record.edition_id, &enrichment(sample.store.id, hit))
                 .await
                 .with_context(|| format!("add the store record of {}", sample.title))?;
         }
@@ -818,16 +817,16 @@ fn new_book(sample: &SampleTitle, hit: Option<&CatalogHit>) -> NewBook {
 
 /// The enrichment fields of a storefront record: what a scan does not
 /// carry but the record has (cover art, description, language).
-fn enrichment(store: &str, hit: &CatalogHit, when: DateTime<Utc>) -> CatalogEnrichmentFields {
-    CatalogEnrichmentFields {
+fn enrichment(store: &str, hit: &CatalogHit) -> EditionEnrichment {
+    EditionEnrichment {
+        asin: None,
         description: present(hit.description.as_ref()),
         language: present(hit.language.as_ref()),
         cover_url: present(hit.cover_url.as_ref()),
         subjects: None,
         categories: present(hit.categories.as_ref()),
-        enrich_source: Some(store.to_owned()),
-        enrich_confidence: Some(1.0),
-        enrich_updated_at: Some(when),
+        source: store.to_owned(),
+        confidence: 1.0,
     }
 }
 

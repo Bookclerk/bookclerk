@@ -59,6 +59,11 @@ SITE_COMMIT=$(git rev-parse HEAD) npm run build
 cd audit && npm ci && node audit.ts      # --chrome <path> or CHROME_PATH picks the browser
 ```
 
+`audit/serve.ts` is the local server the audit uses, and the web UI's visual
+checks screenshot the pages in `audit/pages.ts` through it
+(`docs/contributing/ui/visual-testing.md`). Run it alone with
+`node audit/serve.ts --port 6107`.
+
 ## Layout
 
 - `src/*.html` – pages. `{{name}}` inserts an escaped value, `{{> name}}` a
