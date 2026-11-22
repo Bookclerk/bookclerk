@@ -3005,7 +3005,10 @@ mod tests {
             b"v1"
         );
         assert!(
-            err.contains("directory") || err.contains("install-ledger"),
+            err.contains("directory")
+                || err.contains("install-ledger")
+                // Windows refuses to open a directory as a file this way.
+                || err.contains("os error 5"),
             "{err}"
         );
 

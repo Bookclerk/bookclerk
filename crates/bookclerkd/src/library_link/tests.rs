@@ -833,6 +833,11 @@ async fn a_host_runs_its_owners_scan_end_to_end() {
     }
 }
 
+/// The lease, in seconds, for the job that survives a reconnect: long
+/// enough that a slow runner reconnects (close, 1.5 s back-off, handshake)
+/// before the host's own renew loop gives the fence up.
+const RESUME_LEASE_SECS: u64 = 8;
+
 /// A fence still held when the connection drops is resumed on reconnect
 /// and the job finishes under it; a fence reclaimed while the host was
 /// away is lost on reconnect, its run is cancelled and its result
@@ -843,7 +848,7 @@ async fn a_reconnecting_host_resumes_live_fences_and_drops_lost_ones() {
     let owner_files = tempfile::tempdir().unwrap();
     let host_files = tempfile::tempdir().unwrap();
     let (state, owner) = crate::node_api::tests::test_state(&owner_files).await;
-    state.config.write().await.jobs.lease_seconds = 3;
+    state.config.write().await.jobs.lease_seconds = RESUME_LEASE_SECS;
     let addr = serve(crate::api::router(Arc::clone(&state), None)).await;
     let origin = public_origin(&state, &format!("http://127.0.0.1:{}", addr.port())).await;
     let host = host_store(host_files.path()).await;
@@ -877,8 +882,8 @@ async fn a_reconnecting_host_resumes_live_fences_and_drops_lost_ones() {
     crate::node_api::ws::close_node_sessions(&node_id, CLOSE_SUPERSEDED);
     connected(&handle, 2).await;
     assert_eq!(handle.held_fences().len(), 1, "the fence survived");
-    // Renewals carry on past the 3 s lease under the resumed fence.
-    tokio::time::sleep(Duration::from_secs(4)).await;
+    // Renewals carry on past the lease under the resumed fence.
+    tokio::time::sleep(Duration::from_secs(RESUME_LEASE_SECS + 1)).await;
     let running = job(&owner, &first).await;
     assert_eq!(running.state, JobState::Running);
     assert_eq!(running.lease_generation, fence);
@@ -892,6 +897,8 @@ async fn a_reconnecting_host_resumes_live_fences_and_drops_lost_ones() {
     // Phase 2: while the host is away the lease expires and the owner
     // reclaims it; the reconnecting host learns the fence is lost.
     transport.release.store(false, Ordering::SeqCst);
+    // A short lease, so it expires quickly while the host is away.
+    state.config.write().await.jobs.lease_seconds = 3;
     let second = enqueue_scan(&owner).await;
     eventually("the host to start the second job", || async {
         transport.runs().len() == 2
