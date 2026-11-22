@@ -5141,6 +5141,262 @@
         "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
       }
     },
+    "/api/library/convert": {
+      "post": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Queues a convert of stored books into another copy; returns the\naccepted job ids.",
+        "description": "Each book gets the copy beside its original, made from the copy the\nlibrary already stores, on every destination whose filter takes that\ncopy; the original is left as it is. No store is asked. One job per\ntitle, run like an acquire on a node with the media worker and the\nlibrary database. Operator, Owners and Administrators only.",
+        "operationId": "trigger_convert",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConvertRequestBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The convert jobs were accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanPlanResponse"
+                },
+                "example": {
+                  "job_id": "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
+                  "job_ids": [
+                    "acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+                  ],
+                  "message": "convert job acquire-3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b accepted",
+                  "ok": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The copy is not one a convert makes, or the body names no book. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "error": "invalid",
+                  "job_id": "",
+                  "message": "a convert makes a new encoding; `original` is not one",
+                  "ok": false
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller may not convert these books. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ActionResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "forbidden": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "forbidden",
+                      "job_id": "",
+                      "message": "that title is not in a store account linked to this user",
+                      "ok": false
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The same convert is already pending or running, or no node can run it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanConflict"
+                },
+                "example": {
+                  "error": "conflict",
+                  "job_id": "acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f",
+                  "job_ids": [
+                    "acquire-7d0c1e2f-3a4b-4c5d-8e6f-9a0b1c2d3e4f"
+                  ],
+                  "message": "convert already pending or running",
+                  "ok": false
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `copy` at line 1 column 2"
+              }
+            }
+          },
+          "429": {
+            "description": "The job queue is full.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanPlanResponse"
+                },
+                "example": {
+                  "error": "queue_full",
+                  "job_id": "",
+                  "job_ids": [],
+                  "message": "job queue is full",
+                  "ok": false
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The jobs could not be queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResponse"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "job_id": "",
+                  "message": "ORM / database plugin error: Connection Error: pool timed out while waiting for an open connection",
+                  "ok": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Job admission is paused. When the sign-in could not be checked because the library did not answer in time, the answer is `session_check_unavailable` instead, with `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again; sent only with `session_check_unavailable`."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ActionResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "admission_paused": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "admission_paused",
+                      "job_id": "",
+                      "message": "job admission paused (database reload in progress)",
+                      "ok": false
+                    }
+                  },
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or a signed-in Administrator, Owner or user allowed to acquire."
+      }
+    },
     "/api/jobs": {
       "get": {
         "tags": [
@@ -48912,6 +49168,144 @@
         "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
+    "/hooks/{token}/{name}": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Stores one inbound webhook request for a plugin instance.",
+        "description": "The token is the credential; a row with a signing rule also needs a\nvalid signature. The reply body never says more than the status.",
+        "operationId": "post_hook",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "description": "The webhook's URL token: 43 characters of base64url, from the plugin's `WEBHOOKS.url`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The `[[webhooks]]` row's name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "The request body, kept as sent, at most the row's `max_body_bytes`.",
+          "content": {
+            "*/*": {
+              "schema": {
+                "$ref": "#/components/schemas/BinaryBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Stored; the plugin reads it on its next pull."
+          },
+          "400": {
+            "description": "A kept header repeats, is too long or holds a control character.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "bad_request",
+                  "message": "The request could not be understood.",
+                  "status": 400
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The signature is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The token or name matches no webhook.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "not_found",
+                  "message": "That page or resource was not found.",
+                  "status": 404
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is larger than the row allows.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "payload_too_large",
+                  "message": "Payload Too Large",
+                  "status": 413
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The webhook is over its `rate_per_minute`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many requests. Try again shortly.",
+                  "status": 429
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The webhook cannot take requests now: webhooks are off, the signing secret is not set, this node does not run the instance, the library is unavailable, or the instance already holds its cap of waiting requests. Retry later.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "service_unavailable",
+                  "message": "The Bookclerk daemon is not ready to handle this request.",
+                  "status": 503
+                }
+              }
+            }
+          }
+        },
+        "security": [],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      }
+    },
     "/api/openapi.json": {
       "get": {
         "tags": [
@@ -54314,6 +54708,45 @@
             ],
             "description": "Overrides [`MemberControls::see_prices`].",
             "example": null
+          }
+        },
+        "additionalProperties": false
+      },
+      "ConvertRequestBody": {
+        "type": "object",
+        "description": "Body for `POST /api/library/convert`.",
+        "required": [
+          "copy"
+        ],
+        "properties": {
+          "copy": {
+            "$ref": "#/components/schemas/OutputCopy",
+            "description": "The copy to add: a format and a quality, as `output.copies` lists\nthem. `original` is refused: a convert makes a new encoding."
+          },
+          "titles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Title ids (uuid, ASIN, ISBN, product id) of stored books; each\nbecomes its own job.",
+            "example": [
+              "8c1d2e3f-4a5b-4c6d-9e7f-0a1b2c3d4e5f"
+            ]
+          },
+          "editions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Editions to convert (`id` of an edition in a work's detail); each\nbecomes one job for the title that acquired it.",
+            "example": [
+              "0f3a5c7e-2b4d-4f6a-8c1e-3d5b7f9a1c2e"
+            ]
+          },
+          "force": {
+            "type": "boolean",
+            "description": "Make the copy again when the book already has it.",
+            "example": false
           }
         },
         "additionalProperties": false
@@ -61750,6 +62183,11 @@
             "description": "Write a `.cue` sidecar.",
             "example": false
           },
+          "keep_codec_in_m4b": {
+            "type": "boolean",
+            "description": "Keep Opus, FLAC, ALAC, E-AC-3 and AC-4 audio unchanged inside an M4B\ninstead of encoding it to AAC (advanced; off by default).",
+            "example": false
+          },
           "fixup_metadata": {
             "type": "boolean",
             "description": "Embed tags, cover, and chapters natively.",
@@ -63832,7 +64270,8 @@
               "plugin_kv",
               "work_fs",
               "oauth",
-              "sockets"
+              "sockets",
+              "webhooks"
             ]
           }
         }
@@ -73117,6 +73556,10 @@
     {
       "name": "Health",
       "description": "Liveness."
+    },
+    {
+      "name": "Webhooks",
+      "description": "Inbound webhooks for plugins, outside operator auth: the URL token is the credential."
     },
     {
       "name": "Spec",

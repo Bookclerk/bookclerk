@@ -69,7 +69,7 @@ Commands:
 - [`bookclerk library search`](#bookclerk-library-search): Search the library's works by title, people, series or store id
 - [`bookclerk library export`](#bookclerk-library-export): Export library titles as CSV / JSON / XLSX (alias of `export library`): the whole library, or with `--user` that person's view
 - [`bookclerk library list`](#bookclerk-library-list): List books in the local library DB
-- [`bookclerk library convert`](#bookclerk-library-convert): Convert acquired m4b/m4a to mp3
+- [`bookclerk library convert`](#bookclerk-library-convert): Add another copy of stored books, made from the copy the library holds and kept beside it (queued for the daemon, like acquire)
 - [`bookclerk library filters`](#bookclerk-library-filters): Manage saved quick filters
 - [`bookclerk library tags`](#bookclerk-library-tags): Read or set a work's library tags, which everyone sees, the Library filters by, and a patron scope can include or exclude
 - [`bookclerk library collections`](#bookclerk-library-collections): Read or set the library's collections: named parts of the library, each defined by storage key prefixes, which the Library filters by and a patron scope can include or exclude
@@ -312,20 +312,22 @@ Options:
 
 ### `bookclerk library convert`
 
-Convert acquired m4b/m4a to mp3
+Add another copy of stored books, made from the copy the library holds and kept beside it (queued for the daemon, like acquire)
 
 ```text
-bookclerk library convert [OPTIONS] [ASIN]...
+bookclerk library convert [OPTIONS] <ID>...
 ```
 
 Arguments:
 
-- `[ASIN]...`: Title ids to convert; empty means all acquired titles matching the account filter
+- `<ID>...`: Title ids (uuid, ASIN, ISBN, product id) of the books to convert
 
 Options:
 
 - `--account <ACCOUNT>`: Limit conversion to this account id, stem, or nickname
-- `-f, --force`: Re-encode even when an MP3 already exists in storage
+- `--to <FORMAT:QUALITY>`: The copy to add, as `output.copies` writes it (`mp3:64k-mono`, `m4b:original`, `opus:32k`). Defaults to an MP3 at the library's `output.lame` quality
+- `-f, --force`: Make the copy again when the book already has it
+- `--no-wait`: Queue the jobs and print their ids without waiting
 
 ### `bookclerk library filters`
 

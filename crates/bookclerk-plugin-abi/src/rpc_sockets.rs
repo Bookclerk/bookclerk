@@ -39,7 +39,10 @@ fn check_delivery(socket: &str, frame: Option<&SocketFrame>, attachment: &[u8]) 
 }
 
 /// Writes a unit outcome into an `EmptyReply` builder.
-fn write_unit(mut result: crate::plugin_capnp::empty_reply::Builder<'_>, outcome: Result<()>) {
+pub(super) fn write_unit(
+    mut result: crate::plugin_capnp::empty_reply::Builder<'_>,
+    outcome: Result<()>,
+) {
     match outcome {
         Ok(()) => result.set_ok(()),
         Err(err) => write_error(result.init_err(), &err),
@@ -51,7 +54,7 @@ fn write_unit(mut result: crate::plugin_capnp::empty_reply::Builder<'_>, outcome
 /// # Errors
 ///
 /// The error the reply carried, or the decode error.
-fn read_unit(result: crate::plugin_capnp::empty_reply::Reader<'_>) -> Result<()> {
+pub(super) fn read_unit(result: crate::plugin_capnp::empty_reply::Reader<'_>) -> Result<()> {
     match result.which().map_err(from_capnp)? {
         empty_reply::Ok(()) => Ok(()),
         empty_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),

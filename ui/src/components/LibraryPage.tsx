@@ -5,6 +5,7 @@ import { AppTopBar } from "@/components/AppTopBar";
 import { ContinueListening } from "@/components/ContinueListening";
 import { LibraryTagsEditor } from "@/components/LibraryTagsEditor";
 import { TitleDetailModal, type TitleMetaSearchKind } from "@/components/TitleDetailModal";
+import { ConvertBookPanel } from "@/components/ConvertBookPanel";
 import { titleDetailFromWork } from "@/lib/titleDetail";
 import { WorkRow } from "@/components/WorkRow";
 import { JobsStrip } from "@/components/JobsStrip";
@@ -21,6 +22,7 @@ import {
   fetchWork,
   fetchWorks,
   signOut,
+  storedEditions,
   triggerAcquire,
   triggerScan,
   type AcquireStatus,
@@ -602,7 +604,15 @@ export function LibraryPage({
           }
           extra={
             role === "operator" || role === "owner" || role === "administrator" ? (
-              <LibraryTagsEditor workId={selected.id} />
+              <>
+                <LibraryTagsEditor workId={selected.id} />
+                {storedEditions(selectedDetail).length > 0 ? (
+                  <ConvertBookPanel
+                    editions={storedEditions(selectedDetail)}
+                    onQueued={() => void refreshMeta()}
+                  />
+                ) : null}
+              </>
             ) : undefined
           }
           onMetaSearch={(kind: TitleMetaSearchKind, value: string) => {

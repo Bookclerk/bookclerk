@@ -97,8 +97,15 @@ pub fn check(data: &[u8]) {
         }
         b't' => {
             let Some(text) = text else { return };
-            let shaped = text.len() == 43 && text.bytes().all(base64url);
-            assert_eq!(parse_card_token(text).is_some(), shaped, "{text:?}");
+            // Surrounding whitespace is dropped (a header or query value
+            // may carry it); what is left must be the minted shape.
+            let core = text.trim_matches(char::is_whitespace);
+            let shaped = core.len() == 43 && core.bytes().all(base64url);
+            let parsed = parse_card_token(text);
+            assert_eq!(parsed.is_some(), shaped, "{text:?}");
+            if let Some(token) = parsed {
+                assert_eq!(token, core, "{text:?}");
+            }
         }
         b'q' => {
             let Some(text) = text else { return };
