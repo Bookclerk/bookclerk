@@ -156,6 +156,9 @@ fn msys_command(program: &str) -> Command {
     let bin = msys2_bin();
     let compiler = cc::Build::new().get_compiler();
     let mut cmd = Command::new(bin.join(format!("{program}.exe")));
+    // The plain MSYS environment (not MinGW): POSIX tools, no compiler of
+    // its own.
+    cmd.env("MSYSTEM", "MSYS");
     let mut path = Vec::new();
     if let Some(compiler_dir) = compiler.path().parent() {
         path.push(compiler_dir.to_path_buf());
@@ -316,17 +319,22 @@ fn build_ffmpeg(host: Host, out: &Path, source: &Path, prefix: &Path) {
     }
     run(&mut configure);
     let jobs = env::var("NUM_JOBS").unwrap_or_else(|_| "1".to_string());
-    let make = || {
-        let mut cmd = if msvc {
-            msys_command("make")
+    for target in [format!("-j{jobs}"), "install".to_string()] {
+        let mut make = if msvc {
+            // Through MSYS2's shell, not straight from this process: a
+            // `make` started by a native program runs FFmpeg's recipes
+            // with one level of backslashes lost (its `awk` and `sed`
+            // dependency scripts then fail to parse).
+            let mut sh = msys_command("sh");
+            sh.arg("-c").arg(format!("make {target}"));
+            sh
         } else {
-            Command::new("make")
+            let mut make = Command::new("make");
+            make.arg(target);
+            make
         };
-        cmd.current_dir(&build);
-        cmd
-    };
-    run(make().arg(format!("-j{jobs}")));
-    run(make().arg("install"));
+        run(make.current_dir(&build));
+    }
 }
 
 /// Lowercase hex SHA-256 of the file at `path`.
