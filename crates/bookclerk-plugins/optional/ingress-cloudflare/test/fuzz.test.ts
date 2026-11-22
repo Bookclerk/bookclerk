@@ -5,16 +5,20 @@
  *
  * Both ends parse what the other sends: the plugin parses the relay's
  * frames, request heads and notices, and the relay parses the plugin's
- * frames and response heads. Each seed in `fuzz/frame/` (hex bytes),
- * `fuzz/head/` (head JSON) and `fuzz/notice/` (notice text and client
- * addresses) is replayed, then seeded mutations are checked against
+ * frames and response heads, and each parses the other's live frames. Each
+ * seed in `fuzz/frame/` (hex bytes), `fuzz/head/` (head JSON),
+ * `fuzz/notice/` (notice text and client addresses) and `fuzz/live/` (hex
+ * live frames) is replayed, then seeded mutations are checked against
  * oracles written from the protocol's rules rather than from the parser:
  *
  * - frames: an independent decoder over the whole input, and the same
  *   answer whatever the chunk boundaries;
  * - heads: the RFC 9110 token and field-value grammar and the shared
  *   limits, plus a round trip through `encodeFrame`;
- * - client addresses: Node's `net.isIP`, less IPv6 zones.
+ * - client addresses: Node's `net.isIP`, less IPv6 zones;
+ * - live frames: an independent decoder restating the layout and the
+ *   sendable close codes, plus a byte-exact round trip through
+ *   `encodeLiveFrame`.
  *
  * `FUZZ_SEED` and `FUZZ_ITERATIONS` pick another run; a failure prints the
  * seed, iteration and input that reproduce it.
@@ -33,9 +37,12 @@ import {
   MAX_HEAD_BYTES,
   MAX_METHOD_BYTES,
   MAX_TARGET_BYTES,
+  MAX_LIVE_FRAME_BYTES,
   encodeFrame,
+  encodeLiveFrame,
   isIpAddress,
   isRequestId,
+  parseLiveFrame,
   parseNotice,
   parseRequestHead,
   parseResponseHead,
@@ -367,9 +374,11 @@ function requestOk(json: string): boolean {
     return false;
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const { method, target, headers, client } = value as Record<string, unknown>;
+  const { method, target, headers, client, upgrade } = value as Record<string, unknown>;
   if (typeof method !== "string" || method.length > MAX_METHOD_BYTES || !TCHAR.test(method))
     return false;
+  // An upgrade is only ever a GET.
+  if (upgrade !== undefined && (upgrade !== true || method !== "GET")) return false;
   if (typeof target !== "string" || target.length > MAX_TARGET_BYTES) return false;
   if (!target.startsWith("/") || target.startsWith("//")) return false;
   for (const ch of target) {
@@ -400,8 +409,9 @@ function responseOk(json: string): boolean {
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const { status, headers } = value as Record<string, unknown>;
-  if (typeof status !== "number" || !Number.isInteger(status) || status < 200 || status > 599)
-    return false;
+  if (typeof status !== "number" || !Number.isInteger(status)) return false;
+  // 101 is the one informational answer: the library accepted an upgrade.
+  if (status !== 101 && (status < 200 || status > 599)) return false;
   return headersOk(headers, false);
 }
 
@@ -441,13 +451,16 @@ function checkHead(json: string, label: string): void {
       headers: fieldsOf(input["headers"]),
     };
     if (input["client"] !== undefined) projected["client"] = input["client"];
+    if (input["upgrade"] !== undefined) projected["upgrade"] = input["upgrade"];
     assert.deepEqual(request, projected, `${label} request projection`);
     const step = new FrameReader().push(encodeFrame(request));
     assert.equal(step.kind, "head");
     if (step.kind === "head") assert.deepEqual(parseRequestHead(step.json), request, label);
     // The parsed head carries only the members the protocol defines.
     assert.deepEqual(
-      Object.keys(request).filter((k) => !["method", "target", "headers", "client"].includes(k)),
+      Object.keys(request).filter(
+        (k) => !["method", "target", "headers", "client", "upgrade"].includes(k),
+      ),
       [],
     );
   }
@@ -508,6 +521,101 @@ function checkNotice(text: string, label: string): void {
     assert.equal(isRequestId(notice.id), true);
   }
 }
+
+/** What the oracle says a live frame decodes to. */
+type LiveVerdict =
+  | { ok: true; op: "text"; id: string; text: string }
+  | { ok: true; op: "binary"; id: string; data: number[] }
+  | { ok: true; op: "close"; id: string; code: number; reason: string }
+  | { ok: false };
+
+/**
+ * Decodes UTF-8 the way the oracle trusts: a byte-exact round trip.
+ *
+ * @param bytes - Candidate UTF-8.
+ * @returns The text, or `null` when the bytes are not UTF-8.
+ */
+function utf8(bytes: Uint8Array): string | null {
+  const text = Buffer.from(bytes).toString("utf8");
+  return Buffer.from(text, "utf8").equals(Buffer.from(bytes)) ? text : null;
+}
+
+/**
+ * The independent live-frame decoder: op byte, id length, ASCII id, then
+ * the payload; close codes a WebSocket endpoint may send (RFC 6455
+ * section 7.4, less the reserved and local-only ones).
+ *
+ * @param bytes - The message.
+ * @returns What it decodes to.
+ */
+function liveOracle(bytes: Uint8Array): LiveVerdict {
+  if (bytes.length < 2 || bytes.length > MAX_LIVE_FRAME_BYTES) return { ok: false };
+  const n = bytes[1] ?? 0;
+  if (n < 1 || n > 64 || bytes.length < 2 + n) return { ok: false };
+  const id = Buffer.from(bytes.subarray(2, 2 + n)).toString("latin1");
+  if (!/^[0-9A-Za-z-]+$/.test(id)) return { ok: false };
+  const payload = bytes.subarray(2 + n);
+  switch (bytes[0]) {
+    case 1: {
+      const text = utf8(payload);
+      return text === null ? { ok: false } : { ok: true, op: "text", id, text };
+    }
+    case 2:
+      return { ok: true, op: "binary", id, data: [...payload] };
+    case 3: {
+      if (payload.length < 2 || payload.length > 125) return { ok: false };
+      const code = (payload[0] ?? 0) * 256 + (payload[1] ?? 0);
+      const sendable =
+        (code >= 1000 && code <= 1003) ||
+        (code >= 1007 && code <= 1014) ||
+        (code >= 3000 && code <= 4999);
+      const reason = utf8(payload.subarray(2));
+      if (!sendable || reason === null) return { ok: false };
+      return { ok: true, op: "close", id, code, reason };
+    }
+    default:
+      return { ok: false };
+  }
+}
+
+/**
+ * Checks one live frame against the oracle and the round trip.
+ *
+ * @param bytes - The input.
+ * @param label - Reproduction note for failures.
+ */
+function checkLive(bytes: Uint8Array, label: string): void {
+  const expected = liveOracle(bytes);
+  const frame = parseLiveFrame(bytes);
+  const got: LiveVerdict =
+    typeof frame === "string"
+      ? { ok: false }
+      : frame.op === "binary"
+        ? { ok: true, op: "binary", id: frame.id, data: [...frame.data] }
+        : { ok: true, ...frame };
+  assert.deepEqual(got, expected, `${label} live ${Buffer.from(bytes).toString("hex")}`);
+  if (typeof frame !== "string") {
+    assert.deepEqual(
+      Buffer.from(encodeLiveFrame(frame)).toString("hex"),
+      Buffer.from(bytes).toString("hex"),
+      `${label} live round trip`,
+    );
+  }
+}
+
+test("live frame seeds replay and mutations match the independent decoder", () => {
+  const seeds = corpus("live").map(fromHex);
+  const rand = prng(SEED + 3);
+  seeds.forEach((seed, i) => checkLive(seed, `seed ${i}`));
+  for (let i = 0; i < ITERATIONS; i++) {
+    const seed = seeds[Math.floor(rand() * seeds.length)] ?? new Uint8Array();
+    checkLive(mutateBytes(seed, rand), `FUZZ_SEED=${SEED} iteration ${i}`);
+  }
+  // A frame past the host's socket frame limit is refused unread.
+  const huge = new Uint8Array(MAX_LIVE_FRAME_BYTES + 1);
+  huge.set([2, 2, 0x6f, 0x31]);
+  assert.equal(typeof parseLiveFrame(huge), "string");
+});
 
 test("frame seeds replay and mutations match the independent decoder", () => {
   const seeds = corpus("frame").map(fromHex);

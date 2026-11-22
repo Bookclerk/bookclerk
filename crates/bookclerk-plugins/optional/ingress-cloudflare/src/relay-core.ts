@@ -8,6 +8,10 @@
  * client with what the plugin pushes back. See `protocol.ts` for the wire
  * format.
  *
+ * An upgrade takes the same path; once the plugin pushes `101`, the hub
+ * asks {@link LiveClients} for the client's socket and from then on passes
+ * the plugin's live frames to it.
+ *
  * Nothing here imports `cloudflare:workers`, so the unit tests run the hub
  * under Node with fake sockets.
  */
@@ -15,19 +19,23 @@
 import {
   FrameReader,
   HOP_BY_HOP,
+  MAX_LIVE_FRAME_BYTES,
   RELAY_HEALTH_PATH,
   RELAY_PREFIX,
   RELAY_PULL_PATH,
   RELAY_PUSH_PATH,
+  RELAY_SOCKET_HEADER,
   bearerToken,
   constantTimeEqual,
   encodeFrame,
   encodeNotice,
   isIpAddress,
   isRequestId,
+  parseLiveFrame,
   parseRequestHead,
   parseResponseHead,
   providerHeader,
+  type LiveFrame,
   type RelayHeader,
   type RelayRequestHead,
 } from "./protocol.ts";
@@ -35,12 +43,65 @@ import {
 /** A plugin socket as the hub uses it. */
 export interface RelaySocket {
   /**
-   * Sends one text message.
+   * Sends one message: a notice as text, a live frame as bytes.
    *
-   * @param text - The message.
+   * @param message - The message.
    */
-  send(text: string): void;
+  send(message: string | Uint8Array<ArrayBuffer>): void;
 }
+
+/** A public client's WebSocket as the hub uses it. */
+export interface LiveClient {
+  /**
+   * Sends one message to the client.
+   *
+   * @param message - Text or binary.
+   */
+  send(message: string | Uint8Array<ArrayBuffer>): void;
+  /**
+   * Closes the client's socket.
+   *
+   * @param code - A sendable close code.
+   * @param reason - The reason.
+   */
+  close(code: number, reason: string): void;
+}
+
+/** Where the hub finds and makes client sockets (the Worker's sockets). */
+export interface LiveClients<S extends RelaySocket> {
+  /**
+   * Accepts a client's upgrade the library accepted.
+   *
+   * @param id - The request id, the connection's id from now on.
+   * @param via - The plugin socket that served the upgrade; the
+   *   connection's frames travel on it.
+   * @param local - The plugin's socket id for the connection.
+   * @param protocol - The subprotocol the library chose, or `""`.
+   * @returns The `101` answer for the client and its socket.
+   */
+  accept(
+    id: string,
+    via: S,
+    local: string,
+    protocol: string,
+  ): { response: Response; client: LiveClient };
+  /**
+   * The client socket of a connection.
+   *
+   * @param id - The connection's id.
+   * @returns Its socket, or `null` when it is gone.
+   */
+  find(id: string): LiveClient | null;
+}
+
+/** What became of a live frame the plugin sent. */
+export type LiveOutcome = "delivered" | "held" | "dropped" | "malformed";
+
+/** Most frames held for a connection whose client is not accepted yet. */
+const MAX_EARLY_FRAMES = 64;
+
+/** Most bytes held for such a connection. */
+const MAX_EARLY_BYTES = 4 * MAX_LIVE_FRAME_BYTES;
 
 /** How long the hub waits, in milliseconds. */
 export interface RelayTimeouts {
@@ -53,8 +114,12 @@ export interface RelayTimeouts {
 /** Default waits: 30 s for a socket, 100 s for a response head. */
 export const DEFAULT_TIMEOUTS: RelayTimeouts = { queueMs: 30_000, headMs: 100_000 };
 
-/** One public request the hub holds. */
-interface Pending {
+/**
+ * One public request the hub holds.
+ *
+ * @typeParam S - The plugin socket type.
+ */
+interface Pending<S extends RelaySocket> {
   /** Request head for the plugin's pull. */
   head: RelayRequestHead;
   /** Request body, or `null` for a request without one. */
@@ -66,11 +131,18 @@ interface Pending {
   /** Whether the plugin has pulled the request. */
   pulled: boolean;
   /** The socket serving it, once one was free. */
-  socket: RelaySocket | null;
+  socket: S | null;
   /** The running wait (for a socket, then for the head). */
   timer: ReturnType<typeof setTimeout> | null;
   /** Stops the plugin's push while its head is still arriving. */
   headRead: AbortController | null;
+  /**
+   * Live frames the library sent before the client's socket was accepted,
+   * for an upgrade; `null` for any other request.
+   */
+  early: LiveFrame[] | null;
+  /** Bytes of the frames in `early`, against {@link MAX_EARLY_BYTES}. */
+  earlyBytes: number;
 }
 
 /** Statuses whose responses have no body. */
@@ -229,7 +301,7 @@ async function readHead(
  * @param request - The public request.
  * @returns The head, or why the request is refused.
  */
-export function publicHead(request: Request): RelayRequestHead | string {
+export function publicHead(request: Request, upgrade = false): RelayRequestHead | string {
   const url = new URL(request.url);
   const headers: RelayHeader[] = [];
   request.headers.forEach((value, name) => {
@@ -244,6 +316,7 @@ export function publicHead(request: Request): RelayRequestHead | string {
   };
   const client = request.headers.get("cf-connecting-ip");
   if (client !== null && isIpAddress(client)) head.client = client;
+  if (upgrade) head.upgrade = true;
   // The plugin checks the head the same way; refusing here answers the
   // client instead of failing the pull.
   const checked = parseRequestHead(JSON.stringify(head));
@@ -251,17 +324,45 @@ export function publicHead(request: Request): RelayRequestHead | string {
 }
 
 /**
- * Holds public requests until the plugin serves them.
+ * Delivers one live frame to a client socket.
+ *
+ * @param client - The socket.
+ * @param frame - The frame.
  */
-export class RelayHub {
+function deliver(client: LiveClient, frame: LiveFrame): void {
+  try {
+    switch (frame.op) {
+      case "text":
+        client.send(frame.text);
+        break;
+      case "binary":
+        client.send(new Uint8Array(frame.data));
+        break;
+      case "close":
+        client.close(frame.code, frame.reason);
+        break;
+    }
+  } catch {
+    // The client is already gone; its close tells the plugin.
+  }
+}
+
+/**
+ * Holds public requests until the plugin serves them.
+ *
+ * @typeParam S - The plugin socket type, which {@link LiveClients} gets back.
+ */
+export class RelayHub<S extends RelaySocket = RelaySocket> {
   /** Token every relay path needs. */
   readonly #token: string;
   /** Waits before giving up. */
   readonly #timeouts: RelayTimeouts;
+  /** Client sockets for live connections, or `undefined` to refuse upgrades. */
+  readonly #live: LiveClients<S> | undefined;
   /** Plugin sockets, each with the request it serves or `null` when idle. */
-  readonly #sockets = new Map<RelaySocket, string | null>();
+  readonly #sockets = new Map<S, string | null>();
   /** Requests by id. */
-  readonly #pending = new Map<string, Pending>();
+  readonly #pending = new Map<string, Pending<S>>();
   /** Ids waiting for a free socket, oldest first. */
   readonly #queue: string[] = [];
 
@@ -270,10 +371,13 @@ export class RelayHub {
    *
    * @param token - The bearer token the plugin deployed with the Worker.
    * @param timeouts - How long to wait for a socket and for a head.
+   * @param live - Client sockets for live connections; without it the hub
+   *   answers upgrades 501.
    */
-  constructor(token: string, timeouts: RelayTimeouts = DEFAULT_TIMEOUTS) {
+  constructor(token: string, timeouts: RelayTimeouts = DEFAULT_TIMEOUTS, live?: LiveClients<S>) {
     this.#token = token;
     this.#timeouts = timeouts;
+    this.#live = live;
   }
 
   /**
@@ -292,7 +396,7 @@ export class RelayHub {
    *
    * @param socket - The accepted socket.
    */
-  attach(socket: RelaySocket): void {
+  attach(socket: S): void {
     if (!this.#sockets.has(socket)) this.#sockets.set(socket, null);
     this.#dispatch();
   }
@@ -303,11 +407,41 @@ export class RelayHub {
    *
    * @param socket - The closed socket.
    */
-  detach(socket: RelaySocket): void {
+  detach(socket: S): void {
     const id = this.#sockets.get(socket);
     this.#sockets.delete(socket);
     if (id)
       this.#fail(id, problem(502, "relay_lost", "The library's connection to the relay closed."));
+  }
+
+  /**
+   * Passes a live frame the plugin sent to its client.
+   *
+   * A frame for an upgrade whose `101` push is still on its way is held
+   * and delivered once the client is accepted.
+   *
+   * @param bytes - The binary message from a plugin socket.
+   * @returns What became of it.
+   */
+  pluginFrame(bytes: Uint8Array): LiveOutcome {
+    const frame = parseLiveFrame(bytes);
+    if (typeof frame === "string") return "malformed";
+    const client = this.#live?.find(frame.id) ?? null;
+    if (client) {
+      deliver(client, frame);
+      return "delivered";
+    }
+    const pending = this.#pending.get(frame.id);
+    if (!pending?.early || pending.answered) return "dropped";
+    if (
+      pending.early.length >= MAX_EARLY_FRAMES ||
+      pending.earlyBytes + bytes.length > MAX_EARLY_BYTES
+    ) {
+      return "dropped";
+    }
+    pending.early.push(frame);
+    pending.earlyBytes += bytes.length;
+    return "held";
   }
 
   /**
@@ -352,12 +486,20 @@ export class RelayHub {
    * @returns The library's answer, or a relay error.
    */
   #public(request: Request): Promise<Response> {
-    if (request.headers.get("upgrade") !== null) {
-      return Promise.resolve(
-        problem(501, "upgrade_unsupported", "The relay does not carry WebSocket connections yet."),
-      );
+    const upgrade = request.headers.get("upgrade");
+    if (upgrade !== null) {
+      if (!this.#live) {
+        return Promise.resolve(
+          problem(501, "upgrade_unsupported", "The relay does not carry WebSocket connections."),
+        );
+      }
+      if (upgrade.toLowerCase() !== "websocket" || request.method !== "GET") {
+        return Promise.resolve(
+          problem(400, "bad_request", "Only WebSocket upgrades on GET are carried."),
+        );
+      }
     }
-    const head = publicHead(request);
+    const head = publicHead(request, upgrade !== null);
     if (typeof head === "string") return Promise.resolve(problem(400, "bad_request", head));
     if (this.#sockets.size === 0) {
       return Promise.resolve(
@@ -367,7 +509,7 @@ export class RelayHub {
     const id = crypto.randomUUID();
     const bodyless = request.method === "GET" || request.method === "HEAD";
     return new Promise<Response>((answer) => {
-      const pending: Pending = {
+      const pending: Pending<S> = {
         head,
         body: bodyless ? null : request.body,
         answer,
@@ -376,6 +518,8 @@ export class RelayHub {
         socket: null,
         timer: null,
         headRead: null,
+        early: head.upgrade ? [] : null,
+        earlyBytes: 0,
       };
       this.#pending.set(id, pending);
       this.#queue.push(id);
@@ -477,16 +621,44 @@ export class RelayHub {
       await frame.body.cancel().catch(() => {});
       return problem(410, "gone", "The request was answered before its head arrived.");
     }
+    if (head.status === 101) {
+      await frame.body.cancel().catch(() => {});
+      return this.#accept(id, pending, head.headers);
+    }
     const headers = new Headers();
     for (const field of head.headers) {
       // The relay re-frames the body, so its length is the runtime's to set.
-      if (field.name === "content-length") continue;
+      if (field.name === "content-length" || field.name === RELAY_SOCKET_HEADER) continue;
       headers.append(field.name, field.value);
     }
     const noBody = NULL_BODY.has(head.status) || pending.head.method === "HEAD";
     if (noBody) await frame.body.cancel().catch(() => {});
     this.#answer(id, new Response(noBody ? null : frame.body, { status: head.status, headers }));
     if (!noBody) await done;
+    this.#release(id);
+    return new Response(null, { status: 204 });
+  }
+
+  /**
+   * Accepts the client's upgrade once the library accepted it.
+   *
+   * @param id - The request's id.
+   * @param pending - The request.
+   * @param fields - The `101` head's fields.
+   * @returns 204 for the plugin, or 400 when the `101` does not fit.
+   */
+  #accept(id: string, pending: Pending<S>, fields: RelayHeader[]): Response {
+    const local = fields.find((field) => field.name === RELAY_SOCKET_HEADER)?.value ?? "";
+    const via = pending.socket;
+    if (!pending.head.upgrade || !this.#live || !via || !isRequestId(local)) {
+      this.#fail(id, problem(502, "bad_gateway", "The library sent a malformed answer."));
+      return problem(400, "bad_frame", "101 answers only an upgrade, naming the plugin's socket");
+    }
+    const protocol = fields.find((field) => field.name === "sec-websocket-protocol")?.value ?? "";
+    const { response, client } = this.#live.accept(id, via, local, protocol);
+    for (const frame of pending.early ?? []) deliver(client, frame);
+    pending.early = null;
+    this.#answer(id, response);
     this.#release(id);
     return new Response(null, { status: 204 });
   }

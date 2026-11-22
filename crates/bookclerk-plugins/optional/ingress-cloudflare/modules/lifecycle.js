@@ -8,7 +8,7 @@
  */
 import { PluginError, } from "@bookclerk/plugin-sdk/workerd";
 import { DeployError, deployRelay, findRelayHost, relayToken, } from "./cloudflare.js";
-import { RELAY_CONNECT_PATH, RELAY_HEALTH_PATH, RELAY_SOCKETS, parseNotice } from "./protocol.js";
+import { RELAY_CONNECT_PATH, RELAY_HEALTH_PATH, RELAY_SOCKETS, encodeLiveFrame, messageFrame, parseLiveFrame, parseNotice, sendableCloseCode, sendableCloseReason, } from "./protocol.js";
 import { serveRequest } from "./serve.js";
 /** How long `start` waits for the new relay to answer, in milliseconds. */
 export const START_WAIT_MS = 30_000;
@@ -42,6 +42,18 @@ export function hostOf(ws) {
     return typeof attachment?.host === "string" ? attachment.host : null;
 }
 /**
+ * The relay connection a socket to the library carries.
+ *
+ * @param ws - The socket.
+ * @returns Its attachment, or `null` for a relay socket.
+ */
+export function liveOf(ws) {
+    const attachment = ws.deserializeAttachment();
+    return typeof attachment?.live === "string" && typeof attachment.relay === "string"
+        ? { live: attachment.live, relay: attachment.relay }
+        : null;
+}
+/**
  * Opens sockets to the relay until {@link RELAY_SOCKETS} are open.
  *
  * @param sockets - The socket binding.
@@ -53,6 +65,8 @@ export async function topUpSockets(sockets, host, token) {
     const open = await sockets.getWebSockets();
     let current = 0;
     for (const ws of open) {
+        if (liveOf(ws) !== null)
+            continue;
         if (hostOf(ws) === host)
             current += 1;
         else
@@ -193,21 +207,125 @@ export function liveContext(env) {
     return { env, fetch: (input, init) => fetch(input, init), sleep, startWaitMs: START_WAIT_MS };
 }
 /**
- * Handles one message on a relay socket.
+ * Handles one message: a notice or a live frame on a relay socket, or a
+ * library message on a live connection's socket.
  *
  * @param env - The plugin's bindings.
  * @param fetch - The request function.
  * @param ws - The socket.
  * @param message - The message.
- * @returns Resolves once the announced request has been served.
+ * @returns Resolves once the announced request has been served or the
+ *   message passed on.
  */
 export async function handleMessage(env, fetch, ws, message) {
-    if (typeof message !== "string")
+    const live = liveOf(ws);
+    if (live !== null) {
+        await fromLibrary(env.SOCKETS, ws, live, message);
         return;
+    }
+    if (typeof message !== "string") {
+        await fromRelay(env.SOCKETS, message);
+        return;
+    }
     const notice = parseNotice(message);
     const host = hostOf(ws);
     if (typeof notice === "string" || host === null || !env.ORIGIN)
         return;
     const token = await relayToken(targetOf(env));
-    await serveRequest({ fetch, origin: env.ORIGIN, host, token }, notice.id);
+    await serveRequest({ fetch, origin: env.ORIGIN, host, token, via: ws.id }, notice.id);
+}
+/**
+ * Passes a live frame from the relay to the library socket it names.
+ *
+ * @param sockets - The socket binding.
+ * @param message - The binary message.
+ * @returns Resolves once it was passed on (or found malformed or late).
+ */
+export async function fromRelay(sockets, message) {
+    const frame = parseLiveFrame(new Uint8Array(message));
+    if (typeof frame === "string")
+        return;
+    const target = sockets.getWebSocket(frame.id);
+    try {
+        switch (frame.op) {
+            case "text":
+                await target.send(frame.text);
+                break;
+            case "binary":
+                await target.send(frame.data);
+                break;
+            case "close":
+                await target.close(frame.code, frame.reason);
+                break;
+        }
+    }
+    catch {
+        // The library side already closed; its close told the relay.
+    }
+}
+/**
+ * Passes a library message to the relay as a live frame.
+ *
+ * @param sockets - The socket binding.
+ * @param ws - The live connection's socket to the library.
+ * @param live - Its attachment.
+ * @param message - The message.
+ * @returns Resolves once it was passed on.
+ */
+async function fromLibrary(sockets, ws, live, message) {
+    const relay = sockets.getWebSocket(live.relay);
+    const frame = messageFrame(live.live, message);
+    if (frame === null) {
+        await ws.close(1009, "message too large").catch(() => { });
+        await relay
+            .send(encodeLiveFrame({ op: "close", id: live.live, code: 1009, reason: "message too large" }))
+            .catch(() => { });
+        return;
+    }
+    try {
+        await relay.send(frame);
+    }
+    catch {
+        await ws.close(1011, "the relay connection closed").catch(() => { });
+    }
+}
+/**
+ * Handles a socket that closed: a live connection's close goes to the
+ * relay; a relay socket's close ends the connections it carried and is
+ * reopened unless the plugin closed it.
+ *
+ * @param env - The plugin's bindings.
+ * @param ws - The closed socket.
+ * @param code - The close code.
+ * @param reason - The close reason.
+ * @returns Resolves once the close was handled.
+ */
+export async function handleClose(env, ws, code, reason) {
+    const live = liveOf(ws);
+    if (live !== null) {
+        const frame = encodeLiveFrame({
+            op: "close",
+            id: live.live,
+            code: sendableCloseCode(code),
+            reason: sendableCloseReason(reason),
+        });
+        await env.SOCKETS.getWebSocket(live.relay)
+            .send(frame)
+            .catch(() => { });
+        return;
+    }
+    for (const socket of await env.SOCKETS.getWebSockets().catch(() => [])) {
+        if (liveOf(socket)?.relay === ws.id) {
+            await socket.close(1001, "the relay connection closed").catch(() => { });
+        }
+    }
+    const host = hostOf(ws);
+    if (host === null || code === 1000)
+        return;
+    try {
+        await topUpSockets(env.SOCKETS, host, await relayToken(targetOf(env)));
+    }
+    catch {
+        // `health` tops the sockets up again.
+    }
 }
