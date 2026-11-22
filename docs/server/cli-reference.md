@@ -460,7 +460,7 @@ Commands:
 
 - [`bookclerk discover recommend`](#bookclerk-discover-recommend): Optionally enrich + embed works, then print recommendations
 - [`bookclerk discover enrich-metadata`](#bookclerk-discover-enrich-metadata): Fill metadata gaps (description, subjects, cover, language) from the deployed metadata-provider plugins, such as Open Library
-- [`bookclerk discover embed`](#bookclerk-discover-embed): Embed dirty works
+- [`bookclerk discover embed`](#bookclerk-discover-embed): Embed dirty works with the built-in word-hash vectors
 - [`bookclerk discover sync-listening`](#bookclerk-discover-sync-listening): Sync listening progress from all capable integrations into the library DB
 - [`bookclerk discover wishlist`](#bookclerk-discover-wishlist): Personal wishlist helpers (also feed the shared global queue)
 
@@ -490,15 +490,11 @@ bookclerk discover enrich-metadata [OPTIONS]
 
 ### `bookclerk discover embed`
 
-Embed dirty works
+Embed dirty works with the built-in word-hash vectors
 
 ```text
 bookclerk discover embed [OPTIONS]
 ```
-
-Options:
-
-- `--hash`: Force the local-hash embedder (no ONNX download)
 
 ### `bookclerk discover sync-listening`
 

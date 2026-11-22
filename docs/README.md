@@ -125,3 +125,4 @@ Build and agent conventions for this repository live in
 - [Ingress plugins](adr/ingress-plugins.md): one action gives an install a stable public address, through relay or dynamic DNS plugins
 - [Notifications](adr/notifications.md): the host routes events into send jobs, notifier plugins send them, and account mail carries reset and recovery
 - [Drop folders](adr/drop-folders.md): a storage instance can be a watched drop folder instead of a destination, settled by the host and added by the ingest job
+- [Model plugins and the AI binding](adr/ai-models.md): models run in jailed plugins behind an `ai` entrypoint, and every caller reaches them through one `AI` binding

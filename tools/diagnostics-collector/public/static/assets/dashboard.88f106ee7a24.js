@@ -150,10 +150,10 @@ document.addEventListener("DOMContentLoaded", () => {
         headers: { "Bookclerk-Live": "1" },
         credentials: "same-origin",
       });
-      // A redirect means the session ended; stop rather than show the
-      // sign-in page. Other failures wait for the next push.
+      // A redirect means the session ended: go to sign-in, which brings
+      // this page back afterwards. Other failures wait for the next push.
       if (res.redirected) {
-        stop();
+        signedOut();
         return;
       }
       if (!res.ok) return;
@@ -184,6 +184,14 @@ document.addEventListener("DOMContentLoaded", () => {
     if (dot) dot.hidden = true;
   }
 
+  // The session ended (it expired, or someone signed out in another tab):
+  // load sign-in with this page as the place to come back to, instead of
+  // leaving stale numbers on screen whose next click would fail.
+  function signedOut() {
+    stop();
+    location.replace(`/?next=${encodeURIComponent(location.pathname + location.search)}`);
+  }
+
   function connect() {
     const ws = new WebSocket(
       `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/live`,
@@ -203,14 +211,28 @@ document.addEventListener("DOMContentLoaded", () => {
       const dot = indicator();
       if (dot) dot.hidden = true;
       // 1008: the session ended. Otherwise reconnect with backoff, a few times.
-      if (stopped || ev.code === 1008 || retries >= MAX_RETRIES) return;
+      if (stopped) return;
+      if (ev.code === 1008) {
+        signedOut();
+        return;
+      }
+      if (retries >= MAX_RETRIES) return;
       retries += 1;
       setTimeout(connect, Math.min(60000, 2000 * 2 ** (retries - 1)));
     });
   }
 
+  // A tab that comes back after a long time away checks its session at once
+  // (the hub only notices an expired session at its next push), so a page
+  // whose session ran out goes to sign-in before anything is clicked.
+  const STALE_MS = 15 * 60 * 1000;
+  let hiddenAt = 0;
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && pending) refresh();
+    if (document.hidden) {
+      hiddenAt = Date.now();
+      return;
+    }
+    if (pending || (hiddenAt && Date.now() - hiddenAt > STALE_MS)) changed();
   });
   connect();
 })();

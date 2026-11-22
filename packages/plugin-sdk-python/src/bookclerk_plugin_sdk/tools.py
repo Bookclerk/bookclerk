@@ -1154,6 +1154,52 @@ def _validate_notifier(m: dict[str, Any]) -> None:
         )
 
 
+AI_TASK_NAMES = ("textEmbeddings",)
+"""Model tasks ``[ai].serves`` and ``[ai].calls`` may name."""
+
+_AI_ALIAS_NAMESPACE = "library"
+"""Plugin id that names task aliases (``@library/text-embeddings``)."""
+
+
+def _validate_ai(m: dict[str, Any]) -> None:
+    """Check ``[ai]`` against the entrypoints with the host's rules and messages.
+
+    Args:
+        m: Manifest dictionary.
+
+    Raises:
+        ValueError: If a plugin with the ``ai`` entrypoint serves no task or
+            another plugin serves one, for unknown keys or tasks, a task named
+            twice, or a model plugin whose id is ``library``.
+    """
+    exported = "ai" in (m.get("entrypoints") or [])
+    table = m.get("ai") or {}
+    for key in table:
+        if key not in ("serves", "calls"):
+            raise ValueError(f"plugin.toml: `[ai]` has unknown key `{key}`")
+    serves = table.get("serves") or []
+    calls = table.get("calls") or []
+    if exported and not serves:
+        raise ValueError(
+            "plugin.toml: `[ai].serves` is required for a plugin with the `ai` entrypoint"
+        )
+    if not exported and serves:
+        raise ValueError("plugin.toml: `[ai].serves` needs the `ai` entrypoint")
+    if exported and m.get("id") == _AI_ALIAS_NAMESPACE:
+        raise ValueError(
+            "plugin.toml: a plugin with the `ai` entrypoint cannot have the id "
+            f"`{_AI_ALIAS_NAMESPACE}`, which names task aliases"
+        )
+    for name, tasks in (("serves", serves), ("calls", calls)):
+        seen: set[str] = set()
+        for task in tasks:
+            if task not in AI_TASK_NAMES:
+                raise ValueError(f"plugin.toml: `[ai].{name}` names unknown task `{task}`")
+            if task in seen:
+                raise ValueError(f"plugin.toml: `[ai].{name}` names the task `{task}` twice")
+            seen.add(task)
+
+
 def _validate_notification_types(m: dict[str, Any]) -> None:
     """Check ``[[notifications.types]]`` with the host's rules and messages.
 
@@ -1237,6 +1283,7 @@ def validate_manifest(m: dict[str, Any]) -> None:
     _validate_notifier(m)
     _validate_notification_types(m)
     _validate_ingress(m)
+    _validate_ai(m)
     _validate_surface(m)
     runtime = m.get("runtime") or "native"
     net = (m.get("capabilities") or {}).get("network") or {}
@@ -1288,6 +1335,7 @@ ENTRYPOINT_NAMES: tuple[str, ...] = (
     "metadataFiles",
     "notifier",
     "ingress",
+    "ai",
 )
 """Entrypoint wire names accepted in ``entrypoints``."""
 
@@ -1403,6 +1451,8 @@ def _validate_surface(m: dict[str, Any]) -> None:
         named.append(("sockets", str(sockets.get("binding") or "SOCKETS"), 0))
     if (m.get("notifications") or {}).get("types") or []:
         named.append(("notifications", "NOTIFY", 0))
+    if (m.get("ai") or {}).get("calls") or []:
+        named.append(("ai", "AI", 0))
     for index, kv in enumerate(m.get("kv_namespaces") or []):
         named.append(("kv_namespaces", str(kv.get("binding") or "KV"), index))
     for index, producer in enumerate((m.get("events") or {}).get("producers") or []):
@@ -1522,6 +1572,7 @@ ENTRYPOINT_EXPORT_CLASSES: dict[str, str] = {
     "metadataFiles": "MetadataFiles",
     "notifier": "Notifier",
     "ingress": "Ingress",
+    "ai": "Ai",
 }
 """Exported class name the launcher binds for each ``entrypoints`` wire name."""
 
@@ -1551,7 +1602,7 @@ def check_main_module_source(
             f"{main_name}: `BookclerkPlugin` was removed in api_version 3; extend `{base}` "
             "(default export with event()/job() triggers) and export named entrypoint classes "
             "(Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc, Metadata, Covers, "
-            "MetadataFiles, Notifier)"
+            "MetadataFiles, Notifier, Ai)"
         )
     if language == "python":
         if "bookclerk_plugin_sdk" not in src and base not in src:

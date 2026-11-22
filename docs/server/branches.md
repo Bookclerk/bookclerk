@@ -888,7 +888,11 @@ to several libraries sends a copy's token only to the library that
 granted it.
 
 The library sends a copy of an edition when it holds the edition's audio
-and the person may see the edition. The primary audio file comes first,
+and the person may see the edition: their
+[patron scope](../guide/sharing.md#limit-what-a-patron-sees) shows it, or
+it is on a store account of their own, and their member controls allow
+**Download**. An edition outside the scope gets the same `not_found` as
+one the library doesn't hold. The primary audio file comes first,
 then the files stored in the same folder (parts, chapters, cover, PDF,
 sidecars). File names are relative to that folder. They say what a file
 is; the branch names the files its own way.
@@ -1243,8 +1247,9 @@ are answered "not listed".
 
 ### Asking the library to download a book
 
-A clerk lists every book on A's store accounts, including ones A hasn't
-downloaded yet. For those, a patron can ask A to download the book so the
+A clerk lists every book on A's store accounts that the patron's
+[scope](../guide/sharing.md#limit-what-a-patron-sees) shows them,
+including ones A hasn't downloaded yet. For those, a patron can ask A to download the book so the
 clerk can then take A's copy. The API is `POST /api/download-requests`
 `{"work_id": "..."}`, where `work_id` is A's work id. A signed-in patron
 of A may call it, and so may a clerk with a library card for A (see

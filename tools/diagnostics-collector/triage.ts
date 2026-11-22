@@ -177,12 +177,19 @@ function positiveInt(raw: unknown, fallback: number): number {
 /** KV key prefix for the per-day neuron total. */
 const BUDGET_KEY_PREFIX = "triage-neurons:";
 
-/** How long a day's total is kept, in seconds (past the UTC day it counts). */
-const BUDGET_TTL_SECONDS = 2 * 24 * 60 * 60;
+/** Days of totals the dashboard sums for its "last 7 days" figure. */
+export const BUDGET_HISTORY_DAYS = 7;
+
+/**
+ * How long a day's total is kept, in seconds: one day past the history
+ * window, so the oldest day the dashboard sums is still there.
+ */
+const BUDGET_TTL_SECONDS = (BUDGET_HISTORY_DAYS + 1) * 24 * 60 * 60;
 
 /**
  * Daily neuron ledger in Workers KV: one key per UTC day holding the day's
- * spent and reserved neurons, expiring after two days.
+ * spent and reserved neurons, expiring a day after the dashboard's
+ * seven-day history stops reading it.
  *
  * KV has no atomic increment and reads can be up to a minute stale, so two
  * calls close together (concurrent, or back-to-back workflow runs) can both
@@ -211,6 +218,21 @@ export class BudgetLedger {
   async spent(day: string): Promise<number> {
     const n = Number(await this.kv.get(BUDGET_KEY_PREFIX + day));
     return Number.isSafeInteger(n) && n > 0 ? n : 0;
+  }
+
+  /**
+   * Neurons recorded over the last few UTC days, today included.
+   *
+   * @param nowMs - Unix time in milliseconds.
+   * @param days - How many days to sum, today first.
+   * @returns The sum (unset or unreadable days count as 0).
+   */
+  async spentOver(nowMs: number, days: number): Promise<number> {
+    const dayMs = 24 * 60 * 60 * 1000;
+    const totals = await Promise.all(
+      Array.from({ length: days }, (_, i) => this.spent(utcDay(nowMs - i * dayMs))),
+    );
+    return totals.reduce((a, b) => a + b, 0);
   }
 
   /**

@@ -91,6 +91,10 @@ paths = [
     "fuzz/oracles/notify_address_body.rs",
     "fuzz/corpus/notify_raise/**",
     "fuzz/oracles/notify_raise.rs",
+    "fuzz/corpus/ai_run_reply/**",
+    "fuzz/oracles/ai_run_reply.rs",
+    "fuzz/corpus/ai_run/**",
+    "fuzz/oracles/ai_run.rs",
     "fuzz/corpus/event_read/**",
     "fuzz/oracles/event_read.rs",
     "fuzz/corpus/socket_request/**",
@@ -505,12 +509,6 @@ build = ["bookclerk-media-worker", "bookclerk-jail"]
 [[feature_tests]]
 package = "bookclerk-plugin-database-sqlite"
 features = ["host-helpers"]
-
-# The opt-in ONNX embedder (hosts' `onnx-embeddings`); nothing in the default
-# build enables it, so this keeps it compiling and tested.
-[[feature_tests]]
-package = "bookclerk-discover"
-features = ["onnx"]
 
 # PostgreSQL contract steps (commands live in scripts/ci_plan/execute.py).
 # Each runs on every supported major when its owner's tests are selected.

@@ -242,6 +242,7 @@ export const NAV: NavSpec[] = [
       "adr/notifications",
       "adr/drop-folders",
       "adr/player-api",
+      "adr/ai-models",
     ],
   },
 ];

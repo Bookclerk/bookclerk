@@ -80,6 +80,12 @@ describe("route list", () => {
     for (const [m, p] of refused) assert.equal(classify(m, p).verdict, "deny", `${m} ${p}`);
   });
 
+  it("lets a visitor view the demo's own diagnostics reports but not delete them", () => {
+    const id = "/api/diagnostics/reports/7c1e4a90-2b6f-4d0e-9a51-3f8e2d61b0c4";
+    assert.equal(classify("GET", id).verdict, "allow");
+    assert.equal(classify("DELETE", id).verdict, "deny");
+  });
+
   it("counts every store sign-in start", () => {
     for (const p of ["/api/portal/libro/login", "/api/portal/sources/chirp/login"]) {
       assert.equal(classify("POST", p).verdict, "signin", p);
