@@ -1,6 +1,6 @@
 # ADR: Models run in plugins and are called through one `AI` binding
 
-- **Status:** Accepted; the entrypoint, the binding and the router are built, the first-party model plugin is not
+- **Status:** Accepted; the entrypoint, the binding, the router and the first-party model plugin are built, model delivery is not
 - **Date:** 2026-11-21
 - **Related:** [Plugin Workers RPC on workerd](plugin-workers-rpc-workerd.md),
   [Plugin capabilities](plugin-capabilities-v3.md),
@@ -90,18 +90,23 @@ Bookclerk ships one model plugin for text embeddings:
 
 - It is a native guest, spawned through `bookclerk-workerd` and jailed
   with no network grant.
-- It runs ONNX Runtime and the SentencePiece Lite tokenizer, both C++
-  and both built from pinned sources. The jail is what makes that
-  acceptable: the libraries never enter the host.
+- It runs ONNX Runtime and the SentencePiece Lite tokenizer, both C++.
+  ONNX Runtime is the upstream build, pinned by digest; the tokenizer is
+  compiled from pinned sources in the repository. The jail is what makes
+  that acceptable: the libraries never enter the host.
 - It sleeps when idle, like every plugin, so its memory is held only
   while it works.
-- Its model and languages are plugin settings in the database.
+- It serves the models found in its data directory. Which model and
+  languages a library uses is chosen in the host, which delivers the
+  files.
 
-Models are delivered as a core file plus one pack per language. A
-workflow builds them from pinned upstream revisions, checks token ids
-against the reference tokenizer, and signs what it publishes. The host
-downloads and verifies packs against digests pinned in the plugin
-package, and the guest reads them from a read-only directory.
+Models are delivered as a cut graph, a tokenizer, the rows every text
+needs and one row pack per language
+([Embedding model packs](../internals/model-packs.md)). A workflow builds
+them from pinned upstream revisions, checks token ids against the
+reference tokenizer, and signs what it publishes. The host downloads and
+verifies packs against pinned digests, and the guest checks every file
+against the model description before it loads it.
 
 ### Vectors are stored once and searched in memory
 

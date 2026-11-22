@@ -2143,6 +2143,9 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Data(
         r"INSERT OR IGNORE INTO live_topic_revisions (topic, revision) VALUES ('playback', 0)",
     ),
+    MigrationOp::Data(
+        r"INSERT OR IGNORE INTO live_topic_revisions (topic, revision) VALUES ('notifications', 0)",
+    ),
     // Notifications (`store::notifications`, `docs/adr/notifications.md`).
     // A destination is where a notifier instance sends: a library channel
     // the instance's own settings point at (`user_id` NULL, `address_json`
@@ -2179,6 +2182,26 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         min_severity TEXT NOT NULL DEFAULT 'info' CHECK (min_severity IN ('info', 'warning', 'critical')),
         created_at TEXT NOT NULL,
         PRIMARY KEY (notification_type, destination_id)
+    )",
+    ),
+    // Administrators' routing of operational types to the built-in "In
+    // app" target: each row puts a type in the inbox of every active Owner
+    // and Administrator at or above a minimum severity. The API shows it as
+    // a route to the reserved destination id `in-app`.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS notify_inbox_routes (
+        notification_type TEXT PRIMARY KEY NOT NULL,
+        min_severity TEXT NOT NULL DEFAULT 'info' CHECK (min_severity IN ('info', 'warning', 'critical')),
+        created_at TEXT NOT NULL
+    )",
+    ),
+    // A fresh revision per replacement of one type's routes, written in the
+    // replacement's batch, so routing can check that its reads of
+    // `notify_routes` and `notify_inbox_routes` saw one configuration.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS notify_route_revisions (
+        notification_type TEXT PRIMARY KEY NOT NULL,
+        revision TEXT NOT NULL
     )",
     ),
     // Which notifier instances patrons may use for each patron type, and
@@ -2643,6 +2666,7 @@ mod tests {
         for (table, column) in [
             ("notifications", "severity"),
             ("notify_routes", "min_severity"),
+            ("notify_inbox_routes", "min_severity"),
         ] {
             assert_check(table, column, SEVERITIES.iter().map(|s| s.wire_name()));
         }

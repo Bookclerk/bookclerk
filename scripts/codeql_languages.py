@@ -60,6 +60,9 @@ RUST_INPUTS: tuple[str, ...] = (
     "rust-toolchain.toml",
     "*.capnp",
     "*.proto",
+    # C++ a build script compiles into a crate (the SentencePiece tokenizer).
+    "*.cc",
+    "*.h",
     ".github/workflows/codeql.yml",
     "scripts/codeql_languages.py",
     "scripts/codeql_reuse.py",

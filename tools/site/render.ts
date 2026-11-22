@@ -180,6 +180,7 @@ export const NAV: NavSpec[] = [
       "internals/architecture",
       "internals/discovery",
       "internals/embedding-benchmarks",
+      "internals/model-packs",
       "internals/jobs",
       "internals/storage-bounds",
       "internals/guest-jail",
