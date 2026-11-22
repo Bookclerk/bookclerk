@@ -74,6 +74,9 @@ export function SampleButton({
       setStatus("none");
       return;
     }
+    // The book may have resumed (a media key) while the lookup ran; pause
+    // it again so the two never play over each other.
+    pauseBookFor(webPlayer());
     audio.src = next.value;
     try {
       await audio.play();
