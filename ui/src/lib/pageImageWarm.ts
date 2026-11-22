@@ -8,10 +8,10 @@
  * URL. Each URL is the one the page itself renders, at the size it renders
  * (128 px covers; store icons as their `brand.logo`).
  *
- * The warm starts once per signed-in session, after the first page's own
- * covers have loaded, and yields to any cover on screen before each image
- * (see {@link coversSettled}), so it never competes with what the visitor
- * is looking at. On the hosted demo it runs while the visitor is on
+ * The warm starts once per signed-in session, a few seconds after sign-in
+ * and once the first page's own covers have loaded, and yields to any cover
+ * on screen before each image (see {@link coversSettled}), so it never
+ * competes with what the visitor is looking at. On the hosted demo it runs while the visitor is on
  * Discover, the page a new session opens on.
  *
  * @module
@@ -32,6 +32,14 @@ export const WARM_LIBRARY_ROWS = 40;
 
 /** Images loading at once while warming. */
 export const WARM_CONCURRENCY = 2;
+
+/**
+ * Wait after sign-in before looking at the first page's covers, in ms: the
+ * page has to fetch its rows and render its covers before
+ * {@link coversSettled} can see them, and until then it reports nothing
+ * loading.
+ */
+export const START_DELAY_MS = 3000;
 
 /** Longest wait for the first page's own covers before the warm starts, in ms. */
 const START_WAIT_MS = 8000;
@@ -148,9 +156,15 @@ function rows<T>(result: PromiseSettledResult<T[]>): T[] {
  * their images. Never throws: a read the caller may not make is skipped.
  *
  * @param cancelled - True once the warm should stop (sign-out).
+ * @param startDelayMs - Wait before looking at the first page's covers.
  * @returns Resolves when the warm is done or cancelled.
  */
-export async function warmPageImages(cancelled: () => boolean): Promise<void> {
+export async function warmPageImages(
+  cancelled: () => boolean,
+  startDelayMs: number = START_DELAY_MS,
+): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, startDelayMs));
+  if (cancelled()) return;
   await coversSettled(START_WAIT_MS);
   if (cancelled()) return;
   const [works, wishlist, queue, sources, connections] = await Promise.allSettled([

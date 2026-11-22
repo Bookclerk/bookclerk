@@ -333,15 +333,16 @@ Discover starts as soon as a feed is stored, before any page asks for it,
 so a first page load doesn't wait on every cover's download and re-encode
 at once.
 
-The web app warms the browser's copy too. After sign-in, once the covers
-on the first page have loaded, it reads what the Library (its first 40
-rows), Wishlist and Accounts pages show first. It then loads their
-thumbnails and store icons in the background, at the sizes those pages
-use, two at a time and always after any cover still loading on screen.
-Opening one of those pages then shows its images from the browser's cache.
-On the hosted demo this happens while the visitor is on Discover. Library
-rows show this cached thumbnail first and fall back to the full-size cover
-saved beside an acquired file only when the thumbnail can't load.
+The web app warms the browser's copy too. A few seconds after sign-in,
+once the covers on the first page have loaded, it reads what the Library
+(its first 40 rows), Wishlist and Accounts pages show first. It then loads
+their thumbnails and store icons in the background, at the sizes those
+pages use, two at a time and always after any cover still loading on
+screen. Opening one of those pages then shows its images from the
+browser's cache. On the hosted demo this happens while the visitor is on
+Discover. Library rows show this cached thumbnail first and fall back to
+the full-size cover saved beside an acquired file only when the thumbnail
+can't load.
 
 Each cover a request downloads logs a DEBUG line, `cover fetched and
 processed`, with `wait_ms` (waiting for another request's download of the

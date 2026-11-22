@@ -143,7 +143,7 @@ describe("warmPageImages", () => {
   });
 
   it("reads the three pages and loads their images, skipping reads that fail", async () => {
-    await warmPageImages(() => false);
+    await warmPageImages(() => false, 0);
     expect(api.fetchWorks).toHaveBeenCalledWith({
       sort: "title",
       status: "all",
@@ -158,9 +158,22 @@ describe("warmPageImages", () => {
   });
 
   it("reads nothing when cancelled before it starts", async () => {
-    await warmPageImages(() => true);
+    await warmPageImages(() => true, 0);
     expect(api.fetchWorks).not.toHaveBeenCalled();
     expect(requested).toEqual([]);
+  });
+
+  it("waits before it starts and stops when cancelled meanwhile", async () => {
+    vi.useFakeTimers();
+    let stop = false;
+    const done = warmPageImages(() => stop, 3000);
+    await vi.advanceTimersByTimeAsync(2999);
+    expect(api.fetchWorks).not.toHaveBeenCalled();
+    stop = true;
+    await vi.advanceTimersByTimeAsync(1);
+    await done;
+    vi.useRealTimers();
+    expect(api.fetchWorks).not.toHaveBeenCalled();
   });
 
   it("loads nothing when cancelled during the reads", async () => {
@@ -169,7 +182,7 @@ describe("warmPageImages", () => {
       stop = true;
       return [];
     });
-    await warmPageImages(() => stop);
+    await warmPageImages(() => stop, 0);
     expect(requested).toEqual([]);
   });
 });
