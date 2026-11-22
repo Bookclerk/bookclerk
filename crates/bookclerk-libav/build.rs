@@ -12,9 +12,11 @@
 //! LGPL-2.1-or-later.
 //!
 //! The build needs `curl`, `tar` (with xz), a POSIX shell and `make` on the
-//! host, which every Linux and macOS builder has. Off Unix the script does
-//! nothing and the library is empty; the feature that pulls this crate in
-//! stays off there.
+//! host, which every Linux and macOS builder has. On Windows the target
+//! must be MSVC: FFmpeg's `configure` runs with `--toolchain=msvc` under
+//! MSYS2's shell and `make` (found at `MSYS2_ROOT`, default `C:\msys64`;
+//! `pacman -S make` adds `make`), with the MSVC compiler the `cc` crate
+//! finds. Other targets get an empty library.
 
 use std::env;
 use std::fs;
@@ -48,17 +50,19 @@ const PARSERS: &str = "ac3";
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/shim.c");
-    if env::var_os("CARGO_CFG_UNIX").is_none() {
-        // The library is empty off Unix (`#![cfg(unix)]` in lib.rs), so a
-        // workspace build on Windows compiles it without FFmpeg.
+    println!("cargo:rerun-if-env-changed=MSYS2_ROOT");
+    let host = Host::for_target();
+    if host == Host::Unsupported {
+        // The library is empty there (the `cfg` in lib.rs), so a workspace
+        // build still compiles it without FFmpeg.
         return;
     }
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap_or_default());
     let prefix = out.join("ffmpeg-install");
     let stamp = prefix.join(format!(".built-{FFMPEG_VERSION}"));
     if !stamp.exists() {
-        let source = fetch_source(&out);
-        build_ffmpeg(&out, &source, &prefix);
+        let source = fetch_source(host, &out);
+        build_ffmpeg(host, &out, &source, &prefix);
         fs::write(&stamp, FFMPEG_VERSION).unwrap_or_else(|err| panic!("write stamp: {err}"));
         // Only the installed libraries and headers are needed from here
         // on; the source, objects and tarball are about 150 MB.
@@ -77,14 +81,122 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", lib.display());
     // Order matters for static linking: users before what they use.
     for name in ["avformat", "avcodec", "avutil"] {
+        if host == Host::Msvc {
+            msvc_library_name(&lib, name);
+        }
         println!("cargo:rustc-link-lib=static={name}");
     }
-    println!("cargo:rustc-link-lib=m");
+    match host {
+        Host::Unix => println!("cargo:rustc-link-lib=m"),
+        // libavutil seeds its random numbers from BCryptGenRandom.
+        Host::Msvc => println!("cargo:rustc-link-lib=bcrypt"),
+        Host::Unsupported => {}
+    }
+}
+
+/// How the target's FFmpeg is built.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Host {
+    /// Linux, macOS and the other Unix targets: the host's shell, `make`
+    /// and C compiler.
+    Unix,
+    /// Windows with the MSVC toolchain: MSYS2's shell and `make` driving
+    /// `cl.exe`.
+    Msvc,
+    /// Anything else: no FFmpeg, an empty library.
+    Unsupported,
+}
+
+impl Host {
+    /// Picks the build for the target Cargo is compiling for.
+    fn for_target() -> Self {
+        if env::var_os("CARGO_CFG_UNIX").is_some() {
+            return Self::Unix;
+        }
+        let windows = env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "windows");
+        let msvc = env::var("CARGO_CFG_TARGET_ENV").is_ok_and(|env| env == "msvc");
+        if windows && msvc {
+            Self::Msvc
+        } else {
+            Self::Unsupported
+        }
+    }
+}
+
+/// MSYS2's `usr\bin`, which holds the `sh`, `make` and `tar` the Windows
+/// build runs.
+///
+/// # Panics
+///
+/// When MSYS2 is not installed at `MSYS2_ROOT` (default `C:\msys64`).
+fn msys2_bin() -> PathBuf {
+    let root = env::var_os("MSYS2_ROOT").map_or_else(|| PathBuf::from(r"C:\msys64"), PathBuf::from);
+    let bin = root.join("usr").join("bin");
+    if !bin.join("sh.exe").exists() {
+        panic!(
+            "building FFmpeg for MSVC needs MSYS2 (with `pacman -S make`); none at {}; set MSYS2_ROOT",
+            root.display()
+        );
+    }
+    bin
+}
+
+/// A Windows path as MSYS2's tools read it: forward slashes, drive kept
+/// (`C:/x/y`).
+fn msys_path(path: &Path) -> String {
+    path.display().to_string().replace('\\', "/")
+}
+
+/// A command run with the MSVC compiler's environment (`PATH`, `INCLUDE`,
+/// `LIB`) from the `cc` crate, then MSYS2's tools, on `PATH`.
+///
+/// MSVC's directories come first: MSYS2 has a `link.exe` of its own
+/// (coreutils' `link`), and `configure` must find MSVC's.
+fn msys_command(program: &str) -> Command {
+    let bin = msys2_bin();
+    let compiler = cc::Build::new().get_compiler();
+    let mut cmd = Command::new(bin.join(format!("{program}.exe")));
+    let mut path = Vec::new();
+    if let Some(compiler_dir) = compiler.path().parent() {
+        path.push(compiler_dir.to_path_buf());
+    }
+    for (key, value) in compiler.env() {
+        if key.eq_ignore_ascii_case("PATH") {
+            path.extend(env::split_paths(value));
+        } else {
+            cmd.env(key, value);
+        }
+    }
+    path.push(bin);
+    path.extend(env::var_os("PATH").iter().flat_map(env::split_paths));
+    cmd.env(
+        "PATH",
+        env::join_paths(path).unwrap_or_else(|err| panic!("PATH: {err}")),
+    );
+    cmd
+}
+
+/// Makes `<name>.lib` exist in `lib`, the name Rust links on MSVC.
+///
+/// FFmpeg's MSVC build names its static libraries `lib<name>.a`; the
+/// archive format is already MSVC's, so a copy under the other name is
+/// enough.
+///
+/// # Panics
+///
+/// When neither file exists or the copy fails.
+fn msvc_library_name(lib: &Path, name: &str) {
+    let want = lib.join(format!("{name}.lib"));
+    if want.exists() {
+        return;
+    }
+    let made = lib.join(format!("lib{name}.a"));
+    fs::copy(&made, &want).unwrap_or_else(|err| panic!("copy {}: {err}", made.display()));
 }
 
 /// Downloads and unpacks the pinned tarball into `out`, returning the
 /// source directory.
-fn fetch_source(out: &Path) -> PathBuf {
+fn fetch_source(host: Host, out: &Path) -> PathBuf {
     let name = format!("ffmpeg-{FFMPEG_VERSION}");
     let tarball = out.join(format!("{name}.tar.xz"));
     if !tarball.exists() || digest(&tarball) != FFMPEG_SHA256 {
@@ -105,29 +217,49 @@ fn fetch_source(out: &Path) -> PathBuf {
     if source.exists() {
         fs::remove_dir_all(&source).unwrap_or_else(|err| panic!("clear source: {err}"));
     }
-    run(Command::new("tar")
-        .arg("-xJf")
-        .arg(&tarball)
-        .arg("-C")
-        .arg(out));
+    if host == Host::Msvc {
+        // MSYS2's tar, which has xz; `--force-local` keeps it from reading
+        // `C:` as a remote host.
+        run(msys_command("tar")
+            .args(["--force-local", "-xJf"])
+            .arg(msys_path(&tarball))
+            .arg("-C")
+            .arg(msys_path(out)));
+    } else {
+        run(Command::new("tar")
+            .arg("-xJf")
+            .arg(&tarball)
+            .arg("-C")
+            .arg(out));
+    }
     source
 }
 
 /// Configures, builds and installs the libraries from `source` under
 /// `prefix`, building in `out/ffmpeg-build`.
-fn build_ffmpeg(out: &Path, source: &Path, prefix: &Path) {
+fn build_ffmpeg(host: Host, out: &Path, source: &Path, prefix: &Path) {
     let build = out.join("ffmpeg-build");
     if build.exists() {
         fs::remove_dir_all(&build).unwrap_or_else(|err| panic!("clear build dir: {err}"));
     }
     fs::create_dir_all(&build).unwrap_or_else(|err| panic!("create build dir: {err}"));
-    let compiler = cc::Build::new().get_compiler();
-    let mut configure = Command::new("sh");
+    let msvc = host == Host::Msvc;
+    let shell_path = |path: &Path| {
+        if msvc {
+            msys_path(path)
+        } else {
+            path.display().to_string()
+        }
+    };
+    let mut configure = if msvc {
+        msys_command("sh")
+    } else {
+        Command::new("sh")
+    };
     configure
         .current_dir(&build)
-        .arg(source.join("configure"))
-        .arg(format!("--prefix={}", prefix.display()))
-        .arg(format!("--cc={}", compiler.path().display()))
+        .arg(shell_path(&source.join("configure")))
+        .arg(format!("--prefix={}", shell_path(prefix)))
         .args([
             "--disable-everything",
             "--disable-programs",
@@ -140,6 +272,7 @@ fn build_ffmpeg(out: &Path, source: &Path, prefix: &Path) {
             "--disable-protocols",
             "--disable-autodetect",
             "--disable-pthreads",
+            "--disable-w32threads",
             "--disable-x86asm",
             "--disable-debug",
             "--enable-static",
@@ -149,25 +282,51 @@ fn build_ffmpeg(out: &Path, source: &Path, prefix: &Path) {
         .arg(format!("--enable-decoder={DECODERS}"))
         .arg(format!("--enable-demuxer={DEMUXERS}"))
         .arg(format!("--enable-parser={PARSERS}"));
-    let host = env::var("HOST").unwrap_or_default();
-    let target = env::var("TARGET").unwrap_or_default();
-    if host != target {
-        let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
-        let os = match env::var("CARGO_CFG_TARGET_OS").unwrap_or_default().as_str() {
-            "macos" => "darwin".to_string(),
-            other => other.to_string(),
-        };
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    if msvc {
+        // `cl.exe` from the `cc` crate's environment is already the
+        // target's compiler; the C runtime matches Rust's (`/MD` unless
+        // the target links it statically).
+        let static_crt = env::var("CARGO_CFG_TARGET_FEATURE")
+            .is_ok_and(|features| features.split(',').any(|f| f == "crt-static"));
+        let crt = if static_crt { "-MT" } else { "-MD" };
         configure
-            .arg("--enable-cross-compile")
+            .arg("--toolchain=msvc")
             .arg(format!("--arch={arch}"))
-            .arg(format!("--target-os={os}"));
+            .arg("--target-os=win32")
+            .arg(format!("--extra-cflags={crt}"));
+        if env::var("HOST").unwrap_or_default() != env::var("TARGET").unwrap_or_default() {
+            configure.arg("--enable-cross-compile");
+        }
+    } else {
+        let compiler = cc::Build::new().get_compiler();
+        configure.arg(format!("--cc={}", compiler.path().display()));
+        let host = env::var("HOST").unwrap_or_default();
+        let target = env::var("TARGET").unwrap_or_default();
+        if host != target {
+            let os = match env::var("CARGO_CFG_TARGET_OS").unwrap_or_default().as_str() {
+                "macos" => "darwin".to_string(),
+                other => other.to_string(),
+            };
+            configure
+                .arg("--enable-cross-compile")
+                .arg(format!("--arch={arch}"))
+                .arg(format!("--target-os={os}"));
+        }
     }
     run(&mut configure);
     let jobs = env::var("NUM_JOBS").unwrap_or_else(|_| "1".to_string());
-    run(Command::new("make")
-        .current_dir(&build)
-        .arg(format!("-j{jobs}")));
-    run(Command::new("make").current_dir(&build).arg("install"));
+    let make = || {
+        let mut cmd = if msvc {
+            msys_command("make")
+        } else {
+            Command::new("make")
+        };
+        cmd.current_dir(&build);
+        cmd
+    };
+    run(make().arg(format!("-j{jobs}")));
+    run(make().arg("install"));
 }
 
 /// Lowercase hex SHA-256 of the file at `path`.

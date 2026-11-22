@@ -13,10 +13,10 @@
 //! other codec. FFmpeg is LGPL-2.1-or-later in this configuration; see
 //! `docs/contributing/licensing.md`.
 //!
-//! Linux and macOS only: on other targets the crate is empty (so a
-//! workspace build on Windows still compiles), and the `libav` feature of
-//! `bookclerk-media` that pulls it in stays off there.
-#![cfg(unix)]
+//! Unix and Windows (MSVC) only: on other targets the crate is empty, and
+//! the `libav` feature of `bookclerk-media` that pulls it in stays off
+//! there.
+#![cfg(any(unix, all(windows, target_env = "msvc")))]
 
 use std::ffi::c_void;
 use std::io::{Read, Seek, SeekFrom};

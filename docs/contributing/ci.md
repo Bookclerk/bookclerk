@@ -770,9 +770,11 @@ The release job runs at one of two scopes:
 The `full` scope builds the media worker with its `libav` feature, as
 release archives and the Docker image do, so it also compiles the pinned
 FFmpeg decoders (`bookclerk-libav`; about half a minute on 4 cores). The
-`affected` scope leaves the feature off. Unix test builds turn it on
-through `bookclerk-media`'s dev-dependencies, so the test jobs cover the
-FFmpeg path.
+`affected` scope leaves the feature off. Test builds turn it on through
+`bookclerk-media`'s dev-dependencies, so the test jobs cover the FFmpeg
+path on every OS. Windows jobs that compile `bookclerk-media` install
+MSYS2's `make` first (FFmpeg's `configure` runs under the runner's MSYS2
+with MSVC; see [media.md](../server/media.md#ffmpeg-decoders)).
 
 The release profile ships fat LTO with one codegen unit, which links on a
 single core. On pull requests the job sets

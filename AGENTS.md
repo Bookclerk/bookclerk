@@ -451,9 +451,10 @@ When exercising real store credentials in this cloud environment:
 - Audible Adrm/Widevine decrypt is native inside the Audible plugin (sources
   always return Plain). Host packaging is `bookclerk-media` (MP3 via
   Symphonia+LAME, metadata fix-up, chapter remux). No installed `ffmpeg`
-  or `aaxclean-cli` is required; release builds and Unix test builds
+  or `aaxclean-cli` is required; release builds and test builds
   compile a pinned, decoders-only FFmpeg from source for WMA, AC-3/E-AC-3
-  and AMR (`bookclerk-libav`, needs `curl`, `tar`, `make`). Widevine L3
+  and AMR (`bookclerk-libav`, needs `curl`, `tar`, `make`; on Windows,
+  MSVC plus MSYS2 with `make`). Widevine L3
   CDMs auto-provision via classic Libation AudibleCdm (Accounts connect
   registers as Android); optional BYO `.wvd` still works. Spatial/Atmos (L1) is not available. Neither a CDM nor
   an installed ffmpeg is required to build, test, or run non-acquire

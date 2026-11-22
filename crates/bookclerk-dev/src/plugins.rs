@@ -970,12 +970,13 @@ pub fn build_packages(root: &Path, release: bool, packages: &[String]) -> Result
 }
 
 /// Cargo features a release build of `packages` turns on: the media
-/// worker's FFmpeg decoders (`bookclerk-media-worker/libav`) on Linux and
-/// macOS, where FFmpeg's build system runs. Debug builds and Windows leave
-/// them off.
+/// worker's FFmpeg decoders (`bookclerk-media-worker/libav`) on Unix and
+/// Windows (MSVC). Debug builds leave them off.
 fn release_features(release: bool, packages: &[String]) -> Option<&'static str> {
-    (release && cfg!(unix) && packages.iter().any(|p| p == "bookclerk-media-worker"))
-        .then_some("bookclerk-media-worker/libav")
+    (release
+        && cfg!(any(unix, all(windows, target_env = "msvc")))
+        && packages.iter().any(|p| p == "bookclerk-media-worker"))
+    .then_some("bookclerk-media-worker/libav")
 }
 
 /// `cargo` command (`$CARGO` or `cargo`) with cwd set to the workspace root.
@@ -1320,7 +1321,8 @@ mode = "deny"
             "bookclerkd".to_string(),
             "bookclerk-media-worker".to_string(),
         ];
-        let want = cfg!(unix).then_some("bookclerk-media-worker/libav");
+        let want = cfg!(any(unix, all(windows, target_env = "msvc")))
+            .then_some("bookclerk-media-worker/libav");
         assert_eq!(release_features(true, &worker), want);
         assert_eq!(release_features(false, &worker), None);
         assert_eq!(release_features(true, &["bookclerkd".to_string()]), None);

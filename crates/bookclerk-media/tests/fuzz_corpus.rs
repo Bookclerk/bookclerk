@@ -46,9 +46,9 @@ fn fuzz_corpus_media_decode_holds_invariants() {
     assert!(accepted >= 4, "only {accepted} seeds decoded");
 }
 
-/// With the FFmpeg decoders (every Unix test build), each `libav_*` seed
-/// decodes.
-#[cfg(unix)]
+/// With the FFmpeg decoders (every Unix and Windows test build), each
+/// `libav_*` seed decodes.
+#[cfg(any(unix, all(windows, target_env = "msvc")))]
 #[test]
 fn fuzz_corpus_media_decode_libav_seeds_decode() {
     let seeds: Vec<PathBuf> = corpus_files()

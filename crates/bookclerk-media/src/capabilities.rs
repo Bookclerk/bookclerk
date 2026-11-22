@@ -5,8 +5,8 @@
 //! another store only when an output that re-encodes or repackages audio
 //! can read it. The answers follow the crate's decode front: the
 //! Symphonia features this crate enables, FDK for every AAC profile,
-//! libopus for Opus and, in builds with the `libav` feature (release and
-//! Docker builds on Linux and macOS), FFmpeg for AC-3, E-AC-3, WMA and
+//! libopus for Opus and, in builds with the `libav` feature (every release
+//! and Docker build), FFmpeg for AC-3, E-AC-3, WMA and
 //! AMR. The daemon serves the same report at
 //! `GET /api/status/media` and the CLI prints it with
 //! `bookclerk media capabilities`.

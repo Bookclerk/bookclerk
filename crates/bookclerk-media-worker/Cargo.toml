@@ -14,7 +14,7 @@ path = "src/main.rs"
 
 [features]
 # FFmpeg decoders for AC-3, E-AC-3, WMA and AMR (see bookclerk-media). On
-# in release and Docker builds on Linux and macOS.
+# in every release and Docker build.
 libav = ["bookclerk-media/libav"]
 
 [dependencies]

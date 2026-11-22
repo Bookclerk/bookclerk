@@ -66,10 +66,9 @@ plays at, not the half rate an MP4 header states for it. Opus decodes
 through libopus at 48 kHz, mono or stereo; a surround Opus stream (more
 than one stream in the file) fails to open. AC-4 isn't read by any build.
 
-The rows marked release builds decode through FFmpeg's decoders. Release
-archives and the Docker image for Linux and macOS carry them; the Windows
-archive and a plain `cargo build` don't (see
-[FFmpeg decoders](#ffmpeg-decoders)).
+The rows marked release builds decode through FFmpeg's decoders. Every
+release archive and the Docker image carry them; a plain `cargo build`
+doesn't (see [FFmpeg decoders](#ffmpeg-decoders)).
 
 Surround is folded to stereo by speaker position: left speakers go left,
 right speakers go right, centre and rear-centre speakers go to both sides
@@ -290,9 +289,8 @@ launcher (found the same way):
 cargo build --release -p bookclerk-cli -p bookclerkd -p bookclerk-media-worker -p bookclerk-jail
 ```
 
-Add `--features bookclerk-media-worker/libav` on Linux or macOS for the
-FFmpeg decoders, as `cargo build-app --release` and `cargo package-platform`
-do.
+Add `--features bookclerk-media-worker/libav` for the FFmpeg decoders, as
+`cargo build-app --release` and `cargo package-platform` do.
 
 The Docker image ships it in the read-only bundle under `/opt/bookclerk`,
 next to `bookclerk` and `bookclerkd` (see
@@ -317,9 +315,12 @@ WMA, AC-3, E-AC-3 and AMR decode through FFmpeg, built from source by the
   raw AC-3/E-AC-3, raw AMR and MP4/3GP) and the AC-3 parser. It builds no
   encoders, filters, protocols, devices, hardware decoders or programs,
   and none of FFmpeg's GPL or nonfree parts.
-- It needs `curl`, `tar` with xz support, a POSIX shell and `make`, so it
-  runs on Linux and macOS. The Windows archive leaves the feature off and
-  those formats don't open there.
+- On Linux and macOS it needs `curl`, `tar` with xz support, a POSIX
+  shell and `make`.
+- On Windows it builds with MSVC (x64 and arm64): FFmpeg's `configure`
+  runs under [MSYS2](https://www.msys2.org/)'s shell, which needs its
+  `make` package (`pacman -S make`). MSYS2 is found at `C:\msys64`, or
+  at `MSYS2_ROOT` when that is set.
 - FFmpeg decodes single-threaded inside the worker's confinement, like
   every other codec. It never opens a file or a network connection: the
   worker hands it the bytes.
@@ -328,9 +329,9 @@ WMA, AC-3, E-AC-3 and AMR decode through FFmpeg, built from source by the
   Symphonia can't read or whose audio it has no decoder for, such as AMR
   in a 3GP file.
 
-Release builds turn the feature on by themselves. Tests on Linux and
-macOS run with it too, so the first test build downloads FFmpeg and takes
-about half a minute longer.
+Release builds turn the feature on by themselves. Tests run with it too,
+so the first test build downloads FFmpeg and takes about half a minute
+longer (a few minutes on Windows).
 
 ## Configure it
 
