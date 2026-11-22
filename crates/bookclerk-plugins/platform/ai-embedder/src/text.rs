@@ -54,6 +54,9 @@ pub struct TextEncoder {
     /// Id of the word-boundary piece, or of the unknown token when the
     /// vocabulary has none.
     boundary: u32,
+    /// Whether the tokenizer puts a word boundary before a text by itself
+    /// (bekko's does, Gemma's does not).
+    adds_boundary: bool,
     /// Id of the unknown token.
     unknown: u32,
     /// Most ids of the text itself: the model's token limit less the
@@ -112,6 +115,14 @@ impl TextEncoder {
             .special_id(SpecialPiece::Unknown)
             .ok_or(TextError::NoUnknownPiece)?;
         let boundary = tokenizer.piece_to_id(WORD_BOUNDARY).unwrap_or(unknown);
+        // The tokenizer model does not expose whether it puts a word
+        // boundary before a text, so ask it with a one-letter text.
+        let adds_boundary = tokenizer
+            .encode("a", 2)?
+            .ids
+            .first()
+            .and_then(|id| tokenizer.id_to_piece(*id))
+            .is_some_and(|piece| piece.starts_with(WORD_BOUNDARY));
         let limit = usize::try_from(max_tokens).unwrap_or(usize::MAX);
         let body_limit = limit.saturating_sub(prefix.len() + suffix.len());
         Ok(Self {
@@ -121,6 +132,7 @@ impl TextEncoder {
             prefix,
             suffix,
             boundary,
+            adds_boundary,
             unknown,
             body_limit,
             document_prefix: spec.document_prefix.clone(),
@@ -163,16 +175,18 @@ impl TextEncoder {
         if segment.is_empty() || room == 0 {
             return Ok(());
         }
-        // The published tokenizer adds a word boundary to a segment only
-        // when it does not already start with a space; SentencePiece always
-        // adds one. Dropping the space keeps the two the same.
+        // A published tokenizer that adds a word boundary before a segment
+        // does so only when the segment does not already start with a
+        // space; SentencePiece then always adds one. Dropping the space
+        // keeps the two the same. A tokenizer that adds no boundary gets
+        // the segment as it is.
         let segment = match segment.strip_prefix(' ') {
-            Some("") => {
+            Some("") if self.adds_boundary => {
                 ids.push(self.boundary);
                 return Ok(());
             }
-            Some(rest) => rest,
-            None => segment,
+            Some(rest) if self.adds_boundary => rest,
+            Some(_) | None => segment,
         };
         ids.extend(self.tokenizer.encode(segment, room)?.ids);
         Ok(())
@@ -388,6 +402,48 @@ mod tests {
         assert_eq!(
             tight.body_ids("<s><s><s><s>", Role::Document).unwrap(),
             [2, 2]
+        );
+    }
+
+    #[test]
+    fn a_tokenizer_without_a_leading_boundary_keeps_a_leading_space() {
+        let plain: &[u8] =
+            include_bytes!("../../../../bookclerk-sentencepiece/tests/fixtures/plain.spm.fb");
+        let plain_reference = |text: &str| {
+            Tokenizer::from_bytes(plain.to_vec())
+                .unwrap()
+                .encode(text, 10_000)
+                .unwrap()
+                .ids
+        };
+        let mut spec = spec();
+        spec.literal_pieces = vec!["<pad>".into()];
+        let encoder = TextEncoder::new(plain.to_vec(), &spec, 64).unwrap();
+        assert!(!encoder.adds_boundary);
+        assert_ne!(plain_reference(" a ring"), plain_reference("a ring"));
+        assert_eq!(
+            encoder.body_ids(" a ring", Role::Document).unwrap(),
+            plain_reference(" a ring")
+        );
+        assert_eq!(
+            encoder
+                .body_ids("ring<pad> <pad> stolen", Role::Document)
+                .unwrap(),
+            [
+                plain_reference("ring"),
+                vec![0],
+                plain_reference(" "),
+                vec![0],
+                plain_reference(" stolen")
+            ]
+            .concat()
+        );
+        // The fixture with a boundary drops the space, as before.
+        let tiny = self::encoder(&self::spec(), 64);
+        assert!(tiny.adds_boundary);
+        assert_eq!(
+            tiny.body_ids(" a ring", Role::Document).unwrap(),
+            reference("a ring")
         );
     }
 
