@@ -164,11 +164,14 @@ def fetch_set(repository: str, commit: str, token: str) -> dict[str, bytes]:
             repo,
             env,
         )
-        git(
-            ["--work-tree", str(tree), "checkout", "-q", "FETCH_HEAD", "--", "."],
-            repo,
-            env,
-        )
+        # A set of removals alone has an empty tree, which `checkout -- .`
+        # refuses.
+        if git(["ls-tree", "--name-only", "FETCH_HEAD"], repo, env):
+            git(
+                ["--work-tree", str(tree), "checkout", "-q", "FETCH_HEAD", "--", "."],
+                repo,
+                env,
+            )
         files = vb.read_set(tree)
         if files:
             vb.validate_set(files)
@@ -461,9 +464,10 @@ def run_mismatches(artifact: Path, lock: dict[str, str]) -> set[str] | None:
     """Returns the screenshots the run's comparison found different.
 
     Only a comparison that ran to the end (``vb.compare_finished``) against
-    the same lock the bot compares with (the ``COMPARED_LOCK`` CI copied)
-    says which byte differences are real; otherwise every byte difference
-    counts.
+    the same lock the bot compares with (the ``COMPARED_LOCK`` CI copied),
+    and in which every failed test left a failed screenshot, says which
+    byte differences are real. Otherwise, such as when a test failed before
+    its screenshot, every byte difference counts.
 
     # Arguments
     * ``artifact``: the downloaded ``ui-visual`` artifact.
@@ -484,9 +488,13 @@ def run_mismatches(artifact: Path, lock: dict[str, str]) -> set[str] | None:
         ]
     except (OSError, ValueError):
         return None
-    if used != lock or not vb.compare_finished(report):
+    failed = vb.compare_finished(report)
+    if used != lock or failed is None:
         return None
-    return vb.compare_mismatches(names)
+    mismatched = vb.compare_mismatches(names)
+    if failed > len(mismatched):
+        return None
+    return mismatched
 
 
 def pull_base(send: Transport, repository: str, number: int) -> str:

@@ -280,9 +280,10 @@ The pinned browser doesn't always anti-alias edges the same way twice, so
 a recording can differ in bytes from its approved image while looking the
 same. The comparison allows for that with Playwright's per-pixel colour
 threshold. When the comparison ran to the end (its `results.json` has no
-errors) against the same lock the workflow reads, an image whose bytes
-differ only counts as changed if the comparison failed it; otherwise every
-difference in bytes counts.
+errors) against the same lock the workflow reads, and every failed test
+left a failed screenshot, an image whose bytes differ only counts as
+changed if the comparison failed it. Otherwise, such as when a test failed
+before its screenshot, every difference in bytes counts.
 
 ### How a pull request changes them
 
@@ -330,9 +331,9 @@ approve different screenshots change different lock entries, so both merge
 cleanly, and neither needs approving again when the other lands. They
 conflict only when both change the same screenshot, or add new
 screenshots that sort next to each other. Merging the base branch in
-resolves that: keep both sides' entries, and if both changed the same
-screenshot, CI compares with the base branch's image and the comment asks
-for approval again.
+resolves that: keep both sides' entries, and for a screenshot both changed,
+keep only the base branch's entry. CI then compares with the base branch's
+image and the comment asks for approval again.
 
 ### Who can approve
 

@@ -369,35 +369,39 @@ def compare_mismatches(names: list[str]) -> set[str]:
 MAX_REPORT_BYTES = 64 * 1024 * 1024
 
 
-def compare_finished(raw: bytes) -> bool:
-    """Whether a comparison run's Playwright JSON report shows it ran to the end.
+def compare_finished(raw: bytes) -> int | None:
+    """Reads how many tests failed in a comparison run that ran to the end.
 
     Its mismatches (``compare_mismatches``) only stand for every screenshot
     when it did: a run stopped by a setup error (a page server that never
-    started, say) left the rest untested.
+    started, say) left the rest untested. Each test takes one screenshot, so
+    the caller also checks that every failed test left a failed screenshot.
 
     # Arguments
     * ``raw``: the run's ``results.json``.
 
     # Returns
-    ``True`` when the report is a JSON object with an empty ``errors`` list
-    and ``stats`` counting at least one test that passed or failed.
+    The ``unexpected`` (failed) test count when the report is a JSON object
+    with an empty ``errors`` list and ``stats`` counting at least one test
+    that passed or failed; otherwise ``None``.
     """
     if len(raw) > MAX_REPORT_BYTES:
-        return False
+        return None
     try:
         report = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError):
-        return False
+        return None
     if not isinstance(report, dict) or report.get("errors") != []:
-        return False
+        return None
     stats = report.get("stats")
     if not isinstance(stats, dict):
-        return False
-    counts = [stats.get("expected"), stats.get("unexpected")]
-    if not all(type(c) is int and c >= 0 for c in counts):
-        return False
-    return sum(counts) > 0  # type: ignore[arg-type]
+        return None
+    expected, unexpected = stats.get("expected"), stats.get("unexpected")
+    if not (type(expected) is int and type(unexpected) is int):
+        return None
+    if expected < 0 or unexpected < 0 or expected + unexpected == 0:
+        return None
+    return unexpected
 
 
 #: A line of a proposed set's commit message naming one change it carries.

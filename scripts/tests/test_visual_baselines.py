@@ -98,26 +98,26 @@ def oracle_changes(raw: bytes) -> list[tuple[str, str]] | Exception:
     return out
 
 
-def oracle_report(raw: bytes) -> bool:
-    """Independent reading of whether a Playwright JSON report finished."""
+def oracle_report(raw: bytes) -> int | None:
+    """Independent reading of a Playwright JSON report: failed count if finished."""
     if len(raw) > 64 * 1024 * 1024:
-        return False
+        return None
     try:
         report = json.loads(str(raw, "utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError):
-        return False
+        return None
     if type(report) is not dict:
-        return False
+        return None
     errors, stats = report.get("errors"), report.get("stats")
     if type(errors) is not list or len(errors) != 0 or type(stats) is not dict:
-        return False
-    total = 0
+        return None
+    counts = []
     for key in ("expected", "unexpected"):
         value = stats.get(key)
         if type(value) is not int or value < 0:
-            return False
-        total += value
-    return total > 0
+            return None
+        counts.append(value)
+    return counts[1] if counts[0] + counts[1] > 0 else None
 
 
 def be32(data: bytes, at: int) -> int:
@@ -398,20 +398,20 @@ class CorpusTests(unittest.TestCase):
         ):
             with self.subTest(bad=bad), self.assertRaises(vb.VisualBaselinesError):
                 changes(bad)
-        for name, finished in (
-            ("report__finished", True),
-            ("report__failures", True),
-            ("report__setup_error", False),
-            ("report__no_tests", False),
-            ("report__bool_counts", False),
-            ("report__negative", False),
-            ("report__no_errors_key", False),
-            ("report__not_object", False),
-            ("report__not_json", False),
-            ("report__utf16", False),
+        for name, failed in (
+            ("report__finished", 0),
+            ("report__failures", 10),
+            ("report__setup_error", None),
+            ("report__no_tests", None),
+            ("report__bool_counts", None),
+            ("report__negative", None),
+            ("report__no_errors_key", None),
+            ("report__not_object", None),
+            ("report__not_json", None),
+            ("report__utf16", None),
         ):
             with self.subTest(report=name):
-                self.assertIs(vb.compare_finished(load(name)), finished)
+                self.assertEqual(vb.compare_finished(load(name)), failed)
         self.assertEqual(vb.png_size(load("png__valid")), (4, 3))
         self.assertEqual(
             module_approval(load("approval__tick")),
@@ -1467,6 +1467,27 @@ class BotTests(unittest.TestCase):
         out, _, pushed = self.noisy((report, []))
         self.assertIn("proposed", out)
         self.assertEqual(pushed, ["refs/heads/pending/pr-990"])
+
+    def test_a_test_that_failed_before_its_screenshot_counts_every_byte(
+        self,
+    ) -> None:
+        report = json.dumps(
+            {"errors": [], "stats": {"expected": 3, "unexpected": 1}}
+        ).encode()
+        out, _, pushed = self.noisy((report, []))
+        self.assertIn("proposed", out)
+        self.assertEqual(pushed, ["refs/heads/pending/pr-990"])
+
+    def test_fetch_set_reads_a_removals_only_set_as_empty(self) -> None:
+        calls: list = []
+
+        def fake_git(args: list, cwd: Path, env: dict) -> str:
+            calls.append(args[0])
+            return ""
+
+        with unittest.mock.patch.object(self.bot, "git", fake_git):
+            self.assertEqual(self.bot.fetch_set("B/v", "e" * 40, "t"), {})
+        self.assertNotIn("--work-tree", calls)
 
     def test_no_comparison_counts_every_byte(self) -> None:
         out, _, _ = self.noisy(None)
