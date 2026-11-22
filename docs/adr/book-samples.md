@@ -19,8 +19,8 @@ Three constraints shape how:
   marks and the taste Discover learns from must not move because someone
   previewed a book.
 - **The web app loads media from its own origin only.** Its CSP has
-  `default-src 'self'`, so a store's sample URL cannot be handed to the
-  browser.
+  `default-src 'self'`, so the browser cannot play a store's sample URL
+  directly; it needs a same-origin path to load.
 - **No store special-casing in the host.** Which store has samples, and
   where, is storefront knowledge.
 
