@@ -639,7 +639,7 @@ function workDetail(id: string) {
 
 /**
  * What the player gets for an edition: one track, the listener part way
- * through, and two bookmarks.
+ * through, two bookmarks and five chapters.
  *
  * @param editionId - The edition.
  * @returns Its playback manifest.
@@ -687,6 +687,15 @@ function manifest(editionId: string) {
         created_at: ago(DAY),
       },
     ],
+    // Five chapters of equal length, the last ending where the book does.
+    chapters: ["Jonathan Harker's Journal", "The Castle", "Lucy", "Whitby", "The Hunt"].map(
+      (title, i) => ({
+        title,
+        start_ms: Math.round((duration * i) / 5),
+        end_ms: Math.round((duration * (i + 1)) / 5),
+        depth: 0,
+      }),
+    ),
   };
 }
 
