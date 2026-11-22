@@ -297,8 +297,8 @@ sidecars onto your naming layout instead, set
 Matching works per edition. When two accounts own the same book, its file
 is matched once and both accounts see it as acquired. When the file is
 gone, the account whose acquire recorded it marks the book not acquired.
-`bookclerk library convert` also converts each edition once, through that
-account.
+`bookclerk library convert` also adds a copy to each edition once, through
+that account.
 
 ## Cloudflare R2
 
@@ -522,10 +522,43 @@ as the title's storage key, and the only one offered to a branch that
 asks for the library's copy.
 
 > [!NOTE]
-> Copies are made when a book is acquired. A copy added to
-> `output.copies` later is not made for books already stored. When a book
-> no destination receives any copy of is acquired, the acquire fails at
-> once with "no destination accepts this book".
+> Copies in `output.copies` are made when a book is acquired. A copy added
+> to `output.copies` later is not made for books already stored; add it to
+> those with a convert (see [Adding a copy to a stored book](#adding-a-copy-to-a-stored-book)).
+> When a book no destination receives any copy of is acquired, the acquire
+> fails at once with "no destination accepts this book".
+
+### Adding a copy to a stored book
+
+An administrator can add one more copy to a book the library already
+stores, without downloading it from the store again:
+
+1. Open the book in **Library**.
+2. Under **Convert**, pick a copy, such as **MP3, 64 kbit/s mono**. Opus
+   copies are listed after ticking **Advanced formats**.
+3. Select **Convert**.
+
+From the command line, name the copy with `--to`; without it, the copy is
+an MP3 at the `output.lame` settings:
+
+```sh
+bookclerk library convert --to mp3:64k-mono <book>
+```
+
+The web API takes the same request as `POST /api/library/convert`.
+
+A convert runs as a job on a host that may store files. It makes the copy
+from the stored copy closest to the store's audio: one kept as delivered
+or as an M4B first, then the main output, then the copy on the primary
+destination. The new copy goes beside the original, under its own folder
+(`mp3 64k-mono/Title [1a2b3c4d]/`), to every destination whose filter
+takes it, and is recorded on the edition as that copy. The title's
+storage key stays the main output's. No companion PDF is written for it.
+
+A convert of a copy the book already has does nothing, unless
+**Make it again if it exists** (`--force`) is ticked. A convert refuses
+`original` copies and the main output's own copy, which only an acquire
+makes, and a book that is not stored yet.
 
 ## Upgrading to better files
 
@@ -776,6 +809,7 @@ apply that set everywhere instead, or list your own
 [output]
 format = "enriched_m4b"   # single_mp3 | split_mp3_by_chapter | opus | none
 copies = []               # extra copies, see "Keeping several copies"
+keep_codec_in_m4b = false # see "Keeping unusual audio in M4B"
 download_cover = true
 download_pdf = true
 create_cue = true
@@ -796,6 +830,24 @@ Every host applies a new revision at its next configuration wakeup. See
 [Configuration](configuration.md#output-shared).
 
 If a sidecar file fails, Bookclerk logs it and still keeps the audio.
+
+### Keeping unusual audio in M4B
+
+An M4B normally holds AAC audio, which every audiobook player plays. When
+a store delivers Opus, FLAC, ALAC, E-AC-3 or AC-4 audio, Bookclerk
+re-encodes it to AAC for the M4B. The advanced setting
+`output.keep_codec_in_m4b` (off by default; **Settings → Output →
+Advanced**) keeps that audio unchanged inside the M4B instead, with its
+own sample entry, tags and chapters:
+
+```sh
+bookclerk config set output.keep_codec_in_m4b true
+```
+
+Keeping it saves an encode and keeps the delivered audio bit for bit, but
+some players and devices cannot play these codecs inside an M4B. When a
+book's parts differ in codec, sample rate or channels, they are still
+encoded to AAC.
 
 With `fixup_metadata` on, an M4B also records which Bookclerk version
 tagged it, in the freeform item `----:app.bookclerk:TOOL`.

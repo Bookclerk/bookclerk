@@ -104,6 +104,51 @@ pub struct PluginsConfig {
     /// required). Bookclerk does not verify publisher signatures.
     #[serde(default)]
     pub allow_unverified_publisher: bool,
+    /// Whether plugins' `[[webhooks]]` take requests from the Internet on
+    /// `POST /hooks/<token>/<name>`.
+    #[serde(default, skip_serializing_if = "WebhooksExposure::is_default")]
+    pub webhooks: WebhooksExposure,
+}
+
+/// `plugins.webhooks`: whether the public webhook route is open.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum WebhooksExposure {
+    /// Hand out webhook URLs and take requests when
+    /// `integrations.public_origin` is an `https` origin on a globally
+    /// reachable host. The default.
+    #[default]
+    Auto,
+    /// Hand out no webhook URLs and answer every request on the route with
+    /// 503; stored requests stay until they expire.
+    Off,
+}
+
+impl WebhooksExposure {
+    /// Canonical spelling, as written in `config.toml`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Off => "off",
+        }
+    }
+
+    /// Parses a config or settings value.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" | "on" | "true" => Some(Self::Auto),
+            "off" | "false" | "none" => Some(Self::Off),
+            _ => None,
+        }
+    }
+
+    /// True for [`Self::Auto`], so serde can omit the key.
+    #[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference
+    fn is_default(&self) -> bool {
+        *self == Self::Auto
+    }
 }
 
 impl PluginsJailConfig {

@@ -240,6 +240,11 @@ export type {
   SocketSendData,
   SocketsBinding,
   StorageBinding,
+  WebhookDeliveredEvent,
+  WebhookMessage,
+  WebhookPullOptions,
+  WebhookPullResult,
+  WebhooksBinding,
 } from "./env.js";
 export type {
   OriginBinding,

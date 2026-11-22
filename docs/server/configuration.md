@@ -42,7 +42,7 @@ Classic Libation setting names work as aliases where
 | `[auth]` | `[auth].password` to wrap the library key (prefer `BOOKCLERK_AUTH_PASSWORD`), `[auth].key_store` (`file`, `keychain` or `systemd-creds`; see [The key in the OS keychain](database.md#the-key-in-the-os-keychain)), and `[auth.oidc]` sign-in providers |
 | `[media]` | The codec worker pool: concurrency and confinement; see [Media worker](media.md) |
 | `[uploads]` | Upload limits on this node: file size, staging quota, free-disk floor and idle pruning; see [Upload limits](#upload-limits) |
-| `[plugins]` | How external plugins are jailed; see [Isolation modes](plugins.md#isolation-modes) |
+| `[plugins]` | How external plugins are jailed (see [Isolation modes](plugins.md#isolation-modes)), and whether their webhooks take requests |
 | `[output]` | The first-run seed of the `core.output` document, and the host's own `in_progress` scratch folder |
 | `[daemon]` | Listen addresses, JSON logs, trusted proxies, and `[daemon.node_api]` transport |
 | `[integrations]` | `public_origin`, and claim-ticket and portal session lifetimes |
@@ -482,6 +482,14 @@ isolation = "required"  # required | best-effort | off
 install, data, scratch and cache folders. `required` refuses to load a
 plugin it can't jail, including when the launcher isn't installed.
 
+`webhooks` (`auto` by default, or `off`) says whether plugins' inbound
+webhooks take requests on `POST /hooks/<token>/<name>`. With `auto`, a
+plugin gets a webhook URL only when `integrations.public_origin` is an
+`https` origin on a host the Internet can reach; with `off`, no URLs are
+handed out and the route answers 503. Set it with
+`bookclerk config set plugins.webhooks off` or in Settings. See
+[Inbound webhooks](../plugins/abi.md#inbound-webhooks-webhooks).
+
 This table is about **how** plugins run. Which plugins run on a host, and
 their settings, live in the database (plugin instances and deployments).
 See [Managing plugins](plugins.md).
@@ -508,7 +516,9 @@ multi_destination = "sync_missing"
 The shared output table is the second settings domain in the database,
 `core.output`: one document every host applies. It holds the format and
 the extra copies of each book (`copies`, see
-[Keeping several copies](output.md#keeping-several-copies)), Widevine
+[Keeping several copies](output.md#keeping-several-copies)), whether an
+M4B keeps unusual audio unchanged (`keep_codec_in_m4b`, see
+[Keeping unusual audio in M4B](output.md#keeping-unusual-audio-in-m4b)), Widevine
 and CDM provider, naming profile and templates, sidecars, cover
 and chapter options, LAME settings, timestamps, path sanitization and
 replacement rules, file name length, the multi-destination policy, and

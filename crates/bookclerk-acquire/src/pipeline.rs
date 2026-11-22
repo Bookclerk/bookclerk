@@ -42,6 +42,9 @@ use crate::reconcile::{find_existing_for_request, StorageIndex};
 use crate::record::{recording_copy_destinations, recording_destinations};
 use crate::split::split_audio_by_chapters;
 
+mod convert_copy;
+pub use convert_copy::convert_copy;
+
 /// Request to acquire a single title.
 #[derive(Debug, Clone)]
 pub struct AcquireRequest {
@@ -2058,7 +2061,6 @@ struct CopiesProgress {
 /// # Errors
 ///
 /// Returns the first copy's failure; copies already stored stay stored.
-#[cfg(test)]
 async fn store_copies(
     library: &LibraryStore,
     copies: &[CopyTarget],
@@ -2835,6 +2837,10 @@ async fn store_plain_fetch(
             parts: plain.parts.iter().map(|p| p.path.clone()).collect(),
             output: out,
             chapter_titles: titles,
+            // Only an M4B output keeps the source codec; an MP3 or Opus
+            // output decodes this file again, so it gets AAC it can read.
+            keep_codec: req.options.keep_codec_in_m4b
+                && req.options.effective_output() == bookclerk_config::OutputFormat::EnrichedM4b,
         })
         .await?;
         if chapters.is_empty() {
@@ -5079,7 +5085,7 @@ mod tests {
         assert_eq!(release_year("May 2021"), None);
     }
 
-    async fn test_store() -> LibraryStore {
+    pub(super) async fn test_store() -> LibraryStore {
         LibraryStore::from_connection(
             bookclerk_plugin_database_sqlite::open_memory()
                 .await
@@ -5087,7 +5093,7 @@ mod tests {
         )
     }
 
-    async fn job_id(store: &LibraryStore) -> String {
+    pub(super) async fn job_id(store: &LibraryStore) -> String {
         let created = store
             .enqueue_job(EnqueueJobSpec {
                 kind: JobKind::Acquire,
@@ -6430,7 +6436,7 @@ mod tests {
 
     /// Upserts `product_id` as `title` on `account` (creating the account)
     /// and returns the book's uuid.
-    async fn edition_book(
+    pub(super) async fn edition_book(
         store: &LibraryStore,
         product_id: &str,
         account: &str,
@@ -6448,7 +6454,12 @@ mod tests {
 
     /// A request for `product_id` on `account` named by `<title>`
     /// alone, so two editions of one title plan the same key.
-    fn edition_req(cache: &Path, job: String, product_id: &str, account: &str) -> AcquireRequest {
+    pub(super) fn edition_req(
+        cache: &Path,
+        job: String,
+        product_id: &str,
+        account: &str,
+    ) -> AcquireRequest {
         let mut req = dummy_req(cache, Some(job), None);
         req.asin = product_id.into();
         req.account_id = account.into();
@@ -6460,7 +6471,7 @@ mod tests {
 
     /// Destinations writing to `root` with titles named
     /// `<title> [<call number>]/<title>`.
-    fn title_named_destinations(
+    pub(super) fn title_named_destinations(
         root: &Path,
         puts: Arc<std::sync::atomic::AtomicUsize>,
     ) -> AcquireDestinations {
@@ -6473,7 +6484,7 @@ mod tests {
     }
 
     /// The `<call number>` of `uuid`'s edition.
-    async fn short_id(store: &LibraryStore, uuid: &str) -> String {
+    pub(super) async fn short_id(store: &LibraryStore, uuid: &str) -> String {
         store
             .edition_of_holding(uuid)
             .await
@@ -6484,16 +6495,16 @@ mod tests {
 
     /// A store that sends real audio: an M4B the media worker decodes,
     /// with a cover and, when set, a companion PDF.
-    struct RealAudioSource {
+    pub(super) struct RealAudioSource {
         /// Fetches asked for.
-        fetches: Arc<std::sync::atomic::AtomicUsize>,
+        pub(super) fetches: Arc<std::sync::atomic::AtomicUsize>,
         /// The companion PDF's address.
-        pdf_url: Option<String>,
+        pub(super) pdf_url: Option<String>,
         /// True when the store sends a lossy MP3 of lower bitrate than the
         /// M4B ([`real_m4b`]) instead of the M4B itself.
-        mp3: bool,
+        pub(super) mp3: bool,
         /// Store track markers the fetch reports, `(title, start ms)`.
-        chapters: Vec<(String, u64)>,
+        pub(super) chapters: Vec<(String, u64)>,
     }
 
     /// Writes four seconds of real AAC audio as an M4B at `path` (about
@@ -6614,7 +6625,7 @@ mod tests {
 
     /// Runs the media worker in this process for the rest of the test
     /// binary, so real audio encodes without the confined helper.
-    fn media_in_process() {
+    pub(super) fn media_in_process() {
         bookclerk_media::replace_pool(bookclerk_media::MediaPool::new(
             bookclerk_media::MediaPoolConfig {
                 confinement: bookclerk_media::Confinement::Off,
@@ -7185,12 +7196,12 @@ mod tests {
     }
 
     /// A copy from its `format:quality` name.
-    fn output_copy(raw: &str) -> bookclerk_config::OutputCopy {
+    pub(super) fn output_copy(raw: &str) -> bookclerk_config::OutputCopy {
         bookclerk_config::OutputCopy::parse(raw).unwrap()
     }
 
     /// A filter of one rule on a copy's format.
-    fn format_filter(
+    pub(super) fn format_filter(
         value: &str,
         effect: bookclerk_config::FilterEffect,
     ) -> bookclerk_config::DestinationFilter {
@@ -7796,7 +7807,7 @@ mod tests {
 
     /// The bitrate in kbit/s and whether the audio is mono, read from the
     /// first MPEG audio frame header of an MP3 (after any ID3v2 tag).
-    fn mp3_frame_shape(bytes: &[u8]) -> Option<(u32, bool)> {
+    pub(super) fn mp3_frame_shape(bytes: &[u8]) -> Option<(u32, bool)> {
         let mut at = 0;
         if bytes.starts_with(b"ID3") && bytes.len() >= 10 {
             let size = bytes[6..10]
@@ -7824,7 +7835,7 @@ mod tests {
     }
 
     /// Every file under `root`, recursively.
-    fn walk(root: &Path) -> Vec<PathBuf> {
+    pub(super) fn walk(root: &Path) -> Vec<PathBuf> {
         let mut out = Vec::new();
         let mut stack = vec![root.to_path_buf()];
         while let Some(dir) = stack.pop() {
