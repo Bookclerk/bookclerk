@@ -208,10 +208,13 @@ export function NotificationBell({ onNavigate }: { onNavigate: (view: AppView) =
                   >
                     <span className="flex items-center gap-2">
                       {entry.read_at === null ? (
-                        <span
-                          className="h-2 w-2 shrink-0 rounded-full bg-teal"
-                          aria-label="Unread"
-                        />
+                        <>
+                          <span
+                            className="h-2 w-2 shrink-0 rounded-full bg-teal"
+                            aria-hidden="true"
+                          />
+                          <span className="sr-only">Unread:</span>
+                        </>
                       ) : null}
                       <span
                         className={cn(
