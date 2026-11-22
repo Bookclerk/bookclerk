@@ -1658,7 +1658,8 @@ export interface Origin {
    * delivers. An accepted upgrade becomes a socket in the instance's
    * `Bindings.sockets`: its messages arrive on `Entrypoints.socketHandler`
    * and the plugin answers with `Sockets.send` and `Sockets.close`, as on
-   * any socket it dialed. Needs `[sockets]`.
+   * any socket it dialed. Needs `[sockets]`. These sockets count toward
+   * `maxOriginSocketsPerInstance`, not `maxSocketsPerInstance`.
    *
    * @param request - A `GET` with `upgrade: websocket`.
    * @param attachment - Initial attachment, at most `maxSocketAttachmentBytes`.
@@ -4700,7 +4701,7 @@ export type OriginConnected =
 /** Result union of `Origin.connect`. */
 export type OriginConnectReply =
   | { kind: "ok"; value: OriginConnected } // Success: an open socket or the library's refusal.
-  | { kind: "err"; value: PluginError }; // Typed failure: the request was refused before the library saw it (`invalid_params`, `forbidden` without `[sockets]`, `limit_exceeded` when the instance holds its most sockets) or the library is unavailable.
+  | { kind: "err"; value: PluginError }; // Typed failure: the request was refused before the library saw it (`invalid_params`, `forbidden` without `[sockets]`, `limit_exceeded` when the instance holds `maxOriginSocketsPerInstance`) or the library is unavailable.
 
 /** Success payload of `Ingress.start`. */
 export interface IngressStarted {

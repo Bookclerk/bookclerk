@@ -2869,7 +2869,8 @@ class Origin(Protocol):
         delivers. An accepted upgrade becomes a socket in the instance's
         `Bindings.sockets`: its messages arrive on `Entrypoints.socketHandler`
         and the plugin answers with `Sockets.send` and `Sockets.close`, as on
-        any socket it dialed. Needs `[sockets]`.
+        any socket it dialed. Needs `[sockets]`. These sockets count toward
+        `maxOriginSocketsPerInstance`, not `maxSocketsPerInstance`.
 
         Args:
             request: A `GET` with `upgrade: websocket`.
@@ -7184,14 +7185,15 @@ class OriginConnectReplyErr(TypedDict):
 
     Typed failure: the request was refused before the library saw it
     (`invalid_params`, `forbidden` without `[sockets]`, `limit_exceeded`
-    when the instance holds its most sockets) or the library is
-    unavailable.
+    when the instance holds `maxOriginSocketsPerInstance`) or the library
+    is unavailable.
 
     Attributes:
         kind: Always ``"err"``.
         value: Typed failure: the request was refused before the library saw it
             (`invalid_params`, `forbidden` without `[sockets]`, `limit_exceeded` when
-            the instance holds its most sockets) or the library is unavailable.
+            the instance holds `maxOriginSocketsPerInstance`) or the library is
+            unavailable.
     """
 
     kind: Literal["err"]

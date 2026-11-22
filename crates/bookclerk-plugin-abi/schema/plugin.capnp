@@ -130,6 +130,10 @@ const maxSocketFrameBytes :UInt32 = 262144;
 const maxSocketAttachmentBytes :UInt32 = 2048;
 # Most host-brokered sockets one plugin instance may hold open at once.
 const maxSocketsPerInstance :UInt32 = 8;
+# Most sockets into the library (accepted `Origin.connect` upgrades) one
+# relay ingress instance may hold at once, apart from `maxSocketsPerInstance`:
+# the host holds them in process, not in the socket broker.
+const maxOriginSocketsPerInstance :UInt32 = 256;
 # Most heartbeat pairs one `Sockets.connect` may declare.
 const maxSocketAutoResponses :UInt32 = 4;
 # Largest heartbeat request or response frame, in bytes.
@@ -1579,7 +1583,8 @@ interface Origin {
   # delivers. An accepted upgrade becomes a socket in the instance's
   # `Bindings.sockets`: its messages arrive on `Entrypoints.socketHandler`
   # and the plugin answers with `Sockets.send` and `Sockets.close`, as on
-  # any socket it dialed. Needs `[sockets]`.
+  # any socket it dialed. Needs `[sockets]`. These sockets count toward
+  # `maxOriginSocketsPerInstance`, not `maxSocketsPerInstance`.
   connect @1 (
       request :OriginRequest,  # A `GET` with `upgrade: websocket`.
       attachment :Data  # Initial attachment, at most `maxSocketAttachmentBytes`.
@@ -4387,8 +4392,8 @@ struct OriginConnectReply {
     ok @0 :OriginConnected;
     # Typed failure: the request was refused before the library saw it
     # (`invalid_params`, `forbidden` without `[sockets]`, `limit_exceeded`
-    # when the instance holds its most sockets) or the library is
-    # unavailable.
+    # when the instance holds `maxOriginSocketsPerInstance`) or the library
+    # is unavailable.
     err @1 :PluginError;
   }
 }

@@ -154,6 +154,12 @@ MAX_SOCKET_ATTACHMENT_BYTES: int = 2048
 MAX_SOCKETS_PER_INSTANCE: int = 8
 """Most host-brokered sockets one plugin instance may hold open at once."""
 
+MAX_ORIGIN_SOCKETS_PER_INSTANCE: int = 256
+"""Most sockets into the library (accepted `Origin.connect` upgrades) one
+relay ingress instance may hold at once, apart from `maxSocketsPerInstance`:
+the host holds them in process, not in the socket broker.
+"""
+
 MAX_SOCKET_AUTO_RESPONSES: int = 4
 """Most heartbeat pairs one `Sockets.connect` may declare."""
 
@@ -537,6 +543,7 @@ __all__ = [
     "MAX_SOCKET_FRAME_BYTES",
     "MAX_SOCKET_ATTACHMENT_BYTES",
     "MAX_SOCKETS_PER_INSTANCE",
+    "MAX_ORIGIN_SOCKETS_PER_INSTANCE",
     "MAX_SOCKET_AUTO_RESPONSES",
     "MAX_SOCKET_AUTO_RESPONSE_BYTES",
     "MAX_SOCKET_URL_BYTES",

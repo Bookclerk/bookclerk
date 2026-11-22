@@ -19394,6 +19394,11 @@
       "file": "plugin.capnp",
       "value": 65536
     },
+    "maxOriginSocketsPerInstance": {
+      "name": "maxOriginSocketsPerInstance",
+      "file": "plugin.capnp",
+      "value": 256
+    },
     "maxOriginTargetBytes": {
       "name": "maxOriginTargetBytes",
       "file": "plugin.capnp",

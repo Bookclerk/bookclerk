@@ -163,6 +163,13 @@ export const MAX_SOCKET_ATTACHMENT_BYTES = 2048 as const;
 /** Most host-brokered sockets one plugin instance may hold open at once. */
 export const MAX_SOCKETS_PER_INSTANCE = 8 as const;
 
+/**
+ * Most sockets into the library (accepted `Origin.connect` upgrades) one
+ * relay ingress instance may hold at once, apart from `maxSocketsPerInstance`:
+ * the host holds them in process, not in the socket broker.
+ */
+export const MAX_ORIGIN_SOCKETS_PER_INSTANCE = 256 as const;
+
 /** Most heartbeat pairs one `Sockets.connect` may declare. */
 export const MAX_SOCKET_AUTO_RESPONSES = 4 as const;
 

@@ -585,36 +585,24 @@ async fn a_local_socket_checks_what_the_guest_asks() {
 }
 
 #[tokio::test]
-async fn local_sockets_count_toward_the_instance_cap() {
+async fn local_sockets_have_their_own_cap() {
     let files = tempfile::tempdir().expect("files");
     let broker = idle_broker(files.path());
     let mut held = Vec::new();
-    for _ in 0..MAX_SOCKETS_PER_INSTANCE {
+    for _ in 0..MAX_ORIGIN_SOCKETS_PER_INSTANCE {
         let (socket, library) = local_pair();
         broker.adopt_local(socket, Vec::new()).expect("adopt");
         held.push(library);
     }
     let (socket, _library) = local_pair();
-    assert_eq!(
-        broker.adopt_local(socket, Vec::new()).unwrap_err().code,
-        PluginErrorCode::LimitExceeded
-    );
+    let err = broker.adopt_local(socket, Vec::new()).unwrap_err();
+    assert_eq!(err.code, PluginErrorCode::LimitExceeded);
     assert_eq!(
         broker.check_room().unwrap_err().code,
         PluginErrorCode::LimitExceeded
     );
-    let err = broker
-        .connect(SocketConnectRequest {
-            url: "wss://abs.example.com/socket".into(),
-            ..SocketConnectRequest::default()
-        })
-        .await
-        .unwrap_err();
-    assert_eq!(err.code, PluginErrorCode::LimitExceeded);
-    assert!(
-        broker.inner.link.lock().await.is_none(),
-        "no broker process"
-    );
+    // Outbound sockets are counted apart, so they still have room.
+    assert!(broker.inner.check_capacity().is_ok());
 }
 
 #[tokio::test]

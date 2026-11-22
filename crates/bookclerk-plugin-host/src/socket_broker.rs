@@ -41,7 +41,7 @@ use bookclerk_plugin_abi::sockets::{
 use bookclerk_plugin_abi::{
     LimitExceeded, PluginError as AbiError, Result as AbiResult, SocketClosed,
     SocketConnectRequest, SocketFrame, SocketHandler, SocketInfo, SocketMessage, SocketMessageOk,
-    Sockets, MAX_SOCKETS_PER_INSTANCE,
+    Sockets, MAX_ORIGIN_SOCKETS_PER_INSTANCE, MAX_SOCKETS_PER_INSTANCE,
 };
 use bookclerk_workerd::socket_broker::SOCKET_BROKER_ENV;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -283,18 +283,37 @@ impl Inner {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Refuses one more socket once the instance holds its most, counting
-    /// broker and local sockets together.
+    /// Refuses one more outbound socket once the instance holds its most.
     ///
     /// # Errors
     ///
     /// `limit_exceeded` at [`MAX_SOCKETS_PER_INSTANCE`].
     fn check_capacity(&self) -> AbiResult<()> {
-        let held = self.open().len() + self.local().len();
+        let held = self.open().len();
         if held >= MAX_SOCKETS_PER_INSTANCE as usize {
             return Err(AbiError::limit_exceeded(LimitExceeded::new(
                 "maxSocketsPerInstance",
                 u64::from(MAX_SOCKETS_PER_INSTANCE),
+                u64::try_from(held + 1).unwrap_or(u64::MAX),
+            )));
+        }
+        Ok(())
+    }
+
+    /// Refuses one more origin socket once the instance holds its most.
+    ///
+    /// Origin sockets have their own cap, apart from outbound ones, because
+    /// each live connection a visitor opens through a public address is one.
+    ///
+    /// # Errors
+    ///
+    /// `limit_exceeded` at [`MAX_ORIGIN_SOCKETS_PER_INSTANCE`].
+    fn check_local_capacity(&self) -> AbiResult<()> {
+        let held = self.local().len();
+        if held >= MAX_ORIGIN_SOCKETS_PER_INSTANCE as usize {
+            return Err(AbiError::limit_exceeded(LimitExceeded::new(
+                "maxOriginSocketsPerInstance",
+                u64::from(MAX_ORIGIN_SOCKETS_PER_INSTANCE),
                 u64::try_from(held + 1).unwrap_or(u64::MAX),
             )));
         }
@@ -381,7 +400,7 @@ impl SocketBroker {
     /// # Errors
     ///
     /// `payload_too_large` for an oversized attachment; `limit_exceeded`
-    /// when the instance holds its most sockets. The socket is closed
+    /// when the instance holds its most origin sockets. The socket is closed
     /// either way.
     pub fn adopt_local(&self, socket: LocalSocket, attachment: Vec<u8>) -> AbiResult<SocketInfo> {
         let LocalSocket {
@@ -392,7 +411,7 @@ impl SocketBroker {
             inbound,
         } = socket;
         check_socket_attachment(&attachment)?;
-        self.inner.check_capacity()?;
+        self.inner.check_local_capacity()?;
         let n = self.inner.local_next.fetch_add(1, Ordering::SeqCst) + 1;
         let id = local_socket(n);
         self.inner.local().insert(
@@ -413,13 +432,13 @@ impl SocketBroker {
         })
     }
 
-    /// Refuses when the instance already holds its most sockets.
+    /// Refuses when the instance already holds its most origin sockets.
     ///
     /// # Errors
     ///
-    /// `limit_exceeded` at [`MAX_SOCKETS_PER_INSTANCE`].
+    /// `limit_exceeded` at [`MAX_ORIGIN_SOCKETS_PER_INSTANCE`].
     pub(crate) fn check_room(&self) -> AbiResult<()> {
-        self.inner.check_capacity()
+        self.inner.check_local_capacity()
     }
 
     /// The local socket `socket`'s outbound channel, when it is open.
@@ -452,7 +471,7 @@ impl SocketBroker {
     /// The broker's refusal or dial failure, or `unavailable` when the
     /// broker cannot be started.
     pub async fn connect(&self, request: SocketConnectRequest) -> AbiResult<SocketInfo> {
-        // The broker counts its own sockets; the host adds the local ones.
+        // Checked here too so a full instance is refused without a dial.
         self.inner.check_capacity()?;
         // A broker that is stopping after its last close may drop the
         // command; one retry starts a fresh one.
