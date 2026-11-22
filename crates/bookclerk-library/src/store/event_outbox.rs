@@ -3278,6 +3278,11 @@ fn owner_gone(owner: edition_acquisitions::Column) -> sea_orm::sea_query::Simple
 /// still holds the edition is read by the insert itself, so a holding a
 /// revoke removed after it was read creates no row.
 ///
+/// # Returns
+///
+/// The rows inserted: 1 when the insert created the row with `values`
+/// (the caller then has nothing more to write), else 0.
+///
 /// # Errors
 ///
 /// Returns the write error.
@@ -3286,7 +3291,7 @@ async fn insert_edition_row_if_missing<C: ConnectionTrait>(
     holding_id: &str,
     edition_id: &str,
     values: Vec<(edition_acquisitions::Column, sea_orm::sea_query::SimpleExpr)>,
-) -> Result<()> {
+) -> Result<u64> {
     let (columns, exprs): (Vec<_>, Vec<_>) = values.into_iter().unzip();
     let held = Query::select()
         .expr(Expr::value(1))
@@ -3317,8 +3322,11 @@ async fn insert_edition_row_if_missing<C: ConnectionTrait>(
                 .to_owned(),
         )
         .to_owned();
-    db.execute(&insert).await.map_err(LibraryError::Orm)?;
-    Ok(())
+    Ok(db
+        .execute(&insert)
+        .await
+        .map_err(LibraryError::Orm)?
+        .rows_affected())
 }
 
 /// Write an edition's acquire state for a write from account holding
@@ -3349,7 +3357,7 @@ pub(crate) async fn update_edition_acquisition_on<C: ConnectionTrait>(
     error_message: Option<&str>,
 ) -> Result<u64> {
     let now = now_str();
-    insert_edition_row_if_missing(
+    let inserted = insert_edition_row_if_missing(
         db,
         holding_id,
         edition_id,
@@ -3383,6 +3391,11 @@ pub(crate) async fn update_edition_acquisition_on<C: ConnectionTrait>(
         ],
     )
     .await?;
+    if inserted > 0 {
+        // The insert wrote this state; a second statement would only race
+        // a later write from the same holding.
+        return Ok(inserted);
+    }
     write_guarded_acquisition(
         db,
         edition_id,
@@ -3458,7 +3471,7 @@ pub(crate) async fn update_edition_pdf_on<C: ConnectionTrait>(
     pdf_storage_key: Option<&str>,
 ) -> Result<()> {
     let now = now_str();
-    insert_edition_row_if_missing(
+    let inserted = insert_edition_row_if_missing(
         db,
         holding_id,
         edition_id,
@@ -3494,6 +3507,10 @@ pub(crate) async fn update_edition_pdf_on<C: ConnectionTrait>(
         ],
     )
     .await?;
+    if inserted > 0 {
+        // As in `update_edition_acquisition_on`: the insert wrote it.
+        return Ok(());
+    }
     write_guarded_pdf(db, edition_id, holding_id, status, pdf_storage_key, &now).await
 }
 

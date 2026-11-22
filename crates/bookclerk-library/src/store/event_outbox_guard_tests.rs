@@ -243,3 +243,54 @@ async fn a_revoked_holding_creates_no_edition_row() {
         assert_eq!(row.storage_key.as_deref(), Some("B/b.m4b"), "{name}");
     }
 }
+
+/// A revoked holding's late write leaves a row the owner guard alone would
+/// let it change (queued, owned by the revoked holding) untouched: the
+/// `held_by` guard stops it.
+#[tokio::test]
+async fn a_revoked_holdings_late_write_leaves_a_queued_row_alone() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = sqlite::memory(profile).await.into_store();
+        let (edition, a, _b) = two_holders(&store).await;
+        store
+            .set_holding_acquire_status(&a, AcquireStatus::Queued, None, None)
+            .await
+            .unwrap();
+        store
+            .set_holding_pdf_status(&a, AcquireStatus::Queued, None)
+            .await
+            .unwrap();
+        revoke(&store, &a).await;
+        let now = now_str();
+        let changed = write_guarded_acquisition(
+            store.db(),
+            &edition,
+            &a,
+            AcquireStatus::Acquired,
+            Some("A/a.m4b"),
+            None,
+            &now,
+        )
+        .await
+        .unwrap();
+        assert_eq!(changed, 0, "{name}");
+        write_guarded_pdf(
+            store.db(),
+            &edition,
+            &a,
+            AcquireStatus::Acquired,
+            Some("A/a.pdf"),
+            &now,
+        )
+        .await
+        .unwrap();
+        let row = store.edition_acquisition(&edition).await.unwrap().unwrap();
+        assert_eq!(row.status, AcquireStatus::Queued, "{name}");
+        assert_eq!(row.storage_key, None, "{name}");
+        assert_eq!(row.holding_id, a, "{name}");
+        assert_eq!(row.pdf_status, AcquireStatus::Queued, "{name}");
+        assert_eq!(row.pdf_storage_key, None, "{name}");
+        assert_eq!(row.pdf_holding_id.as_deref(), Some(a.as_str()), "{name}");
+    }
+}
