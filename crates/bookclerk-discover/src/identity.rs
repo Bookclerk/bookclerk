@@ -724,7 +724,7 @@ pub fn merge_candidate_metadata(into: &mut StorefrontCandidate, from: &Storefron
     fill_opt_string(&mut into.cover_url, from.cover_url.as_deref());
     fill_opt_string(&mut into.subtitle, from.subtitle.as_deref());
     fill_opt_string(&mut into.description, from.description.as_deref());
-    fill_opt_string(&mut into.publisher, from.publisher.as_deref());
+    merge_publisher(into, from);
     fill_opt_string(&mut into.published_at, from.published_at.as_deref());
     fill_opt_string(&mut into.categories, from.categories.as_deref());
     fill_opt_string(&mut into.language, from.language.as_deref());
@@ -945,6 +945,41 @@ pub fn push_shelf_category(categories: &mut Vec<String>, kind: &str) {
     categories.push(kind.to_ascii_lowercase());
 }
 
+/// Merges `from`'s publisher into `into` by agreement between stores.
+///
+/// Each store listing names one publisher, but stores disagree (Audible
+/// lists First Family under Grand Central Publishing, Chirp and Libro.fm
+/// under Hachette Audio). Every listing's publisher counts as one vote, and
+/// the row shows the name most of them give, compared without regard to
+/// case or surrounding space; on a tie the name that arrived first stays.
+fn merge_publisher(into: &mut StorefrontCandidate, from: &StorefrontCandidate) {
+    let named = |c: &StorefrontCandidate| -> Vec<String> {
+        if c.publisher_votes.is_empty() {
+            c.publisher
+                .as_deref()
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .map(str::to_string)
+                .into_iter()
+                .collect()
+        } else {
+            c.publisher_votes.clone()
+        }
+    };
+    let mut votes = named(into);
+    votes.extend(named(from));
+    let key = |name: &str| name.trim().to_lowercase();
+    let mut best: Option<(&String, usize)> = None;
+    for name in &votes {
+        let count = votes.iter().filter(|v| key(v) == key(name)).count();
+        if best.is_none_or(|(_, n)| count > n) {
+            best = Some((name, count));
+        }
+    }
+    into.publisher = best.map(|(name, _)| name.clone());
+    into.publisher_votes = votes;
+}
+
 /// Fills an empty optional string, or replaces it when the incoming value is longer.
 fn fill_opt_string(slot: &mut Option<String>, incoming: Option<&str>) {
     let Some(v) = incoming.map(str::trim).filter(|s| !s.is_empty()) else {
@@ -1067,6 +1102,7 @@ mod tests {
             store_rank: None,
             work_id: None,
             expression_id: None,
+            publisher_votes: Vec::new(),
             starter_genre: None,
         }
     }

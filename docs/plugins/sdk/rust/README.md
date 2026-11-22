@@ -120,6 +120,17 @@ poll. The Audiobookshelf plugin, written in TypeScript, is a worked
 example of the same conversation
 (`crates/bookclerk-plugins/optional/integration-audiobookshelf/src/push.ts`).
 
+## Inbound webhooks
+
+A plugin that declares `[[webhooks]]` (see
+[Inbound webhooks](../../abi.md#inbound-webhooks-webhooks)) receives
+`Webhooks` on `Bindings::webhooks` in `open` (`url`, `pull` and `ack`,
+with `WebhookPullRequest` and `WebhookAckRequest`), and may return a
+`WebhookHandler` on `Entrypoints::webhook_handler`, whose `delivered` the
+host calls on a running guest once a request is stored.
+`bookclerk_plugin_abi::webhooks` has the checks the host applies, so a
+plugin can validate a pull before sending it.
+
 ## Author tools
 
 The `bookclerk-plugin` author CLI (`check`, `fmt`, `sync-embed`,

@@ -464,6 +464,42 @@ The isolate runs at that applied date.
   name in `binding`). It needs `[capabilities.network] mode =
   "outbound"`, and every URL must still pass the network grant (see
   [Pushed sockets](abi.md#pushed-sockets-sockets)).
+- `[[webhooks]]` asks the host to take requests from outside services
+  for each instance and keep them until the plugin pulls them
+  (`env.WEBHOOKS`; see [Inbound webhooks](abi.md#inbound-webhooks-webhooks)).
+
+### `[[webhooks]]` (inbound webhooks)
+
+Each row is one webhook URL per plugin instance. A service such as a
+storage provider's event notifications calls it; the host checks and
+stores the request, and the plugin reads it through `env.WEBHOOKS`.
+
+```toml
+[[webhooks]]
+name = "b2-events"                    # [a-z0-9][a-z0-9-]*, at most 32 chars
+max_body_bytes = 65536                # default 64 KiB, at most 1 MiB
+rate_per_minute = 60                  # default 60, at most 600
+retention_secs = 86400                # default 1 day, 60 s to 7 days
+headers = ["x-bz-event-notification-timestamp"]  # kept besides content-type
+[webhooks.signature]
+scheme = "hmac-sha256"                # or "none"
+header = "x-bz-event-notification-signature"
+prefix = "v1="                        # stripped before decoding, optional
+encoding = "hex"                      # or "base64"; default hex
+secret_setting = "webhook_secret"     # a type = "secret" [[settings]] key
+```
+
+- A plugin declares at most 8 rows, with unique names.
+- `signature` is required, so an unsigned webhook is a choice:
+  `signature = { scheme = "none" }`. An `hmac-sha256` rule names the
+  header carrying the signature and the secret setting holding the key;
+  until the operator sets that secret, the route answers 503.
+- `headers` lists up to 16 lowercase header names the stored request
+  keeps; `content-type` is always kept. Credential and hop-by-hop headers
+  (`authorization`, `cookie`, `host`, `transfer-encoding` and the like)
+  can't be kept.
+- Declaring any row adds the `webhooks` binding token to the consent
+  request.
 
 ### `[triggers]`
 

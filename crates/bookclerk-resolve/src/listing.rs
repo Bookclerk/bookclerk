@@ -129,10 +129,11 @@ pub struct SeriesEntry {
 }
 
 impl SeriesEntry {
-    /// The cleaned name series are matched by.
+    /// The cleaned name series are matched by (see [`crate::series_key`]),
+    /// so `King & Maxwell` and `King and Maxwell` are one series.
     #[must_use]
     pub fn name_key(&self) -> String {
-        crate::normalize::clean_title(&self.name, true)
+        crate::labels::series_key(&self.name)
     }
 
     /// The position as a sortable number: the leading decimal of the label.
@@ -371,7 +372,7 @@ impl Listing {
         let mut series = Vec::new();
         for (name, position) in &draft.series {
             let entry = SeriesEntry {
-                name: clean_text(name, "series")?,
+                name: crate::labels::clean_series_name(&clean_text(name, "series")?),
                 position: clean_optional(position.as_deref(), "series")?,
             };
             if entry.name_key().is_empty() {
@@ -498,11 +499,13 @@ impl Listing {
 ///
 /// # Returns
 ///
-/// `clean_title` and the sorted, de-duplicated `clean_author` names joined
-/// with unit separators; empty when either side is empty.
+/// The `clean_title` of the title without its trailing edition markers
+/// (see [`crate::strip_edition_marker`]: `First Family - Abridged` keys as
+/// `First Family`) and the sorted, de-duplicated `clean_author` names
+/// joined with unit separators; empty when either side is empty.
 #[must_use]
 pub fn work_match_key<'a>(title: &str, authors: impl Iterator<Item = &'a str>) -> String {
-    let title = crate::normalize::clean_title(title, true);
+    let title = crate::normalize::clean_title(crate::labels::strip_edition_marker(title), true);
     let authors = name_set_key(authors);
     if title.is_empty() || authors.is_empty() {
         return String::new();

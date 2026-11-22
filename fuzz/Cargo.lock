@@ -932,6 +932,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.23.1",
  "bookclerk-plugin-abi",
  "bookclerk-plugin-manifest",
  "bookclerk-plugin-sdk",
@@ -942,6 +943,7 @@ dependencies = [
  "flate2",
  "futures",
  "hex",
+ "hmac",
  "libc",
  "rand 0.8.7",
  "serde",

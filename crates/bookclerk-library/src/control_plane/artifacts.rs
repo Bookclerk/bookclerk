@@ -81,7 +81,7 @@ pub(crate) fn chunk_bytes(caps: &DbCapabilities) -> usize {
 /// Bounded by `maxResultRows` and by how many chunks, counted in base64
 /// plus [`CHUNK_HEADROOM`] each, fit `maxResultBytes` and
 /// `maxAtomicResultBytes`. Never below one row.
-fn read_width(caps: &DbCapabilities, chunk: usize) -> u32 {
+pub(super) fn read_width(caps: &DbCapabilities, chunk: usize) -> u32 {
     let per_row = chunk
         .div_ceil(3)
         .saturating_mul(4)
@@ -131,7 +131,7 @@ fn encoded_len(statements: &[TypedDbStatement]) -> Result<usize> {
 /// A batch closes before it would pass `maxStatements` or
 /// [`BATCH_BYTES_EIGHTHS`] of `maxRequestBytes`; a statement that cannot
 /// share a batch goes alone while it fits the whole request cap.
-struct ChunkBatches {
+pub(super) struct ChunkBatches {
     /// Statements waiting for the next batch.
     pending: Vec<TypedDbStatement>,
     /// Summed encoded bytes of `pending` plus an empty request's framing.
@@ -152,7 +152,7 @@ impl ChunkBatches {
     /// # Errors
     ///
     /// Returns an error when an empty request cannot be encoded.
-    fn new(caps: &DbCapabilities) -> Result<Self> {
+    pub(super) fn new(caps: &DbCapabilities) -> Result<Self> {
         let empty_bytes = encoded_len(&[])?;
         let request_cap = if caps.max_request_bytes == 0 {
             usize::MAX
@@ -184,11 +184,11 @@ impl ChunkBatches {
     ///
     /// Returns an error when the statement alone is larger than one request
     /// may carry, or cannot be encoded.
-    fn push(&mut self, stmt: TypedDbStatement) -> Result<Option<Vec<TypedDbStatement>>> {
+    pub(super) fn push(&mut self, stmt: TypedDbStatement) -> Result<Option<Vec<TypedDbStatement>>> {
         let size = encoded_len(std::slice::from_ref(&stmt))?.saturating_sub(self.empty_bytes);
         if self.empty_bytes.saturating_add(size) > self.max_single_bytes {
             return Err(LibraryError::Other(anyhow::anyhow!(
-                "a plugin archive write is {size} bytes, over the database plugin's request limit"
+                "a chunked library write is {size} bytes, over the database plugin's request limit"
             )));
         }
         let full = self.pending.len() >= self.max_statements
@@ -205,7 +205,7 @@ impl ChunkBatches {
     }
 
     /// The last, partly filled batch, when anything is left.
-    fn finish(self) -> Option<Vec<TypedDbStatement>> {
+    pub(super) fn finish(self) -> Option<Vec<TypedDbStatement>> {
         (!self.pending.is_empty()).then_some(self.pending)
     }
 }
@@ -216,7 +216,7 @@ impl ChunkBatches {
 /// # Errors
 ///
 /// Returns the database error; nothing in the batch is kept then.
-async fn run(
+pub(super) async fn run(
     store: &LibraryStore,
     statements: Vec<TypedDbStatement>,
     max_rows: u32,
@@ -233,7 +233,7 @@ async fn run(
 /// # Errors
 ///
 /// Returns an error when the cell is missing or not an integer.
-fn int_cell(row: &DbRow, index: usize) -> Result<i64> {
+pub(super) fn int_cell(row: &DbRow, index: usize) -> Result<i64> {
     match row.values.get(index) {
         Some(DbValue::Int64(value)) => Ok(*value),
         other => Err(LibraryError::Other(anyhow::anyhow!(
@@ -247,7 +247,7 @@ fn int_cell(row: &DbRow, index: usize) -> Result<i64> {
 /// # Errors
 ///
 /// Returns an error when the cell is missing or not a blob.
-fn bytes_cell(row: &DbRow, index: usize) -> Result<&[u8]> {
+pub(super) fn bytes_cell(row: &DbRow, index: usize) -> Result<&[u8]> {
     match row.values.get(index) {
         Some(DbValue::Bytes(value)) => Ok(value),
         other => Err(LibraryError::Other(anyhow::anyhow!(
