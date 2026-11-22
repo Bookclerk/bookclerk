@@ -1,0 +1,196 @@
+# Visual recheck: compare queued pull requests with main before the merge
+# queue does.
+#
+# A pull request's visual check compares it with main as main was when the
+# check ran. When main later gains screenshots the pull request also
+# changes (two pull requests each passed alone, but the merge of both draws
+# something nobody approved), the merge group fails. So after each push to
+# main that changes what the visual checks see, this workflow runs the
+# visual check again for every ready pull request with auto-merge on whose
+# changes the checks see, merged into the new main commit. The baselines bot
+# (visual-baselines.yml) then proposes any difference on the pull request,
+# where approving it once lets the pull request land
+# (docs/contributing/ui/visual-testing.md#rechecks-after-main-moves).
+#
+# Trust: `targets` runs main's code only and uploads `recheck-targets` before
+# any job that runs pull request code starts; artifact names can't be reused
+# within a run, so no later job can replace it. `plan` and `visual` run the
+# pull request's merge commit with a read-only token and no secrets, like the
+# CI jobs of a pull request. Only pull requests a maintainer queued (auto-merge
+# needs write access) are rechecked, and every proposal still needs approval.
+
+name: Visual recheck
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A newer main commit supersedes the recheck of an older one.
+concurrency:
+  group: visual-recheck
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  targets:
+    name: Pick the pull requests to recheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # Read main's scripts and diff the push.
+      contents: read
+      # List open pull requests, their files and merge commits.
+      pull-requests: read
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+      count: ${{ steps.pick.outputs.count }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Read tool pins
+        id: pins
+        shell: bash
+        run: python3 scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
+
+      # The planner reads `cargo metadata` to map paths to checks.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ steps.pins.outputs.rust }}
+
+      # What this push changed; a manual run counts everything as changed.
+      - name: List the changed paths
+        env:
+          BEFORE: ${{ github.event_name == 'push' && github.event.before || '' }}
+        run: |
+          set -euo pipefail
+          if [ -n "$BEFORE" ] && git fetch --depth 1 origin "$BEFORE"; then
+            git diff --name-only "$BEFORE" "$GITHUB_SHA" > "$RUNNER_TEMP/changed.txt"
+          else
+            git ls-files > "$RUNNER_TEMP/changed.txt"
+          fi
+
+      - name: Pick
+        id: pick
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          BASE_SHA: ${{ github.sha }}
+          CHANGED_PATHS_FILE: ${{ runner.temp }}/changed.txt
+          OUT_DIR: ${{ runner.temp }}/recheck-targets
+        run: python3 scripts/visual_baselines_bot.py recheck-targets >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.pick.outputs.count != '0'
+        with:
+          name: recheck-targets
+          path: ${{ runner.temp }}/recheck-targets
+          retention-days: 7
+
+  # The CI plan the visual job validates, for the merge commit it checks out.
+  plan:
+    name: Plan the recheck of #${{ matrix.target.number }}
+    needs: targets
+    if: needs.targets.outputs.count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.targets.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.target.merge }}
+          persist-credentials: false
+
+      - name: Read tool pins
+        id: pins
+        shell: bash
+        run: python3 scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ steps.pins.outputs.rust }}
+
+      # A plan that selects the visual check, as a ready pull request's run
+      # would.
+      - name: Resolve CI plan
+        run: |
+          python3 scripts/ci-exec.py resolve --selective 1 --linux-only \
+            --event pull_request --paths ui/visual/baselines.lock
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-plan-${{ matrix.target.number }}
+          path: ${{ runner.temp }}/ci-plan
+          retention-days: 1
+
+  # The same steps as CI's `ui-visual` job (a contract test keeps them in
+  # step), on the merge commit `targets` picked.
+  visual:
+    name: Recheck #${{ matrix.target.number }}
+    needs: [targets, plan]
+    # Every pull request whose plan was made, even when another's failed.
+    if: ${{ !cancelled() && needs.targets.result == 'success' && needs.targets.outputs.count != '0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      # Leaves runners for the merge queue and pull request CI.
+      max-parallel: 4
+      matrix:
+        target: ${{ fromJSON(needs.targets.outputs.matrix) }}
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.target.merge }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ci-plan-${{ matrix.target.number }}
+          path: ${{ runner.temp }}/ci-plan
+
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Validate CI plan
+        run: python3 scripts/ci-exec.py validate
+
+      - name: Fetch the approved baselines
+        id: baselines
+        env:
+          BASELINES: https://github.com/${{ github.repository_owner }}/bookclerk-visual-baselines
+        run: |
+          python3 scripts/visual_baselines.py assemble ui/visual/baselines.lock "$BASELINES" "$RUNNER_TEMP/visual-baselines" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/ui-visual"
+          cp ui/visual/baselines.lock "$RUNNER_TEMP/ui-visual/compared.lock"
+
+      # A difference fails this job and is what the bot proposes; the
+      # workflow's result is not a check any pull request requires.
+      - name: Visual and accessibility checks
+        env:
+          CI_VISUAL_BASELINES: ${{ steps.baselines.outputs.dir }}
+        run: python3 scripts/ci-exec.py run ui_visual
+
+      - name: Upload the visual results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ui-visual-${{ matrix.target.number }}
+          path: ${{ runner.temp }}/ui-visual
+          if-no-files-found: ignore
+          retention-days: 7

@@ -8,7 +8,8 @@ request run's artifact, which the bot commits with a write token, plus the
 and the collaborator role GitHub reports for whoever ticked it. Each corpus
 file is named ``<kind>__<case>`` (``lock``, ``png``, ``approval``,
 ``command``, ``membership``, ``role``, ``changes`` for a proposed set's
-commit message, or ``report`` for a comparison run's Playwright report);
+commit message, ``report`` for a comparison run's Playwright report, or
+``targets`` for a visual recheck run's ``recheck-targets`` document);
 every corpus input and every mutation of one must get the same verdict from
 the module and from the independent oracle below, which reads bytes one by
 one instead of with ``re`` and ``struct``.
@@ -118,6 +119,46 @@ def oracle_report(raw: bytes) -> int | None:
             return None
         counts.append(value)
     return counts[1] if counts[0] + counts[1] > 0 else None
+
+
+def oracle_commit(value: object) -> bool:
+    """Whether ``value`` is 40 lowercase hex characters, checked one by one."""
+    return type(value) is str and len(value) == 40 and all(c in HEX for c in value)
+
+
+def oracle_targets(raw: bytes) -> tuple[str, list[tuple[int, str, str]]] | Exception:
+    """Independent reading of a recheck targets document, or a refusal."""
+    if len(raw) > 4 * 1024 * 1024:
+        return ValueError()
+    try:
+        doc = json.loads(raw)
+    except (ValueError, RecursionError):
+        return ValueError()
+    if type(doc) is not dict or sorted(doc) != ["base", "targets"]:
+        return ValueError()
+    if not oracle_commit(doc["base"]) or type(doc["targets"]) is not list:
+        return ValueError()
+    if len(doc["targets"]) > 20:
+        return ValueError()
+    out: list[tuple[int, str, str]] = []
+    for entry in doc["targets"]:
+        if type(entry) is not dict or sorted(entry) != ["head", "merge", "number"]:
+            return ValueError()
+        number = entry["number"]
+        if type(number) is not int or number < 1 or number >= 2**31:
+            return ValueError()
+        if out and out[-1][0] >= number:
+            return ValueError()
+        if not (oracle_commit(entry["head"]) and oracle_commit(entry["merge"])):
+            return ValueError()
+        out.append((number, entry["head"], entry["merge"]))
+    return doc["base"], out
+
+
+def module_targets(raw: bytes) -> tuple[str, list[tuple[int, str, str]]]:
+    """The module's reading of a targets document, shaped like the oracle's."""
+    base, targets = vb.parse_targets(raw)
+    return base, [(t.number, t.head, t.merge) for t in targets]
 
 
 def be32(data: bytes, at: int) -> int:
@@ -322,6 +363,8 @@ def assert_matches(test: unittest.TestCase, kind: str, raw: bytes, msg: str) -> 
         want = oracle_changes(raw)
     elif kind == "report":
         got, want = vb.compare_finished(raw), oracle_report(raw)
+    elif kind == "targets":
+        got, want = verdict(module_targets, raw), oracle_targets(raw)
     elif kind == "approval":
         got, want = verdict(module_approval, raw), oracle_approval(raw)
     elif kind == "command":
@@ -413,6 +456,27 @@ class CorpusTests(unittest.TestCase):
         ):
             with self.subTest(report=name):
                 self.assertEqual(vb.compare_finished(load(name)), failed)
+        a, b, c = "a" * 40, "b" * 40, "c" * 40
+        self.assertEqual(module_targets(load("targets__none")), (a, []))
+        self.assertEqual(
+            module_targets(load("targets__two")), (a, [(7, b, c), (1290, c, b)])
+        )
+        for bad in (
+            "targets__unsorted",
+            "targets__repeated",
+            "targets__zero",
+            "targets__bool_number",
+            "targets__float_number",
+            "targets__upper_sha",
+            "targets__short_sha",
+            "targets__extra_key",
+            "targets__missing_merge",
+            "targets__too_many",
+            "targets__not_object",
+            "targets__base_missing",
+        ):
+            with self.subTest(bad=bad), self.assertRaises(vb.VisualBaselinesError):
+                vb.parse_targets(load(bad))
         self.assertEqual(vb.png_size(load("png__valid")), (4, 3))
         self.assertEqual(
             module_approval(load("approval__tick")),
@@ -1569,6 +1633,7 @@ class BotTests(unittest.TestCase):
         self.assertNotIn("PUT", [m for m, _, _ in write.sent])
 
     def test_propose_skips_an_incomplete_set(self) -> None:
+        self.event({"workflow_run": {"event": "pull_request"}})
         self.env["ARTIFACT_DIR"] = str(self.root)
         self.assertEqual(
             self.bot.propose(self.env, FakeGitHub({}), FakeGitHub({})),
@@ -1827,6 +1892,320 @@ class BotTests(unittest.TestCase):
             base64.b64decode(env["GIT_CONFIG_VALUE_0"].split()[-1]),
             b"x-access-token:secret-token",
         )
+
+
+class RecheckTests(unittest.TestCase):
+    """The visual recheck: picking pull requests and proposing for them."""
+
+    REPO = "repos/Bookclerk/bookclerk"
+    BASE, HEAD, MERGE = "a" * 40, "d" * 40, "e" * 40
+
+    def setUp(self) -> None:
+        import visual_baselines_bot as bot
+
+        self.bot = bot
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        changed = self.root / "changed.txt"
+        changed.write_text("ui/src/app/Book.tsx\n")
+        self.env = {
+            "GITHUB_REPOSITORY": "Bookclerk/bookclerk",
+            "BASELINES_REPOSITORY": "Bookclerk/bookclerk-visual-baselines",
+            "BASELINES_TOKEN": "t",
+            "APP_SLUG": "bookclerk",
+            "DEFAULT_BRANCH": "main",
+            "BASE_SHA": self.BASE,
+            "CHANGED_PATHS_FILE": str(changed),
+        }
+        self.sleeps: list[float] = []
+
+    def pull(self, number: int, **fields: object) -> dict:
+        """An open, ready pull request with auto-merge on, at ``HEAD``."""
+        return {
+            "number": number,
+            "draft": False,
+            "auto_merge": {"merge_method": "squash"},
+            "head": {"sha": self.HEAD},
+            "state": "open",
+            **fields,
+        }
+
+    def answers(
+        self, pulls: list, files: dict | None = None, merges: dict | None = None
+    ):
+        """GitHub answers: the open pull requests, each one's files (a UI file
+        by default) and each one's merge state (current by default)."""
+        out: dict = {
+            ("GET", f"{self.REPO}/pulls?state=open&base=main&per_page=100&page=1"): (
+                200,
+                pulls,
+            ),
+            ("GET", f"{self.REPO}/commits/{self.MERGE}"): (
+                200,
+                {"parents": [{"sha": self.BASE}, {"sha": self.HEAD}]},
+            ),
+        }
+        for pr in pulls:
+            n = pr["number"]
+            listed = (files or {}).get(n, [{"filename": "ui/src/app/Book.tsx"}])
+            out[("GET", f"{self.REPO}/pulls/{n}/files?per_page=100&page=1")] = (
+                200,
+                listed,
+            )
+            state = (merges or {}).get(
+                n, {"mergeable": True, "merge_commit_sha": self.MERGE}
+            )
+            out[("GET", f"{self.REPO}/pulls/{n}")] = (
+                200,
+                {"head": {"sha": self.HEAD}, **state},
+            )
+        return out
+
+    def pick(self, send, selects=lambda paths: any(p.startswith("ui/") for p in paths)):
+        return self.bot.recheck_targets(self.env, send, selects, self.sleeps.append)
+
+    def test_picks_ready_auto_merge_pull_requests_the_checks_see(self) -> None:
+        pulls = [
+            self.pull(12),
+            self.pull(11, draft=True),
+            self.pull(13, auto_merge=None),
+            self.pull(14),
+        ]
+        send = FakeGitHub(
+            self.answers(pulls, files={14: [{"filename": "crates/x.rs"}]})
+        )
+        targets, notes = self.pick(send)
+        self.assertEqual(targets, [vb.RecheckTarget(12, self.HEAD, self.MERGE)])
+        self.assertEqual(notes, [])
+        self.assertFalse(
+            any("pulls/11" in p or "pulls/13" in p for _, p, _ in send.sent)
+        )
+
+    def test_a_renamed_file_counts_by_its_old_path(self) -> None:
+        files = {12: [{"filename": "docs/x.md", "previous_filename": "ui/src/x.tsx"}]}
+        send = FakeGitHub(self.answers([self.pull(12)], files=files))
+        self.assertEqual(len(self.pick(send)[0]), 1)
+
+    def test_a_push_the_checks_do_not_see_rechecks_nothing(self) -> None:
+        send = FakeGitHub({})
+        targets, notes = self.pick(send, selects=lambda paths: False)
+        self.assertEqual((targets, send.sent), ([], []))
+        self.assertIn("nothing this commit changed", notes[0])
+
+    def test_waits_for_the_merge_commit_to_catch_up(self) -> None:
+        stale = "f" * 40
+        answers = self.answers(
+            [self.pull(12)], merges={12: {"mergeable": None, "merge_commit_sha": None}}
+        )
+        calls = []
+        states = [
+            {"head": {"sha": self.HEAD}, "mergeable": None, "merge_commit_sha": None},
+            {"head": {"sha": self.HEAD}, "mergeable": True, "merge_commit_sha": stale},
+            {
+                "head": {"sha": self.HEAD},
+                "mergeable": True,
+                "merge_commit_sha": self.MERGE,
+            },
+        ]
+        answers[("GET", f"{self.REPO}/commits/{stale}")] = (
+            200,
+            {"parents": [{"sha": "9" * 40}, {"sha": self.HEAD}]},
+        )
+
+        def send(method: str, path: str, body: object) -> tuple[int, bytes]:
+            calls.append(path)
+            if path == f"{self.REPO}/pulls/12":
+                return 200, json.dumps(states[min(calls.count(path), 3) - 1]).encode()
+            status, payload = answers.get((method, path), (404, {}))
+            return status, json.dumps(payload).encode()
+
+        targets, _ = self.pick(send)
+        self.assertEqual(targets, [vb.RecheckTarget(12, self.HEAD, self.MERGE)])
+        self.assertEqual(self.sleeps, [self.bot.MERGE_PAUSE_SECONDS] * 2)
+
+    def test_a_conflicting_pull_request_is_left_out(self) -> None:
+        send = FakeGitHub(
+            self.answers([self.pull(12)], merges={12: {"mergeable": False}})
+        )
+        targets, notes = self.pick(send)
+        self.assertEqual(targets, [])
+        self.assertIn("#12: no merge commit", notes[0])
+        self.assertEqual(self.sleeps, [])
+
+    def test_a_merge_commit_that_never_catches_up_is_left_out(self) -> None:
+        answers = self.answers([self.pull(12)])
+        answers[("GET", f"{self.REPO}/commits/{self.MERGE}")] = (
+            200,
+            {"parents": [{"sha": "9" * 40}, {"sha": self.HEAD}]},
+        )
+        targets, _ = self.pick(FakeGitHub(answers))
+        self.assertEqual(targets, [])
+        self.assertEqual(len(self.sleeps), self.bot.MERGE_TRIES - 1)
+
+    def test_at_most_the_limit_lowest_numbers_first(self) -> None:
+        pulls = [self.pull(n) for n in range(40, 40 - vb.MAX_RECHECK_TARGETS - 2, -1)]
+        targets, notes = self.pick(FakeGitHub(self.answers(pulls)))
+        self.assertEqual(len(targets), vb.MAX_RECHECK_TARGETS)
+        self.assertEqual(targets[0].number, 40 - vb.MAX_RECHECK_TARGETS - 1)
+        self.assertEqual(len(notes), 2)
+
+    def test_too_many_files_to_list_is_rechecked(self) -> None:
+        answers = self.answers([self.pull(12)])
+        for page in range(1, self.bot.MAX_LIST_PAGES + 1):
+            answers[("GET", f"{self.REPO}/pulls/12/files?per_page=100&page={page}")] = (
+                200,
+                [{"filename": "crates/x.rs"}] * 100,
+            )
+        targets, _ = self.pick(FakeGitHub(answers))
+        self.assertEqual(len(targets), 1)
+
+    def test_the_planner_decides_what_the_checks_see(self) -> None:
+        self.assertTrue(self.bot.planner_selects_visual(["ui/src/main.tsx"]))
+        self.assertFalse(
+            self.bot.planner_selects_visual(["crates/bookclerk-cli/src/main.rs"])
+        )
+        self.assertFalse(self.bot.planner_selects_visual([]))
+
+    def test_cli_writes_the_targets_and_the_matrix(self) -> None:
+        self.env["OUT_DIR"] = str(self.root / "out")
+        picked = [vb.RecheckTarget(12, self.HEAD, self.MERGE)]
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            unittest.mock.patch.object(
+                self.bot, "recheck_targets", lambda *a: (picked, ["#13: skipped"])
+            ),
+            redirect_stdout(out),
+            redirect_stderr(err),
+        ):
+            status = self.bot.main_recheck_targets(self.env, FakeGitHub({}))
+        self.assertEqual(status, 0)
+        lines = dict(line.split("=", 1) for line in out.getvalue().splitlines())
+        self.assertEqual(lines["count"], "1")
+        self.assertEqual(
+            json.loads(lines["matrix"]),
+            [{"head": self.HEAD, "merge": self.MERGE, "number": 12}],
+        )
+        written = (self.root / "out" / "targets.json").read_bytes()
+        self.assertEqual(vb.parse_targets(written), (self.BASE, picked))
+        self.assertIn("#13: skipped", err.getvalue())
+
+    # --- proposing for a recheck run -------------------------------------
+
+    def recheck_event(self, **run: object) -> None:
+        payload = {
+            "workflow_run": {
+                "path": ".github/workflows/visual-recheck.yml",
+                "event": "push",
+                "head_branch": "main",
+                "head_sha": self.BASE,
+                "head_repository": {"full_name": "Bookclerk/bookclerk"},
+                **run,
+            },
+            "repository": {
+                "full_name": "Bookclerk/bookclerk",
+                "default_branch": "main",
+            },
+        }
+        path = self.root / "event.json"
+        path.write_text(json.dumps(payload))
+        self.env["GITHUB_EVENT_PATH"] = str(path)
+
+    def recheck_artifacts(self, numbers: list[int]) -> None:
+        art = self.root / "recheck"
+        (art / "recheck-targets").mkdir(parents=True)
+        (art / "recheck-targets" / "targets.json").write_text(
+            vb.render_targets(
+                self.BASE, [vb.RecheckTarget(n, self.HEAD, self.MERGE) for n in numbers]
+            )
+        )
+        for n in numbers:
+            folder = art / f"ui-visual-{n}" / "baselines" / "desktop"
+            folder.mkdir(parents=True)
+            (folder / "x--light.png").write_bytes((CORPUS / "png__valid").read_bytes())
+            (art / f"ui-visual-{n}" / "record-complete").write_text("")
+        self.env["ARTIFACT_DIR"] = str(art)
+
+    def recheck_github(self, pull: dict) -> FakeGitHub:
+        return FakeGitHub(
+            {
+                ("GET", f"{self.REPO}/pulls/990"): (200, pull),
+                (
+                    "GET",
+                    f"{self.REPO}/contents/ui/visual/baselines.lock?ref={self.MERGE}",
+                ): (200, {"content": base64.b64encode(lock_of(None)).decode()}),
+                ("GET", f"{self.REPO}/issues/990/comments?per_page=100&page=1"): (
+                    200,
+                    [],
+                ),
+            }
+        )
+
+    def run_recheck(self, send: FakeGitHub) -> tuple[str, FakeGitHub, list]:
+        write = FakeGitHub(
+            {
+                ("POST", f"{self.REPO}/issues/990/comments"): (201, {}),
+                ("POST", f"{self.REPO}/pulls/990/requested_reviewers"): (201, {}),
+            }
+        )
+        pushed: list = []
+        with unittest.mock.patch.object(
+            self.bot,
+            "push_set",
+            lambda r, f, ref, m, t: pushed.append((sorted(f), ref, m)) or "7" * 40,
+        ):
+            out = self.bot.propose(self.env, send, write)
+        return out, write, pushed
+
+    def test_proposes_the_merge_result_on_the_pull_request(self) -> None:
+        self.recheck_event()
+        self.recheck_artifacts([990])
+        out, write, pushed = self.run_recheck(self.recheck_github(self.pull(990)))
+        self.assertIn("#990: proposed", out)
+        self.assertEqual(pushed[0][:2], ([X], "refs/heads/pending/pr-990"))
+        self.assertIn(f"at {self.HEAD}", pushed[0][2])
+        # The comment names the pull request's head, which approval checks.
+        self.assertIn(f"head={self.HEAD}", write.sent[0][2]["body"])
+
+    def test_a_pull_request_that_moved_on_is_left_alone(self) -> None:
+        self.recheck_event()
+        self.recheck_artifacts([990])
+        for pull in (
+            self.pull(990, head={"sha": "9" * 40}),
+            self.pull(990, auto_merge=None),
+            self.pull(990, state="closed"),
+        ):
+            with self.subTest(pull=pull):
+                out, write, pushed = self.run_recheck(self.recheck_github(pull))
+                self.assertIn("moved on", out)
+                self.assertEqual((write.sent, pushed), ([], []))
+
+    def test_a_target_without_a_complete_set_is_skipped(self) -> None:
+        self.recheck_event()
+        self.recheck_artifacts([990])
+        (self.root / "recheck" / "ui-visual-990" / "record-complete").unlink()
+        out, write, _ = self.run_recheck(self.recheck_github(self.pull(990)))
+        self.assertIn("no complete recorded set", out)
+        self.assertEqual(write.sent, [])
+
+    def test_no_targets_means_nothing_to_do(self) -> None:
+        self.recheck_event()
+        self.env["ARTIFACT_DIR"] = str(self.root / "missing")
+        out, _, _ = self.run_recheck(FakeGitHub({}))
+        self.assertEqual(out, "no recheck targets in this run")
+
+    def test_only_a_recheck_of_the_default_branch_proposes(self) -> None:
+        self.recheck_artifacts([990])
+        for run in (
+            {"event": "pull_request"},
+            {"head_branch": "other"},
+            {"head_repository": {"full_name": "fork/bookclerk"}},
+            {"head_sha": "9" * 40},
+        ):
+            with self.subTest(run=run):
+                self.recheck_event(**run)
+                with self.assertRaises(self.bot.BotError):
+                    self.run_recheck(self.recheck_github(self.pull(990)))
 
 
 if __name__ == "__main__":
