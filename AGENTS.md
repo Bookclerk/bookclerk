@@ -179,7 +179,7 @@ See [`docs/contributing/licensing.md`](docs/contributing/licensing.md).
 `bookclerk-jail`, `bookclerk-sandbox`, `bookclerk-workerd`,
 `bookclerk-plugin-host`, `bookclerk-plugin-abi` (`plugin.capnp`),
 `bookclerk-db-exec`, `docs/plugins/sql-contract/`, `bookclerk-media-worker`,
-`bookclerk-mp4`, `bookclerk-keystore`, secrets / `master.key` / operator-token code, and
+`bookclerk-mp4`, `bookclerk-libav`, `bookclerk-keystore`, secrets / `master.key` / operator-token code, and
 `.github/workflows/`.
 
 ## Review guidelines
@@ -451,11 +451,15 @@ When exercising real store credentials in this cloud environment:
   `bookclerk config master-key wrap` or daemon config reload.
 - Audible Adrm/Widevine decrypt is native inside the Audible plugin (sources
   always return Plain). Host packaging is `bookclerk-media` (MP3 via
-  Symphonia+LAME, metadata fix-up, chapter remux). No `ffmpeg` or
-  `aaxclean-cli` is required. Widevine L3 CDMs auto-provision via classic
-  Libation AudibleCdm (Accounts connect registers as Android); optional BYO
-  `.wvd` still works. Spatial/Atmos (L1) is not available. Neither a CDM nor
-  ffmpeg is required to build, test, or run non-acquire commands.
+  Symphonia+LAME, metadata fix-up, chapter remux). No installed `ffmpeg`
+  or `aaxclean-cli` is required; release builds and test builds
+  compile a pinned, decoders-only FFmpeg from source for WMA, AC-3/E-AC-3
+  and AMR (`bookclerk-libav`, needs `curl`, `tar`, `make`; on Windows,
+  MSVC plus MSYS2 with `make`). Widevine L3
+  CDMs auto-provision via classic Libation AudibleCdm (Accounts connect
+  registers as Android); optional BYO `.wvd` still works. Spatial/Atmos (L1) is not available. Neither a CDM nor
+  an installed ffmpeg is required to build, test, or run non-acquire
+  commands.
 - Plugin configuration is **database only**. A plugin declares its settings in
   `plugin.toml` `[[settings]]` and a semver `version`; enrollment pins that
   schema under the version (newest wins and documents are reconciled to it on every enrollment pass; an

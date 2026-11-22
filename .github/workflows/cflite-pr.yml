@@ -28,6 +28,9 @@ on:
       - "crates/bookclerk-tags/**"
       - "crates/bookclerk-archive/**"
       - "crates/bookclerk-media/**"
+      # Linked through bookclerk-media's `libav` feature, which the fuzz
+      # build turns on.
+      - "crates/bookclerk-libav/**"
       - "crates/bookclerk-config/**"
       - "crates/bookclerk-intake/**"
       - "crates/bookclerk-storefront/**"

@@ -833,6 +833,14 @@ jobs:
         if: runner.os == 'macOS' && env.CI_SAVED_CACHE_CURRENT != 'true'
         run: brew install capnp
 
+      # FFmpeg's `configure` for the media worker's decoders runs under the
+      # runner's MSYS2, which has no `make` until it is added
+      # (docs/server/media.md#ffmpeg-decoders).
+      - name: Install MSYS2 make (Windows)
+        if: runner.os == 'Windows' && env.CI_SAVED_CACHE_CURRENT != 'true'
+        shell: pwsh
+        run: C:\msys64\usr\bin\pacman.exe -S --needed --noconfirm make
+
       - name: Install capnproto (Windows)
         if: runner.os == 'Windows' && env.CI_SAVED_CACHE_CURRENT != 'true'
         shell: pwsh
@@ -1138,6 +1146,11 @@ jobs:
           cache-on-failure: true
           save-if: false
 
+      - name: Install MSYS2 make (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: C:\msys64\usr\bin\pacman.exe -S --needed --noconfirm make
+
       - name: Confinement clippy + enforcement tests
         run: python scripts/ci-exec.py run confinement
 
@@ -1241,6 +1254,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends capnproto
+
+      # FFmpeg's `configure` for the media worker's decoders runs under the
+      # runner's MSYS2, which has no `make` until it is added
+      # (docs/server/media.md#ffmpeg-decoders).
+      - name: Install MSYS2 make (Windows)
+        if: runner.os == 'Windows' && env.CI_SAVED_CACHE_CURRENT != 'true'
+        shell: pwsh
+        run: C:\msys64\usr\bin\pacman.exe -S --needed --noconfirm make
 
       - name: Install capnproto (Windows)
         if: runner.os == 'Windows' && env.CI_SAVED_CACHE_CURRENT != 'true'
@@ -1680,6 +1701,14 @@ jobs:
           env-vars: RUSTFLAGS CARGO_PROFILE_DEV_DEBUG CI_CARGO_PROFILES CI_BUILD_PLAN_DEBUG
           cache-on-failure: true
           save-if: false
+
+      # FFmpeg's `configure` for the media worker's decoders runs under the
+      # runner's MSYS2, which has no `make` until it is added
+      # (docs/server/media.md#ffmpeg-decoders).
+      - name: Install MSYS2 make (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: C:\msys64\usr\bin\pacman.exe -S --needed --noconfirm make
 
       - name: Install capnproto (Windows)
         shell: pwsh

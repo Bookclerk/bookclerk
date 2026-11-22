@@ -12,6 +12,11 @@ authors.workspace = true
 name = "bookclerk-media-worker"
 path = "src/main.rs"
 
+[features]
+# FFmpeg decoders for AC-3, E-AC-3, WMA and AMR (see bookclerk-media). On
+# in every release and Docker build.
+libav = ["bookclerk-media/libav"]
+
 [dependencies]
 bookclerk-cover.workspace = true
 bookclerk-media.workspace = true

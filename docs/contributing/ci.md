@@ -769,6 +769,15 @@ The release job runs at one of two scopes:
   assertions. It runs when a packaging input changes (`bookclerk-dev`, the
   workerd pins, the platform manifests) or on the full suite.
 
+The `full` scope builds the media worker with its `libav` feature, as
+release archives and the Docker image do, so it also compiles the pinned
+FFmpeg decoders (`bookclerk-libav`; about half a minute on 4 cores). The
+`affected` scope leaves the feature off. Test builds turn it on through
+`bookclerk-media`'s dev-dependencies, so the test jobs cover the FFmpeg
+path on every OS. Windows jobs that compile `bookclerk-media` install
+MSYS2's `make` first (FFmpeg's `configure` runs under the runner's MSYS2
+with MSVC; see [media.md](../server/media.md#ffmpeg-decoders)).
+
 The release profile ships fat LTO with one codegen unit, which links on a
 single core. On pull requests the job sets
 `CARGO_PROFILE_RELEASE_LTO=thin`, which links in parallel and still checks
@@ -999,8 +1008,9 @@ input reuses `main`'s Rust results instead:
    (`git diff -z --no-renames --name-only`).
 2. [`scripts/codeql_languages.py`](../../scripts/codeql_languages.py)
    treats a path as a Rust input when it is a `.rs` file, a `.capnp` or
-   `.proto` schema that a build script compiles into Rust, a `.cc` or `.h`
-   file (C++ a build script compiles into a crate), a `Cargo.toml`,
+   `.proto` schema that a build script compiles into Rust, a `.c`, `.cc`
+   or `.h` file (C or C++ a build script compiles into a crate: the FFmpeg
+   shim, the SentencePiece tokenizer), a `Cargo.toml`,
    `Cargo.lock`, `rust-toolchain.toml`, anything under a `.cargo/`
    directory at any depth, the workflow, or the scripts that choose and
    reuse. A name that isn't UTF-8 also counts. A test fails when a

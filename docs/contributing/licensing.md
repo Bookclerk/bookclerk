@@ -20,6 +20,7 @@ may be used. The reasons behind these choices are in
 | `match_score` in `bookclerk-enrich`, ported from audiobookshelf | GPL-3.0-only |
 | `normalize` in `bookclerk-resolve`, ported from audiobookshelf (title and author cleaning moved out of `match_score`) | GPL-3.0-only |
 | Vendored code under `third_party/` and fonts under `ui/public/fonts/` | Their own licenses, next to them |
+| FFmpeg, which `bookclerk-libav` downloads, builds and links statically into the media worker of release builds | LGPL-2.1-or-later |
 | The ONNX Runtime shared library that packages carry beside the `embedder` plugin (downloaded at build time, not in the repository) | MIT |
 
 The plugin SDKs and everything a third-party plugin built on them links
@@ -35,6 +36,18 @@ license. GPL-3.0 and AGPL-3.0 both allow combining the two (section 13 of
 each), so Bookclerk ships as one program. Mark a new port the same way:
 set the crate's `license` field, and say in the module docs where it came
 from and which license it keeps.
+
+FFmpeg is built without its GPL and nonfree parts, so the libraries the
+media worker links stay LGPL-2.1-or-later, which the AGPL can combine
+with. The build script fetches the unmodified release tarball from
+`ffmpeg.org` and checks its SHA-256; the version is `FFMPEG_VERSION` in
+`crates/bookclerk-libav/build.rs`, next to the tarball's URL and digest.
+Bookclerk's source is offered under the AGPL with every release, and that
+build script names exactly which FFmpeg source a release links and how it
+was configured; the tarball itself stays downloadable from `ffmpeg.org`.
+To link the worker against a changed FFmpeg, point the build script at
+the changed tarball and its digest and rebuild with
+`--features bookclerk-media-worker/libav`.
 
 Every crate states its license in `Cargo.toml`. A new crate inherits
 AGPL-3.0-or-later from `[workspace.package]` unless it is plugin-facing.

@@ -85,6 +85,7 @@ PostgreSQL 16+, or Cloudflare D1
 | Scan deltas for stores with no change feed (plugins) | `bookclerk-scan-delta` (fingerprints in the plugin's own `SCAN_STATE` database, read through a keyed reader; links only the SDK) |
 | ABS integration (plugin) | `bookclerk-plugins/optional/integration-audiobookshelf` (TypeScript workerd guest, no Cargo package; user watch and listening memory in its own `LISTENING_STATE` database) |
 | Clear-media packaging | `bookclerk-media` (remux / fixup / MP3; no DRM) |
+| FFmpeg decoders (WMA, AC-3/E-AC-3, AMR) | `bookclerk-libav` (pinned FFmpeg built decoders-only from source, behind a C shim; linked by the media worker in release builds) |
 | MP4 container plumbing | `bookclerk-mp4` (shared with store plugins, plus the Audible brand-trim helpers; no cryptography) |
 | Process confinement | `bookclerk-sandbox` (Landlock+seccomp / Seatbelt / AppContainer) |
 | Guest jail launcher | `bookclerk-jail` (applies a policy, then `exec`s the guest) |

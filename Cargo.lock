@@ -1966,6 +1966,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-libav"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "bookclerk-library"
 version = "0.1.0"
 dependencies = [
@@ -2017,6 +2026,8 @@ dependencies = [
  "bookclerk-archive",
  "bookclerk-config",
  "bookclerk-cover",
+ "bookclerk-libav",
+ "bookclerk-media",
  "bookclerk-mp4",
  "bookclerk-sandbox",
  "bookclerk-tags",

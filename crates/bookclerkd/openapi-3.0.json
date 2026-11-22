@@ -61042,7 +61042,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Audio codecs the worker decodes (`aac`, `alac`, `flac`, `mp3`,\n`opus`, `vorbis`).",
+            "description": "Audio codecs the worker decodes (`aac`, `alac`, `flac`, `mp3`,\n`opus`, `vorbis`, and `eac3` in builds with the FFmpeg decoders).",
             "example": [
               "aac",
               "alac",
@@ -61057,7 +61057,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Media types of files the worker opens, compared without case or\nparameters.",
+            "description": "Media types of files the worker opens, compared without case or\nparameters. Builds with the FFmpeg decoders add WMA, raw AC-3 and\nE-AC-3, and AMR types.",
             "example": [
               "audio/mp4",
               "audio/mpeg",

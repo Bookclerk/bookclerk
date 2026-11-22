@@ -994,6 +994,9 @@ pub fn build_packages(root: &Path, release: bool, packages: &[String]) -> Result
     for pkg in packages {
         cmd.args(["-p", pkg]);
     }
+    if let Some(features) = release_features(release, packages) {
+        cmd.args(["--features", features]);
+    }
     cmd.stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
@@ -1007,6 +1010,16 @@ pub fn build_packages(root: &Path, release: bool, packages: &[String]) -> Result
         profile_dir(release)
     );
     Ok(())
+}
+
+/// Cargo features a release build of `packages` turns on: the media
+/// worker's FFmpeg decoders (`bookclerk-media-worker/libav`) on Unix and
+/// Windows (MSVC). Debug builds leave them off.
+fn release_features(release: bool, packages: &[String]) -> Option<&'static str> {
+    (release
+        && cfg!(any(unix, all(windows, target_env = "msvc")))
+        && packages.iter().any(|p| p == "bookclerk-media-worker"))
+    .then_some("bookclerk-media-worker/libav")
 }
 
 /// `cargo` command (`$CARGO` or `cargo`) with cwd set to the workspace root.
@@ -1343,6 +1356,19 @@ mode = "deny"
         assert!(ids.contains("d1"), "{ids:?}");
         assert!(ids.contains("postgres"), "{ids:?}");
         assert!(!ids.contains("sqlite"));
+    }
+
+    #[test]
+    fn release_builds_of_the_media_worker_turn_on_ffmpeg() {
+        let worker = vec![
+            "bookclerkd".to_string(),
+            "bookclerk-media-worker".to_string(),
+        ];
+        let want = cfg!(any(unix, all(windows, target_env = "msvc")))
+            .then_some("bookclerk-media-worker/libav");
+        assert_eq!(release_features(true, &worker), want);
+        assert_eq!(release_features(false, &worker), None);
+        assert_eq!(release_features(true, &["bookclerkd".to_string()]), None);
     }
 
     #[test]
