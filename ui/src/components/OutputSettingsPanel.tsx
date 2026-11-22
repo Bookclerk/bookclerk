@@ -220,7 +220,7 @@ export function OutputSettingsPanel({ onSessionExpired }: { onSessionExpired: ()
         <label htmlFor={field.key} className="text-sm font-medium text-ink">
           {field.label}
         </label>
-        {field.hint ? <p className="text-xs text-ink/50">{field.hint}</p> : null}
+        {field.hint ? <p className="text-xs text-ink/70">{field.hint}</p> : null}
       </div>
       <input
         id={field.key}
