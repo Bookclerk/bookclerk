@@ -603,6 +603,7 @@ pub async fn catalog_search_page(
                         store_rank,
                         work_id: None,
                         expression_id: None,
+                        publisher_votes: Vec::new(),
                     });
                 }
             }
@@ -1403,6 +1404,7 @@ pub(crate) mod tests {
             store_rank: Some(0),
             work_id: None,
             expression_id: None,
+            publisher_votes: Vec::new(),
         }
     }
 
@@ -1659,6 +1661,7 @@ pub(crate) mod tests {
                     store_rank: None,
                     work_id: None,
                     expression_id: None,
+                    publisher_votes: Vec::new(),
                 },
             }],
         };
@@ -2163,6 +2166,44 @@ pub(crate) mod tests {
             }
             assert_eq!(row_listings(&map).len(), 2, "rotation {rotation}");
         }
+    }
+
+    /// A merged row shows the publisher most of its stores name, whichever
+    /// store arrived first; on a tie the first name stays.
+    #[test]
+    fn a_merged_row_shows_the_publisher_most_stores_name() {
+        let publisher = |order: &[(&str, &str, Option<&str>)]| {
+            let mut map = HashMap::new();
+            for (source, product, name) in order {
+                let mut hit = first_family(source, product, "First Family", 871, false);
+                hit.publisher = name.map(str::to_string);
+                upsert_hit(&mut map, hit);
+            }
+            assert_eq!(map.len(), 1);
+            map.into_values().next().unwrap().publisher
+        };
+        let audible = ("audible", "B002V0QCMW", Some("Grand Central Publishing"));
+        let chirp = ("chirp", "279927", Some("Hachette Audio"));
+        let libro = ("libro", "9781600245497", Some("hachette audio "));
+        for order in [
+            [audible, chirp, libro],
+            [chirp, audible, libro],
+            [libro, chirp, audible],
+        ] {
+            let shown = publisher(&order).unwrap();
+            assert!(shown.eq_ignore_ascii_case(shown.trim()));
+            assert_eq!(shown.trim().to_lowercase(), "hachette audio", "{order:?}");
+        }
+        // A tie keeps the first name; a listing that names none has no vote.
+        let chirp_silent = ("chirp", "279927", None);
+        assert_eq!(
+            publisher(&[audible, chirp]).as_deref(),
+            Some("Grand Central Publishing")
+        );
+        assert_eq!(
+            publisher(&[chirp_silent, libro, audible]).as_deref(),
+            Some("hachette audio")
+        );
     }
 
     /// What tells two listings apart keeps them apart even when the title,

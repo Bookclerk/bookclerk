@@ -121,6 +121,7 @@ pub(crate) fn candidate_from_listing(
         store_rank: None,
         work_id: listing.work_id.clone(),
         expression_id: listing.expression_id.clone(),
+        publisher_votes: Vec::new(),
     }
 }
 

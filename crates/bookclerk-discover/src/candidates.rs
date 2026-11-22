@@ -112,6 +112,12 @@ pub struct StorefrontCandidate {
     /// sold by different stores, so one card carries both prices.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expression_id: Option<String>,
+    /// The publisher each store listing merged into this row named, one
+    /// entry per listing that named one, in arrival order. Empty until a
+    /// second listing merges in; [`Self::publisher`] is then the name most
+    /// of them agree on (see `merge_candidate_metadata`). Never sent.
+    #[serde(skip)]
+    pub publisher_votes: Vec<String>,
 }
 
 /// Options for storefront candidate expansion.
@@ -335,6 +341,7 @@ pub(crate) fn hit_to_candidate(source_id: &str, hit: CatalogHit) -> StorefrontCa
         store_rank: None,
         work_id: None,
         expression_id: None,
+        publisher_votes: Vec::new(),
     }
 }
 
@@ -543,9 +550,10 @@ pub(crate) fn insert_candidate(
 ///
 /// Stores round a recording's length differently (Audible to the nearest
 /// minute, Chirp down from milliseconds, Libro.fm from seconds), so the
-/// same files read 370 and 370.5 minutes. Two recordings of one book by the
-/// same narrator, such as an abridgement, differ by hours.
-pub(crate) const RUNTIME_TOLERANCE_MINUTES: i64 = 2;
+/// same files read 370 and 370.5 minutes: rounding alone moves a runtime
+/// by less than one minute. Two recordings of one book by the same
+/// narrator, such as an abridgement, differ by hours.
+pub(crate) const RUNTIME_TOLERANCE_MINUTES: i64 = 1;
 
 /// The key of the candidate in `map` that lists the same recording as `c`.
 ///
@@ -868,6 +876,7 @@ mod tests {
                 store_rank: None,
                 work_id: None,
                 expression_id: Some("x-hail".into()),
+                publisher_votes: Vec::new(),
             },
             &owned_asins,
             &owned_isbns,
@@ -908,6 +917,7 @@ mod tests {
                 store_rank: None,
                 work_id: None,
                 expression_id: Some("x-hail".into()),
+                publisher_votes: Vec::new(),
             },
             &owned_asins,
             &owned_isbns,
@@ -948,6 +958,7 @@ mod tests {
                 store_rank: None,
                 work_id: None,
                 expression_id: Some("x-hail".into()),
+                publisher_votes: Vec::new(),
             },
             &owned_asins,
             &owned_isbns,
@@ -1004,6 +1015,7 @@ mod tests {
             store_rank: None,
             work_id: Some("w-sunlit".into()),
             expression_id: Some(format!("x-{product_id}")),
+            publisher_votes: Vec::new(),
         };
         let none = HashSet::new();
         let mut map = HashMap::new();
@@ -1061,6 +1073,7 @@ mod tests {
             expression_id: language
                 .filter(|l| *l == "Spanish")
                 .map(|_| String::from("x-es")),
+            publisher_votes: Vec::new(),
         };
         let none = HashSet::new();
         let mut map = HashMap::new();

@@ -659,8 +659,8 @@ Stores rarely share a record number, so hits from two different stores that
 share none of those still share a row when all of these hold
 (`same_recording_by_runtime` in `bookclerk-discover`):
 
-1. Both report a runtime, and the runtimes differ by at most 2 minutes
-   (stores round a recording's length differently).
+1. Both report a runtime, and the runtimes differ by at most 1 minute
+   (stores round a recording's length differently, by less than a minute).
 2. They name the same work: the resolver's work key matches. It reads the
    cleaned title without a trailing edition marker (`First Family - Abridged`
    and `First Family (Abridged)` both key as `First Family`) and the authors.
@@ -674,7 +674,11 @@ never merge hits. A narration and a dramatisation of one book, or an
 unabridged and an abridged recording, stay separate rows with their own
 cover, narrators and price. Each merged row keeps every store's edition, so
 every store's price is still offered, and a field one store left out (a
-runtime, a series, a publisher) is filled from another store's hit.
+runtime, a series) is filled from another store's hit. Each store listing
+names one publisher, and stores disagree (Audible lists *First Family* under
+Grand Central Publishing, Chirp and Libro.fm under Hachette Audio), so a
+merged row shows the publisher most of its listings name, ignoring case; on
+a tie the first one stays.
 
 > [!NOTE]
 > David Baldacci's *First Family*, read by Ron McLarty, is the reference
