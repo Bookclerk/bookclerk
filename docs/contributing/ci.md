@@ -871,6 +871,13 @@ the job records a set every run and compares with the locked images when
 there are any. See
 [Visual and accessibility testing](ui/visual-testing.md#baselines).
 
+After a push to main that the job would see, the `Visual recheck` workflow
+runs the same steps for each ready pull request with auto-merge on, merged
+into the new main commit, so a combination nobody approved shows up on the
+pull request before the merge queue fails on it. It is not a required check
+and runs at most four legs at once (see
+[Rechecks after main moves](ui/visual-testing.md#rechecks-after-main-moves)).
+
 ### Small-VPS envelope
 
 The check makes sure Bookclerk fits a small VPS. Its paths are the harness,

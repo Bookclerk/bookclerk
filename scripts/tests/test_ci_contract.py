@@ -1321,6 +1321,61 @@ def step_selects(step: dict, test: dict) -> bool:
     return any(f in name for f in step["filters"])
 
 
+class VisualRecheckWorkflowTests(unittest.TestCase):
+    """`visual-recheck.yml` runs CI's visual check and keeps pull request code unprivileged."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        wf_dir = REPO / ".github" / "workflows"
+        cls.ci = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["ui-visual"]
+        cls.recheck = yaml.safe_load((wf_dir / "visual-recheck.yml").read_text(encoding="utf-8"))
+        cls.baselines = yaml.safe_load((wf_dir / "visual-baselines.yml").read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _shape(steps: list[dict]) -> list[tuple]:
+        """Each step's name or action and command, without the inputs that name artifacts or refs."""
+        return [(s.get("name"), (s.get("uses") or "").split("@")[0], s.get("run"), s.get("env")) for s in steps]
+
+    def test_visual_job_mirrors_ci(self) -> None:
+        visual = self.recheck["jobs"]["visual"]
+        # CI's OSV remediation step only applies to a called remediation run.
+        ci_steps = [s for s in self.ci["steps"] if s.get("uses") != PRIVATE_HEAD_ACTION]
+        self.assertEqual(self._shape(visual["steps"]), self._shape(ci_steps))
+        self.assertEqual(visual["container"], self.ci["container"])
+        self.assertEqual(visual["timeout-minutes"], self.ci["timeout-minutes"])
+        for step, ci_step in zip(visual["steps"], ci_steps):
+            self.assertEqual(step.get("uses"), ci_step.get("uses"), step.get("name"))
+
+    def test_pull_request_code_runs_without_secrets_or_write_access(self) -> None:
+        jobs = self.recheck["jobs"]
+        self.assertEqual(self.recheck["permissions"], {})
+        for name in ("plan", "visual"):
+            with self.subTest(job=name):
+                self.assertEqual(jobs[name]["permissions"], {"contents": "read"})
+                self.assertNotIn("secrets.", str(jobs[name]))
+                checkout = jobs[name]["steps"][0]
+                self.assertEqual(checkout["with"]["ref"], "${{ matrix.target.merge }}")
+                self.assertIs(checkout["with"]["persist-credentials"], False)
+        # Targets come from main's code, uploaded before any pull request code runs.
+        targets = jobs["targets"]
+        self.assertNotIn("ref", targets["steps"][0].get("with", {}))
+        self.assertEqual(jobs["plan"]["needs"], "targets")
+        self.assertEqual(jobs["visual"]["needs"], ["targets", "plan"])
+        upload = next(s for s in targets["steps"] if "upload-artifact" in s.get("uses", ""))
+        self.assertEqual(upload["with"]["name"], "recheck-targets")
+
+    def test_bot_proposes_only_for_rechecks_of_the_default_branch(self) -> None:
+        on = self.baselines.get("on", self.baselines.get(True))
+        self.assertIn(self.recheck["name"], on["workflow_run"]["workflows"])
+        job = self.baselines["jobs"]["propose-recheck"]
+        self.assertIn("github.event.workflow_run.path == '.github/workflows/visual-recheck.yml'", job["if"])
+        self.assertIn("github.event.workflow_run.head_branch == github.event.repository.default_branch", job["if"])
+        checkout = job["steps"][0]
+        self.assertEqual(checkout["with"]["ref"], "${{ github.event.repository.default_branch }}")
+        # The CI proposal job still only takes pull request runs.
+        self.assertIn("github.event.workflow_run.event == 'pull_request'", self.baselines["jobs"]["propose"]["if"])
+
+
 class DiagnosticsReportKeyTests(unittest.TestCase):
     """The collector's report key must never reach a Bookclerk build.
 

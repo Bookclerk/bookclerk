@@ -19,6 +19,11 @@ here, so both are parsed sans-IO:
   which differences are proposed (``compare_finished``,
   ``compare_mismatches``); they never approve anything.
 
+- The ``recheck-targets`` artifact of a visual recheck run
+  (``.github/workflows/visual-recheck.yml``): the pull requests, heads and
+  merge commits the run compared, which the bot proposes for. A job that
+  runs no pull request code writes it before any job that does starts, but
+  it is still read strictly (``parse_targets``).
 - An ``issue_comment`` ``created`` event whose body is
   ``@<bot> approve-visuals``,
   the approval of someone without write access, and the team membership
@@ -864,6 +869,112 @@ def parse_approval(raw: bytes, bot_login: str) -> Approval | None:
     ):
         return None
     return Approval(number, comment_id, login, head, set_commit)
+
+
+#: Most pull requests one visual recheck run compares, so a burst of
+#: queued pull requests never takes more than a few runners at a time.
+MAX_RECHECK_TARGETS = 20
+
+#: Largest pull request number accepted, GitHub's 32-bit id range.
+MAX_PULL_NUMBER = 2**31 - 1
+
+
+class RecheckTarget:
+    """One pull request a visual recheck run compares with the default branch.
+
+    # Fields
+    * ``number``: the pull request.
+    * ``head``: its head commit when the run was planned; a proposal is
+      only made while the pull request is still at it.
+    * ``merge``: the commit the run checked out, the head merged into the
+      default branch commit the run was started for.
+    """
+
+    __slots__ = ("head", "merge", "number")
+
+    def __init__(self, number: int, head: str, merge: str) -> None:
+        """Holds the fields as given; ``parse_targets`` validates them."""
+        #: The pull request number.
+        self.number = number
+        #: The head commit id the run planned with.
+        self.head = head
+        #: The merge commit id the run checked out.
+        self.merge = merge
+
+    def __eq__(self, other: object) -> bool:
+        """Equal when every field is."""
+        return isinstance(other, RecheckTarget) and (
+            self.number,
+            self.head,
+            self.merge,
+        ) == (other.number, other.head, other.merge)
+
+    def __repr__(self) -> str:
+        """``RecheckTarget(number, head, merge)``, for test failures."""
+        return f"RecheckTarget({self.number}, {self.head!r}, {self.merge!r})"
+
+
+def render_targets(base: str, targets: list[RecheckTarget]) -> str:
+    """Writes the ``recheck-targets`` document ``parse_targets`` reads.
+
+    # Arguments
+    * ``base``: the default branch commit the run compares against.
+    * ``targets``: the pull requests, in any order; written sorted by number.
+    """
+    return json.dumps(
+        {
+            "base": base,
+            "targets": [
+                {"number": t.number, "head": t.head, "merge": t.merge}
+                for t in sorted(targets, key=lambda t: t.number)
+            ],
+        },
+        sort_keys=True,
+    )
+
+
+def parse_targets(raw: bytes) -> tuple[str, list[RecheckTarget]]:
+    """Reads a visual recheck run's ``recheck-targets`` document.
+
+    It is a JSON object with exactly the keys ``base`` (a commit id) and
+    ``targets``: a list of at most ``MAX_RECHECK_TARGETS`` objects with
+    exactly the keys ``number`` (an integer from 1 to ``MAX_PULL_NUMBER``),
+    ``head`` and ``merge`` (commit ids), in strictly increasing ``number``
+    order. Commit ids are 40 lowercase hex characters.
+
+    # Arguments
+    * ``raw``: the document's bytes.
+
+    # Returns
+    The base commit and the targets.
+
+    # Errors
+    ``VisualBaselinesError`` when the document breaks any of those rules.
+    """
+    doc = _json_object(raw, "recheck targets")
+    if set(doc) != {"base", "targets"}:
+        raise VisualBaselinesError("recheck targets need exactly base and targets")
+    base = _field(doc, "base", str, "recheck base")
+    if COMMIT_ID.fullmatch(base) is None:
+        raise VisualBaselinesError("recheck base is not a commit id")
+    entries = _field(doc, "targets", list, "recheck target list")
+    if len(entries) > MAX_RECHECK_TARGETS:
+        raise VisualBaselinesError("too many recheck targets")
+    out: list[RecheckTarget] = []
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != {"number", "head", "merge"}:
+            raise VisualBaselinesError("recheck target is malformed")
+        number = _field(entry, "number", int, "recheck target number")
+        if not 1 <= number <= MAX_PULL_NUMBER:
+            raise VisualBaselinesError("recheck target number is out of range")
+        if out and number <= out[-1].number:
+            raise VisualBaselinesError("recheck targets are not in order")
+        head = _field(entry, "head", str, "recheck target head")
+        merge = _field(entry, "merge", str, "recheck target merge")
+        if COMMIT_ID.fullmatch(head) is None or COMMIT_ID.fullmatch(merge) is None:
+            raise VisualBaselinesError("recheck target commit is not a commit id")
+        out.append(RecheckTarget(number, head, merge))
+    return base, out
 
 
 def read_set(root: Path) -> list[tuple[str, bytes]]:

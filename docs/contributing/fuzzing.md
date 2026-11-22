@@ -1321,20 +1321,23 @@ kind: each is refused unless its size and SHA-256 match the pin in
 
 ### Visual baselines (Python)
 
-- **Lock, screenshot set, comparison report, change list, approval and
-  role readers** (`parse_lock`, `png_size`, `validate_set`,
-  `compare_finished`, `parse_changes`, `parse_approval`, `parse_command`,
-  `parse_membership` and `parse_role` in `scripts/visual_baselines.py`).
+- **Lock, screenshot set, comparison report, change list, recheck
+  targets, approval and role readers** (`parse_lock`, `png_size`,
+  `validate_set`, `compare_finished`, `parse_changes`, `parse_targets`,
+  `parse_approval`, `parse_command`, `parse_membership` and `parse_role` in
+  `scripts/visual_baselines.py`).
   The `ui-visual` CI job fetches the commits a pull request's
   `ui/visual/baselines.lock` names, and the `Visual baselines` workflow
   commits the screenshots a pull request's run recorded, reads that run's
-  comparison report, and acts on edits of its review comment.
+  comparison report, reads the pull requests a visual recheck run lists,
+  and acts on edits of its review comment.
   - Test and corpus: `scripts/tests/test_visual_baselines.py`,
     `scripts/tests/visual_baselines_corpus/` (named `<kind>__<case>`).
   - Oracle: an independent byte-by-byte reading of the lock (sorted
     `<path> <40 lowercase hex digits>` lines after optional comments), of
     each `Change:` line, of the report's `errors` and counts by exact JSON
-    types, of the PNG signature and `IHDR` header with
+    types, of the recheck targets by exact keys and JSON types with
+    commit ids checked character by character, of the PNG signature and `IHDR` header with
     hand-decoded big-endian sizes, of each path piece by piece, and of
     each event by exact JSON types, accepting an edit only when ticking the
     one checkbox turns the old body into the new one (CRLF line endings

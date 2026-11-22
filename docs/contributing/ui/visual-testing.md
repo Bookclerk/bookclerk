@@ -308,7 +308,11 @@ its new screenshots are approved. The `Visual baselines` workflow
    notified.
 2. An approver ticks the checkbox. Ticking needs write access, so a visual
    reviewer without it replies `@bookclerk approve-visuals` instead, the
-   same form as the other bot commands.
+   same form as the other bot commands. The workflow adds an eyes reaction
+   to the ticked comment or the reply as soon as it starts, which can take
+   a few minutes when every runner is busy. A reply also gets a rocket
+   reaction and an answer that mentions the approver once the approval
+   lands, or a confused reaction and the reason when it doesn't.
 3. The workflow checks the approver and that the pull request is open. It
    then tags the set `approved/<commit>` and, in the lock on the pull
    request's branch, points the screenshots the set adds or changes at it
@@ -335,6 +339,40 @@ resolves that: keep both sides' entries, and for a screenshot both changed,
 keep only the base branch's entry. CI then compares with the base branch's
 image and the comment asks for approval again.
 
+### Rechecks after main moves
+
+Each pull request's check compares it with main as main was when the check
+ran. Two pull requests can each pass and still draw something nobody
+approved once both land, for example when one adds a page and the other
+changes a component on it. The merge group then fails on the screenshots
+of the combination. The `Visual recheck` workflow
+(`.github/workflows/visual-recheck.yml`) catches this before the queue:
+
+1. After each push to main, it asks CI's planner whether the visual checks
+   see anything the push changed. If not, it stops.
+2. It picks the open pull requests into main that are ready, have
+   auto-merge on and change something the visual checks see. It waits for
+   GitHub to rebuild each one's merge commit on the new main commit, and
+   leaves out pull requests that conflict with it. At most 20 are picked,
+   lowest numbers first.
+3. For each one, it runs the same steps as CI's `ui-visual` job on that
+   merge commit, four at a time.
+4. The `Visual baselines` workflow then proposes what differs on each pull
+   request, the same way as for a CI run, as long as the pull request is
+   still open, at the same head and has auto-merge on. Approving the
+   comment commits the lock change, so the pull request runs CI again
+   before it reaches the queue.
+
+> [!NOTE]
+> A pull request queued behind another one that hasn't landed yet is
+> compared with main without it. If the two clash, the merge group still
+> fails, and the recheck that runs when the first one lands proposes the
+> fix on the second.
+
+A newer push to main cancels the recheck of an older one. The workflow's
+result is not a required check, so a recheck that finds differences never
+blocks a pull request by itself.
+
 ### Who can approve
 
 - Anyone with the admin or maintain role on this repository.
@@ -351,6 +389,16 @@ expected names, folders and sizes, and only a comment edit that ticks the
 box and changes nothing else. Line endings don't count as a change: a
 tick saved from the browser comes back with CRLF line endings (see
 [Fuzzing](../fuzzing.md#visual-baselines-python)).
+
+The recheck works the same way. Its first job runs main's code only and
+uploads the list of pull requests, head commits and merge commits before
+any job that runs pull request code starts. Artifact names can't be
+reused within a run, so no later job can replace the list, and the bot
+reads it strictly (`parse_targets`). The jobs that build and screenshot a
+merge commit have a read-only token and no secrets, like the CI jobs of a
+pull request. Only pull requests a maintainer queued are rechecked,
+because turning on auto-merge needs write access, and every proposal
+still needs approval.
 
 The `ui-visual` job holds no secrets. The workflow's App tokens are
 narrowed per step: Contents on the baselines repository alone for sets and
