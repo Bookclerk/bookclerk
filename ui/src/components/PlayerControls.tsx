@@ -53,7 +53,12 @@ export function TransportButtons({
         title={playing ? "Pause" : "Play"}
       >
         {state.status === "loading" ? (
-          <WaveformThrobber size="sm" />
+          // As large as the play icon it stands in for, in a brick that
+          // stands out on the ink button.
+          <WaveformThrobber
+            size="sm"
+            className={cn("text-brick-on-ink", large ? "h-7 w-7" : "h-5 w-5")}
+          />
         ) : playing ? (
           <Pause className={large ? "h-7 w-7" : "h-5 w-5"} />
         ) : (

@@ -120,6 +120,9 @@
   --color-brick: #c84a34;
   /* Brick for text and small labels: AA (4.5:1) on paper and on brick tints. */
   --color-brick-text: #a33b28;
+  /* Brick on an ink fill (the play button): 3:1 or more against ink and its
+     hover shade, so the buffering bars stay visible. */
+  --color-brick-on-ink: #ec8a6f;
   --color-parchment: #f3e5c6;
   --color-fold: #e7d3ac;
   --color-paper: #fbf7ee;
@@ -154,6 +157,8 @@ html.dark {
   --color-teal-text: #5aa8a2;
   --color-brick: #e06a52;
   --color-brick-text: #e06a52;
+  /* Ink is cream here, so the deep brick contrasts with it. */
+  --color-brick-on-ink: #a33b28;
   --color-card: color-mix(in srgb, var(--color-ink) 8%, transparent);
   --color-card-mid: color-mix(in srgb, var(--color-ink) 12%, transparent);
   --color-card-strong: color-mix(in srgb, var(--color-ink) 18%, var(--color-paper));

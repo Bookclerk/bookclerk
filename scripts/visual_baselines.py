@@ -204,6 +204,13 @@ MARKER = re.compile(
     re.ASCII,
 )
 
+#: The first line of a continuation comment: the images of the review
+#: comment for ``set`` that did not fit in it, page ``part`` (from 1).
+MORE_MARKER = re.compile(
+    r"<!-- bookclerk-visual-baselines-more v1 set=([0-9a-f]{40}) part=([1-9][0-9]{0,3}) -->",
+    re.ASCII,
+)
+
 #: Most characters a comment body holds; GitHub refuses bodies over 65,536,
 #: and the rest is headroom for the outcome notes ``approve`` appends.
 MAX_COMMENT_CHARS = 60_000
@@ -270,12 +277,35 @@ def render_comment(
 ) -> str:
     """Renders the bot's review comment for a proposed set.
 
-    One comment holds every change: a summary line with the count in each
-    category, the approval checkbox, then one collapsed section per
+    The first body of ``render_comments``: see there.
+
+    # Returns
+    The comment body, opened by ``MARKER``.
+    """
+    return render_comments(
+        head, set_commit, approved_commit, changes, raw_base, bot_login
+    )[0]
+
+
+def render_comments(
+    head: str,
+    set_commit: str,
+    approved_commit: str | None,
+    changes: list[tuple[str, str]],
+    raw_base: str,
+    bot_login: str,
+) -> list[str]:
+    """Renders the bot's review comment for a proposed set, and the
+    continuation comments that hold the images it has no room for.
+
+    The review comment holds every change: a summary line with the count in
+    each category, the approval checkbox, then one collapsed section per
     category. Changed screenshots show the approved and proposed image, new
-    ones only the proposed and removed ones only the approved. Only a set
-    too large for one GitHub comment loses images: the rows that no longer
-    fit list the screenshot's name alone.
+    ones only the proposed and removed ones only the approved. A set too
+    large for one GitHub comment lists the rows that no longer fit by name
+    alone, says so under the summary, and shows their images in
+    continuation comments (each opened by ``MORE_MARKER``), so every image
+    can still be reviewed.
 
     # Arguments
     * ``head``: the pull request head the set was recorded from.
@@ -288,7 +318,8 @@ def render_comment(
     * ``bot_login``: the automation App's login, for the reply command.
 
     # Returns
-    The comment body, opened by ``MARKER``.
+    The review comment's body, opened by ``MARKER``, then each continuation
+    comment's body in order; each body at most ``MAX_COMMENT_CHARS``.
     """
     by_kind = {kind: [p for p, c in changes if c == kind] for kind, _, _ in CATEGORIES}
     counts = ", ".join(
@@ -317,17 +348,16 @@ def render_comment(
         "Approved": f"{raw_base}/{approved_commit}" if approved_commit else None,
         "Proposed": f"{raw_base}/{set_commit}",
     }
-    sections: list[tuple[list[str], list[str], list[str]]] = []
+    sections: list[tuple[str, list[str], list[str], list[str], list[str]]] = []
     for kind, title, columns in CATEGORIES:
         paths = by_kind[kind]
         if not paths:
             continue
-        top = [
-            f"<details><summary>{title} ({len(paths)})</summary>",
-            "",
+        header = [
             "| Screenshot | " + " | ".join(columns) + " |",
             "| --- |" + " --- |" * len(columns),
         ]
+        top = [f"<details><summary>{title} ({len(paths)})</summary>", "", *header]
         rows = []
         for path in paths:
             cells = [
@@ -337,18 +367,21 @@ def render_comment(
                 for column in columns
             ]
             rows.append(f"| `{path[:-4]}` | " + " | ".join(cells) + " |")
-        sections.append(
-            (top, rows, [f"| `{path[:-4]}` |" + " |" * len(columns) for path in paths])
-        )
+        bare = [f"| `{path[:-4]}` |" + " |" * len(columns) for path in paths]
+        sections.append((title, header, top, rows, bare))
     tail = ["</details>", ""]
-    size = sum(len(line) + 1 for line in head_lines)
+    # Room for the note a set that overflows gets under its summary.
+    note_room = 160
+    size = sum(len(line) + 1 for line in head_lines) + note_room
     size += sum(
         sum(len(line) + 1 for line in top + tail) + sum(len(r) + 1 for r in bare)
-        for top, _, bare in sections
+        for _, _, top, _, bare in sections
     )
     lines = list(head_lines)
-    for top, rows, bare in sections:
+    overflow: list[tuple[str, list[str], list[str]]] = []
+    for title, header, top, rows, bare in sections:
         lines += top
+        left: list[str] = []
         for row, plain in zip(rows, bare, strict=True):
             # Swap a bare row for its imaged one while the whole body fits.
             if size - len(plain) + len(row) <= MAX_COMMENT_CHARS:
@@ -356,8 +389,69 @@ def render_comment(
                 lines.append(row)
             else:
                 lines.append(plain)
+                left.append(row)
         lines += tail
-    return "\n".join(lines)
+        if left:
+            overflow.append((title, header, left))
+    pages = _continuation_pages(set_commit, overflow)
+    if pages:
+        missing = sum(len(left) for _, _, left in overflow)
+        lines.insert(
+            len(head_lines) - 1,
+            f"\n{missing} row(s) below have no room for their images here; "
+            f"they are in the {len(pages)} comment(s) that follow.",
+        )
+    return ["\n".join(lines), *pages]
+
+
+def _continuation_pages(
+    set_commit: str, overflow: list[tuple[str, list[str], list[str]]]
+) -> list[str]:
+    """Lays the imaged rows the review comment had no room for out over
+    continuation comments.
+
+    # Arguments
+    * ``set_commit``: the baselines commit holding the proposed set.
+    * ``overflow``: per category with rows left over, its title, its table
+      header and those rows, in the review comment's order.
+
+    # Returns
+    Each continuation comment's body, opened by ``MORE_MARKER`` and at most
+    ``MAX_COMMENT_CHARS`` long; empty when nothing overflowed.
+    """
+    pages: list[list[str]] = []
+    page: list[str] = []
+    size = 0
+
+    def start() -> None:
+        nonlocal page, size
+        page = [
+            f"<!-- bookclerk-visual-baselines-more v1 set={set_commit} part={len(pages) + 1} -->",
+            "### Visual changes, continued",
+            "",
+        ]
+        pages.append(page)
+        size = sum(len(line) + 1 for line in page)
+
+    for title, header, rows in overflow:
+        opened = False
+        for row in rows:
+            heading = [f"#### {title}", "", *header]
+            need = (
+                len(row) + 1 + (0 if opened else sum(len(h) + 1 for h in heading) + 1)
+            )
+            if not page or size + need > MAX_COMMENT_CHARS:
+                start()
+                opened = False
+                need = len(row) + 1 + sum(len(h) + 1 for h in heading) + 1
+            if not opened:
+                if len(page) > 3:
+                    page.append("")
+                page.extend(heading)
+                opened = True
+            page.append(row)
+            size += need
+    return ["\n".join(p) for p in pages]
 
 
 def parse_role(raw: bytes) -> str:

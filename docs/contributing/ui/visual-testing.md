@@ -282,8 +282,11 @@ its new screenshots are approved. The `Visual baselines` workflow
    and the approval checkbox. Below that, each category is a collapsed
    section: changed screenshots show the approved and proposed image, new
    ones only the proposed image and removed ones only the approved image.
-   Every screenshot is listed; only a set too large for one GitHub comment
-   (65,536 characters) shows the last rows by name alone. The workflow then
+   Every screenshot is listed. When a set is too large for one GitHub
+   comment (65,536 characters), the last rows show only the name. Their
+   images go in follow-on comments headed "Visual changes, continued",
+   which the workflow edits, adds or deletes along with the main comment.
+   The workflow then
    requests a review from the `visual-reviewers` team, so its members are
    notified.
 2. An approver ticks the checkbox. Ticking needs write access, so a visual

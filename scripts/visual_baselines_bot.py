@@ -243,21 +243,21 @@ def head_lock(send: Transport, repository: str, sha: str) -> str | None:
     return vb.parse_lock(data)
 
 
-def find_comment(
+def bot_comments(
     send: Transport, repository: str, number: int, bot_login: str
-) -> tuple[int, str] | None:
-    """Returns the bot's latest review comment on pull request ``number``.
+) -> list[tuple[int, str]]:
+    """Lists the comments ``bot_login`` left on pull request ``number``.
 
-    Only comments by ``bot_login`` count, so a user who pastes the marker
-    cannot pose as one.
+    Only comments by ``bot_login`` count, so a user who pastes a marker
+    cannot pose as the bot.
 
     # Returns
-    The comment's id and body, or ``None`` before the bot posted one.
+    Each comment's id and body, oldest first.
 
     # Errors
     ``BotError`` when the listing fails.
     """
-    latest: tuple[int, str] | None = None
+    found: list[tuple[int, str]] = []
     for page in range(1, 11):
         raw = call(
             send,
@@ -279,12 +279,75 @@ def find_comment(
                 and user.get("login") == bot_login
                 and isinstance(body, str)
                 and type(cid) is int
-                and vb.MARKER.match(body)
             ):
-                latest = (cid, body)
+                found.append((cid, body))
         if len(items) < 100:
             break
+    return found
+
+
+def find_comment(
+    send: Transport, repository: str, number: int, bot_login: str
+) -> tuple[int, str] | None:
+    """Returns the bot's latest review comment on pull request ``number``.
+
+    # Returns
+    The comment's id and body, or ``None`` before the bot posted one.
+
+    # Errors
+    ``BotError`` when the listing fails.
+    """
+    latest: tuple[int, str] | None = None
+    for cid, body in bot_comments(send, repository, number, bot_login):
+        if vb.MARKER.match(body):
+            latest = (cid, body)
     return latest
+
+
+def sync_continuations(
+    send: Transport,
+    write: Transport,
+    repository: str,
+    number: int,
+    bot_login: str,
+    replaces: str | None,
+    pages: list[str],
+) -> None:
+    """Brings the continuation comments of a review comment up to date.
+
+    The continuation comments of the set the review comment showed before
+    (``replaces``) are edited into ``pages`` in order; any left over are
+    deleted and any missing are posted after them. Continuation comments of
+    other sets (an approved comment kept as a record) stay as they are.
+
+    # Arguments
+    * ``send``: reads this repository.
+    * ``write``: edits, posts and deletes comments, as the App.
+    * ``replaces``: the set the review comment showed before this update,
+      or ``None`` for a new review comment.
+    * ``pages``: the continuation bodies from ``render_comments``.
+
+    # Errors
+    ``BotError`` when a request fails.
+    """
+    old: list[tuple[int, int]] = []
+    if replaces is not None:
+        for cid, body in bot_comments(send, repository, number, bot_login):
+            more = vb.MORE_MARKER.match(body)
+            if more and more.group(1) == replaces:
+                old.append((int(more.group(2)), cid))
+    old.sort()
+    for i, page in enumerate(pages):
+        post_or_update(
+            write, repository, number, old[i][1] if i < len(old) else None, page
+        )
+    for _, cid in old[len(pages) :]:
+        call(
+            write,
+            "DELETE",
+            f"repos/{repository}/issues/comments/{cid}",
+            ok=(204,),
+        )
 
 
 def post_or_update(
@@ -400,11 +463,15 @@ def propose(env: dict[str, str], send: Transport, write: Transport) -> str:
             and not is_approved(send, baselines, shown.group(2))
             else None
         )
+        replaces = shown.group(2) if open_id is not None and shown is not None else None
         if not changes:
             if open_id is not None:
                 note = f"<!-- bookclerk-visual-baselines v1 head={head.sha} set={lock or '0' * 40} -->\n"
                 note += f"No visual changes left to approve at `{head.sha[:12]}`.\n"
                 post_or_update(write, repository, number, open_id, note)
+                sync_continuations(
+                    send, write, repository, number, bot_login, replaces, []
+                )
             done.append(f"#{number}: matches the approved baselines")
             continue
         # A rerun that recorded the same images keeps the open comment as it
@@ -426,13 +493,11 @@ def propose(env: dict[str, str], send: Transport, write: Transport) -> str:
             f"Proposed baselines for {repository}#{number} at {head.sha}",
             env["BASELINES_TOKEN"],
         )
-        post_or_update(
-            write,
-            repository,
-            number,
-            open_id,
-            vb.render_comment(head.sha, commit, lock, changes, raw_base, bot_login),
+        review, *pages = vb.render_comments(
+            head.sha, commit, lock, changes, raw_base, bot_login
         )
+        post_or_update(write, repository, number, open_id, review)
+        sync_continuations(send, write, repository, number, bot_login, replaces, pages)
         done.append(
             f"#{number}: proposed {commit} ({len(changes)} changes)"
             + request_review(write, repository, number)
