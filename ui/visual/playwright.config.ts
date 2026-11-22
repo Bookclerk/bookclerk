@@ -39,7 +39,13 @@ export default defineConfig({
   forbidOnly: Boolean(process.env.CI),
   // A retry would hide a flaky screenshot, which is exactly what to fix.
   retries: 0,
-  reporter: [["list"], ["html", { outputFolder: path.join(out, "report"), open: "never" }]],
+  // results.json tells the baselines bot whether a comparison run finished
+  // (scripts/visual_baselines.py compare_finished).
+  reporter: [
+    ["list"],
+    ["html", { outputFolder: path.join(out, "report"), open: "never" }],
+    ["json", { outputFile: path.join(out, "results.json") }],
+  ],
   expect: {
     toHaveScreenshot: {
       // Baselines come from the pinned CI image, so the comparison is exact

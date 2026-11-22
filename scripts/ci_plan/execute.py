@@ -1240,10 +1240,11 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
     if check == "ui_visual":
         # Storybook's static build, then every story checked with axe-core
         # inside the pinned Playwright image. The first run always records a
-        # full set into the artifact (what the label workflow commits as new
-        # baselines); with baselines checked out (`CI_VISUAL_BASELINES`), a
-        # second run compares against them and fails on any difference
-        # (docs/contributing/ui/visual-testing.md).
+        # full set into the artifact (what the baselines bot proposes); with
+        # approved baselines fetched (`CI_VISUAL_BASELINES`), a second run
+        # compares against them and fails on any difference beyond
+        # Playwright's per-pixel threshold; the bot reads its report and
+        # failures (docs/contributing/ui/visual-testing.md).
         #
         # The same run covers the website and the diagnostics collector
         # (ui/visual/workers.spec.ts): the Playwright config starts their

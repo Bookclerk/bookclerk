@@ -865,9 +865,10 @@ fails when a web app component rendered in no story or page.
 A change under `ui/`, `tools/site/`, `tools/diagnostics-collector/` or
 `assets/brand/`, or to `SECURITY.md` or the daemon's OpenAPI document,
 selects it; any other change to the host that serves `ui/dist`, or to
-`docs/`, doesn't. Baselines live in a separate repository, named by
-`ui/visual/baselines.lock`; the job records a set every run and compares
-with the locked one when there is one. See
+`docs/`, doesn't. Baselines live in a separate repository, and
+`ui/visual/baselines.lock` names the approved image of each screenshot;
+the job records a set every run and compares with the locked images when
+there are any. See
 [Visual and accessibility testing](ui/visual-testing.md#baselines).
 
 ### Small-VPS envelope

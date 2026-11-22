@@ -1896,43 +1896,28 @@ jobs:
       - name: Validate CI plan
         run: python3 scripts/ci-exec.py validate
 
-      # The baselines commit this tree is checked against: `none` until a
-      # set is approved, then a commit of the public baselines repository.
-      - name: Read the baselines lock
-        id: lock
-        run: python3 scripts/visual_baselines.py lock ui/visual/baselines.lock >> "$GITHUB_OUTPUT"
-
-      # Only a set the approval workflow tagged counts: a pull request could
-      # otherwise copy a pending set's commit into the lock and skip the
-      # approval. Only the App can create `approved/*` tags (ruleset).
-      - name: Check the locked set is approved
-        if: steps.lock.outputs.sha != ''
+      # The approved image of every screenshot `baselines.lock` lists, from
+      # the public baselines repository (no token, so a fork's pull request
+      # fetches it the same way). Only commits the approval workflow tagged
+      # `approved/<commit>` are fetched: a pull request could otherwise copy
+      # a pending set's commit into the lock and skip the approval. Only the
+      # App can create `approved/*` tags (ruleset). The lock goes into the
+      # artifact too, so the baselines bot knows what the comparison used.
+      - name: Fetch the approved baselines
+        id: baselines
         env:
           BASELINES: https://github.com/${{ github.repository_owner }}/bookclerk-visual-baselines
-          SHA: ${{ steps.lock.outputs.sha }}
         run: |
-          tagged="$(git ls-remote "$BASELINES" "refs/tags/approved/$SHA" | cut -f1)"
-          if [ "$tagged" != "$SHA" ]; then
-            echo "::error file=ui/visual/baselines.lock::$SHA is not an approved baselines set (no approved/$SHA tag)."
-            exit 1
-          fi
-
-      # Public, so no token: a fork's pull request fetches it the same way.
-      - name: Check out the baselines
-        if: steps.lock.outputs.sha != ''
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: ${{ github.repository_owner }}/bookclerk-visual-baselines
-          ref: ${{ steps.lock.outputs.sha }}
-          path: visual-baselines
-          persist-credentials: false
+          python3 scripts/visual_baselines.py assemble ui/visual/baselines.lock "$BASELINES" "$RUNNER_TEMP/visual-baselines" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/ui-visual"
+          cp ui/visual/baselines.lock "$RUNNER_TEMP/ui-visual/compared.lock"
 
       # Records a full set for the artifact below, and compares with the
-      # checked-out baselines when there are any. axe-core violations and
+      # fetched baselines when there are any. axe-core violations and
       # screenshot differences fail the run.
       - name: Visual and accessibility checks
         env:
-          CI_VISUAL_BASELINES: ${{ steps.lock.outputs.sha != '' && format('{0}/visual-baselines', github.workspace) || '' }}
+          CI_VISUAL_BASELINES: ${{ steps.baselines.outputs.dir }}
         run: python3 scripts/ci-exec.py run ui_visual
 
       # The recorded set (`baselines/`, which the label workflow commits as
