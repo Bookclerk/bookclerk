@@ -147,11 +147,14 @@ fn msys_path(path: &Path) -> String {
     path.display().to_string().replace('\\', "/")
 }
 
-/// A command run with the MSVC compiler's environment (`PATH`, `INCLUDE`,
-/// `LIB`) from the `cc` crate, then MSYS2's tools, on `PATH`.
+/// A command run with MSYS2's tools, then the MSVC compiler's environment
+/// (`PATH`, `INCLUDE`, `LIB`) from the `cc` crate, on `PATH`.
 ///
-/// MSVC's directories come first: MSYS2 has a `link.exe` of its own
-/// (coreutils' `link`), and `configure` must find MSVC's.
+/// MSYS2's directory comes first so `configure` and the recipes find its
+/// `make`, `sed` and `awk` rather than native ports elsewhere on `PATH`
+/// (a native `make` can't read MSYS paths). MSYS2's own `link.exe` then
+/// shadows MSVC's, which FFmpeg's MSVC toolchain expects: it links
+/// through `compat/windows/mslink`, which skips it.
 fn msys_command(program: &str) -> Command {
     let bin = msys2_bin();
     let compiler = cc::Build::new().get_compiler();
@@ -159,19 +162,21 @@ fn msys_command(program: &str) -> Command {
     // The plain MSYS environment (not MinGW): POSIX tools, no compiler of
     // its own.
     cmd.env("MSYSTEM", "MSYS");
-    let mut path = Vec::new();
+    let mut path = vec![bin];
     if let Some(compiler_dir) = compiler.path().parent() {
         path.push(compiler_dir.to_path_buf());
     }
+    let mut compiler_path = None;
     for (key, value) in compiler.env() {
         if key.eq_ignore_ascii_case("PATH") {
-            path.extend(env::split_paths(value));
+            compiler_path = Some(value.clone());
         } else {
             cmd.env(key, value);
         }
     }
-    path.push(bin);
-    path.extend(env::var_os("PATH").iter().flat_map(env::split_paths));
+    // The compiler's `PATH` already ends with this process's.
+    let rest = compiler_path.or_else(|| env::var_os("PATH"));
+    path.extend(rest.iter().flat_map(env::split_paths));
     cmd.env(
         "PATH",
         env::join_paths(path).unwrap_or_else(|err| panic!("PATH: {err}")),
