@@ -634,9 +634,10 @@ only that. The others check:
   restated id, frame and attachment bounds; and a decoded message
   survives `write` then `read` unchanged. The shared oracle is
   `fuzz/oracles/socket_request.rs`, replayed from `bookclerk-plugin-abi`.
-- **`origin_request`**: byte 0 modulo 4 picks a framed `POST /origin/fetch`
-  body (0), a request head's JSON (1), a response head's JSON (2) or an
-  ingress origin (3). Splitting waits for more bytes exactly while the frame
+- **`origin_request`**: byte 0 modulo 6 picks a framed `POST /origin/fetch`
+  body (0), a request head's JSON (1), a response head's JSON (2), an
+  ingress origin (3), a `POST /origin/connect` body (4) or an upgrade
+  refusal's JSON (5). Splitting waits for more bytes exactly while the frame
   is incomplete, refuses exactly the declared lengths past the head cap, and
   otherwise returns the declared head and every byte after it, so the
   request body starts at the right byte and a plugin can't make the host
@@ -648,8 +649,14 @@ only that. The others check:
   An origin is accepted exactly when the restated host-name rules hold, and
   a WHATWG URL parser (the `url` crate) reads every accepted origin as
   `https` and the same host with no port, user info, path, query or
-  fragment. The shared oracle is `fuzz/oracles/origin_request.rs`, replayed
-  from `bookclerk-plugin-abi`.
+  fragment. A connect body is accepted exactly when its head passes the
+  restated request rules, its method is `GET` and its attachment is
+  base64 of at most 2 KiB; an accepted upgrade keeps every field but the
+  handshake ones (`sec-websocket-key`, `-version`, `-extensions`,
+  `-accept`). A refusal is accepted exactly when its status is 200 to 599,
+  its headers pass the response rules and its body is at most 64 KiB. The
+  shared oracle is `fuzz/oracles/origin_request.rs`, replayed from
+  `bookclerk-plugin-abi`.
 - **`socket_broker`**: the input is a script of operations on the broker's
   socket table (connect requests, handshake outcomes, frames and closes
   from the server, sends, attachments and closes from the plugin), checked
@@ -1993,10 +2000,12 @@ pick another run.
 
 The `cloudflare_relay` guest and the relay Worker it deploys parse what
 the other end sends: the plugin parses the relay's frames, request heads
-and notices, and the relay parses the plugin's frames and response heads.
+and notices, and the relay parses the plugin's frames and response heads; each parses
+the other's live frames.
 Both run `crates/bookclerk-plugins/optional/ingress-cloudflare/src/protocol.ts`.
-Its `test/fuzz.test.ts` replays `fuzz/frame/` (hex bytes), `fuzz/head/`
-and `fuzz/notice/` and runs seeded byte and text mutations in `npm test`
+Its `test/fuzz.test.ts` replays `fuzz/frame/` (hex bytes), `fuzz/head/`,
+`fuzz/notice/` and `fuzz/live/` (hex bytes) and runs seeded byte and text
+mutations in `npm test`
 (the `workerd_guests` check); `FUZZ_SEED` and `FUZZ_ITERATIONS` pick
 another run.
 
@@ -2010,13 +2019,21 @@ another run.
   limits: a method token of at most 32 bytes, a target of one `/` and
   visible ASCII without `#`, at most 128 lowercase header fields and
   64 KiB of names and values, no connection fields, no provider or
-  forwarding fields in a request, a status of 200 to 599. An accepted head
-  survives `encodeFrame` and a second parse unchanged.
+  forwarding fields in a request, `upgrade` only as `true` on a `GET`, a
+  status of 101 or 200 to 599. An accepted head survives `encodeFrame` and
+  a second parse unchanged.
 - **Notices and client addresses** (`parseNotice`, `isIpAddress`). Oracle
   for addresses: Node's `net.isIP`, less IPv6 zones, which the host's
   parser refuses too. A notice is accepted exactly when it is a JSON object
   of at most 256 characters with `t = "request"` and an id of 1 to 64
   letters, digits and dashes.
+- **Live frames** (`parseLiveFrame`). Oracle: an independent decoder of
+  the layout (an op byte of 1, 2 or 3, an id length, an id of 1 to 64
+  letters, digits and dashes, then the payload) within the host's 256 KiB
+  frame limit, with text and close reasons valid UTF-8 and close codes
+  those RFC 6455 lets an endpoint send (1000 to 1003, 1007 to 1014, 3000
+  to 4999) with at most 123 bytes of reason. An accepted frame encodes
+  back to the same bytes.
 
 ### Metadata file dialect guests
 

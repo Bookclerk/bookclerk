@@ -4,7 +4,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-use bookclerk_plugin_abi::{NoOrigin, Origin};
+use bookclerk_plugin_abi::{NoOrigin, Origin, PluginErrorCode, SocketFrame};
 
 use super::*;
 use crate::deployment::{serve_ingress, LiveDeploymentRuntime, SpawnHealth};
@@ -107,8 +107,8 @@ impl IngressHost for FakeHost {
         }
     }
 
-    fn origin(&self) -> Arc<dyn Origin + Send + Sync> {
-        Arc::new(NoOrigin)
+    fn origin(&self) -> Arc<dyn LibraryOrigin> {
+        Arc::new(FakeLibrary::default())
     }
 
     async fn started(
@@ -308,4 +308,117 @@ fn health_answers_are_logged_by_kind() {
         }),
     );
     log_health("relay", Err("guest gone".into()));
+}
+
+/// The library's ends of the sockets a [`FakeLibrary`] accepted.
+type LibraryEnds = (
+    tokio::sync::mpsc::Receiver<crate::LocalOutbound>,
+    tokio::sync::mpsc::Sender<crate::LocalInbound>,
+);
+
+/// A library double: upgrades when `accept`, otherwise refuses with `401`.
+#[derive(Default)]
+struct FakeLibrary {
+    /// Whether upgrades are accepted.
+    accept: bool,
+    /// The library's ends of accepted sockets, kept open.
+    kept: Mutex<Vec<LibraryEnds>>,
+}
+
+#[async_trait(?Send)]
+impl Origin for FakeLibrary {
+    async fn fetch(
+        &self,
+        request: CheckedOriginRequest,
+        body: Option<Pin<Box<dyn AsyncRead + Send>>>,
+    ) -> AbiResult<OriginReply> {
+        NoOrigin.fetch(request, body).await
+    }
+}
+
+#[async_trait(?Send)]
+impl LibraryOrigin for FakeLibrary {
+    async fn upgrade(&self, _request: CheckedOriginRequest) -> AbiResult<OriginUpgrade> {
+        if !self.accept {
+            return Ok(OriginUpgrade::Refused(OriginRefusal {
+                status: 401,
+                headers: Vec::new(),
+                body: b"sign in".to_vec(),
+            }));
+        }
+        let (outbound, drained) = tokio::sync::mpsc::channel(1);
+        let (library, inbound) = tokio::sync::mpsc::channel(1);
+        self.kept.lock().unwrap().push((drained, library));
+        Ok(OriginUpgrade::Accepted(LocalSocket {
+            runtime: tokio::runtime::Handle::current(),
+            url: "https://library.example/api/live".into(),
+            protocol: None,
+            outbound,
+            inbound,
+        }))
+    }
+}
+
+/// An upgrade request.
+fn upgrade_request() -> CheckedOriginRequest {
+    CheckedOriginRequest {
+        method: "GET".into(),
+        target: "/api/live".into(),
+        headers: Vec::new(),
+        client: Some("198.51.100.7".parse().unwrap()),
+    }
+}
+
+#[tokio::test]
+async fn an_origin_without_sockets_refuses_upgrades() {
+    let origin = BrokeredOrigin::new(
+        Arc::new(FakeLibrary {
+            accept: true,
+            ..FakeLibrary::default()
+        }),
+        None,
+    );
+    let err = origin
+        .connect(upgrade_request(), Vec::new())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, PluginErrorCode::Forbidden);
+}
+
+#[tokio::test]
+async fn upgrades_become_sockets_and_refusals_pass_through() {
+    let files = tempfile::tempdir().expect("files");
+    let broker = crate::socket_broker::tests::idle_broker(files.path());
+    let accepting = BrokeredOrigin::new(
+        Arc::new(FakeLibrary {
+            accept: true,
+            ..FakeLibrary::default()
+        }),
+        Some(broker.clone()),
+    );
+    let connected = accepting
+        .connect(upgrade_request(), b"pair".to_vec())
+        .await
+        .unwrap();
+    let OriginConnected::Socket(info) = connected else {
+        panic!("expected a socket, got {connected:?}");
+    };
+    assert_eq!(info.socket, "o1");
+    assert_eq!(info.attachment, b"pair");
+    assert_eq!(broker.open_sockets(), vec!["o1".to_string()]);
+    broker
+        .send("o1".into(), SocketFrame::Text("x".into()))
+        .await
+        .expect("the socket is open");
+
+    let refusing = BrokeredOrigin::new(Arc::new(FakeLibrary::default()), Some(broker.clone()));
+    let connected = refusing
+        .connect(upgrade_request(), Vec::new())
+        .await
+        .unwrap();
+    assert!(matches!(
+        connected,
+        OriginConnected::Refused(OriginRefusal { status: 401, .. })
+    ));
+    assert_eq!(broker.open_sockets().len(), 1, "a refusal opens nothing");
 }

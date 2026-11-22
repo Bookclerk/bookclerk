@@ -6097,6 +6097,76 @@ _origin_request_codec = _Codec(0, 4, _write_origin_request, _read_origin_request
 """Wire codec for ``OriginRequest`` (0 data words, 4 pointers)."""
 
 
+def _write_origin_refusal(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_u16(0, v["status"])
+    items = s.init_struct_list(0, len(v["headers"]), 0, 2)
+    for item, elem in zip(items, v["headers"], strict=True):
+        _origin_header_codec.write(item, elem, caps)
+    s.set_data(1, v["body"])
+
+
+def _read_origin_refusal(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "status": s.get_u16(0),
+        "headers": [_origin_header_codec.read(item, caps) for item in s.get_struct_list(0, 0, 2)],
+        "body": s.get_data(1),
+    }
+
+
+_origin_refusal_codec = _Codec(1, 2, _write_origin_refusal, _read_origin_refusal)
+"""Wire codec for ``OriginRefusal`` (1 data words, 2 pointers)."""
+
+
+def _write_origin_connected(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "socket":
+        s.set_u16(0, 0)
+        _socket_info_codec.write(s.init_struct(0, 0, 4), v["value"], caps)
+    elif kind == "refused":
+        s.set_u16(0, 1)
+        _origin_refusal_codec.write(s.init_struct(0, 1, 2), v["value"], caps)
+    else:
+        raise ValueError(f"unknown OriginConnected union member: {kind}")
+
+
+def _read_origin_connected(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "socket", "value": _socket_info_codec.read(s.get_struct(0, 0, 4), caps)}
+    elif disc == 1:
+        return {"kind": "refused", "value": _origin_refusal_codec.read(s.get_struct(0, 1, 2), caps)}
+    raise ValueError(f"unknown OriginConnected union member: {disc}")
+
+
+_origin_connected_codec = _Codec(1, 1, _write_origin_connected, _read_origin_connected)
+"""Wire codec for ``OriginConnected`` (1 data words, 1 pointers)."""
+
+
+def _write_origin_connect_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _origin_connected_codec.write(s.init_struct(0, 1, 1), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown OriginConnectReply union member: {kind}")
+
+
+def _read_origin_connect_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _origin_connected_codec.read(s.get_struct(0, 1, 1), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown OriginConnectReply union member: {disc}")
+
+
+_origin_connect_reply_codec = _Codec(1, 1, _write_origin_connect_reply, _read_origin_connect_reply)
+"""Wire codec for ``OriginConnectReply`` (1 data words, 1 pointers)."""
+
+
 def _write_ingress_started(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["origin"])
 
@@ -8508,6 +8578,38 @@ def _read_origin_fetch_results(s: _StructReader, caps: _CapTable) -> Any:
 
 _origin_fetch_results_codec = _Codec(0, 1, _write_origin_fetch_results, _read_origin_fetch_results)
 """Wire codec for ``OriginFetchResults`` (0 data words, 1 pointers)."""
+
+
+def _write_origin_connect_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("request") is not None:
+        _origin_request_codec.write(s.init_struct(0, 0, 4), v["request"], caps)
+    s.set_data(1, v["attachment"])
+
+
+def _read_origin_connect_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "request": _origin_request_codec.read(s.get_struct(0, 0, 4), caps),
+        "attachment": s.get_data(1),
+    }
+
+
+_origin_connect_params_codec = _Codec(0, 2, _write_origin_connect_params, _read_origin_connect_params)
+"""Wire codec for ``OriginConnectParams`` (0 data words, 2 pointers)."""
+
+
+def _write_origin_connect_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("result") is not None:
+        _origin_connect_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_origin_connect_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _origin_connect_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_origin_connect_results_codec = _Codec(0, 1, _write_origin_connect_results, _read_origin_connect_results)
+"""Wire codec for ``OriginConnectResults`` (0 data words, 1 pointers)."""
 
 
 def _write_ingress_start_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:

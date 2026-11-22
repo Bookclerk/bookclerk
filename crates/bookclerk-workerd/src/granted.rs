@@ -501,6 +501,14 @@ enum GrantedCmd {
         body_rx: mpsc::Receiver<Result<Vec<u8>, String>>,
         resp: oneshot::Sender<Result<origin_route::OriginOpened, PluginError>>,
     },
+    /// `env.ORIGIN.connect` through the grant: the checked upgrade head and
+    /// the socket's initial attachment.
+    OriginConnect {
+        invocation: String,
+        request: bookclerk_plugin_abi::origin::CheckedOriginRequest,
+        attachment: Vec<u8>,
+        resp: oneshot::Sender<Result<bookclerk_plugin_abi::OriginConnected, PluginError>>,
+    },
     /// `env.SOCKETS` calls through the grant.
     Sockets {
         invocation: String,
@@ -748,6 +756,20 @@ async fn dispatch_granted(mut rx: mpsc::Receiver<GrantedCmd>, table: GrantedTabl
                     tokio::task::spawn_local(async move {
                         let _ = resp.send(
                             origin_route::dispatch(&table, invocation, request, body_rx).await,
+                        );
+                    });
+                }
+                GrantedCmd::OriginConnect {
+                    invocation,
+                    request,
+                    attachment,
+                    resp,
+                } => {
+                    let table = Rc::clone(&table);
+                    tokio::task::spawn_local(async move {
+                        let _ = resp.send(
+                            origin_route::dispatch_connect(&table, invocation, request, attachment)
+                                .await,
                         );
                     });
                 }
@@ -2145,6 +2167,25 @@ where
 
     if method == "POST" && path_only == "/origin/fetch" {
         return origin_route::serve(reader, &mut writer, headers, prefix, invocation, cmds).await;
+    }
+    if method == "POST" && path_only == "/origin/connect" {
+        let cap = u32::try_from(bookclerk_plugin_abi::origin::MAX_ORIGIN_CONNECT_BODY_BYTES)
+            .unwrap_or(u32::MAX);
+        if declared_content_length_over_cap(&headers, cap) {
+            write_status(&mut writer, 413, "payload too large").await?;
+            return Ok(());
+        }
+        let body = match read_content(&mut reader, &headers, prefix, cap).await {
+            Ok(body) => body,
+            Err(err) => {
+                let Some((status, reason)) = body_error_response(&err) else {
+                    return Err(err);
+                };
+                write_status(&mut writer, status, &reason).await?;
+                return Ok(());
+            }
+        };
+        return origin_route::serve_connect(&mut writer, &body, invocation, cmds).await;
     }
     if method == "POST" && path_only.starts_with("/webhooks/") {
         let op = &path_only["/webhooks/".len()..];

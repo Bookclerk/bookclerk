@@ -111,7 +111,10 @@ permission.
    bookclerk ingress activate cloudflare_relay
    ```
 
-The relay serves six requests at once; more wait up to 30 seconds. Stopping
+The relay serves six requests at once; more wait up to 30 seconds. Live
+connections (a branch's socket, a clerk's live link) pass through it too,
+riding on the same six connections, so they don't count against the
+six. Stopping
 the ingress leaves the Worker in your account, so turning it back on keeps
 the same name. The plugin's
 [README](../../crates/bookclerk-plugins/optional/ingress-cloudflare/README.md)
@@ -155,9 +158,6 @@ Invite links name the public origin, from the daemon and from
 - The Cloudflare relay is the only first-party ingress plugin. ngrok,
   Cloudflare Tunnel and dynamic DNS come next, and the relay can't use a
   custom domain yet.
-- `ORIGIN` carries plain HTTP requests, not WebSocket upgrades. A
-  branch's live socket and a clerk's live link need one, so over a relay
-  they don't connect yet; enrollment, sign-in, uploads and copies work.
 - There is no web app screen yet; use the CLI or the web API.
 
 ## Next steps

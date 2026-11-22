@@ -1,4 +1,5 @@
-//! Tests for the granted `POST /origin/fetch` route: the connection side
+//! Tests for the granted `POST /origin/fetch` and `POST /origin/connect`
+//! routes: the connection side
 //! (frame parsing, streaming the reply) and the vat side (grant checks, the
 //! library's response checked before it goes back).
 
@@ -10,13 +11,14 @@ use std::time::{Duration, Instant};
 
 use bookclerk_plugin_abi::origin::{encode_origin_frame, OriginResponseHead};
 use bookclerk_plugin_abi::{
-    Origin, OriginHeader, OriginReply, OriginRequest, PluginError, PluginErrorCode,
+    Origin, OriginConnected, OriginHeader, OriginRefusal, OriginReply, OriginRequest, PluginError,
+    PluginErrorCode, SocketInfo,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 use super::super::{handle_conn, GrantedCmd, GrantedSlot, GrantedTable};
-use super::{dispatch, OriginOpened};
+use super::{dispatch, dispatch_connect, OriginOpened};
 
 /// A framed `POST` head for `target` followed by `body`.
 fn framed(target: &str, body: &[u8]) -> Vec<u8> {
@@ -218,7 +220,9 @@ async fn a_library_refusal_is_answered_as_the_plugin_error() {
     assert!(String::from_utf8_lossy(body).contains("not now"));
 }
 
-/// An `Origin` that echoes the request body back with `status`.
+/// An `Origin` that echoes the request body back with `status`, and
+/// answers an upgrade with a socket (`status` 101) or a refusal with
+/// `status`.
 struct Echo {
     /// Status the reply carries.
     status: u16,
@@ -239,6 +243,27 @@ impl Origin for Echo {
             status: self.status,
             headers: Vec::new(),
             body: Some(Box::pin(std::io::Cursor::new(bytes))),
+        })
+    }
+
+    async fn connect(
+        &self,
+        request: bookclerk_plugin_abi::origin::CheckedOriginRequest,
+        attachment: Vec<u8>,
+    ) -> Result<OriginConnected, PluginError> {
+        Ok(if self.status == 101 {
+            OriginConnected::Socket(SocketInfo {
+                socket: "o1".into(),
+                url: format!("https://library.example{}", request.target),
+                protocol: None,
+                attachment,
+            })
+        } else {
+            OriginConnected::Refused(OriginRefusal {
+                status: self.status,
+                headers: Vec::new(),
+                body: b"no".to_vec(),
+            })
         })
     }
 }
@@ -335,4 +360,140 @@ async fn dispatch_refuses_a_bad_library_status() {
                 .is_err());
         })
         .await;
+}
+
+/// An upgrade head for the vat-side tests.
+fn upgrade() -> bookclerk_plugin_abi::origin::CheckedOriginRequest {
+    bookclerk_plugin_abi::origin::check_origin_connect(&OriginRequest {
+        method: "GET".into(),
+        target: "/live".into(),
+        headers: Vec::new(),
+        client_address: Some("203.0.113.9".into()),
+    })
+    .unwrap()
+}
+
+#[tokio::test]
+async fn dispatch_connect_answers_the_socket_or_a_checked_refusal() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let live = Instant::now() + Duration::from_secs(60);
+            let table = table_with(GrantedSlot::origin_only(
+                Rc::new(Echo { status: 101 }),
+                live,
+            ));
+            let connected = dispatch_connect(&table, "grant-1".into(), upgrade(), b"a".to_vec())
+                .await
+                .unwrap();
+            assert!(
+                matches!(connected, OriginConnected::Socket(ref info) if info.attachment == b"a")
+            );
+
+            let table = table_with(GrantedSlot::origin_only(
+                Rc::new(Echo { status: 403 }),
+                live,
+            ));
+            let connected = dispatch_connect(&table, "grant-1".into(), upgrade(), Vec::new())
+                .await
+                .unwrap();
+            assert!(matches!(
+                connected,
+                OriginConnected::Refused(OriginRefusal { status: 403, .. })
+            ));
+
+            // A refusal that breaks a rule does not reach the isolate.
+            let table = table_with(GrantedSlot::origin_only(
+                Rc::new(Echo { status: 150 }),
+                live,
+            ));
+            assert!(
+                dispatch_connect(&table, "grant-1".into(), upgrade(), Vec::new())
+                    .await
+                    .is_err()
+            );
+
+            let ungranted = table_with(GrantedSlot::sockets_free(live));
+            let err = dispatch_connect(&ungranted, "grant-1".into(), upgrade(), Vec::new())
+                .await
+                .err()
+                .unwrap();
+            assert_eq!(err.code, PluginErrorCode::Forbidden);
+        })
+        .await;
+}
+
+/// `POST /origin/connect` under the test grant with `body`, answered with
+/// `answer`. Returns the raw response and whether anything was dispatched.
+async fn connect_exchange(body: &[u8], answer: OriginConnected) -> (Vec<u8>, bool) {
+    let mut request = format!(
+        "POST /origin/connect HTTP/1.1\r\nAuthorization: Bearer grant-1\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    request.extend_from_slice(body);
+    let (cmds_tx, mut cmds_rx) = mpsc::channel(8);
+    let dispatched = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = std::sync::Arc::clone(&dispatched);
+    tokio::spawn(async move {
+        while let Some(cmd) = cmds_rx.recv().await {
+            if let GrantedCmd::OriginConnect {
+                invocation,
+                request,
+                attachment,
+                resp,
+            } = cmd
+            {
+                assert_eq!(invocation, "grant-1");
+                assert_eq!(request.method, "GET");
+                assert_eq!(attachment, b"pair");
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                let _ = resp.send(Ok(answer.clone()));
+            }
+        }
+    });
+    let (client, server) = tokio::io::duplex(1 << 16);
+    let serve = tokio::spawn(async move { handle_conn(server, "bridge", cmds_tx).await });
+    let (mut reader, mut writer) = tokio::io::split(client);
+    writer.write_all(&request).await.unwrap();
+    let mut out = Vec::new();
+    tokio::time::timeout(Duration::from_secs(2), reader.read_to_end(&mut out))
+        .await
+        .expect("http response")
+        .unwrap();
+    drop(writer);
+    let _ = serve.await;
+    (out, dispatched.load(std::sync::atomic::Ordering::SeqCst))
+}
+
+#[tokio::test]
+async fn connect_route_answers_the_socket_as_json() {
+    let body = br#"{"request":{"method":"GET","target":"/live","headers":[{"name":"Sec-WebSocket-Key","value":"x"}],"clientAddress":"203.0.113.9"},"attachment":"cGFpcg=="}"#;
+    let socket = OriginConnected::Socket(SocketInfo {
+        socket: "o3".into(),
+        url: "https://library.example/live".into(),
+        protocol: Some("v1".into()),
+        attachment: b"pair".to_vec(),
+    });
+    let (raw, dispatched) = connect_exchange(body, socket.clone()).await;
+    assert!(dispatched);
+    let (head, payload) = split_response(&raw);
+    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+    let answered: OriginConnected = serde_json::from_slice(payload).unwrap();
+    assert_eq!(answered, socket);
+}
+
+#[tokio::test]
+async fn connect_route_refuses_a_bad_upgrade_before_dispatch() {
+    let refusal = OriginConnected::Refused(OriginRefusal::default());
+    for body in [
+        &br#"{"request":{"method":"POST","target":"/live","headers":[]},"attachment":"cGFpcg=="}"#[..],
+        br#"{"request":{"method":"GET","target":"/live","headers":[{"name":"Upgrade","value":"websocket"}]}}"#,
+        br#"{"request":{"method":"GET","target":"/live","headers":[]},"extra":1}"#,
+        b"not json",
+    ] {
+        let (raw, dispatched) = connect_exchange(body, refusal.clone()).await;
+        assert!(!dispatched, "{}", String::from_utf8_lossy(body));
+        let (head, _) = split_response(&raw);
+        assert!(!head.starts_with("HTTP/1.1 200"), "{head}");
+    }
 }

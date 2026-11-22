@@ -5,6 +5,10 @@
  * The whole exchange runs inside the socket message that announced it, so
  * every stream it touches belongs to that one invocation. The relay sends
  * a socket no new notice until the push is done.
+ *
+ * An upgrade opens a socket to the library through `env.ORIGIN.connect`
+ * instead; its attachment ({@link LiveAttachment}) pairs it with the
+ * relay's connection, and `lifecycle.ts` carries its messages.
  */
 
 import type { OriginBinding } from "@bookclerk/plugin-sdk/workerd";
@@ -13,11 +17,21 @@ import {
   HOP_BY_HOP,
   RELAY_PULL_PATH,
   RELAY_PUSH_PATH,
+  RELAY_SOCKET_HEADER,
   encodeFrame,
   parseRequestHead,
   type RelayHeader,
+  type RelayRequestHead,
   type RelayResponseHead,
 } from "./protocol.ts";
+
+/** What a live connection's socket to the library keeps as its attachment. */
+export interface LiveAttachment {
+  /** The relay's id for the connection (the upgrade's request id). */
+  live: string;
+  /** Id of the relay socket the connection's frames travel on. */
+  relay: string;
+}
 
 /** A request the plugin makes; `globalThis.fetch` outside tests. */
 export type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
@@ -32,6 +46,8 @@ export interface ServeContext {
   host: string;
   /** The relay's bearer token. */
   token: string;
+  /** Id of the relay socket that announced the request. */
+  via: string;
 }
 
 /** How a relayed request ended, for the log. */
@@ -166,6 +182,7 @@ export async function serveRequest(ctx: ServeContext, id: string): Promise<Serve
   }
   const bodyless = head.method === "GET" || head.method === "HEAD";
   if (bodyless) await frame.body.cancel().catch(() => {});
+  if (head.upgrade) return serveUpgrade(ctx, id, head);
   const headers = new Headers();
   for (const field of head.headers) headers.append(field.name, field.value);
   const request = new Request(`https://${ctx.host}${head.target}`, {
@@ -189,4 +206,48 @@ export async function serveRequest(ctx: ServeContext, id: string): Promise<Serve
   const body = NULL_BODY.has(response.status) || head.method === "HEAD" ? null : response.body;
   if (!body) await response.body?.cancel().catch(() => {});
   return (await push(ctx, id, responseHead(response), body)) ? "served" : "push_failed";
+}
+
+/**
+ * Serves one relayed upgrade: open a socket to the library and tell the
+ * relay which socket carries the connection, or pass on the library's
+ * refusal.
+ *
+ * @param ctx - The relay, its token and the library.
+ * @param id - The request's id, from now on the connection's.
+ * @param head - The upgrade's head.
+ * @returns How it ended.
+ */
+async function serveUpgrade(
+  ctx: ServeContext,
+  id: string,
+  head: RelayRequestHead,
+): Promise<ServeOutcome> {
+  const headers = new Headers();
+  for (const field of head.headers) headers.append(field.name, field.value);
+  const request = new Request(`https://${ctx.host}${head.target}`, { method: "GET", headers });
+  const attachment: LiveAttachment = { live: id, relay: ctx.via };
+  let result: Awaited<ReturnType<OriginBinding["connect"]>>;
+  try {
+    result = await ctx.origin.connect(request, {
+      attachment,
+      ...(head.client ? { clientAddress: head.client } : {}),
+    });
+  } catch {
+    const answer = errorAnswer(502, "The library could not open the connection.");
+    await push(ctx, id, answer.head, answer.body);
+    return "library_failed";
+  }
+  if ("response" in result) {
+    const { response } = result;
+    const body = NULL_BODY.has(response.status) ? null : response.body;
+    if (!body) await response.body?.cancel().catch(() => {});
+    return (await push(ctx, id, responseHead(response), body)) ? "served" : "push_failed";
+  }
+  const { socket } = result;
+  const fields: RelayHeader[] = [{ name: RELAY_SOCKET_HEADER, value: socket.id }];
+  if (socket.protocol) fields.push({ name: "sec-websocket-protocol", value: socket.protocol });
+  if (await push(ctx, id, { status: 101, headers: fields }, null)) return "served";
+  await socket.close(1011, "the relay did not take the connection").catch(() => {});
+  return "push_failed";
 }
