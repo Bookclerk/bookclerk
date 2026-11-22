@@ -7288,6 +7288,7 @@ pub(crate) mod library_index;
 pub(crate) mod library_model;
 pub(crate) mod listening;
 pub(crate) mod listing_reads;
+pub(crate) mod notifications;
 pub(crate) mod overrides;
 pub(crate) mod pacing;
 pub(crate) mod playback;
@@ -7329,6 +7330,7 @@ pub use edition_files::{
 };
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
 pub use holdings::{HoldingSelection, NodeHoldingSelection, HOLDING_REMOVED};
+pub use notifications::{NotifyCursor, NotifyPage, NotifyQueueLimits, MAX_NOTIFY_PAGE};
 pub use request_queue::{QueueRank, StoredQueueRank, MAX_QUEUE_REASONS};
 pub use taste_titles::{apply_user_states, HeldIdentifiers};
 pub(crate) mod job_queue;
@@ -7337,6 +7339,8 @@ mod lock_retry;
 mod result_cap;
 pub use acquired_keys::{AcquiredTitleKey, AcquiredTitleKeyPage, ACQUIRED_KEYS_MAX_PAGE};
 
+#[cfg(test)]
+mod notifications_tests;
 #[cfg(test)]
 mod paging_tests;
 #[cfg(test)]

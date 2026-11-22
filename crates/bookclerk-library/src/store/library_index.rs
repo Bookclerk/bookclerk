@@ -864,7 +864,7 @@ pub(crate) fn build_work_facets(
 impl LibraryStore {
     /// Most rows one read may return: the database plugin's advertised
     /// `maxResultRows`, or no cap when it advertises none. At least 1.
-    fn result_row_cap(&self) -> u64 {
+    pub(super) fn result_row_cap(&self) -> u64 {
         match self.db_capabilities().max_result_rows {
             0 => u64::MAX,
             rows => u64::from(rows),

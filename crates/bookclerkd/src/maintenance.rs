@@ -61,8 +61,8 @@ pub enum Duty {
     SessionExpiry,
     /// Every [`RecordPruneStep`]: expired OIDC codes and refresh tokens,
     /// portal sessions, spent claim tickets, invites and enrollment links,
-    /// finished uploads, abandoned storage-scan inventories, and audit rows
-    /// past their windows.
+    /// finished uploads, abandoned storage-scan inventories, audit rows and
+    /// notifications past their windows.
     RecordRetention,
 }
 
