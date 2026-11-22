@@ -63,11 +63,6 @@ wrangler, `@cloudflare/vitest-plugin` and `@cloudflare/workers-types`
 move in all three lockfiles in one pull request. Major releases still
 arrive one per pull request.
 
-Dependabot leaves Playwright in `ui/` alone: the
-[UI visual job](ui/visual-testing.md) runs in a Playwright image pinned in
-`ci.yml` whose version must match `@playwright/test`, and a new browser
-renders the approved baselines differently. Bump both by hand together.
-
 In Cargo, Dependabot leaves zbus majors and notify-rust 4.19 and later
 alone, so the desktop keeps one D-Bus stack: its media controls and tray
 are on zbus 5, and notify-rust 4.18 is the last line on it. Lift both

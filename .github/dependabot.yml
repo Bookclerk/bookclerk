@@ -147,13 +147,6 @@ updates:
     open-pull-requests-limit: 5
     cooldown:
       default-days: 7
-    # The UI visual job runs in the Playwright image pinned in ci.yml, whose
-    # version must match @playwright/test, and a new browser re-renders the
-    # approved baselines. Playwright moves by hand with the image
-    # (docs/contributing/ui/visual-testing.md).
-    ignore:
-      - dependency-name: "@playwright/test"
-      - dependency-name: "playwright-core"
     groups:
       # Vite / ESLint / TypeScript tooling releases often; one PR a week.
       ui-minor-patch:
