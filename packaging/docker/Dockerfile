@@ -5,7 +5,7 @@
 #
 # The image carries the `cargo package-platform` bundle under /opt/bookclerk:
 # the hosts, bookclerk-media-worker, bookclerk-jail, bookclerk-workerd, the
-# pinned workerd, and the sqlite and local platform plugins under plugins/.
+# pinned workerd, and the sqlite, local and embedder platform plugins under plugins/.
 # On first start (and after an image upgrade) bookclerkd installs those
 # plugins into BOOKCLERK_FILES_DIR (/config) and records them in its install
 # ledger, so a fresh volume boots with a working database and local output.
@@ -55,7 +55,7 @@ ARG RELEASE_CODEGEN_UNITS=1
 # The commit being built, which diagnostics reports carry (the build context
 # has no .git to read it from). Empty leaves reports saying "unknown".
 ARG BUILD_COMMIT=
-# Release hosts + helpers + pinned workerd + sqlite/local, stamped and laid
+# Release hosts + helpers + pinned workerd + sqlite/local/embedder, stamped and laid
 # out exactly as the release archive. The bundle-local ledger is dropped: the
 # host stamps its own ledger in BOOKCLERK_FILES_DIR when it installs the
 # plugins.
@@ -72,7 +72,7 @@ RUN CARGO_PROFILE_RELEASE_LTO="$RELEASE_LTO" \
     && test -x /opt/bookclerk/bookclerk-workerd \
     && test -x /opt/bookclerk/bookclerk-media-worker \
     && test -x /opt/bookclerk/workerd \
-    && test "$(find /opt/bookclerk/plugins -mindepth 2 -maxdepth 2 -name plugin.toml | wc -l)" -ge 2
+    && test "$(find /opt/bookclerk/plugins -mindepth 2 -maxdepth 2 -name plugin.toml | wc -l)" -ge 3
 
 FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS runtime
 RUN apt-get update \

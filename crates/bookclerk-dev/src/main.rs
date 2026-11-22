@@ -149,7 +149,7 @@ enum Commands {
         /// Version stamped into the archive name (default: workspace version).
         version: Option<String>,
     },
-    /// Build hosts + platform guests (`sqlite`, `local`) installer archive.
+    /// Build hosts + platform guests (`sqlite`, `local`, `embedder`) installer archive.
     PackagePlatform {
         #[arg(long)]
         /// Output directory for the platform installer archive (default: `target/dist`).
@@ -171,6 +171,10 @@ enum Commands {
     },
     /// Download/update the pinned Cloudflare `workerd` binary into `target/<profile>/`.
     EnsureWorkerd,
+    /// Download the pinned ONNX Runtime shared library into
+    /// `target/onnxruntime-<version>/` (the model plugin loads it; staging
+    /// copies it beside the plugin).
+    EnsureOnnxruntime,
     /// Wipe local app data under `$BOOKCLERK_FILES_DIR` (DB, config, keys, plugins).
     ///
     /// Does **not** remove Cargo `target/` or `.cargo-home/` (use `cargo clean` /
@@ -281,6 +285,13 @@ fn run() -> Result<()> {
         Commands::EnsureWorkerd => {
             let bin = ensure_workerd_for_profile(&root, cli.release)?;
             println!("{}", bin.display());
+            Ok(())
+        }
+        Commands::EnsureOnnxruntime => {
+            match bookclerk_onnxruntime::ensure_in_target(&root.join("target"))? {
+                Some(library) => println!("{}", library.display()),
+                None => eprintln!("no ONNX Runtime release for this platform"),
+            }
             Ok(())
         }
         Commands::Dev {

@@ -19,6 +19,7 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow.workspace = true
+bookclerk-onnxruntime.workspace = true
 bookclerk-plugin-manifest = { path = "../bookclerk-plugin-manifest" }
 bookclerk-plugin-catalog = { path = "../bookclerk-plugin-catalog" }
 bookclerk-sandbox = { path = "../bookclerk-sandbox" }

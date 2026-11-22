@@ -882,7 +882,10 @@ class FullSuiteTests(unittest.TestCase):
             ["cargo", "test", "-p", "bookclerk-plugin-catalog", "--test", "plugin_mutation_lock"],
             check_argv(p, "rust_test"),
         )
-        self.assertIn(["cargo", "build", "-p", "bookclerk-mp4", "--examples"], check_argv(p, "rust_test"))
+        self.assertIn(
+            ["cargo", "build", "-p", "bookclerk-mp4", "-p", "bookclerk-plugin-ai-embedder", "--examples"],
+            check_argv(p, "rust_test"),
+        )
         self.assertIn(
             [*NEXTEST_RUN, "--no-fail-fast", "-p", "bookclerk-plugin-database-sqlite", "--features", "host-helpers"],
             check_argv(p, "rust_test"),

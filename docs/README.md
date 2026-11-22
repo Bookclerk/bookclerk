@@ -65,6 +65,7 @@ others go deeper.
 - [Architecture](internals/architecture.md): how the pieces fit
 - [Discovery design](internals/discovery.md): how suggestions are found and ranked
 - [Embedding model benchmarks](internals/embedding-benchmarks.md): how candidate models match taste across languages, and what they cost to run
+- [Embedding model packs](internals/model-packs.md): how a model is stored on disk, how the `embedder` plugin runs it, and how it was checked
 - [Durable job queue](internals/jobs.md): admission, leases and crash recovery
 - [Bounded storage](internals/storage-bounds.md): size caps, streams, paged scans and checkpoints
 - [The guest jail](internals/guest-jail.md): why plugins run as jailed processes, and how each platform confines them

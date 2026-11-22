@@ -135,7 +135,7 @@ activate an earlier version.
 
 ### Staged packages
 
-Platform guests (`local`, `sqlite`) ship with the node, and
+Platform guests (`local`, `sqlite`, `embedder`) ship with the node, and
 `cargo stage-plugins` stages development trees under `plugins/<fs-id>`.
 Those are staged on one machine, not installed into the library. Their
 provenance is `platform_bundled`, `verified_staged` or
@@ -200,7 +200,7 @@ running, and records observations (`materialized`, `running`, `healthy`,
 
 - Third-party plugins enroll `absent` until an operator approves their
   grant and enables them.
-- Platform guests (`local`, `sqlite`) grant themselves (the reconciler
+- Platform guests (`local`, `sqlite`, `embedder`) grant themselves (the reconciler
   persists that grant before the first spawn) and come up enabled.
 
 ```sh
@@ -669,7 +669,7 @@ $FILES_DIR/
 
 Host-local trees remain for three cases:
 
-- platform guests that ship with the host (`sqlite`, `local`);
+- platform guests that ship with the host (`sqlite`, `local`, `embedder`);
 - development trees staged by `cargo stage-plugins` or `cargo dev`;
 - installs committed before library installs existed.
 

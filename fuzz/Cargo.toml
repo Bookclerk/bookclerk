@@ -32,6 +32,7 @@ bookclerk-resolve = { path = "../crates/bookclerk-resolve" }
 bookclerk-node-proto = { path = "../crates/bookclerk-node-proto" }
 bookclerk-cover = { path = "../crates/bookclerk-cover" }
 bookclerk-tags = { path = "../crates/bookclerk-tags" }
+bookclerk-model-pack = { path = "../crates/bookclerk-model-pack" }
 bookclerk-archive = { path = "../crates/bookclerk-archive" }
 # media_decode drives the media worker's demux and decode path.
 bookclerk-media = { path = "../crates/bookclerk-media" }
@@ -687,6 +688,13 @@ bench = false
 [[bin]]
 name = "relayed_log_line"
 path = "fuzz_targets/relayed_log_line.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "model_pack"
+path = "fuzz_targets/model_pack.rs"
 test = false
 doc = false
 bench = false

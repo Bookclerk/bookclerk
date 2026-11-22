@@ -601,7 +601,7 @@ holds a trusted, byte-identical copy, and records each install in
 - A fresh `/config` volume boots with a working database and local output.
 - Upgrading (or rolling back) the image brings the plugins to the build
   that image shipped with.
-- A folder of the same name (`sqlite`, `local`) owned by another install
+- A folder of the same name (`sqlite`, `local`, `embedder`) owned by another install
   is left alone, with a warning.
 
 The same applies to an unpacked platform archive run from its own folder.

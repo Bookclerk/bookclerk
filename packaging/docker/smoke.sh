@@ -4,8 +4,8 @@
 #
 #   packaging/docker/smoke.sh bookclerkd:ci
 #
-# First boot: bookclerkd must install sqlite and local from the image's bundle
-# and load the sqlite database guest under the default ("required")
+# First boot: bookclerkd must install sqlite, local and embedder from the
+# image's bundle and load the sqlite database guest under the default ("required")
 # isolation. Second boot: nothing is reinstalled and the database still loads.
 # The image must not override the isolation defaults.
 set -euo pipefail
@@ -77,6 +77,7 @@ refuse() {
 boot first
 expect first 'installed bundled platform plugin.*sqlite|sqlite.*installed bundled platform plugin'
 expect first 'installed bundled platform plugin.*local|local.*installed bundled platform plugin'
+expect first 'installed bundled platform plugin.*embedder|embedder.*installed bundled platform plugin'
 expect first 'loaded external database plugin'
 refuse first 'could not install the (platform plugins bundled|bundled platform plugin)|did not install the bundled platform plugin'
 

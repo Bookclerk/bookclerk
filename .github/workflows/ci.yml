@@ -59,7 +59,7 @@ env:
   # its own; test_ci_contract.py fails until they match the planner
   # (docs/contributing/ci.md#caches).
   CI_BUILD_PLAN_LINT: "f0db76a66f23e946"
-  CI_BUILD_PLAN_DEBUG: "eb05fa814aa1d09a"
+  CI_BUILD_PLAN_DEBUG: "ccbf610d819d6ea5"
   CI_BUILD_PLAN_RELEASE: "065d3a2b38c07a3a"
   # A failing test's panic prints its backtrace. Library backtraces stay off:
   # with RUST_BACKTRACE alone, every error built by an error library such as

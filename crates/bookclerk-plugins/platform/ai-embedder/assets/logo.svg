@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Text embeddings">
+  <!-- Axes -->
+  <path fill="none" stroke="#8b8989" stroke-width="1.6" stroke-linecap="round" d="M5 4.5v22.5h22.5"/>
+  <!-- A cluster of similar texts -->
+  <circle cx="11" cy="20" r="2.1" fill="#5b5656"/>
+  <circle cx="14.6" cy="22.4" r="2.1" fill="#5b5656"/>
+  <circle cx="15.2" cy="17.6" r="2.1" fill="#5b5656"/>
+  <!-- Another cluster -->
+  <circle cx="22" cy="9" r="2.1" fill="#d1d7e2" stroke="#5b5656" stroke-width="1"/>
+  <circle cx="25" cy="12.6" r="2.1" fill="#d1d7e2" stroke="#5b5656" stroke-width="1"/>
+</svg>

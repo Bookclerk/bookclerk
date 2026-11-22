@@ -1,0 +1,16 @@
+api_version = 3
+id = "embedder"
+name = "Text embeddings"
+version = "0.1.0"
+logo = "assets/logo.svg"
+runtime = "native"
+command = "./bookclerk-plugin-ai-embedder"
+entrypoints = ["ai"]
+
+[ai]
+serves = ["textEmbeddings"]
+
+[capabilities.network]
+mode = "deny"
+
+[vars]
