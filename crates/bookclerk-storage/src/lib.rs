@@ -18,7 +18,6 @@
 /// Backblaze B2 storage through the native API.
 #[cfg(feature = "b2")]
 mod b2;
-/// Parsing and encoding for Backblaze B2 native API replies (sans-IO).
 pub mod b2_api;
 /// Bounded scalar reads, ranges, and digest helpers.
 mod bounded;
