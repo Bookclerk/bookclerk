@@ -37,6 +37,7 @@ use crate::event_publisher::{
     granted_event_subscriptions, manifest_event_subscriptions, EventOutbox, EventReaders,
 };
 use crate::kv_binding::KvNamespaces;
+use crate::notify_raiser::NotifyOutbox;
 use crate::queue_producer::QueueOutbox;
 use crate::spawn_plan::{GuestRuntimeKind, SpawnPlan, SpawnTransport};
 use crate::storage_intent::{StorageOp, StorageOpReply};
@@ -884,6 +885,20 @@ impl PluginSession {
             .event_outbox
             .clone()
             .and_then(|store| QueueOutbox::new(store, &id, &manifest, &grant));
+        // `NOTIFY` needs the library and a declared `[[notifications.types]]`
+        // row; the types themselves are the consent (the host decides who
+        // receives them).
+        let notify = services.event_outbox.clone().and_then(|store| {
+            NotifyOutbox::new(
+                store,
+                &id,
+                &manifest,
+                bookclerk_library::NotifyQueueLimits {
+                    max_pending: i64::from(config.jobs.max_pending),
+                    max_attempts: i64::from(config.jobs.max_attempts),
+                },
+            )
+        });
         // `[[kv_namespaces]]` rows live on the same library; the `plugin_kv`
         // grant token covers every row.
         let kv = services
@@ -995,6 +1010,7 @@ impl PluginSession {
                         queues,
                         kv,
                         sockets,
+                        notify,
                         origin,
                         network,
                         ai,
@@ -2511,6 +2527,8 @@ struct PrimaryState {
     kv: Option<KvNamespaces>,
     /// `SOCKETS` broker; `None` unless `[sockets]` is declared and granted.
     sockets: Option<crate::SocketBroker>,
+    /// `NOTIFY` hook; `None` when no type is declared.
+    notify: Option<NotifyOutbox>,
     /// `ORIGIN`; `None` unless this is the active relay ingress.
     origin: Option<Arc<dyn bookclerk_plugin_abi::Origin + Send + Sync>>,
     /// `NETWORK`: the grant in effect, carried by every `open`.
@@ -2530,6 +2548,8 @@ struct BindingHooks {
     kv: Option<KvNamespaces>,
     /// `SOCKETS` broker.
     sockets: Option<crate::SocketBroker>,
+    /// `NOTIFY` hook; `None` when no type is declared.
+    notify: Option<NotifyOutbox>,
     /// `ORIGIN`, already filtered by [`granted_origin`].
     origin: Option<Arc<dyn bookclerk_plugin_abi::Origin + Send + Sync>>,
     /// `NETWORK` grant computed at spawn.
@@ -2547,6 +2567,7 @@ impl PrimaryState {
             queues: hooks.queues,
             kv: hooks.kv,
             sockets: hooks.sockets,
+            notify: hooks.notify,
             origin: hooks.origin,
             network: hooks.network,
             ai: hooks.ai,
@@ -2595,6 +2616,16 @@ impl PrimaryState {
             .unwrap_or_default();
         values.network = self.network.clone();
         values
+    }
+
+    /// `NOTIFY` raiser for `invocation`, when the manifest declares types.
+    fn notify_for(
+        &self,
+        invocation: &Invocation,
+    ) -> Option<Arc<dyn bookclerk_plugin_abi::NotificationRaiser>> {
+        self.notify.as_ref().map(|outbox| {
+            Arc::new(outbox.raiser(invocation)) as Arc<dyn bookclerk_plugin_abi::NotificationRaiser>
+        })
     }
 
     /// `EVENTS` publisher for `invocation`, when the outbox is granted.
@@ -2668,6 +2699,7 @@ async fn primary_entrypoints<'a>(
                     kv: primary.kv_bindings(),
                     sockets: primary.sockets_binding(),
                     ai: primary.ai_binding(),
+                    notify: primary.notify_for(&invocation),
                     origin: primary
                         .origin
                         .clone()

@@ -209,6 +209,9 @@ impl JobTransport for InProcessJobTransport {
             JobKind::IngestBatch => {
                 crate::uploads::run_ingest_batch(&self.state, &cmd.payload, Some(&ctx)).await
             }
+            JobKind::NotifySend => {
+                crate::notify_jobs::run_notify_send(&self.state, &cmd.payload, Some(&ctx)).await
+            }
             // Only its branch takes a request, over `requests.claim`; no
             // claim path of this library hands it to a worker.
             JobKind::BranchRequest => {

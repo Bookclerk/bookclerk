@@ -77,6 +77,7 @@ mod instance_bindings;
 mod jail;
 mod kv_binding;
 mod manifest;
+mod notify_raiser;
 mod on_demand;
 mod on_demand_source;
 mod on_demand_storage;

@@ -500,6 +500,68 @@ pub async fn node_can_run_job(
     Ok(true)
 }
 
+/// True when some live node that holds the library database runs
+/// `instance`: it has a deployment there that should run, the node's last
+/// observation says the guest is up (`running` or `healthy`), and the
+/// node's heartbeat is current ([`super::node_status::NodeStatus::is_live`]).
+/// A node holds the database when it is a shared branch
+/// ([`super::NodeKind::Shared`]) or has no `nodes` row (a worker in this
+/// process); a branch with its own database does not.
+///
+/// A job that requires only `instance` and runs only where the database is
+/// (a notification send) is then claimable, however long it has waited for
+/// a worker; when this is false, nothing can claim it until the instance
+/// comes up on such a node. An unparsable id is never running.
+///
+/// # Arguments
+///
+/// * `now_ms` - The caller's clock, in Unix milliseconds, for the
+///   heartbeat check.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub async fn instance_running_on_database_node(
+    store: &LibraryStore,
+    instance: &str,
+    now_ms: i64,
+) -> Result<bool> {
+    let Ok(instance) = PluginInstanceId::parse(instance) else {
+        return Ok(false);
+    };
+    for deployment in list_deployments_for_instance(store, &instance).await? {
+        if !deployment.desired.runs() {
+            continue;
+        }
+        let up = load_observation(store, &deployment.deployment_id, &deployment.node_id)
+            .await?
+            .is_some_and(|o| {
+                matches!(
+                    o.status,
+                    DeploymentStatus::Running | DeploymentStatus::Healthy
+                )
+            });
+        if !up {
+            continue;
+        }
+        let holds_database = crate::entities::nodes::Entity::find_by_id(deployment.node_id.clone())
+            .one(store.db())
+            .await
+            .map_err(LibraryError::Orm)?
+            .is_none_or(|node| super::NodeKind::parse(&node.kind) == super::NodeKind::Shared);
+        if !holds_database {
+            continue;
+        }
+        if super::node_status::load_node_status(store, &deployment.node_id)
+            .await?
+            .is_some_and(|status| status.is_live(now_ms))
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// The library semaphores `job` counts against under `limits`.
 ///
 /// Every job takes its class semaphore and one per required instance. Scan

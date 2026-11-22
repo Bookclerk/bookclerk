@@ -25,6 +25,7 @@ use tokio::sync::{oneshot, Semaphore};
 
 use crate::error::{MediaError, Result};
 use crate::pool::{forward_worker_stderr, worker_env_allowed, Confinement, WorkerLaunch};
+use crate::worker_pipe::{ClearOnDrop, ThreadPipe};
 use crate::WORKER_ENFORCEMENT_ENV;
 
 /// First worker argument that selects the cover server.
@@ -313,10 +314,17 @@ fn spawn(launch: &WorkerLaunch, confinement: Confinement, threads: usize) -> Res
         .ok_or_else(|| worker_error("cover worker stdout unavailable".into()))?;
     let pending: Pending = Arc::default();
     let alive = Arc::new(AtomicBool::new(true));
+    // Read on a thread of our own: on Windows a pipe read on the runtime's
+    // blocking pool would keep that runtime from shutting down for as long
+    // as this long-lived worker runs.
+    let stdout = ThreadPipe::spawn("media-cover-replies".to_owned(), stdout)
+        .map_err(|err| worker_error(format!("could not read cover worker output: {err}")))?;
+    // The guard is built here, not inside the task, so a task dropped before
+    // its first poll still marks the worker dead.
     tokio::spawn(read_replies(
         stdout,
         Arc::clone(&pending),
-        Arc::clone(&alive),
+        ClearOnDrop(Arc::clone(&alive)),
     ));
     Ok(Running {
         stdin: tokio::sync::Mutex::new(stdin),
@@ -328,10 +336,14 @@ fn spawn(launch: &WorkerLaunch, confinement: Confinement, threads: usize) -> Res
 
 /// Hands each reply to its waiter until the worker ends or misbehaves, then
 /// fails every cover still waiting.
+///
+/// `dead_when_done` marks the worker dead when this reader ends, or when
+/// its task is cancelled with its runtime, so the next request on any
+/// runtime starts a fresh worker.
 async fn read_replies(
     mut stdout: impl tokio::io::AsyncRead + Unpin,
     pending: Pending,
-    alive: Arc<AtomicBool>,
+    dead_when_done: ClearOnDrop,
 ) {
     let reason = loop {
         match read_reply(&mut stdout).await {
@@ -347,7 +359,7 @@ async fn read_replies(
             Err(reason) => break reason,
         }
     };
-    alive.store(false, Ordering::Release);
+    drop(dead_when_done);
     tracing::warn!(reason = %reason, "cover worker stopped");
     for (_, waiter) in lock(&pending).drain() {
         let _ = waiter.send(Err(worker_error(reason.clone())));
@@ -477,7 +489,12 @@ mod tests {
             .expect("encode"),
         ]
         .concat();
-        read_replies(&stream[..], Arc::clone(&pending), Arc::clone(&alive)).await;
+        read_replies(
+            &stream[..],
+            Arc::clone(&pending),
+            ClearOnDrop(Arc::clone(&alive)),
+        )
+        .await;
         assert_eq!(rx_ok.await.expect("sent").expect("ok"), set);
         assert!(matches!(rx_err.await.expect("sent"), Err(MediaError::Cover(m)) if m == "bad"));
         assert!(matches!(
