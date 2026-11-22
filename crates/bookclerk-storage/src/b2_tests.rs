@@ -76,6 +76,11 @@ struct World {
     restrict_to: Option<String>,
     /// Large files cancelled.
     cancelled: u32,
+    /// Make the next `b2_finish_large_file` commit, then answer 503 as if
+    /// its reply were lost.
+    lose_finish_reply: bool,
+    /// Ids `b2_delete_file_version` removed, in order.
+    deleted: Vec<String>,
 }
 
 impl World {
@@ -144,9 +149,9 @@ fn handle(
         }
         world.sign_ins += 1;
         world.token = format!("token-{}", world.sign_ins);
-        let buckets = match &world.restrict_to {
-            Some(name) => json!([{ "id": "b1", "name": name }]),
-            None => json!([]),
+        let (bucket_id, bucket_name) = match &world.restrict_to {
+            Some(name) => (json!("b1"), json!(name)),
+            None => (Value::Null, Value::Null),
         };
         return reply_json(
             200,
@@ -158,7 +163,10 @@ fn handle(
                     "downloadUrl": world.base,
                     "recommendedPartSize": 100,
                     "absoluteMinimumPartSize": 5,
-                    "allowed": { "buckets": buckets, "capabilities": ["listFiles"] },
+                    "bucketId": bucket_id,
+                    "bucketName": bucket_name,
+                    "namePrefix": Value::Null,
+                    "capabilities": ["listFiles"],
                 }},
             }),
         );
@@ -314,14 +322,29 @@ fn api(world: &mut World, op: &str, request: &Value) -> Reply {
         }
         "b2_finish_large_file" => {
             let id = text("fileId");
+            let sha1s: Vec<String> =
+                serde_json::from_value(request["partSha1Array"].clone()).unwrap_or_default();
+            let Some(large) = world.large.get(&id) else {
+                return reply_error(400, "bad_request");
+            };
+            // Part numbers run 1..=n and each SHA-1 matches its part, in
+            // order; a refused finish leaves the upload to retry or cancel.
+            let stored_sha1s: Vec<String> = large
+                .parts
+                .values()
+                .map(|part| hex::encode(Sha1::digest(part)))
+                .collect();
+            let numbered = large
+                .parts
+                .keys()
+                .copied()
+                .eq(1..=u32::try_from(large.parts.len()).unwrap_or(0));
+            if large.parts.len() < 2 || !numbered || sha1s != stored_sha1s {
+                return reply_error(400, "bad_request");
+            }
             let Some(large) = world.large.remove(&id) else {
                 return reply_error(400, "bad_request");
             };
-            let sha1s: Vec<String> =
-                serde_json::from_value(request["partSha1Array"].clone()).unwrap_or_default();
-            if large.parts.len() < 2 || sha1s.len() != large.parts.len() {
-                return reply_error(400, "bad_request");
-            }
             let data: Vec<u8> = large.parts.values().flatten().copied().collect();
             let stored = Stored {
                 id,
@@ -333,9 +356,28 @@ fn api(world: &mut World, op: &str, request: &Value) -> Reply {
                 action: "upload",
             };
             world.files.push(stored.clone());
+            if world.lose_finish_reply {
+                world.lose_finish_reply = false;
+                return reply_error(503, "service_unavailable");
+            }
             let mut reply = World::file_json(&stored);
             reply["contentSha1"] = json!("none");
             reply_json(200, &reply)
+        }
+        "b2_get_file_info" => {
+            let id = text("fileId");
+            if let Some(file) = world.files.iter().find(|file| file.id == id) {
+                let mut reply = World::file_json(file);
+                reply["contentSha1"] = json!("none");
+                return reply_json(200, &reply);
+            }
+            match world.large.get(&id) {
+                Some(large) => reply_json(
+                    200,
+                    &json!({ "fileId": id, "fileName": large.name, "action": "start" }),
+                ),
+                None => reply_error(404, "not_found"),
+            }
         }
         "b2_cancel_large_file" => {
             world.cancelled += 1;
@@ -394,6 +436,7 @@ fn api(world: &mut World, op: &str, request: &Value) -> Reply {
             if world.files.len() == before {
                 return reply_error(400, "file_not_present");
             }
+            world.deleted.push(id.clone());
             reply_json(200, &json!({ "fileId": id, "fileName": text("fileName") }))
         }
         "b2_copy_file" => {
@@ -629,6 +672,33 @@ async fn long_bodies_become_large_files() {
 }
 
 #[tokio::test]
+async fn a_finish_whose_reply_was_lost_is_read_back() {
+    let world = serve().await;
+    let backend = open(&world, "").await;
+    world.lock().await.lose_finish_reply = true;
+    let data: Vec<u8> = (0..20u8).collect();
+    let put = backend
+        .put_stream("big", body(&data), ObjectMeta::default())
+        .await
+        .expect("the finished file is found by id");
+    assert_eq!(put.bytes_written, 20);
+    let world = world.lock().await;
+    assert_eq!(world.cancelled, 0, "a finished file is not cancelled");
+    assert_eq!(world.files.len(), 1);
+    assert_eq!(world.files[0].data, data);
+}
+
+#[tokio::test]
+async fn the_sign_in_url_must_be_https() {
+    let mut settings = B2Settings::new(KEY_ID, B2ApplicationKey::new(APP_KEY), BUCKET, "");
+    settings.authorize_url = "http://api.backblazeb2.com".into();
+    assert!(matches!(
+        B2Backend::new(settings),
+        Err(StorageError::InvalidKey(_))
+    ));
+}
+
+#[tokio::test]
 async fn failed_large_uploads_are_cancelled() {
     let world = serve().await;
     let backend = open(&world, "").await;
@@ -781,12 +851,24 @@ async fn copies_are_server_side_and_deletes_remove_every_version() {
         Err(StorageError::NotFound(_))
     ));
 
+    let ids: Vec<String> = world
+        .lock()
+        .await
+        .files
+        .iter()
+        .filter(|file| file.name == "a")
+        .map(|file| file.id.clone())
+        .collect();
     backend.delete("a").await.expect("delete");
     assert!(!backend.exists("a").await.expect("exists"));
-    assert!(
-        world.lock().await.files.iter().all(|file| file.name != "a"),
-        "both versions are gone"
-    );
+    {
+        let world = world.lock().await;
+        assert!(
+            world.files.iter().all(|file| file.name != "a"),
+            "both versions are gone"
+        );
+        assert_eq!(world.deleted, ids, "oldest first, current version last");
+    }
     backend.delete("a").await.expect("deleting nothing is fine");
     assert!(backend.exists("b").await.expect("exists"));
 }

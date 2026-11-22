@@ -406,11 +406,15 @@ The `b2` plugin writes to a Backblaze B2 bucket through B2's native API.
 It works like the other object stores, with these differences:
 
 - **Large files.** A file over 8 MiB goes up in parts, with at most two
-  parts in memory. An upload that fails part way is cancelled, so it
-  leaves no unfinished file behind.
+  parts in memory. An upload that fails part way is cancelled. If the
+  cancel fails too, the unfinished file stays in the bucket (and is
+  billed) until a later delete of that name or a lifecycle rule removes
+  it.
 - **Deletes remove every version.** B2 keeps old versions of a file.
-  When Bookclerk deletes a file it deletes all of its versions, so none
-  stay billed behind a hide marker.
+  When Bookclerk deletes a file it deletes all of its versions, oldest
+  first, so none stay billed behind a hide marker and a delete that stops
+  part way never brings back an older version. A name with more than
+  10,000 versions is refused instead of half deleted.
 - **No conditional writes.** B2 cannot write a file only if it is
   unchanged. Bookclerk checks just before such a write instead, so
   another program writing the same file at the same moment can still win.

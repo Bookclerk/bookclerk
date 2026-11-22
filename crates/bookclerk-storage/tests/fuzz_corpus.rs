@@ -206,6 +206,8 @@ fn named_b2_seeds_keep_their_meaning() {
         "authorize_http_url",
         "authorize_not_utf8_in_skipped_field",
         "authorize_deleted_bucket",
+        "authorize_positional_array",
+        "buckets_positional_array",
         "buckets_bad_name",
         "upload_target_userinfo",
         "file_backslash",

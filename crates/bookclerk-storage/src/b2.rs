@@ -8,12 +8,16 @@
 //! - Writes of up to one part go up in one `b2_upload_file`. Longer bodies
 //!   become large files: `b2_start_large_file`, one `b2_upload_part` per
 //!   part, then `b2_finish_large_file`. At most two parts are in memory at
-//!   once, and a failed upload is cancelled.
+//!   once, and a failed upload is cancelled (best effort). A finish whose
+//!   reply was lost is settled by reading the file back by id.
 //! - Reads and probes use the download URL (`GET` / `HEAD` on
 //!   `/file/<bucket>/<name>`), so a probe never lists.
 //! - Copies are server-side (`b2_copy_file`, or `b2_copy_part` above 5 GB).
-//! - A delete removes every version of the name, so nothing stays billed
-//!   behind a hide marker.
+//! - A delete removes every version of the name, oldest first, so nothing
+//!   stays billed behind a hide marker and a delete that fails part way
+//!   never uncovers an older version.
+//! - Requests have a deadline for their reply headers and bodies an idle
+//!   timeout, so a long transfer that keeps moving is never cut off.
 //!
 //! Conditional writes are not declared: B2 has none, so the host checks
 //! before it writes and reports that the write was not atomic.
@@ -26,7 +30,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use base64::Engine;
-use bookclerk_plugin_sdk::http::{Client, Method, Response};
+use bookclerk_plugin_sdk::http::{Client, Method, RequestBuilder, Response};
 use bytes::Bytes;
 use futures::StreamExt;
 use serde_json::{json, Map, Value};
@@ -64,8 +68,20 @@ const COPY_PART_BYTES: u64 = 1 << 30;
 /// Versions asked for per `b2_list_file_versions` page.
 const VERSIONS_PAGE: u32 = 1000;
 
-/// Most versions of one name a delete walks.
+/// Most versions of one name a delete walks; a name with more is refused
+/// rather than half deleted.
 const MAX_VERSIONS_WALKED: usize = 10_000;
+
+/// Most `b2_list_file_versions` pages one walk asks for, so a listing
+/// that keeps answering empty pages cannot loop forever.
+const MAX_VERSION_PAGES: usize = 4 * (MAX_VERSIONS_WALKED / VERSIONS_PAGE as usize) + 4;
+
+/// Longest wait for a request's reply headers, upload body included (an
+/// upload is at most one part), in seconds.
+const SEND_DEADLINE: Duration = Duration::from_secs(300);
+
+/// Longest wait for the next chunk of a reply body.
+const BODY_IDLE: Duration = Duration::from_secs(60);
 
 /// Content type that asks B2 to pick one from the file name.
 const AUTO_CONTENT_TYPE: &str = "b2/x-auto";
@@ -176,11 +192,27 @@ async fn backoff(attempt: u32) {
     tokio::time::sleep(Duration::from_millis(millis)).await;
 }
 
+/// Sends `request`, waiting at most [`SEND_DEADLINE`] for the reply
+/// headers.
+async fn send(request: RequestBuilder, what: &str) -> Result<Response> {
+    match tokio::time::timeout(SEND_DEADLINE, request.send()).await {
+        Ok(sent) => sent.map_err(|err| remote(what, err)),
+        Err(_) => Err(remote(what, "no reply before the deadline")),
+    }
+}
+
 /// Reads a reply body, stopping one byte past `MAX_B2_REPLY_BYTES` so an
 /// oversized reply never sits whole in memory (the parser refuses it).
 async fn read_reply(mut reply: Response) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    while let Some(chunk) = reply.chunk().await.map_err(|err| remote("reply", err))? {
+    loop {
+        let chunk = match tokio::time::timeout(BODY_IDLE, reply.chunk()).await {
+            Ok(chunk) => chunk.map_err(|err| remote("reply", err))?,
+            Err(_) => return Err(remote("reply", "the reply stalled")),
+        };
+        let Some(chunk) = chunk else {
+            break;
+        };
         let room = (MAX_B2_REPLY_BYTES + 1).saturating_sub(bytes.len());
         bytes.extend_from_slice(&chunk[..chunk.len().min(room)]);
         if bytes.len() > MAX_B2_REPLY_BYTES {
@@ -391,9 +423,13 @@ impl B2Backend {
                 .map_err(|err| StorageError::InvalidKey(format!("B2 prefix: {err}")))?;
         }
         settings.authorize_url = settings.authorize_url.trim_end_matches('/').to_string();
+        // The application key goes to this URL, so it must be plain https.
+        b2_api::B2Url::parse(&settings.authorize_url)
+            .map_err(|err| StorageError::InvalidKey(format!("B2 sign-in URL: {err}")))?;
+        // No client timeout: the SDK's is a whole-request limit that would
+        // cut off a long download. `send` and the body readers time out
+        // instead (`SEND_DEADLINE`, `BODY_IDLE`).
         let http = Client::builder()
-            .connect_timeout(Duration::from_secs(30))
-            .read_timeout(Duration::from_secs(120))
             .build()
             .map_err(|err| remote("client", err))?;
         Ok(Self {
@@ -426,17 +462,15 @@ impl B2Backend {
             "{}:{}",
             settings.key_id, settings.application_key.0
         ));
-        let reply = self
+        let request = self
             .inner
             .http
             .get(format!(
                 "{}{API_PATH}b2_authorize_account",
                 settings.authorize_url
             ))
-            .header("Authorization", format!("Basic {basic}"))
-            .send()
-            .await
-            .map_err(|err| remote("sign-in", err))?;
+            .header("Authorization", format!("Basic {basic}"));
+        let reply = send(request, "sign-in").await?;
         let bytes = match settle(reply).await? {
             Ok(bytes) => bytes,
             Err(err) => return Err(remote("sign-in", err)),
@@ -465,7 +499,7 @@ impl B2Backend {
     /// Looks the bucket up by name with an unrestricted key.
     async fn find_bucket(&self, auth: &Authorization) -> Result<String> {
         let bucket = &self.inner.settings.bucket;
-        let reply = self
+        let request = self
             .inner
             .http
             .post(format!(
@@ -473,10 +507,8 @@ impl B2Backend {
                 auth.api_url.as_str()
             ))
             .header("Authorization", auth.token.expose())
-            .json(&json!({ "accountId": auth.account_id, "bucketName": bucket }))
-            .send()
-            .await
-            .map_err(|err| remote("bucket lookup", err))?;
+            .json(&json!({ "accountId": auth.account_id, "bucketName": bucket }));
+        let reply = send(request, "bucket lookup").await?;
         let bytes = match settle(reply).await? {
             Ok(bytes) => bytes,
             Err(err) => return Err(remote("bucket lookup", err)),
@@ -542,17 +574,15 @@ impl B2Backend {
         let mut attempt = 0;
         loop {
             attempt += 1;
-            let sent = self
+            let request = self
                 .inner
                 .http
                 .post(format!("{}{API_PATH}{op}", session.auth.api_url.as_str()))
                 .header("Authorization", session.auth.token.expose())
-                .json(body)
-                .send()
-                .await;
-            let settled = match sent {
+                .json(body);
+            let settled = match send(request, op).await {
                 Ok(reply) => settle(reply).await,
-                Err(err) => Err(remote(op, err)),
+                Err(err) => Err(err),
             };
             match settled {
                 Ok(Ok(bytes)) => return parse(&bytes).map_err(|err| remote(op, err)),
@@ -593,9 +623,9 @@ impl B2Backend {
             for (name, value) in headers {
                 request = request.header(name.as_str(), value.as_str());
             }
-            let settled = match request.body(data.to_vec()).send().await {
+            let settled = match send(request.body(data.to_vec()), "upload").await {
                 Ok(reply) => settle(reply).await,
-                Err(err) => Err(remote("upload", err)),
+                Err(err) => Err(err),
             };
             match settled {
                 Ok(Ok(bytes)) => return Ok(bytes),
@@ -711,13 +741,39 @@ impl B2Backend {
     }
 
     /// Finishes a large file from its parts' SHA-1s.
+    ///
+    /// When the finish fails (for example a retry after a lost reply that
+    /// B2 refuses because the file is already finished), the file is read
+    /// back by id: a finished file under that id is the result, and
+    /// anything else returns the finish's own error, so the caller still
+    /// cancels an unfinished upload.
     async fn finish_large_file(&self, file_id: &str, sha1s: &[String]) -> Result<FileVersion> {
-        self.call(
-            "b2_finish_large_file",
-            &json!({ "fileId": file_id, "partSha1Array": sha1s }),
-            b2_api::parse_file_version,
-        )
-        .await
+        let finished = self
+            .call(
+                "b2_finish_large_file",
+                &json!({ "fileId": file_id, "partSha1Array": sha1s }),
+                b2_api::parse_file_version,
+            )
+            .await;
+        let Err(err) = finished else {
+            return finished;
+        };
+        match self
+            .call(
+                "b2_get_file_info",
+                &json!({ "fileId": file_id }),
+                b2_api::parse_file_version,
+            )
+            .await
+        {
+            Ok(version)
+                if version.action == FileAction::Upload
+                    && version.file_id.as_ref().map(b2_api::FileId::as_str) == Some(file_id) =>
+            {
+                Ok(version)
+            }
+            Ok(_) | Err(_) => Err(err),
+        }
     }
 
     /// Streams `body` into `name` and returns what was stored.
@@ -843,13 +899,13 @@ impl B2Backend {
             if let Some(range) = range {
                 request = request.header("Range", range);
             }
-            let reply = match request.send().await {
+            let reply = match send(request, "download").await {
                 Ok(reply) => reply,
                 Err(_) if attempt < ATTEMPTS => {
                     backoff(attempt).await;
                     continue;
                 }
-                Err(err) => return Err(remote("download", err)),
+                Err(err) => return Err(err),
             };
             let status = reply.status().as_u16();
             match status {
@@ -934,7 +990,7 @@ impl B2Backend {
         let session = self.session().await?;
         let mut versions = Vec::new();
         let mut start: Option<(String, String)> = None;
-        loop {
+        for _ in 0..MAX_VERSION_PAGES {
             let mut body = Map::new();
             body.insert("bucketId".into(), json!(session.bucket_id));
             body.insert("prefix".into(), json!(name));
@@ -963,11 +1019,17 @@ impl B2Backend {
                     past = true;
                 }
             }
-            if past || versions.len() >= MAX_VERSIONS_WALKED {
+            if past {
                 return Ok(versions);
             }
             match page.next {
                 Some((next_name, next_id)) if next_name == name => {
+                    if versions.len() >= MAX_VERSIONS_WALKED {
+                        return Err(remote(
+                            "version listing",
+                            format!("{name} has more than {MAX_VERSIONS_WALKED} versions"),
+                        ));
+                    }
                     let next = (next_name, next_id.as_str().to_string());
                     if start.as_ref() == Some(&next) {
                         return Err(remote("version listing", "the listing did not move"));
@@ -977,6 +1039,7 @@ impl B2Backend {
                 _ => return Ok(versions),
             }
         }
+        Err(remote("version listing", "the listing did not end"))
     }
 
     /// Server-side copy of `from` to `to`, returning the bytes copied.
@@ -1116,7 +1179,9 @@ impl StorageBackend for B2Backend {
 
     async fn delete(&self, key: &str) -> Result<()> {
         let name = self.name_for(key)?;
-        for version in self.versions_of(&name).await? {
+        // Oldest first: the current version or hide marker goes last, so a
+        // delete that fails part way never uncovers an older version.
+        for version in self.versions_of(&name).await?.into_iter().rev() {
             let Some(file_id) = version.file_id else {
                 continue;
             };
@@ -1204,6 +1269,9 @@ impl StorageBackend for B2Backend {
             });
         }
         let next_cursor = page.next_file_name.filter(|next| next.starts_with(&full));
+        if next_cursor.as_ref().is_some_and(|next| *next <= start) {
+            return Err(remote("listing", "the continuation does not advance"));
+        }
         Ok(ListPage {
             objects,
             next_cursor,
@@ -1231,23 +1299,47 @@ impl StorageBackend for B2Backend {
                     .stat(key)
                     .await?
                     .ok_or_else(|| StorageError::NotFound(key.to_string()))?;
-                crate::normalize_range(range, Some(version.content_length))?;
-                let empty: Pin<Box<dyn AsyncRead + Send>> = Box::pin(tokio::io::empty());
-                Ok((Self::probe_of(key, &version), empty))
+                match crate::normalize_range(range, Some(version.content_length))? {
+                    Some(ReadSpan::ToEnd { offset }) if offset == version.content_length => {
+                        let empty: Pin<Box<dyn AsyncRead + Send>> = Box::pin(tokio::io::empty());
+                        Ok((Self::probe_of(key, &version), empty))
+                    }
+                    // The file changed between the read and the probe.
+                    None | Some(ReadSpan::ToEnd { .. } | ReadSpan::Exact { .. }) => {
+                        Err(remote("download", "the file changed while it was read"))
+                    }
+                }
             }
             Fetched::Found(head, reply) => {
-                let expected =
+                let (offset, expected) =
                     match crate::normalize_range(range, Some(head.version.content_length))? {
-                        None => head.version.content_length,
-                        Some(ReadSpan::ToEnd { offset }) => head.version.content_length - offset,
-                        Some(ReadSpan::Exact { length, .. }) => length,
+                        None => (0, head.version.content_length),
+                        Some(ReadSpan::ToEnd { offset }) => {
+                            (offset, head.version.content_length - offset)
+                        }
+                        Some(ReadSpan::Exact { offset, length }) => (offset, length),
                     };
-                if head.body_length != expected {
+                if head.body_offset != offset || head.body_length != expected {
                     return Err(remote("download", "the reply is not the range asked for"));
                 }
-                let stream = (*reply)
-                    .bytes_stream()
-                    .map(|chunk| chunk.map_err(|err| std::io::Error::other(err.to_string())));
+                let chunks = Box::pin((*reply).bytes_stream());
+                let stream = futures::stream::unfold(Some(chunks), |chunks| async move {
+                    let mut chunks = chunks?;
+                    match tokio::time::timeout(BODY_IDLE, chunks.next()).await {
+                        Ok(Some(chunk)) => Some((
+                            chunk.map_err(|err| std::io::Error::other(err.to_string())),
+                            Some(chunks),
+                        )),
+                        Ok(None) => None,
+                        Err(_) => Some((
+                            Err(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "B2 download stalled",
+                            )),
+                            None,
+                        )),
+                    }
+                });
                 let reader: Pin<Box<dyn AsyncRead + Send>> =
                     Box::pin(tokio_util::io::StreamReader::new(Box::pin(stream)));
                 let body = SizedBody {

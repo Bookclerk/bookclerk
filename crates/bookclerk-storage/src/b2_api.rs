@@ -423,35 +423,18 @@ struct WireStorageApi {
     recommended_part_size: u64,
     /// Smallest large-file part size.
     absolute_minimum_part_size: u64,
-    /// The key's restrictions.
+    /// The bucket id the key is restricted to (null: every bucket).
     #[serde(default)]
-    allowed: Option<WireAllowed>,
-}
-
-/// `allowed` in an authorization reply.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WireAllowed {
-    /// The buckets the key is restricted to (empty or absent: all).
+    bucket_id: Option<String>,
+    /// The restricted bucket's name (null when it was deleted).
     #[serde(default)]
-    buckets: Option<Vec<WireAllowedBucket>>,
+    bucket_name: Option<String>,
     /// The file-name prefix the key is restricted to.
     #[serde(default)]
     name_prefix: Option<String>,
     /// The capabilities the key holds.
     #[serde(default)]
     capabilities: Vec<String>,
-}
-
-/// One bucket in `allowed.buckets`.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WireAllowedBucket {
-    /// The bucket id.
-    id: String,
-    /// The bucket name (null when the bucket was deleted).
-    #[serde(default)]
-    name: Option<String>,
 }
 
 /// Rejects a reply over [`MAX_B2_REPLY_BYTES`] and decodes the JSON.
@@ -461,6 +444,11 @@ fn decode<'a, T: Deserialize<'a>>(what: &str, bytes: &'a [u8]) -> ReplyResult<T>
     }
     // JSON is UTF-8 throughout, including fields the reader skips.
     let text = std::str::from_utf8(bytes).map_err(|_| malformed(format!("{what}: not UTF-8")))?;
+    // Every B2 reply is a JSON object; serde would also take a positional
+    // array for a struct, which no B2 reply is.
+    if !text.trim_start().starts_with('{') {
+        return Err(malformed(format!("{what}: not a JSON object")));
+    }
     serde_json::from_str(text).map_err(|err| malformed(format!("{what}: {err}")))
 }
 
@@ -478,7 +466,7 @@ fn decode<'a, T: Deserialize<'a>>(what: &str, bytes: &'a [u8]) -> ReplyResult<T>
 ///
 /// Returns [`B2ReplyError`] for an oversized or malformed reply, a bad
 /// URL, id or token, a part size of zero or a minimum above the
-/// recommendation, or a restriction to more than one bucket.
+/// recommendation, or a restriction to a bucket that no longer exists.
 pub fn parse_authorization(bytes: &[u8]) -> ReplyResult<Authorization> {
     let wire: WireAuthorization = decode("authorization reply", bytes)?;
     check_id("account id", &wire.account_id)?;
@@ -488,41 +476,31 @@ pub fn parse_authorization(bytes: &[u8]) -> ReplyResult<Authorization> {
     {
         return Err(malformed("authorization reply has impossible part sizes"));
     }
-    let (bucket, name_prefix, capabilities) = match storage.allowed {
-        None => (None, None, Vec::new()),
-        Some(allowed) => {
-            let bucket = match allowed.buckets.unwrap_or_default().as_slice() {
-                [] => None,
-                [only] => {
-                    check_id("bucket id", &only.id)?;
-                    let name = only
-                        .name
-                        .clone()
-                        .ok_or_else(|| malformed("the key's bucket no longer exists"))?;
-                    check_bucket_name(&name)?;
-                    Some(Bucket {
-                        id: only.id.clone(),
-                        name,
-                    })
-                }
-                _ => return Err(malformed("the key is restricted to several buckets")),
-            };
-            let name_prefix = allowed.name_prefix.filter(|prefix| !prefix.is_empty());
-            if let Some(prefix) = &name_prefix {
-                if prefix.len() > MAX_FILE_NAME_BYTES || prefix.chars().any(char::is_control) {
-                    return Err(malformed("the key's name prefix is not a file-name prefix"));
-                }
-            }
-            if allowed.capabilities.len() > 64
-                || allowed.capabilities.iter().any(|c| {
-                    c.is_empty() || c.len() > 64 || !c.bytes().all(|b| b.is_ascii_alphanumeric())
-                })
-            {
-                return Err(malformed("the key's capabilities are not capability names"));
-            }
-            (bucket, name_prefix, allowed.capabilities)
+    let bucket = match storage.bucket_id {
+        None => None,
+        Some(id) => {
+            check_id("bucket id", &id)?;
+            let name = storage
+                .bucket_name
+                .ok_or_else(|| malformed("the key's bucket no longer exists"))?;
+            check_bucket_name(&name)?;
+            Some(Bucket { id, name })
         }
     };
+    let name_prefix = storage.name_prefix.filter(|prefix| !prefix.is_empty());
+    if let Some(prefix) = &name_prefix {
+        if prefix.len() > MAX_FILE_NAME_BYTES || prefix.chars().any(char::is_control) {
+            return Err(malformed("the key's name prefix is not a file-name prefix"));
+        }
+    }
+    let capabilities = storage.capabilities;
+    if capabilities.len() > 64
+        || capabilities
+            .iter()
+            .any(|c| c.is_empty() || c.len() > 64 || !c.bytes().all(|b| b.is_ascii_alphanumeric()))
+    {
+        return Err(malformed("the key's capabilities are not capability names"));
+    }
     Ok(Authorization {
         account_id: wire.account_id,
         token: AuthToken::parse(&wire.authorization_token)?,
@@ -966,6 +944,9 @@ pub fn parse_part(bytes: &[u8]) -> ReplyResult<StoredPart> {
 pub struct DownloadHead {
     /// The version served. `content_length` is the whole file's size.
     pub version: FileVersion,
+    /// Offset in the file of this response's first body byte: the range
+    /// start for a ranged read, 0 otherwise.
+    pub body_offset: u64,
     /// Bytes in this response's body: the range length for a ranged read,
     /// the whole size otherwise.
     pub body_length: u64,
@@ -975,8 +956,8 @@ pub struct DownloadHead {
 pub const MAX_DOWNLOAD_HEADERS: usize = 128;
 
 /// Reads a whole-file size out of a `Content-Range: bytes a-b/size` value,
-/// with the range's length.
-fn content_range(value: &str) -> Option<(u64, u64)> {
+/// with the range's start and length.
+fn content_range(value: &str) -> Option<(u64, u64, u64)> {
     let rest = value.strip_prefix("bytes ")?;
     let (span, size) = rest.split_once('/')?;
     let (start, end) = span.split_once('-')?;
@@ -986,7 +967,7 @@ fn content_range(value: &str) -> Option<(u64, u64)> {
     if start > end || end >= size {
         return None;
     }
-    Some((size, end - start + 1))
+    Some((size, start, end - start + 1))
 }
 
 /// Reads the headers of a download reply.
@@ -1069,15 +1050,15 @@ where
             .as_deref()
             .ok_or_else(|| malformed("download reply has no Content-Length"))?,
     )?;
-    let total = match range.as_deref() {
-        None => body_length,
+    let (total, body_offset) = match range.as_deref() {
+        None => (body_length, 0),
         Some(value) => {
-            let (total, span) = content_range(value.trim())
+            let (total, start, span) = content_range(value.trim())
                 .ok_or_else(|| malformed("Content-Range is malformed"))?;
             if span != body_length {
                 return Err(malformed("Content-Range disagrees with Content-Length"));
             }
-            total
+            (total, start)
         }
     };
     let file_name = decode_file_name(
@@ -1102,6 +1083,7 @@ where
     };
     Ok(DownloadHead {
         version: file_version(wire)?,
+        body_offset,
         body_length,
     })
 }
@@ -1213,13 +1195,14 @@ pub fn parse_api_error(status: u16, bytes: &[u8]) -> ApiError {
 mod tests {
     use super::*;
 
-    /// A full authorization reply restricted to `bucket`.
+    /// A full authorization reply (API version 3) whose `storageApi`
+    /// carries `bucket` (its `bucketId` and `bucketName` members).
     fn authorization_json(bucket: &str) -> String {
         format!(
             r#"{{"accountId":"acct1","authorizationToken":"4_tok/en=","apiInfo":{{"storageApi":{{
               "apiUrl":"https://api005.backblazeb2.com","downloadUrl":"https://f005.backblazeb2.com/",
               "recommendedPartSize":100000000,"absoluteMinimumPartSize":5000000,
-              "allowed":{{"buckets":[{bucket}],"namePrefix":"books/","capabilities":["listFiles","writeFiles"]}}}}}}}}"#
+              {bucket}"namePrefix":"books/","capabilities":["listFiles","writeFiles"]}}}}}}"#
         )
     }
 
@@ -1255,6 +1238,33 @@ mod tests {
     }
 
     #[test]
+    fn download_headers_keep_the_range_start() {
+        let headers = |range: Option<&'static str>, length: &'static str| {
+            let mut headers: Vec<(&str, &[u8])> = vec![
+                ("Content-Length", length.as_bytes()),
+                ("x-bz-file-id", b"4_z1"),
+                ("x-bz-file-name", b"a/b.m4b"),
+            ];
+            if let Some(range) = range {
+                headers.push(("Content-Range", range.as_bytes()));
+            }
+            parse_download_headers(headers)
+        };
+        let ranged = headers(Some("bytes 2-4/10"), "3").expect("ranged");
+        assert_eq!(
+            (
+                ranged.body_offset,
+                ranged.body_length,
+                ranged.version.content_length
+            ),
+            (2, 3, 10)
+        );
+        let whole = headers(None, "10").expect("whole");
+        assert_eq!((whole.body_offset, whole.body_length), (0, 10));
+        assert!(headers(Some("bytes 2-4/10"), "4").is_err());
+    }
+
+    #[test]
     fn tokens_hide_in_debug_output() {
         let token = AuthToken::parse("secret-token").expect("token");
         assert_eq!(format!("{token:?}"), "AuthToken([redacted])");
@@ -1282,9 +1292,10 @@ mod tests {
 
     #[test]
     fn reads_a_bucket_restricted_authorization() {
-        let auth =
-            parse_authorization(authorization_json(r#"{"id":"b1","name":"my-books"}"#).as_bytes())
-                .expect("authorization");
+        let auth = parse_authorization(
+            authorization_json(r#""bucketId":"b1","bucketName":"my-books","#).as_bytes(),
+        )
+        .expect("authorization");
         assert_eq!(auth.account_id, "acct1");
         assert_eq!(auth.api_url.as_str(), "https://api005.backblazeb2.com");
         assert_eq!(auth.download_url.host(), "f005.backblazeb2.com");
@@ -1303,13 +1314,20 @@ mod tests {
 
     #[test]
     fn refuses_impossible_authorizations() {
-        let deleted = authorization_json(r#"{"id":"b1","name":null}"#);
+        let open = parse_authorization(authorization_json(r#""bucketId":null,"#).as_bytes())
+            .expect("an unrestricted key");
+        assert_eq!(open.bucket, None);
+        let deleted = authorization_json(r#""bucketId":"b1","bucketName":null,"#);
         assert!(parse_authorization(deleted.as_bytes()).is_err());
-        let several = authorization_json(r#"{"id":"b1","name":"a"},{"id":"b2","name":"b"}"#);
-        assert!(parse_authorization(several.as_bytes()).is_err());
-        let sizes = authorization_json(r#"{"id":"b1","name":"a"}"#).replace("100000000", "1");
+        let bad_name = authorization_json(r#""bucketId":"b1","bucketName":"a_b","#);
+        assert!(parse_authorization(bad_name.as_bytes()).is_err());
+        let sizes =
+            authorization_json(r#""bucketId":"b1","bucketName":"a","#).replace("100000000", "1");
         assert!(parse_authorization(sizes.as_bytes()).is_err());
         assert!(parse_authorization(b"{}").is_err());
+        assert!(parse_authorization(b"[]").is_err());
+        assert!(parse_buckets(b"[[]]").is_err());
+        assert_eq!(parse_buckets(br#" {"buckets":[]}"#), Ok(Vec::new()));
         let huge = vec![b' '; MAX_B2_REPLY_BYTES + 1];
         assert_eq!(parse_authorization(&huge), Err(B2ReplyError::TooLarge));
     }

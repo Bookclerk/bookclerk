@@ -15,8 +15,8 @@
 //! - reading never panics and gives the same answer twice;
 //! - an error reply always reads, with a non-empty code and code and
 //!   message within their caps and free of control characters;
-//! - when a reply is accepted, an independent reading of the same JSON (a
-//!   `serde_json::Value` walk) finds the same token, URLs, names, counts and
+//! - an accepted JSON reply is a JSON object, and an independent reading
+//!   of the same JSON (a `serde_json::Value` walk) finds the same token, URLs, names, counts and
 //!   part numbers, every file name passes the oracle's own copy of B2's
 //!   naming rules, a listing's continuation name is past every listed
 //!   name, and every SHA-1 is 40 lowercase hex digits;
@@ -110,10 +110,12 @@ pub fn check(data: &[u8]) {
         assert_eq!(decode_file_name(&encoded).as_deref(), Some(text));
     }
     let json: Option<Value> = serde_json::from_slice(rest).ok();
+    let object = json.as_ref().is_some_and(Value::is_object);
     match selector % 9 {
         0 => {
             let first = parse_authorization(rest);
             assert_eq!(first, parse_authorization(rest));
+            assert!(first.is_err() || object);
             if let Ok(auth) = first {
                 let json = json.expect("accepted reply is JSON");
                 assert_eq!(
@@ -135,6 +137,7 @@ pub fn check(data: &[u8]) {
         1 => {
             let first = parse_buckets(rest);
             assert_eq!(first, parse_buckets(rest));
+            assert!(first.is_err() || object);
             if let Ok(buckets) = first {
                 let json = json.expect("accepted reply is JSON");
                 assert_eq!(
@@ -146,6 +149,7 @@ pub fn check(data: &[u8]) {
         2 => {
             let first = parse_upload_target(rest);
             assert_eq!(first, parse_upload_target(rest));
+            assert!(first.is_err() || object);
             if let Ok(target) = first {
                 assert!(url_ok(target.url.as_str()));
                 assert!(target.token.expose().bytes().all(|b| b.is_ascii_graphic()));
@@ -154,6 +158,7 @@ pub fn check(data: &[u8]) {
         3 => {
             let first = parse_file_version(rest);
             assert_eq!(first, parse_file_version(rest));
+            assert!(first.is_err() || object);
             if let Ok(file) = first {
                 check_version(&file, json.as_ref());
             }
@@ -161,6 +166,7 @@ pub fn check(data: &[u8]) {
         4 => {
             let first = parse_names_page(rest);
             assert_eq!(first, parse_names_page(rest));
+            assert!(first.is_err() || object);
             if let Ok(page) = first {
                 check_files(&page.files, &json.expect("accepted reply is JSON"));
                 if let Some(next) = &page.next_file_name {
@@ -172,6 +178,7 @@ pub fn check(data: &[u8]) {
         5 => {
             let first = parse_versions_page(rest);
             assert_eq!(first, parse_versions_page(rest));
+            assert!(first.is_err() || object);
             if let Ok(page) = first {
                 check_files(&page.files, &json.expect("accepted reply is JSON"));
                 if let Some((next, _)) = &page.next {
@@ -183,6 +190,7 @@ pub fn check(data: &[u8]) {
         6 => {
             let first = parse_part(rest);
             assert_eq!(first, parse_part(rest));
+            assert!(first.is_err() || object);
             if let Ok(part) = first {
                 let json = json.expect("accepted reply is JSON");
                 assert!((1..=MAX_PARTS).contains(&part.part_number));
@@ -223,7 +231,10 @@ pub fn check(data: &[u8]) {
             let first = parse_download_headers(lines.clone());
             assert_eq!(first, parse_download_headers(lines));
             if let Ok(head) = first {
-                assert!(head.body_length <= head.version.content_length);
+                assert!(
+                    head.body_offset.saturating_add(head.body_length)
+                        <= head.version.content_length
+                );
                 assert!(head.version.file_id.is_some());
                 check_version(&head.version, None);
             }
