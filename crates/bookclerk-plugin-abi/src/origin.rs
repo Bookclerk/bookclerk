@@ -430,6 +430,52 @@ pub fn decode_origin_request_frame(json: &[u8]) -> Result<CheckedOriginRequest> 
     check_origin_request(&request)
 }
 
+/// The body of a `POST /origin/connect` on the isolate bridge: one
+/// `env.ORIGIN.connect` call.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OriginConnectBody {
+    /// The upgrade request's head.
+    pub request: OriginRequest,
+    /// The socket's initial attachment, base64 on the wire.
+    #[serde(default, with = "crate::json_bytes::b64")]
+    pub attachment: Vec<u8>,
+}
+
+/// Largest `POST /origin/connect` body the isolate bridge reads: a head at
+/// its framed limit and an attachment at its limit in base64.
+pub const MAX_ORIGIN_CONNECT_BODY_BYTES: usize =
+    MAX_ORIGIN_FRAME_HEAD_BYTES + 2 * crate::limits::MAX_SOCKET_ATTACHMENT_BYTES as usize + 1024;
+
+/// Decodes and checks a `POST /origin/connect` body from an isolate.
+///
+/// # Returns
+///
+/// The head as [`check_origin_connect`] keeps it, and the attachment.
+///
+/// # Errors
+///
+/// `invalid_params` when the JSON is not an [`OriginConnectBody`], the head
+/// fails [`check_origin_connect`], or the attachment exceeds
+/// `maxSocketAttachmentBytes`.
+pub fn decode_origin_connect_body(json: &[u8]) -> Result<(CheckedOriginRequest, Vec<u8>)> {
+    if json.len() > MAX_ORIGIN_CONNECT_BODY_BYTES {
+        return Err(PluginError::invalid_params(format!(
+            "origin connect body exceeds {MAX_ORIGIN_CONNECT_BODY_BYTES} bytes"
+        )));
+    }
+    let body: OriginConnectBody = serde_json::from_slice(json)
+        .map_err(|_| PluginError::invalid_params("origin connect body is not valid JSON"))?;
+    let checked = check_origin_connect(&body.request)?;
+    if body.attachment.len() > crate::limits::MAX_SOCKET_ATTACHMENT_BYTES as usize {
+        return Err(PluginError::invalid_params(format!(
+            "the attachment exceeds {} bytes",
+            crate::limits::MAX_SOCKET_ATTACHMENT_BYTES
+        )));
+    }
+    Ok((checked, body.attachment))
+}
+
 /// Decodes and checks a framed response head (the isolate side reads these;
 /// the host only writes them, so this is for tests and fuzzing).
 ///
