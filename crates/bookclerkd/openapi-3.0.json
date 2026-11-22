@@ -49197,6 +49197,144 @@
         "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
+    "/hooks/{token}/{name}": {
+      "post": {
+        "tags": [
+          "Webhooks"
+        ],
+        "summary": "Stores one inbound webhook request for a plugin instance.",
+        "description": "The token is the credential; a row with a signing rule also needs a\nvalid signature. The reply body never says more than the status.",
+        "operationId": "post_hook",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "description": "The webhook's URL token: 43 characters of base64url, from the plugin's `WEBHOOKS.url`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The `[[webhooks]]` row's name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "The request body, kept as sent, at most the row's `max_body_bytes`.",
+          "content": {
+            "*/*": {
+              "schema": {
+                "$ref": "#/components/schemas/BinaryBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Stored; the plugin reads it on its next pull."
+          },
+          "400": {
+            "description": "A kept header repeats, is too long or holds a control character.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "bad_request",
+                  "message": "The request could not be understood.",
+                  "status": 400
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The signature is missing or does not match.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The token or name matches no webhook.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "not_found",
+                  "message": "That page or resource was not found.",
+                  "status": 404
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is larger than the row allows.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "payload_too_large",
+                  "message": "Payload Too Large",
+                  "status": 413
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The webhook is over its `rate_per_minute`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many requests. Try again shortly.",
+                  "status": 429
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The webhook cannot take requests now: webhooks are off, the signing secret is not set, this node does not run the instance, the library is unavailable, or the instance already holds its cap of waiting requests. Retry later.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "service_unavailable",
+                  "message": "The Bookclerk daemon is not ready to handle this request.",
+                  "status": 503
+                }
+              }
+            }
+          }
+        },
+        "security": [],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      }
+    },
     "/api/openapi.json": {
       "get": {
         "tags": [
@@ -64918,7 +65056,8 @@
               "plugin_kv",
               "work_fs",
               "oauth",
-              "sockets"
+              "sockets",
+              "webhooks"
             ]
           }
         }
@@ -74628,6 +74767,10 @@
     {
       "name": "Health",
       "description": "Liveness."
+    },
+    {
+      "name": "Webhooks",
+      "description": "Inbound webhooks for plugins, outside operator auth: the URL token is the credential."
     },
     {
       "name": "Spec",

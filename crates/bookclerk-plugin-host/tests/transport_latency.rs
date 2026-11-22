@@ -140,6 +140,7 @@ async fn measure(
         sockets: None,
         ai: None,
         origin: None,
+        webhooks: None,
     };
     let spawn_started = Instant::now();
     let ext = ExternalDatabase::spawn_with(&staged.plugin, config, services)
