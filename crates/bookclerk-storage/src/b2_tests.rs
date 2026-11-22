@@ -87,6 +87,16 @@ struct World {
     versions_page: Option<usize>,
     /// The `range` of each `b2_copy_part`, in order.
     copy_ranges: Vec<String>,
+    /// Make the next `b2_upload_file` land just after another writer's
+    /// upload of the same name, as if the two raced.
+    racer: bool,
+    /// The bucket's event notification rules, as B2 lists them.
+    rules: Vec<Value>,
+    /// `b2_set_bucket_notification_rules` calls so far.
+    rule_sets: u32,
+    /// List rules without their signing secret and batch size, which B2
+    /// does not document repeating.
+    terse_rules: bool,
 }
 
 impl World {
@@ -108,6 +118,23 @@ impl World {
             "action": file.action,
             "fileInfo": file.info,
         })
+    }
+
+    /// The rules as a reply lists them.
+    fn listed_rules(&self) -> Vec<Value> {
+        self.rules
+            .iter()
+            .map(|rule| {
+                let mut rule = rule.clone();
+                if self.terse_rules {
+                    if let Some(target) = rule["targetConfiguration"].as_object_mut() {
+                        target.remove("hmacSha256SigningSecret");
+                        target.remove("maxEventsPerBatch");
+                    }
+                }
+                rule
+            })
+            .collect()
     }
 
     /// The newest version of `name`, when it is not hidden.
@@ -177,7 +204,16 @@ fn handle(
             }),
         );
     }
-    if let Some(op) = path.strip_prefix("/b2api/v3/") {
+    let (path, query) = path.split_once('?').unwrap_or((path, ""));
+    let api_op = path
+        .strip_prefix("/b2api/v3/")
+        .or_else(|| path.strip_prefix("/b2api/v4/"));
+    if let Some(op) = api_op {
+        // B2 documents the rules listing as a GET with a query string.
+        let get_only = op == "b2_get_bucket_notification_rules";
+        if get_only != (method == "GET") {
+            return reply_error(405, "method_not_allowed");
+        }
         if world.expire_next {
             world.expire_next = false;
             return reply_error(401, "expired_auth_token");
@@ -185,7 +221,19 @@ fn handle(
         if auth != world.token {
             return reply_error(401, "bad_auth_token");
         }
-        let request: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+        let request: Value = if get_only {
+            let fields: serde_json::Map<String, Value> = query
+                .split('&')
+                .filter_map(|pair| pair.split_once('='))
+                .map(|(key, value)| (key.to_string(), json!(value)))
+                .collect();
+            Value::Object(fields)
+        } else {
+            serde_json::from_slice(body).unwrap_or(Value::Null)
+        };
+        if get_only && request["bucketId"].as_str().unwrap_or_default().is_empty() {
+            return reply_error(400, "bad_request");
+        }
         return api(world, op, &request);
     }
     if path == "/upload/file" || path.starts_with("/upload/part/") {
@@ -226,6 +274,18 @@ fn handle(
                     .map(|key| (key.to_string(), decode_file_name(value).unwrap_or_default()))
             })
             .collect();
+        if std::mem::take(&mut world.racer) {
+            let racer = Stored {
+                id: world.id(),
+                name: name.clone(),
+                data: b"racer".to_vec(),
+                content_type: "text/plain".into(),
+                info: BTreeMap::new(),
+                ts: world.next_id,
+                action: "upload",
+            };
+            world.files.push(racer);
+        }
         let stored = Stored {
             id: world.id(),
             name,
@@ -293,6 +353,39 @@ fn handle(
 fn api(world: &mut World, op: &str, request: &Value) -> Reply {
     let text = |key: &str| request[key].as_str().unwrap_or_default().to_string();
     match op {
+        "b2_get_bucket_notification_rules" => reply_json(
+            200,
+            &json!({ "bucketId": text("bucketId"), "eventNotificationRules": world.listed_rules() }),
+        ),
+        "b2_set_bucket_notification_rules" => {
+            let Some(rules) = request["eventNotificationRules"].as_array() else {
+                return reply_error(400, "bad_request");
+            };
+            // A suspended rule can only be deleted, not sent again.
+            let resends_suspended = rules.iter().any(|rule| {
+                world
+                    .rules
+                    .iter()
+                    .any(|old| old["name"] == rule["name"] && old["isSuspended"] == json!(true))
+            });
+            if resends_suspended || rules.len() > 25 {
+                return reply_error(400, "bad_request");
+            }
+            world.rule_sets += 1;
+            world.rules = rules
+                .iter()
+                .map(|rule| {
+                    let mut rule = rule.clone();
+                    rule["isSuspended"] = json!(false);
+                    rule["suspensionReason"] = json!("");
+                    rule
+                })
+                .collect();
+            reply_json(
+                200,
+                &json!({ "bucketId": text("bucketId"), "eventNotificationRules": world.listed_rules() }),
+            )
+        }
         "b2_list_buckets" => reply_json(
             200,
             &json!({ "buckets": [{ "bucketId": "b1", "bucketName": BUCKET }] }),
@@ -1041,6 +1134,113 @@ async fn keys_translate_like_other_object_stores() {
     );
     assert!(backend.capabilities().translate_keys);
     assert!(!backend.capabilities().conditional_write);
+    assert!(backend.capabilities().checked_write);
+}
+
+/// Writes `data` to `key` under `condition`.
+async fn put_if(
+    backend: &B2Backend,
+    key: &str,
+    data: &'static [u8],
+    condition: &WriteCondition,
+) -> Result<crate::ConditionalPutResult> {
+    backend
+        .put_stream_conditional(key, body(data), ObjectMeta::default(), condition)
+        .await
+}
+
+#[tokio::test]
+async fn a_write_that_must_be_new_is_withdrawn_when_the_name_exists() {
+    let world = serve().await;
+    let backend = open(&world, "").await;
+    let first = put_if(&backend, "a", b"one", &WriteCondition::IfNoneMatch)
+        .await
+        .expect("a new name takes the write");
+    assert!(!first.atomic, "a checked write is never atomic");
+    let refused = put_if(&backend, "a", b"two", &WriteCondition::IfNoneMatch).await;
+    assert!(
+        matches!(refused, Err(StorageError::Conflict(_))),
+        "{refused:?}"
+    );
+    assert_eq!(backend.get("a").await.expect("get"), "one");
+    {
+        let world = world.lock().await;
+        assert_eq!(world.files.len(), 1, "the losing write was withdrawn");
+        assert_eq!(world.deleted.len(), 1);
+    }
+
+    // A hidden name counts as absent.
+    let hide_id = {
+        let mut world = world.lock().await;
+        let id = world.id();
+        let ts = world.next_id;
+        world.files.push(Stored {
+            id: id.clone(),
+            name: "a".into(),
+            data: Vec::new(),
+            content_type: String::new(),
+            info: BTreeMap::new(),
+            ts,
+            action: "hide",
+        });
+        id
+    };
+    put_if(&backend, "a", b"three", &WriteCondition::IfNoneMatch)
+        .await
+        .expect("a hidden name takes the write");
+    assert_eq!(backend.get("a").await.expect("get"), "three");
+    assert!(world.lock().await.files.iter().any(|f| f.id == hide_id));
+}
+
+#[tokio::test]
+async fn a_write_that_must_replace_a_version_checks_which_it_replaced() {
+    let world = serve().await;
+    let backend = open(&world, "").await;
+    backend
+        .put("a", Bytes::from_static(b"one"), ObjectMeta::default())
+        .await
+        .expect("put");
+    let current = backend.probe("a").await.expect("probe").etag.expect("etag");
+    let stale = put_if(
+        &backend,
+        "a",
+        b"two",
+        &WriteCondition::IfMatch("4_zstale".into()),
+    )
+    .await;
+    assert!(matches!(stale, Err(StorageError::Conflict(_))), "{stale:?}");
+    assert_eq!(backend.get("a").await.expect("get"), "one");
+    put_if(&backend, "a", b"three", &WriteCondition::IfMatch(current))
+        .await
+        .expect("the expected version was replaced");
+    assert_eq!(backend.get("a").await.expect("get"), "three");
+    let missing = put_if(
+        &backend,
+        "b",
+        b"four",
+        &WriteCondition::IfMatch("4_z0001".into()),
+    )
+    .await;
+    assert!(
+        matches!(missing, Err(StorageError::Conflict(_))),
+        "{missing:?}"
+    );
+    assert!(!backend.exists("b").await.expect("exists"));
+}
+
+#[tokio::test]
+async fn of_two_racing_writes_the_one_listed_first_stands() {
+    let world = serve().await;
+    let backend = open(&world, "").await;
+    world.lock().await.racer = true;
+    let lost = put_if(&backend, "a", b"ours", &WriteCondition::IfNoneMatch).await;
+    assert!(matches!(lost, Err(StorageError::Conflict(_))), "{lost:?}");
+    assert_eq!(
+        backend.get("a").await.expect("get"),
+        "racer",
+        "the earlier write stands and ours is gone"
+    );
+    assert_eq!(world.lock().await.files.len(), 1);
 }
 
 #[test]
@@ -1111,4 +1311,446 @@ async fn a_large_copy_goes_part_by_part() {
     let world = world.lock().await;
     assert_eq!(world.copy_ranges, ["bytes=0-3", "bytes=4-7", "bytes=8-10"]);
     assert!(world.large.is_empty());
+}
+
+/// The webhook binding's side of the feed tests.
+#[derive(Default)]
+struct HookState {
+    /// The URL `url` answers.
+    url: Option<String>,
+    /// Requests waiting: lease id when leased, body.
+    waiting: Vec<Vec<u8>>,
+    /// Leased requests by lease id.
+    leased: Vec<(String, Vec<u8>)>,
+    /// Lease ids acknowledged, in order.
+    acked: Vec<String>,
+    /// Lease ids handed out so far.
+    leases: u64,
+    /// What the next pull reports as missed.
+    missed: bool,
+}
+
+/// An in-memory [`Webhooks`] binding.
+struct FakeHooks(std::rc::Rc<std::cell::RefCell<HookState>>);
+
+#[async_trait::async_trait(?Send)]
+impl bookclerk_plugin_sdk::Webhooks for FakeHooks {
+    async fn url(
+        &self,
+        name: String,
+    ) -> std::result::Result<Option<String>, bookclerk_plugin_sdk::PluginError> {
+        assert_eq!(name, "changes");
+        Ok(self.0.borrow().url.clone())
+    }
+
+    async fn pull(
+        &self,
+        request: bookclerk_plugin_sdk::WebhookPullRequest,
+    ) -> std::result::Result<bookclerk_plugin_sdk::WebhookPullPage, bookclerk_plugin_sdk::PluginError>
+    {
+        assert!(request.batch_size >= 1);
+        assert!(request.visibility_timeout_ms <= bookclerk_plugin_sdk::MAX_WEBHOOK_VISIBILITY_MS);
+        let mut state = self.0.borrow_mut();
+        let take = state.waiting.len().min(request.batch_size as usize);
+        let bodies: Vec<Vec<u8>> = state.waiting.drain(..take).collect();
+        let mut deliveries = Vec::new();
+        for body in bodies {
+            state.leases += 1;
+            let lease_id = format!("lease-{}", state.leases);
+            state.leased.push((lease_id.clone(), body.clone()));
+            deliveries.push(bookclerk_plugin_sdk::WebhookDelivery {
+                lease_id,
+                body,
+                attempt: 1,
+                ..Default::default()
+            });
+        }
+        Ok(bookclerk_plugin_sdk::WebhookPullPage {
+            deliveries,
+            missed: std::mem::take(&mut state.missed),
+        })
+    }
+
+    async fn ack(
+        &self,
+        request: bookclerk_plugin_sdk::WebhookAckRequest,
+    ) -> std::result::Result<(), bookclerk_plugin_sdk::PluginError> {
+        let mut state = self.0.borrow_mut();
+        for lease in &request.acks {
+            state.leased.retain(|(id, _)| id != lease);
+            state.acked.push(lease.clone());
+        }
+        for lease in &request.retries {
+            if let Some(at) = state.leased.iter().position(|(id, _)| id == lease) {
+                let (_, body) = state.leased.remove(at);
+                state.waiting.push(body);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The URL the fake binding hands out.
+const HOOK_URL: &str = "https://library.example/hooks/0123456789abcdef/changes";
+
+/// A signing secret.
+fn hook_secret() -> crate::b2_events::B2SigningSecret {
+    crate::b2_events::B2SigningSecret::parse("abcdefghijklmnopqrstuvwxyz012345").expect("secret")
+}
+
+/// A rule that is not the destination's.
+fn foreign_rule() -> Value {
+    json!({
+        "name": "someone-elses",
+        "eventTypes": ["b2:ObjectCreated:*"],
+        "isEnabled": true,
+        "objectNamePrefix": "other/",
+        "targetConfiguration": { "targetType": "webhook", "url": "https://elsewhere.example/hook" },
+        "isSuspended": false,
+        "suspensionReason": "",
+    })
+}
+
+/// A webhook body with one event per `(type, bucket, name)`.
+fn event_body(events: &[(&str, &str, &str)]) -> Vec<u8> {
+    let events: Vec<Value> = events
+        .iter()
+        .enumerate()
+        .map(|(at, (kind, bucket, name))| {
+            json!({
+                "eventType": kind,
+                "bucketName": bucket,
+                "objectName": name,
+                "eventTimestamp": 1_700_000_000_000u64 + at as u64,
+            })
+        })
+        .collect();
+    json!({ "events": events }).to_string().into_bytes()
+}
+
+/// A feed over the fake bucket under `library/`, with its state in `dir`.
+async fn open_feed(
+    world: &Arc<Mutex<World>>,
+    hooks: &std::rc::Rc<std::cell::RefCell<HookState>>,
+    secret: Option<crate::b2_events::B2SigningSecret>,
+    dir: &std::path::Path,
+) -> crate::B2ChangeFeed {
+    let backend = open(world, "library").await;
+    crate::B2ChangeFeed::open(
+        backend,
+        Some(Box::new(FakeHooks(std::rc::Rc::clone(hooks)))),
+        "changes",
+        secret,
+        dir,
+    )
+    .expect("feed")
+}
+
+/// The names of the bucket's rules.
+fn rule_names_of(world: &World) -> Vec<String> {
+    world
+        .rules
+        .iter()
+        .map(|rule| rule["name"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn the_feed_writes_its_rules_and_hands_out_events_under_its_prefix() {
+    use crate::s3_guest::ChangeSource;
+    let world = serve().await;
+    world.lock().await.rules.push(foreign_rule());
+    let dir = tempfile::tempdir().expect("dir");
+    let hooks = std::rc::Rc::new(std::cell::RefCell::new(HookState {
+        url: Some(HOOK_URL.into()),
+        ..HookState::default()
+    }));
+    let feed = open_feed(&world, &hooks, Some(hook_secret()), dir.path()).await;
+    assert!(feed.is_on());
+
+    let start = feed
+        .changes(None, 0)
+        .await
+        .expect("start")
+        .expect("feed on");
+    assert!(!start.complete, "a new feed starts with a listing");
+    {
+        let world = world.lock().await;
+        let mut expected = vec!["someone-elses".to_string()];
+        expected.extend(crate::b2_events::rule_names("library/"));
+        assert_eq!(rule_names_of(&world), expected);
+        assert_eq!(
+            world.rules[0]["targetConfiguration"],
+            foreign_rule()["targetConfiguration"]
+        );
+        let own = &world.rules[1];
+        assert_eq!(own["objectNamePrefix"], "library/");
+        assert_eq!(own["eventTypes"], json!(["b2:ObjectCreated:*"]));
+        assert_eq!(own["targetConfiguration"]["url"], HOOK_URL);
+        assert_eq!(
+            own["targetConfiguration"]["hmacSha256SigningSecret"],
+            hook_secret().expose()
+        );
+        assert_eq!(world.rule_sets, 1);
+    }
+
+    hooks.borrow_mut().waiting.push(event_body(&[
+        ("b2:ObjectCreated:Upload", BUCKET, "library/a.m4b"),
+        ("b2:ObjectCreated:Upload", "another", "library/b.m4b"),
+        ("b2:HideMarkerCreated:Hide", BUCKET, "other/c.m4b"),
+        ("b2:ObjectDeleted:Delete", BUCKET, "library/d.m4b"),
+    ]));
+    let page = feed
+        .changes(Some(&start.cursor), 0)
+        .await
+        .expect("page")
+        .expect("feed on");
+    let keys: Vec<&str> = page.changes.iter().map(|c| c.key.as_str()).collect();
+    assert_eq!(keys, ["a.m4b", "d.m4b"]);
+    assert!(page
+        .changes
+        .iter()
+        .all(|c| c.kind == crate::ObjectChangeKind::Changed));
+    assert!(page.complete, "rules in place and nothing missed");
+    assert!(
+        hooks.borrow().acked.is_empty(),
+        "acked only after the next call"
+    );
+
+    let after = feed
+        .changes(Some(&page.cursor), 0)
+        .await
+        .expect("after")
+        .expect("feed on");
+    assert!(after.changes.is_empty());
+    assert_eq!(hooks.borrow().acked, ["lease-1"]);
+    assert_eq!(world.lock().await.rule_sets, 1, "rules are not rewritten");
+
+    // Requests the host dropped make the page incomplete.
+    hooks.borrow_mut().missed = true;
+    let gap = feed
+        .changes(Some(&after.cursor), 0)
+        .await
+        .expect("gap")
+        .expect("feed on");
+    assert!(!gap.complete);
+}
+
+#[tokio::test]
+async fn the_listing_cursor_starts_the_feed_over() {
+    use crate::s3_guest::ChangeSource;
+    let world = serve().await;
+    let dir = tempfile::tempdir().expect("dir");
+    let hooks = std::rc::Rc::new(std::cell::RefCell::new(HookState {
+        url: Some(HOOK_URL.into()),
+        ..HookState::default()
+    }));
+    let feed = open_feed(&world, &hooks, Some(hook_secret()), dir.path()).await;
+    let page = feed
+        .changes(Some(crate::guest::NO_FEED_CURSOR), 0)
+        .await
+        .expect("page")
+        .expect("feed on");
+    assert!(!page.complete);
+    assert!(page.cursor.starts_with("q1."));
+}
+
+#[tokio::test]
+async fn suspended_rules_are_deleted_then_written_again() {
+    use crate::s3_guest::ChangeSource;
+    let world = serve().await;
+    {
+        let mut world = world.lock().await;
+        world.rules.push(foreign_rule());
+        for mut rule in crate::b2_events::own_rules("library/", HOOK_URL, &hook_secret()) {
+            rule["isSuspended"] = json!(true);
+            rule["suspensionReason"] = json!("too many failed deliveries");
+            world.rules.push(rule);
+        }
+    }
+    let dir = tempfile::tempdir().expect("dir");
+    let hooks = std::rc::Rc::new(std::cell::RefCell::new(HookState {
+        url: Some(HOOK_URL.into()),
+        ..HookState::default()
+    }));
+    let feed = open_feed(&world, &hooks, Some(hook_secret()), dir.path()).await;
+    let page = feed.changes(None, 0).await.expect("page").expect("feed on");
+    assert!(!page.complete);
+    let world = world.lock().await;
+    assert_eq!(world.rule_sets, 2, "deleted in one call, added in the next");
+    assert_eq!(world.rules.len(), 4);
+    assert!(world
+        .rules
+        .iter()
+        .all(|rule| rule["isSuspended"] == json!(false)));
+}
+
+#[tokio::test]
+async fn a_changed_url_rewrites_the_rules_and_the_page_is_incomplete() {
+    use crate::s3_guest::ChangeSource;
+    let world = serve().await;
+    let dir = tempfile::tempdir().expect("dir");
+    let hooks = std::rc::Rc::new(std::cell::RefCell::new(HookState {
+        url: Some(HOOK_URL.into()),
+        ..HookState::default()
+    }));
+    let feed = open_feed(&world, &hooks, Some(hook_secret()), dir.path()).await;
+    let start = feed
+        .changes(None, 0)
+        .await
+        .expect("start")
+        .expect("feed on");
+    let steady = feed
+        .changes(Some(&start.cursor), 0)
+        .await
+        .expect("steady")
+        .expect("feed on");
+    assert!(steady.complete);
+
+    let moved = "https://moved.example/hooks/0123456789abcdef/changes";
+    hooks.borrow_mut().url = Some(moved.into());
+    let page = feed
+        .changes(Some(&steady.cursor), 0)
+        .await
+        .expect("page")
+        .expect("feed on");
+    assert!(!page.complete, "events before the new rules went elsewhere");
+    let world = world.lock().await;
+    assert_eq!(world.rule_sets, 3, "removed, then added with the new URL");
+    assert!(world
+        .rules
+        .iter()
+        .all(|rule| rule["targetConfiguration"]["url"] == moved));
+}
+
+#[tokio::test]
+async fn a_refused_rule_change_falls_back_to_listing() {
+    use crate::s3_guest::ChangeSource;
+    let world = serve().await;
+    {
+        // B2 holds at most 25 rules; the destination's three do not fit.
+        let mut world = world.lock().await;
+        for at in 0..24 {
+            let mut rule = foreign_rule();
+            rule["name"] = json!(format!("someone-elses-{at}"));
+            world.rules.push(rule);
+        }
+    }
+    let dir = tempfile::tempdir().expect("dir");
+    let hooks = std::rc::Rc::new(std::cell::RefCell::new(HookState {
+        url: Some(HOOK_URL.into()),
+        ..HookState::default()
+    }));
+    let feed = open_feed(&world, &hooks, Some(hook_secret()), dir.path()).await;
+    let start = feed
+        .changes(None, 0)
+        .await
+        .expect("start")
+        .expect("feed on");
+    let page = feed
+        .changes(Some(&start.cursor), 0)
+        .await
+        .expect("page")
+        .expect("feed on");
+    assert!(!page.complete, "without rules every page lists");
+    assert_eq!(world.lock().await.rules.len(), 24, "other rules untouched");
+}
+
+#[tokio::test]
+async fn without_a_url_or_a_secret_the_feed_removes_its_rules() {
+    use crate::s3_guest::ChangeSource;
+    let world = serve().await;
+    world.lock().await.rules.push(foreign_rule());
+    let dir = tempfile::tempdir().expect("dir");
+    let hooks = std::rc::Rc::new(std::cell::RefCell::new(HookState {
+        url: Some(HOOK_URL.into()),
+        ..HookState::default()
+    }));
+    let feed = open_feed(&world, &hooks, Some(hook_secret()), dir.path()).await;
+    feed.changes(None, 0)
+        .await
+        .expect("start")
+        .expect("feed on");
+    assert_eq!(world.lock().await.rules.len(), 4);
+
+    // The library stops being reachable: no URL, no feed, no rules.
+    hooks.borrow_mut().url = None;
+    assert!(feed.changes(None, 0).await.expect("off").is_none());
+    assert_eq!(rule_names_of(&*world.lock().await), ["someone-elses"]);
+
+    // Back on, then the operator clears the secret.
+    hooks.borrow_mut().url = Some(HOOK_URL.into());
+    feed.changes(None, 0).await.expect("on").expect("feed on");
+    assert_eq!(world.lock().await.rules.len(), 4);
+    let off = open_feed(&world, &hooks, None, dir.path()).await;
+    assert!(!off.is_on());
+    assert!(off.changes(None, 0).await.expect("off").is_none());
+    assert_eq!(rule_names_of(&*world.lock().await), ["someone-elses"]);
+    let sets = world.lock().await.rule_sets;
+    assert!(off.changes(None, 0).await.expect("off").is_none());
+    assert_eq!(world.lock().await.rule_sets, sets, "removed once");
+}
+
+#[tokio::test]
+async fn rules_listed_without_their_secret_still_count_as_in_place() {
+    use crate::s3_guest::ChangeSource;
+    let world = serve().await;
+    world.lock().await.terse_rules = true;
+    let dir = tempfile::tempdir().expect("dir");
+    let hooks = std::rc::Rc::new(std::cell::RefCell::new(HookState {
+        url: Some(HOOK_URL.into()),
+        ..HookState::default()
+    }));
+    let feed = open_feed(&world, &hooks, Some(hook_secret()), dir.path()).await;
+    let start = feed
+        .changes(None, 0)
+        .await
+        .expect("start")
+        .expect("feed on");
+    assert_eq!(world.lock().await.rule_sets, 1, "written and verified once");
+    // A fresh state file forces a check against B2's listing.
+    for entry in std::fs::read_dir(dir.path()).expect("dir") {
+        let path = entry.expect("entry").path();
+        if path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with("b2-rules-"))
+        {
+            std::fs::remove_file(path).expect("remove");
+        }
+    }
+    let page = feed
+        .changes(Some(&start.cursor), 0)
+        .await
+        .expect("page")
+        .expect("feed on");
+    assert!(page.complete);
+    assert_eq!(
+        world.lock().await.rule_sets,
+        1,
+        "found in place, not rewritten"
+    );
+}
+
+#[tokio::test]
+async fn out_of_date_rules_are_deleted_before_they_are_written_again() {
+    use crate::s3_guest::ChangeSource;
+    let world = serve().await;
+    world.lock().await.rules.extend(crate::b2_events::own_rules(
+        "library/",
+        "https://old.example/hook",
+        &hook_secret(),
+    ));
+    let dir = tempfile::tempdir().expect("dir");
+    let hooks = std::rc::Rc::new(std::cell::RefCell::new(HookState {
+        url: Some(HOOK_URL.into()),
+        ..HookState::default()
+    }));
+    let feed = open_feed(&world, &hooks, Some(hook_secret()), dir.path()).await;
+    feed.changes(None, 0).await.expect("page").expect("feed on");
+    let world = world.lock().await;
+    assert_eq!(world.rule_sets, 2, "removed, then added with the new URL");
+    assert!(world
+        .rules
+        .iter()
+        .all(|rule| rule["targetConfiguration"]["url"] == HOOK_URL));
 }

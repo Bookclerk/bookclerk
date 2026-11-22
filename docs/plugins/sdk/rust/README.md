@@ -127,8 +127,9 @@ A plugin that declares `[[webhooks]]` (see
 `Webhooks` on `Bindings::webhooks` in `open` (`url`, `pull` and `ack`,
 with `WebhookPullRequest` and `WebhookAckRequest`), and may return a
 `WebhookHandler` on `Entrypoints::webhook_handler`, whose `delivered` the
-host calls on a running guest once a request is stored.
-`bookclerk_plugin_abi::webhooks` has the checks the host applies, so a
+host calls on a running guest once a request is stored. The SDK re-exports
+these types and the `MAX_WEBHOOK_PULL_BATCH` and
+`MAX_WEBHOOK_VISIBILITY_MS` limits. `bookclerk_plugin_abi::webhooks` has the checks the host applies, so a
 plugin can validate a pull before sending it.
 
 ## Author tools

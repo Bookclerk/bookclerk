@@ -2026,7 +2026,9 @@ guest did not declare. The fallback gives the same result when nothing else
 writes the same keys at the same time, but it may be slower (a copy and a
 delete instead of a rename) and it is not atomic: a concurrent writer can
 slip in between its steps. Where that matters, the guest declares the
-operation, or `storage.conditionalWrite`, and enforces it natively.
+operation, or `storage.conditionalWrite`, and enforces it natively. A
+store with no conditional writes may declare `storage.checkedWrite`
+instead.
 
 | Feature | Method | What the guest does |
 | --- | --- | --- |
@@ -2036,6 +2038,7 @@ operation, or `storage.conditionalWrite`, and enforces it natively.
 | `storage.headMany` | `headMany(keys)` | Probes up to `maxBatchKeys` objects. |
 | `storage.translateKeys` | `translateKeys(keys)` | Turns up to `maxBatchKeys` host keys into the keys it stores ([Translating keys](#translating-keys)). |
 | `storage.conditionalWrite` | `put` with `ifMatch` / `ifNoneMatch` | Publishes only while the precondition holds, else fails with `conflict`. |
+| `storage.checkedWrite` | `put` with `ifMatch` / `ifNoneMatch` | Writes, then checks the precondition held and withdraws its own write, failing with `conflict`, when it did not. A reader may see the withdrawn write briefly, so the host reports these writes as not atomic. Ignored beside `storage.conditionalWrite`. |
 | `storage.changes` | `changes(request)` | Returns keys changed since a cursor. |
 
 The rules every operation follows:
@@ -2116,8 +2119,8 @@ size within the same millisecond passes it. The ABI has no delete
 conditioned on an etag, so a rewrite between that probe and the delete can
 still be lost too. A guest that declares `storage.move` avoids both gaps. With `noOverwrite`,
 the fallback writes the target with `ifNoneMatch` when the guest declares
-`storage.conditionalWrite`, and otherwise checks for the target just before
-the copy (so `atomic` is false).
+`storage.conditionalWrite` or `storage.checkedWrite`, and otherwise checks
+for the target just before the copy (so `atomic` is false).
 
 `changes` is a hint, not a ledger. The first call, with an empty cursor,
 returns the current position and no changes. A feed drained from a queue
@@ -2176,11 +2179,18 @@ It is an ordinary storage guest: its settings and secrets reach it in
 `[capabilities.network]` grant.
 
 The optional `b2` destination talks to Backblaze B2's native API. It
-declares only `storage.translateKeys` (with the `s3` key rules) besides
-copies: B2 has no conditional writes, so the host checks before a
-conditional write and reports it as not atomic, and moves, batch deletes
-and batch probes use the host's fallbacks. It has no `changes` feed yet.
-Its replies are read by `bookclerk-storage::b2_api`, a fuzzed boundary.
+declares `storage.translateKeys` (with the `s3` key rules),
+`storage.checkedWrite` and `storage.changes` besides copies: B2 has no
+conditional writes, so the guest writes, reads the name's versions and
+withdraws its write when another got in first, and moves, batch deletes
+and batch probes use the host's fallbacks. Its `changes` feed reads B2's
+event notifications from its `[[webhooks]]` row `changes` once the
+operator sets `webhook_signing_secret`, keeping the bucket's rules for
+its prefix itself (see
+[Following changes in a B2 bucket](../server/output.md#following-changes-in-a-b2-bucket));
+without it, every page is incomplete and the host lists. Its replies are
+read by `bookclerk-storage::b2_api`, and the webhook bodies and rule
+replies by `bookclerk-storage::b2_events`, both fuzzed boundaries.
 
 First-party S3 ships as `bookclerk-plugin-destination-s3`
 (`api_version = 3`). Its bucket, region, endpoint, prefix, naming

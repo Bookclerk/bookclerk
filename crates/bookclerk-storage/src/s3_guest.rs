@@ -17,22 +17,54 @@ use bookclerk_plugin_sdk::{
 use tokio::io::AsyncRead;
 
 use crate::guest::{self, object_metadata, plugin_error as map_storage};
-use crate::{ObjectMeta, StorageBackend, StorageError};
+use crate::{ChangeFeedPage, ObjectMeta, StorageBackend, StorageError};
 
 /// Result alias matching the ABI crate.
 type Result<T> = std::result::Result<T, PluginError>;
+
+/// A change feed kept beside the backend rather than in it, for a feed
+/// whose calls are not `Send` (one over the guest's own bindings, such as
+/// the `b2` destination's webhook feed).
+#[async_trait(?Send)]
+pub trait ChangeSource {
+    /// One page of changes since `cursor`, or `None` when the feed is not
+    /// running now (the host lists instead).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::InvalidCursor`] for a cursor the feed does
+    /// not accept, and the feed's other failures.
+    async fn changes(
+        &self,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> std::result::Result<Option<ChangeFeedPage>, StorageError>;
+}
 
 /// The `Destination` capability of an object-store guest.
 pub struct ObjectStoreDestination<B> {
     /// The backend every call goes to.
     backend: B,
+    /// The change feed, when it is kept beside the backend; otherwise
+    /// `changes` asks the backend.
+    feed: Option<Box<dyn ChangeSource>>,
 }
 
 impl<B: StorageBackend> ObjectStoreDestination<B> {
     /// Serves `backend` as a destination.
     #[must_use]
     pub fn new(backend: B) -> Self {
-        Self { backend }
+        Self {
+            backend,
+            feed: None,
+        }
+    }
+
+    /// Answers `changes` from `feed` instead of the backend.
+    #[must_use]
+    pub fn with_changes(mut self, feed: Box<dyn ChangeSource>) -> Self {
+        self.feed = Some(feed);
+        self
     }
 }
 
@@ -210,7 +242,16 @@ impl<B: StorageBackend> Destination for ObjectStoreDestination<B> {
     }
 
     async fn changes(&self, request: ChangesRequest) -> Result<ChangesPage> {
-        guest::changes(&self.backend, request).await
+        match &self.feed {
+            Some(feed) => {
+                let page = feed
+                    .changes(request.cursor.as_deref(), request.limit)
+                    .await
+                    .map_err(map_storage)?;
+                Ok(guest::changes_page(page))
+            }
+            None => guest::changes(&self.backend, request).await,
+        }
     }
 
     async fn abort_stage(&self, key: &str, commit_token: &str) -> Result<()> {

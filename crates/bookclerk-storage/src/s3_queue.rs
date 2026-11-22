@@ -1,8 +1,12 @@
-//! The `s3` destination's change feed, drained from a notification queue.
+//! Object-store change feeds drained from a pulled queue.
 //!
-//! The bucket announces writes and deletes on an Amazon SQS queue (directly,
-//! through SNS, or through EventBridge; see [`crate::s3_events`]). Each
-//! `changes` call receives a page of messages and turns them into changes.
+//! [`QueueFeed`] turns a queue of bucket notifications into `changes`
+//! pages. The `s3` destination's queue is Amazon SQS (directly, through
+//! SNS, or through EventBridge; see [`crate::s3_events`]), the `r2`
+//! destination's a Cloudflare Queue (`crate::r2_queue`), and the `b2`
+//! destination's the host's store of its webhook requests
+//! (`crate::b2_feed`). Each `changes` call receives a page of messages and
+//! turns them into changes.
 //!
 //! A message is deleted from the queue only once the host has the page: the
 //! next call's cursor names the pages the host has read, and their messages
@@ -25,7 +29,9 @@ use sha2::Digest;
 use tokio::sync::Mutex;
 
 use crate::error::{Result, StorageError};
-use crate::s3_events::{parse_event_message, EventParseError, EventScope, ParsedEvent};
+#[cfg(feature = "s3")]
+use crate::s3_events::{parse_event_message, EventScope};
+use crate::s3_events::{EventParseError, ParsedEvent};
 use crate::ChangeFeedPage;
 
 /// Prefix of every cursor this feed hands out.
@@ -56,6 +62,7 @@ const MAX_PAGE: u32 = 256;
 /// `https://<region>.queue.amazonaws.com/<account>/<name>`, where the
 /// account is 12 digits and the name 1 to 80 letters, digits, `-` or `_`,
 /// counting an optional `.fifo` suffix.
+#[cfg(feature = "s3")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueueUrl {
     /// The URL as given.
@@ -64,6 +71,7 @@ pub struct QueueUrl {
     region: String,
 }
 
+#[cfg(feature = "s3")]
 impl QueueUrl {
     /// Parses and checks a queue URL.
     ///
@@ -116,6 +124,7 @@ impl QueueUrl {
 }
 
 /// The region in an SQS host name, or `None` when the host is not SQS.
+#[cfg(feature = "s3")]
 fn queue_region(host: &str) -> Option<&str> {
     let region = host
         .strip_prefix("sqs.")
@@ -156,7 +165,52 @@ pub(crate) trait NotificationQueue: Send + Sync {
     async fn release(&self, receipts: &[String]) -> Result<()>;
 }
 
+/// What one receive got.
+#[derive(Debug, Default)]
+pub(crate) struct Received {
+    /// The messages, at most the number asked for.
+    pub messages: Vec<QueueMessage>,
+    /// True when the queue dropped messages since the last receive, so the
+    /// page is incomplete.
+    pub missed: bool,
+}
+
+/// The queue operations [`QueueFeed`] runs, as a static trait so a feed
+/// over a queue whose calls are not `Send` (the guest's webhook binding)
+/// shares the feed's logic; `Box<dyn NotificationQueue>` is the queue of
+/// the `s3` and `r2` feeds.
+pub(crate) trait QueueSource {
+    /// Receives up to `max` messages (at most [`RECEIVE_BATCH`]), waiting up
+    /// to `wait_secs` for the first, and hides them for
+    /// [`VISIBILITY_TIMEOUT_SECS`].
+    async fn receive(&self, max: usize, wait_secs: i32) -> Result<Received>;
+
+    /// Deletes up to [`RECEIVE_BATCH`] deliveries.
+    async fn delete(&self, receipts: &[String]) -> Result<()>;
+
+    /// Makes up to [`RECEIVE_BATCH`] deliveries visible again now.
+    async fn release(&self, receipts: &[String]) -> Result<()>;
+}
+
+impl<'a> QueueSource for Box<dyn NotificationQueue + 'a> {
+    async fn receive(&self, max: usize, wait_secs: i32) -> Result<Received> {
+        Ok(Received {
+            messages: (**self).receive(max, wait_secs).await?,
+            missed: false,
+        })
+    }
+
+    async fn delete(&self, receipts: &[String]) -> Result<()> {
+        (**self).delete(receipts).await
+    }
+
+    async fn release(&self, receipts: &[String]) -> Result<()> {
+        (**self).release(receipts).await
+    }
+}
+
 /// [`NotificationQueue`] over Amazon SQS.
+#[cfg(feature = "s3")]
 pub(crate) struct SqsQueue {
     /// SQS client for the queue's region.
     client: aws_sdk_sqs::Client,
@@ -164,6 +218,7 @@ pub(crate) struct SqsQueue {
     url: QueueUrl,
 }
 
+#[cfg(feature = "s3")]
 impl SqsQueue {
     /// A queue client sharing the S3 client's credentials.
     ///
@@ -186,11 +241,13 @@ impl SqsQueue {
 }
 
 /// Maps an SQS SDK error to a storage error with its message only.
+#[cfg(feature = "s3")]
 fn sqs_error<E: std::fmt::Display>(what: &str, err: E) -> StorageError {
     StorageError::S3(format!("notification queue {what}: {err}"))
 }
 
 /// Logs the entries a batch request could not apply.
+#[cfg(feature = "s3")]
 fn log_batch_failures(what: &str, failed: &[aws_sdk_sqs::types::BatchResultErrorEntry]) {
     for entry in failed {
         tracing::debug!(
@@ -200,6 +257,7 @@ fn log_batch_failures(what: &str, failed: &[aws_sdk_sqs::types::BatchResultError
     }
 }
 
+#[cfg(feature = "s3")]
 #[async_trait]
 impl NotificationQueue for SqsQueue {
     async fn receive(&self, max: usize, wait_secs: i32) -> Result<Vec<QueueMessage>> {
@@ -346,6 +404,7 @@ pub(crate) type MessageParser =
 
 /// The [`MessageParser`] for S3 notifications (direct, SNS or EventBridge)
 /// about `bucket` under `prefix`.
+#[cfg(feature = "s3")]
 pub(crate) fn s3_message_parser(bucket: &str, prefix: &str) -> MessageParser {
     let bucket = bucket.to_string();
     let prefix = prefix.to_string();
@@ -361,9 +420,9 @@ pub(crate) fn s3_message_parser(bucket: &str, prefix: &str) -> MessageParser {
 }
 
 /// The change feed of one destination, drained from its notification queue.
-pub(crate) struct QueueFeed {
+pub(crate) struct QueueFeed<Q = Box<dyn NotificationQueue>> {
     /// The queue.
-    queue: Box<dyn NotificationQueue>,
+    queue: Q,
     /// Reads the queue's messages for this destination.
     parse: MessageParser,
     /// Where [`FeedState`] is kept.
@@ -372,7 +431,7 @@ pub(crate) struct QueueFeed {
     state: Mutex<FeedState>,
 }
 
-impl QueueFeed {
+impl<Q: QueueSource> QueueFeed<Q> {
     /// A feed over `queue` whose messages `parse` reads, with its state in
     /// `state_dir`, in a file named after `queue_id`, `bucket` and `prefix`,
     /// so each queue and scope keeps its own and a cursor from another
@@ -385,7 +444,7 @@ impl QueueFeed {
     ///
     /// Returns an error when `state_dir` cannot be created.
     pub(crate) fn open(
-        queue: Box<dyn NotificationQueue>,
+        queue: Q,
         parse: MessageParser,
         queue_id: &str,
         bucket: &str,
@@ -483,7 +542,10 @@ impl QueueFeed {
             let wait = if first { RECEIVE_WAIT_SECS } else { 0 };
             first = false;
             let messages = match self.queue.receive(want, wait).await {
-                Ok(messages) => messages,
+                Ok(received) => {
+                    complete &= !received.missed;
+                    received.messages
+                }
                 Err(err) => {
                     let _released = self.release_all(&receipts).await;
                     return Err(err);
@@ -695,6 +757,7 @@ fn parse_cursor(cursor: &str) -> Result<(&str, u64)> {
 }
 
 #[cfg(test)]
+#[cfg(feature = "s3")]
 mod tests {
     use std::sync::{Arc, Mutex as StdMutex};
 
@@ -794,7 +857,7 @@ mod tests {
 
     fn feed(queue: &Arc<FakeQueue>, dir: &Path) -> QueueFeed {
         QueueFeed::open(
-            Box::new(Arc::clone(queue)),
+            Box::new(Arc::clone(queue)) as Box<dyn NotificationQueue>,
             s3_message_parser("books", "library/"),
             "queue-a",
             "books",
@@ -1217,7 +1280,7 @@ mod tests {
             .expect("start")
             .cursor;
         let other = QueueFeed::open(
-            Box::new(Arc::clone(&queue)),
+            Box::new(Arc::clone(&queue)) as Box<dyn NotificationQueue>,
             s3_message_parser("books", "other/"),
             "queue-a",
             "books",
