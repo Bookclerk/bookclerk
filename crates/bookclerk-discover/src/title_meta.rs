@@ -718,11 +718,13 @@ const SAMPLE_LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
 /// `detailByProductId` by their own product ids, then the stores that
 /// declared `detailByIsbn` by the title's ISBN. The first catalog record
 /// with a `sample_url` wins; a store that fails is skipped, and the calls
-/// together stop after ten seconds. A found URL is cached for six hours and
-/// checked against `usable` again on every hit. A miss is cached only when
-/// every store answered and none offered a sample at all; a timeout, a
-/// failed store or a URL `usable` refused leaves nothing cached, so the
-/// next request asks again.
+/// together stop after ten seconds. A URL is cached for six hours only when
+/// it is the first store's answer in that order, and is checked against
+/// `usable` again on every hit; a miss is cached only when every store
+/// answered and none offered a sample at all. A timeout, a failed store or
+/// a URL `usable` refused leaves nothing cached (a later store's URL is
+/// still returned), so callers with different rules never see each
+/// other's choice.
 ///
 /// # Arguments
 ///
@@ -776,6 +778,11 @@ pub async fn resolve_title_sample(
             title_sample_cache().insert(key, None);
             None
         }
+        // A later store's sample, after a failed store or one whose URL
+        // this caller refused: served, but not cached, so the cache only
+        // ever holds the first store's answer and every caller judges it
+        // with its own rule.
+        SampleOutcome::FoundLater(url) => Some(url),
         SampleOutcome::Unsettled => None,
     }
 }
@@ -783,8 +790,12 @@ pub async fn resolve_title_sample(
 /// What a run of the fill plan learned about a title's sample.
 #[derive(Debug, PartialEq, Eq)]
 enum SampleOutcome {
-    /// The first usable sample URL a record carried.
+    /// The first store's sample URL, every store before it having answered
+    /// with no sample; cacheable for every caller.
     Found(String),
+    /// A usable sample URL found after a store failed or offered a URL the
+    /// caller refused; served to this caller but not cached.
+    FoundLater(String),
     /// Every store answered and no record carried a sample URL.
     NoneOffered,
     /// No usable URL, but a store failed, the lookup timed out, or a record
@@ -807,7 +818,13 @@ async fn sample_in_order(
         };
         match result {
             Ok(Some(hit)) => match hit.sample_url {
-                Some(url) if usable(url.trim()) => return SampleOutcome::Found(url),
+                Some(url) if usable(url.trim()) => {
+                    return if settled {
+                        SampleOutcome::Found(url)
+                    } else {
+                        SampleOutcome::FoundLater(url)
+                    };
+                }
                 Some(_) => settled = false,
                 None => {}
             },
@@ -1387,6 +1404,49 @@ mod tests {
         assert_eq!(
             found.as_deref(),
             Some("https://samples.example/elantris.mp3")
+        );
+    }
+
+    /// A sample found past a URL one caller refused is not cached, so a
+    /// caller that accepts the first store's URL still gets that one.
+    #[tokio::test]
+    async fn a_sample_found_past_a_refused_url_is_not_cached() {
+        fn not_chirp(url: &str) -> bool {
+            !url.contains("chirp")
+        }
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let store = |id: &'static str, url: &str| -> Arc<dyn ContentSource> {
+            Arc::new(DetailStore {
+                id,
+                by_isbn: true,
+                by_product_id: false,
+                answer: Some(CatalogHit {
+                    product_id: format!("{id}-1"),
+                    title: "Mistborn".into(),
+                    sample_url: Some(url.into()),
+                    ..CatalogHit::default()
+                }),
+                fails: false,
+                calls: calls.clone(),
+                listed: Vec::new(),
+            })
+        };
+        let mut registry = SourceRegistry::new();
+        registry.register(store("chirp", "https://samples.example/chirp.mp3"));
+        registry.register(store("libro", "https://samples.example/libro.mp3"));
+        let asked = query(&[], Some("9780000005599"));
+        assert_eq!(
+            resolve_title_sample(&asked, &registry, not_chirp)
+                .await
+                .as_deref(),
+            Some("https://samples.example/libro.mp3")
+        );
+        assert_eq!(
+            resolve_title_sample(&asked, &registry, https)
+                .await
+                .as_deref(),
+            Some("https://samples.example/chirp.mp3"),
+            "the first store's sample, not the other caller's choice"
         );
     }
 

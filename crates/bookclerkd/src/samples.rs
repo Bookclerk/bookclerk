@@ -174,7 +174,7 @@ pub(crate) struct SampleService {
     key: TokenKey,
     /// One lock per sample being made, so concurrent requests for it wait
     /// for one worker instead of starting several.
-    flights: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    flights: Arc<Flights>,
     /// Held while a sample is renamed into the cache and the cache trimmed,
     /// so two writes never trim from the same stale listing.
     publishing: Arc<Mutex<()>>,
@@ -195,7 +195,7 @@ impl SampleService {
         Ok(Self {
             dir: Some(dir),
             key,
-            flights: Mutex::default(),
+            flights: Arc::default(),
             publishing: Arc::default(),
             budget: CACHE_BUDGET_BYTES,
         })
@@ -207,7 +207,7 @@ impl SampleService {
         Self {
             dir: None,
             key: crate::covers::random_key(),
-            flights: Mutex::default(),
+            flights: Arc::default(),
             publishing: Arc::default(),
             budget: CACHE_BUDGET_BYTES,
         }
@@ -259,8 +259,7 @@ impl SampleService {
         if let Some(bytes) = read_cached(&path).await {
             return Ok(bytes);
         }
-        let ticket = self.board(&name);
-        let guard = Arc::clone(&ticket.lock).lock_owned().await;
+        let flight = self.board(&name).await;
         // Another request may have made it while this one waited.
         if let Some(bytes) = read_cached(&path).await {
             return Ok(bytes);
@@ -276,7 +275,7 @@ impl SampleService {
                 bytes,
                 self.budget,
                 Arc::clone(&self.publishing),
-                guard,
+                flight,
             )
             .await;
         }
@@ -285,30 +284,54 @@ impl SampleService {
 
     /// This request's share of the lock of `name`, registering the lock
     /// when no other request holds it.
-    fn board(&self, name: &str) -> FlightTicket<'_> {
+    fn ticket(&self, name: &str) -> FlightTicket {
         let mut flights = self.flights.lock().unwrap_or_else(PoisonError::into_inner);
         let lock = Arc::clone(flights.entry(name.to_owned()).or_default());
         FlightTicket {
-            flights: &self.flights,
+            flights: Arc::clone(&self.flights),
             name: name.to_owned(),
             lock,
         }
     }
+
+    /// Takes a share of the lock of `name` and waits until this request
+    /// holds it.
+    async fn board(&self, name: &str) -> Flight {
+        let ticket = self.ticket(name);
+        let guard = Arc::clone(&ticket.lock).lock_owned().await;
+        Flight {
+            _guard: guard,
+            _ticket: ticket,
+        }
+    }
+}
+
+/// The locks of samples being made, by cache file name.
+type Flights = Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>;
+
+/// A request holding a sample's lock. It owns everything it needs, so the
+/// cache write can carry it onto its blocking task and release it there.
+struct Flight {
+    /// The held lock. Declared first, so it drops before the ticket and
+    /// the ticket sees only the shares still outstanding.
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+    /// This request's share, which removes the lock once it is the last.
+    _ticket: FlightTicket,
 }
 
 /// One request's share of a sample's lock. Dropping it, when the request
 /// finishes or is cancelled while it waits, releases the share and removes
 /// the lock once no request holds one.
-struct FlightTicket<'a> {
+struct FlightTicket {
     /// The service's locks by sample name.
-    flights: &'a Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    flights: Arc<Flights>,
     /// The sample's cache file name.
     name: String,
     /// This request's clone of the lock.
     lock: Arc<tokio::sync::Mutex<()>>,
 }
 
-impl Drop for FlightTicket<'_> {
+impl Drop for FlightTicket {
     /// Releases the share under the map's lock. Clones are taken and
     /// released only under it, so the count read here is exact: two
     /// requests ending together see each other, and the last one removes
@@ -341,16 +364,17 @@ impl Drop for FlightTicket<'_> {
 /// * `publishing` - Held around the rename and the trim, so concurrent
 ///   writes of different samples trim one after another, each from a
 ///   fresh listing.
-/// * `flight` - The sample's own lock, released only once the file is in
-///   place or the write failed; a request waiting on it then finds the
-///   file or makes it itself.
+/// * `flight` - The sample's own lock and this request's share of it,
+///   released only once the file is in place or the write failed; a
+///   request waiting on it then finds the file or makes it itself, and the
+///   last share removes the lock.
 async fn keep(
     dir: &std::path::Path,
     name: &str,
     bytes: &[u8],
     budget: u64,
     publishing: Arc<Mutex<()>>,
-    flight: tokio::sync::OwnedMutexGuard<()>,
+    flight: Flight,
 ) {
     let dir = dir.to_path_buf();
     let name = name.to_owned();

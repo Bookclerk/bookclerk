@@ -53,8 +53,8 @@ fn only_top_level_chapters_mark_the_opening() {
 #[tokio::test]
 async fn a_flight_lock_is_forgotten_only_by_its_last_holder() {
     let service = SampleService::detached();
-    let first = service.board("a.mp3");
-    let second = service.board("a.mp3");
+    let first = service.ticket("a.mp3");
+    let second = service.ticket("a.mp3");
     assert!(
         Arc::ptr_eq(&first.lock, &second.lock),
         "one lock per sample"
@@ -69,7 +69,7 @@ async fn a_flight_lock_is_forgotten_only_by_its_last_holder() {
 
     // A ticket whose lock the map no longer holds never removes the
     // entry that replaced it.
-    let stale = service.board("b.mp3");
+    let stale = service.ticket("b.mp3");
     let replacement = Arc::new(tokio::sync::Mutex::new(()));
     service
         .flights
@@ -83,12 +83,12 @@ async fn a_flight_lock_is_forgotten_only_by_its_last_holder() {
 #[tokio::test]
 async fn a_cancelled_waiter_leaves_no_lock_behind() {
     let service = Arc::new(SampleService::detached());
-    let holder = service.board("c.mp3");
+    let holder = service.ticket("c.mp3");
     let guard = holder.lock.lock().await;
     let waiting = {
         let service = Arc::clone(&service);
         tokio::spawn(async move {
-            let ticket = service.board("c.mp3");
+            let ticket = service.ticket("c.mp3");
             let _guard = ticket.lock.lock().await;
         })
     };
@@ -124,6 +124,34 @@ async fn requests_ending_together_leave_no_lock_behind() {
             task.await.unwrap();
         }
         assert!(service.flights.lock().unwrap().is_empty());
+    }
+}
+
+/// A request cancelled while its sample is being written leaves no lock
+/// behind once the write finishes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_cancelled_during_the_write_leaves_no_lock_behind() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = Arc::new(SampleService::open(dir.path().join("samples")).unwrap());
+    for round in 0..20 {
+        let request = {
+            let service = Arc::clone(&service);
+            tokio::spawn(async move {
+                let key = format!("edition\n{round}");
+                service.sample(&key, || async { Ok(vec![2; 4096]) }).await
+            })
+        };
+        tokio::task::yield_now().await;
+        request.abort();
+        let _ = request.await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !service.flights.lock().unwrap().is_empty() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "a lock outlived its write"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
     }
 }
 
