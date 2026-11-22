@@ -15,6 +15,7 @@ members = [
     "crates/bookclerk-dev",
     "crates/bookclerk-discover",
     "crates/bookclerk-enrich",
+    "crates/bookclerk-intake",
     "crates/bookclerk-integrations",
     "crates/bookclerk-jail",
     "crates/bookclerk-keystore",
@@ -91,6 +92,7 @@ authors = ["fritz-fritz <contact@bookclerk.app>"]
 # Internal crates
 bookclerk-audible-catalog = { path = "crates/bookclerk-audible-catalog" }
 bookclerk-config = { path = "crates/bookclerk-config" }
+bookclerk-intake = { path = "crates/bookclerk-intake" }
 bookclerk-db-exec = { path = "crates/bookclerk-db-exec" }
 bookclerk-db-guest = { path = "crates/bookclerk-db-guest" }
 bookclerk-db-testkit = { path = "crates/bookclerk-db-testkit" }

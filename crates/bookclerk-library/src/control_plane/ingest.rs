@@ -706,6 +706,17 @@ pub async fn create_upload_batch(
 /// `user_id`, run on `node_id`. The host creates these itself (the drop
 /// folder); the person must be active.
 ///
+/// # Arguments
+///
+/// * `store` - The library database.
+/// * `id` - The batch id, chosen by the caller (a fresh
+///   [`IngestBatchId::new`]) and recorded before the call, so that after a
+///   crash the caller finds the batch, or knows it was never written.
+/// * `user_id` - The patron who holds the books.
+/// * `node_id` - The node that runs the batch.
+/// * `instance` - The storage instance the members are read from.
+/// * `specs` - One member per object.
+///
 /// # Returns
 ///
 /// The new batch, open, or why it was refused. Its members are complete
@@ -713,9 +724,10 @@ pub async fn create_upload_batch(
 ///
 /// # Errors
 ///
-/// Returns a read or write error.
+/// Returns a read or write error, including for an `id` already in use.
 pub async fn create_intake_batch(
     store: &LibraryStore,
+    id: &IngestBatchId,
     user_id: i64,
     node_id: &str,
     instance: &str,
@@ -728,7 +740,6 @@ pub async fn create_intake_batch(
         Ok(total) => total,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    let id = IngestBatchId::new();
     let now = stamp(Utc::now());
     let reply = store
         .execute_host_batch(batch::request(
@@ -758,7 +769,7 @@ pub async fn create_intake_batch(
     if batch::rows_affected(&reply, 0) == 0 {
         return Ok(Err(CreateRefusal::NotAllowed));
     }
-    insert_members(store, &id, specs, &now).await?;
+    insert_members(store, id, specs, &now).await?;
     // An intake member's bytes are already in place.
     store
         .execute_host_batch(batch::request(
@@ -769,7 +780,7 @@ pub async fn create_intake_batch(
             )],
         ))
         .await?;
-    load_batch(store, &id)
+    load_batch(store, id)
         .await?
         .map(Ok)
         .ok_or_else(|| LibraryError::Other(anyhow::anyhow!("the new intake batch is gone")))
