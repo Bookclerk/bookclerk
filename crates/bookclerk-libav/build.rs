@@ -322,7 +322,7 @@ fn build_ffmpeg(host: Host, out: &Path, source: &Path, prefix: &Path) {
                 .arg(format!("--target-os={os}"));
         }
     }
-    run(&mut configure);
+    run(without_host_flags(&mut configure));
     let jobs = env::var("NUM_JOBS").unwrap_or_else(|_| "1".to_string());
     for target in [format!("-j{jobs}"), "install".to_string()] {
         let mut make = if msvc {
@@ -338,7 +338,7 @@ fn build_ffmpeg(host: Host, out: &Path, source: &Path, prefix: &Path) {
             make.arg(target);
             make
         };
-        run(make.current_dir(&build));
+        run(without_host_flags(make.current_dir(&build)));
     }
 }
 
@@ -362,6 +362,17 @@ fn digest(path: &Path) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+/// Clears the C flags a fuzzing or sanitizer build exports for its own
+/// code (ClusterFuzzLite sets `-fsanitize=fuzzer-no-link` and the like),
+/// so FFmpeg builds plainly. FFmpeg itself is not instrumented; the shim,
+/// which `cc` compiles, keeps those flags.
+fn without_host_flags(cmd: &mut Command) -> &mut Command {
+    for name in ["CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS"] {
+        cmd.env_remove(name);
+    }
+    cmd
 }
 
 /// Runs `cmd`, panicking with its command line when it fails.
