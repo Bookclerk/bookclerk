@@ -588,8 +588,8 @@ struct PreparedCatalogBatch {
 /// other title is resolved into the library model and held by the branch
 /// (`holding_added` when new), and the holding's share state is written
 /// with the cursor (in one transaction when the database plugin's
-/// statement limit allows, else the cursor last; see
-/// [`write_catalog_statements`]), each statement gated on the fence
+/// statement limit allows, else in parts with the cursor last), each
+/// statement gated on the fence
 /// still being live, the branch still sharing and its credential live. A
 /// holding is stamped with the pass under way, and with `done` (the last
 /// batch of a pass) while a pass from the start is under way, the

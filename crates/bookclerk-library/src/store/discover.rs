@@ -881,9 +881,8 @@ impl LibraryStore {
     ///
     /// One upsert writes the row without reading the old one first, so a
     /// stored feed too large to read back cannot block its replacement. A
-    /// feed wider than one piece the database plugin carries
-    /// ([`crate::control_plane::chunk_bytes`]: its cell, statement and
-    /// result limits) is cut into `discover_feed_parts` pieces under a new
+    /// feed wider than one piece the database plugin carries (the smallest
+    /// of its cell, statement and result limits) is cut into `discover_feed_parts` pieces under a new
     /// version first, in as few batches as its limits allow; the row then
     /// names that version, so it never names one whose pieces are not all
     /// in. Pieces the row no longer names are dropped afterwards.
@@ -995,7 +994,7 @@ impl LibraryStore {
     ///
     /// A feed stored in pieces is read in keyset pages sized to the
     /// database plugin's result limits and joined again; one whose pieces
-    /// are not all there (see [`Self::drop_unnamed_feed_parts`]) reads as
+    /// are not all there (a concurrent write dropped them) reads as
     /// no feed.
     ///
     /// # Errors
