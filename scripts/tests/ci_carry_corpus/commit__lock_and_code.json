@@ -1,0 +1,18 @@
+{
+  "files": [
+    {
+      "filename": "ui/visual/baselines.lock",
+      "status": "modified"
+    },
+    {
+      "filename": "ui/src/App.tsx",
+      "status": "modified"
+    }
+  ],
+  "parents": [
+    {
+      "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
