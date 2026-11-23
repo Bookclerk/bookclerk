@@ -17,6 +17,10 @@ use std::path::{Path, PathBuf};
 use bookclerk_plugin_manifest::{format_manifest, PluginManifest};
 
 /// Repository root, two levels above this crate.
+///
+/// # Panics
+///
+/// When the root cannot be resolved.
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -37,6 +41,10 @@ const SKIPPED_SEGMENTS: &[&str] = &["target", "node_modules", "fixtures", ".venv
 ///
 /// * `dir` - Directory to walk.
 /// * `out` - Paths found so far.
+///
+/// # Panics
+///
+/// When a directory under `dir` cannot be read.
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
     let mut entries: Vec<_> = std::fs::read_dir(dir)
         .expect("read source dir")
@@ -70,6 +78,10 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
 /// # Returns
 ///
 /// `<slug>.fmt.toml`.
+///
+/// # Panics
+///
+/// When `source` has no parent or is not under `root`.
 fn corpus_name(root: &Path, source: &Path) -> String {
     let dir = source
         .parent()
@@ -84,6 +96,13 @@ fn corpus_name(root: &Path, source: &Path) -> String {
     format!("{slug}.fmt.toml")
 }
 
+/// Every first-party `plugin.toml` formats to its committed corpus file,
+/// and the index lists exactly those files (`UPDATE_FMT_CORPUS=1` rewrites
+/// them instead).
+///
+/// # Panics
+///
+/// When a source fails to parse or format, or the corpus is stale.
 #[test]
 fn fmt_corpus_is_current() {
     let root = repo_root();
