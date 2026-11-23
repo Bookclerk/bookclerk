@@ -889,22 +889,20 @@ async fn write_catalog_statements(
     let mut cut = WriteBatches::new(caps, "catalog batch").with_trailer(probe)?;
     // Each part with how many of its statements (from its start) record
     // titles: the titles come before the `seen_pass` stamps.
-    let mut body: Vec<(Vec<TypedDbStatement>, usize)> = Vec::new();
-    let mut titles_left = prepared.titles;
-    let mut counted = |part: Vec<TypedDbStatement>,
-                       body: &mut Vec<(Vec<TypedDbStatement>, usize)>| {
-        let titles = titles_left.min(part.len().saturating_sub(1));
-        titles_left -= titles;
-        body.push((part, titles));
-    };
+    let mut parts = Vec::new();
     for stmt in &statements[1..body_end] {
-        if let Some(part) = cut.push(stmt.clone())? {
-            counted(part, &mut body);
-        }
+        parts.extend(cut.push(stmt.clone())?);
     }
-    if let Some(part) = cut.finish() {
-        counted(part, &mut body);
-    }
+    parts.extend(cut.finish());
+    let mut titles_left = prepared.titles;
+    let body: Vec<(Vec<TypedDbStatement>, usize)> = parts
+        .into_iter()
+        .map(|part| {
+            let titles = titles_left.min(part.len().saturating_sub(1));
+            titles_left -= titles;
+            (part, titles)
+        })
+        .collect();
     let mut upserted = 0u64;
     for (index, (part, titles)) in body.into_iter().enumerate() {
         let probe_at = part.len() - 1;

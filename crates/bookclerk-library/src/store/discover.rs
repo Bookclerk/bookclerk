@@ -1481,6 +1481,31 @@ mod tests {
     /// in pieces and reads back whole under every database profile; a
     /// smaller feed written after it drops the pieces, and forgetting the
     /// subject drops them too.
+    /// With no result limits from the plugin, pieces are read in pages of
+    /// the most rows a keyset page takes.
+    #[tokio::test]
+    async fn a_feed_in_pieces_reads_back_when_the_plugin_sets_no_result_limits() {
+        use crate::test_support::{sqlite, Profile};
+        let caps = bookclerk_plugin_abi::DbCapabilities {
+            max_result_rows: 0,
+            max_result_bytes: 0,
+            ..bookclerk_plugin_abi::DbCapabilities::advertised_sqlite()
+        };
+        let store = sqlite::memory(Profile::FirstParty)
+            .await
+            .into_store()
+            .with_db_capabilities(caps);
+        assert_eq!(super::super::keyset::result_page(&store), 256);
+        let alice = DiscoverSubject::User(1);
+        let wide = "w".repeat(3 * crate::control_plane::chunk_bytes(store.db_capabilities()));
+        store
+            .put_discover_feed(&alice, &wide, SeedScope::Own, None)
+            .await
+            .unwrap();
+        let feed = store.get_discover_feed(&alice).await.unwrap().unwrap();
+        assert_eq!(feed.feed_json, wide);
+    }
+
     #[tokio::test]
     async fn a_feed_wider_than_a_piece_is_stored_in_pieces_under_every_profile() {
         use crate::test_support::{sqlite, Profile};
