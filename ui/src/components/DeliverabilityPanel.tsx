@@ -56,7 +56,7 @@ export function DeliverabilityReportView({ report }: DeliverabilityReportViewPro
                   <span className="text-sm font-medium text-ink">{item.title}</span>
                 </div>
                 <p className="mt-1 text-xs text-ink/70">{item.detail}</p>
-                <p className="mt-1 text-[11px] text-ink/60">From {item.sources.join(", ")}</p>
+                <p className="mt-1 text-[11px] text-ink/70">From {item.sources.join(", ")}</p>
               </li>
             ))}
           </ul>
