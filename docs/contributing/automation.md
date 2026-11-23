@@ -135,8 +135,9 @@ approve pull requests" setting.
 `Protect Main` requires the merge queue, and the queue builds every group on
 top of the current `main`. A green Dependabot pull request that has fallen
 behind `main` therefore enters the queue without a rebase, and the queue's
-full suite checks it against the latest code. Dependabot rebases only pull
-requests that actually conflict; comment `@dependabot rebase` to force one
+full suite checks it against the latest code. Dependabot still rebases a
+pull request on its own when it conflicts or when its next check finds a
+newer version of the update; comment `@dependabot rebase` to force one
 sooner.
 
 ## Automation App
