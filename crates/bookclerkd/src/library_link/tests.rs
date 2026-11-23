@@ -3176,6 +3176,7 @@ mod results_and_uploads {
                     class: 8,
                     plugin_instance: 8,
                 },
+                node_bound: None,
             },
             None,
         )
@@ -3299,6 +3300,7 @@ mod results_and_uploads {
                     class: 8,
                     plugin_instance: 8,
                 },
+                node_bound: None,
             },
             None,
         )
@@ -3759,6 +3761,7 @@ mod results_and_uploads {
                     class: 8,
                     plugin_instance: 8,
                 },
+                node_bound: None,
             },
             None,
         )
@@ -4133,6 +4136,7 @@ mod results_and_uploads {
                     class: 8,
                     plugin_instance: 8,
                 },
+                node_bound: None,
             },
             None,
         )

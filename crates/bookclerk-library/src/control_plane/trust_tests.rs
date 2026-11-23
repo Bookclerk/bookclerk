@@ -48,6 +48,7 @@ fn request<'a>(node_id: &'a str, claimant: Claimant, owner: &'a str) -> JobClaim
             plugin_instance: 8,
         },
         filter: None,
+        node_bound: None,
     }
 }
 

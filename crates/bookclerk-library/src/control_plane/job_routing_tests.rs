@@ -61,6 +61,7 @@ fn request<'a>(
         lease_secs,
         limits: limits(class),
         filter: None,
+        node_bound: None,
     }
 }
 

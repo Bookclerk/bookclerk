@@ -130,6 +130,9 @@ pub struct RemoteClaimSettings {
     pub lease_secs: u64,
     /// Library semaphore limits.
     pub limits: JobClaimLimits,
+    /// Tells node-bound output keys, so a job's requirements are checked
+    /// again before it is claimed ([`JobClaimRequest::node_bound`]).
+    pub node_bound: Option<super::NodeBoundKey>,
 }
 
 /// A job claimed for a Host, with the secrets to seal for it.
@@ -240,6 +243,7 @@ pub async fn claim_remote_job(
         lease_secs: settings.lease_secs,
         limits: settings.limits,
         filter,
+        node_bound: settings.node_bound,
     };
     let Some(claim) = claim_routed_job(store, &request).await? else {
         return Ok(None);

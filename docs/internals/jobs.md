@@ -762,6 +762,18 @@ own CAS (a routed claim matches the generation of the record whose
 requirements it checked) and moves on to re-read it on a later pass. A wakeup on a node that does not hold the lease does
 nothing; the holder's timer picks the change up within 30 s.
 
+Until the sweep runs, a claim does not trust the stored requirements
+alone. Before a routed claim takes a job, it resolves the job's
+requirements again from the deployments committed now, with the same
+node-bound output keys. If they differ from the stored ones, the claim
+skips the job until the sweep has rewritten them. A deployment committed
+on one node while another node holds the sweep lease therefore stops claims
+of queued work on its old requirements at once, instead of after the next
+pass. The daemon's own worker and the node API's branch claims both check
+this way. The check is read once per claim for each job kind and pinned
+instance, and only for a job that got past the trust, filter and
+requirement checks.
+
 Before requirements and permits, the routed claim filters candidates
 through the trust predicate (`control_plane::trust`). The daemon's own
 worker holds the database and is trusted with every job. A Branch node

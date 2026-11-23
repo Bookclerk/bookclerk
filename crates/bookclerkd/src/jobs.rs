@@ -198,12 +198,19 @@ pub(crate) async fn node_bound_output_keys(
     let instances = bookclerk_library::control_plane::list_all_plugin_instances(library).await?;
     Ok(instances
         .into_iter()
-        .filter(|instance| {
-            bookclerk_plugin_catalog::PluginKey::parse(&instance.plugin_key)
-                .is_ok_and(|key| bookclerk_plugin_host::is_first_party_local_output_key(&key))
-        })
         .map(|instance| instance.plugin_key)
+        .filter(|key| is_node_bound_key(key))
         .collect())
+}
+
+/// True when the stored plugin key `key` names a node-bound output (the
+/// first-party local destination): what [`node_bound_output_keys`] keeps,
+/// handed to claims so they check a job's requirements against the
+/// deployments committed now
+/// (`bookclerk_library::control_plane::JobClaimRequest::node_bound`).
+pub(crate) fn is_node_bound_key(key: &str) -> bool {
+    bookclerk_plugin_catalog::PluginKey::parse(key)
+        .is_ok_and(|key| bookclerk_plugin_host::is_first_party_local_output_key(&key))
 }
 
 /// True when the fence asked to stop or the row is flagged cancelled.

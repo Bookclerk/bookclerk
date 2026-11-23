@@ -112,7 +112,19 @@ pub struct JobClaimRequest<'a> {
     /// The claimer's own narrowing; `None` claims every job it is trusted
     /// with and can run.
     pub filter: Option<&'a JobClaimFilter>,
+    /// Tells which plugin keys are node-bound outputs (the first-party
+    /// local destination), as the requirements sweep counts them. When
+    /// set, a job's requirements are resolved again before it is claimed,
+    /// and a job whose stored requirements no longer match (a deployment
+    /// committed since the sweep last rewrote them) is skipped until the
+    /// sweep catches up, so no node claims it on its old requirements.
+    /// `None` trusts the stored requirements.
+    pub node_bound: Option<NodeBoundKey>,
 }
+
+/// Tells whether a stored plugin key names a node-bound output
+/// ([`JobClaimRequest::node_bound`]).
+pub type NodeBoundKey = fn(&str) -> bool;
 
 impl JobClaimRequest<'_> {
     /// Whose work the claim takes: a Host's filter says
@@ -659,6 +671,57 @@ pub fn job_permit_holder_prefix(owner: &str, job_id: &str, generation: i64) -> S
     format!("{owner}/{job_id}/g{generation}/")
 }
 
+/// What [`claim_routed_job`] knows of the requirements jobs would be given
+/// now, read lazily.
+#[derive(Default)]
+struct CurrentRequirements {
+    /// The node-bound output keys; `None` until a candidate needs them.
+    node_bound_keys: Option<BTreeSet<String>>,
+    /// Each job shape's requirements now, by kind and pinned instance (the
+    /// only parts of a job they depend on).
+    by_shape: BTreeMap<(String, Option<String>), Vec<String>>,
+}
+
+impl CurrentRequirements {
+    /// True when `job`'s stored requirements are the ones it would be
+    /// given now.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a read fails.
+    async fn matches(
+        &mut self,
+        store: &LibraryStore,
+        node_bound: NodeBoundKey,
+        job: &JobRecord,
+    ) -> Result<bool> {
+        let shape = (
+            job.kind.as_str().to_owned(),
+            job.payload.plugin_instance_id.clone(),
+        );
+        if !self.by_shape.contains_key(&shape) {
+            if self.node_bound_keys.is_none() {
+                let keys = list_all_plugin_instances(store)
+                    .await?
+                    .into_iter()
+                    .map(|instance| instance.plugin_key)
+                    .filter(|key| node_bound(key))
+                    .collect();
+                self.node_bound_keys = Some(keys);
+            }
+            let Some(keys) = self.node_bound_keys.as_ref() else {
+                return Ok(false);
+            };
+            let now = desired_requirements(store, job.kind, &job.payload, keys).await?;
+            self.by_shape.insert(shape.clone(), now);
+        }
+        let mut stored = job.payload.requires.clone();
+        stored.sort();
+        stored.dedup();
+        Ok(self.by_shape.get(&shape) == Some(&stored))
+    }
+}
+
 /// Claims the best ready job this node can run, under the library semaphores.
 ///
 /// Pages through the ready pending jobs of the class, best first
@@ -702,6 +765,9 @@ pub async fn claim_routed_job(
     // A user's Host is checked against each named account once per call
     // too, rather than reading the accounts and links per candidate.
     let mut owned_accounts: BTreeMap<String, bool> = BTreeMap::new();
+    // The node-bound keys and each job shape's current requirements, read
+    // once per call and only when a candidate gets that far.
+    let mut current = CurrentRequirements::default();
     let mut after: Option<JobClaimCursor> = None;
     loop {
         let page = store
@@ -762,6 +828,11 @@ pub async fn claim_routed_job(
             };
             if !can_run {
                 continue;
+            }
+            if let Some(node_bound) = request.node_bound {
+                if !current.matches(store, node_bound, &job).await? {
+                    continue;
+                }
             }
             let semaphores = job_semaphores(store, &job, request.limits).await?;
             // The claim below succeeds only at the generation read here, so it

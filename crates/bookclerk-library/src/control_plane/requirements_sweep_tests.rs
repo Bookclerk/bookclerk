@@ -207,6 +207,7 @@ async fn placement_move_inside_grace_keeps_the_job(store_a: LibraryStore, store_
                 plugin_instance: 4,
             },
             filter: None,
+            node_bound: None,
         },
     )
     .await
@@ -342,6 +343,7 @@ fn claim_request(node_id: &str) -> JobClaimRequest<'_> {
             plugin_instance: 4,
         },
         filter: None,
+        node_bound: None,
     }
 }
 
@@ -633,6 +635,54 @@ async fn cron_fire_on_member_host_fails_after_grace(store_a: LibraryStore, store
     assert_eq!(admin.state, JobState::Pending);
 }
 
+/// True for the test's node-bound output key, as the daemon's check is
+/// for the first-party local destination.
+fn is_local_key(key: &str) -> bool {
+    key == LOCAL_KEY
+}
+
+/// A deployment committed on one node while the sweep has not yet run (its
+/// lease held elsewhere) stops claims of a pending job on its old
+/// requirements: the claim resolves them again, skips the job, and claims
+/// it once the sweep has recorded the new output.
+async fn a_claim_waits_for_the_sweep_after_a_deployment(
+    store_a: LibraryStore,
+    store_b: LibraryStore,
+) {
+    let first = create_plugin_instance(&store_a, &operator(), LOCAL_KEY, "")
+        .await
+        .unwrap();
+    set_desired(&store_a, &first.id, "node-a", DesiredState::Present).await;
+    let job = admit_acquire(&store_a, "gate").await;
+    let second = create_plugin_instance(&store_a, &operator(), LOCAL_KEY, "second")
+        .await
+        .unwrap();
+    // Deployed through the other node; no sweep has run.
+    set_desired(&store_b, &second.id, "node-a", DesiredState::Present).await;
+    let gated = JobClaimRequest {
+        node_bound: Some(is_local_key),
+        ..claim_request("node-a")
+    };
+    assert!(
+        claim_routed_job(&store_a, &gated).await.unwrap().is_none(),
+        "the job is not claimed on its pre-deployment requirements"
+    );
+    let pending = store_b.get_job(&job).await.unwrap().unwrap();
+    assert_eq!(pending.state, JobState::Pending);
+    assert_eq!(pending.payload.requires, vec![first.id.to_string()]);
+
+    assert_eq!(sweep(&store_b, Utc::now()).await.rewritten, 1);
+    let claim = claim_routed_job(&store_a, &gated)
+        .await
+        .unwrap()
+        .expect("claimed once the sweep recorded the new output");
+    assert_eq!(claim.job.id, job);
+    assert_eq!(
+        claim.job.payload.requires,
+        sorted(vec![first.id.to_string(), second.id.to_string()])
+    );
+}
+
 macro_rules! twin {
     ($scenario:ident, $sqlite:ident, $postgres:ident) => {
         #[tokio::test]
@@ -652,6 +702,11 @@ macro_rules! twin {
     };
 }
 
+twin!(
+    a_claim_waits_for_the_sweep_after_a_deployment,
+    sqlite_a_claim_waits_for_the_sweep_after_a_deployment,
+    postgres_a_claim_waits_for_the_sweep_after_a_deployment
+);
 twin!(
     new_output_tightens_a_pending_acquire,
     sqlite_new_output_tightens_a_pending_acquire,
