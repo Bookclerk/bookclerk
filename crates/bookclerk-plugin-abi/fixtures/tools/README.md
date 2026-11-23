@@ -10,7 +10,8 @@ implementations. Each SDK must accept the `valid-*` trees and reject
 | `valid-workerd/` | `check` ok; `package` includes `plugin.toml` + `modules/` (imports `@bookclerk/plugin-sdk/workerd`) |
 | `valid-logo-url/` | `check` ok (`logo` https URL) |
 | `valid-logo-path/` | `check` ok (`logo` relative image under plugin root) |
-| `invalid-outbound-no-domains/` | `check` fails (outbound without domains) |
+| `invalid-outbound-no-domains/` | `check` fails (outbound without domains or tcp) |
+| `valid-outbound-tcp-only/` | `check` ok (workerd outbound with only a `tcp` grant, for a `tls://` stream) |
 | `invalid-logo-javascript/` | `check` fails (`javascript:` logo) |
 | `invalid-logo-parent/` | `check` fails (`..` in embedded logo path) |
 | `valid-compat-date-future/` | `check` ok, and warns that load falls back to the workerd pin (runners rewrite `compatibility_date` to the day after the pin) |

@@ -42,6 +42,7 @@ pub const OPTIONAL_PLUGINS: &[&str] = &[
     "audnexus",
     "openlibrary",
     "cloudflare_relay",
+    "ngrok",
     "webhook",
 ];
 
