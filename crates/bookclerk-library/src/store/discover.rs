@@ -911,11 +911,11 @@ impl LibraryStore {
         } else {
             let version = uuid::Uuid::new_v4().simple().to_string();
             let pieces = crate::control_plane::cut_text(feed_json, width);
-            let count = i64::try_from(pieces.len())
-                .map_err(|_| LibraryError::Invalid("a stored feed has too many pieces".into()))?;
             let mut batches = WriteBatches::new(self.db_capabilities(), "discover feed piece");
             let mut full = Vec::new();
+            let mut count = 0_i64;
             for (seq, body) in (0_i64..).zip(pieces) {
+                count = seq + 1;
                 let insert = batch::exec(
                     "INSERT INTO discover_feed_parts (subject_key, version, seq, body) \
                      VALUES (?, ?, ?, ?)",
@@ -1019,15 +1019,14 @@ impl LibraryStore {
             }
             _ => row.feed_json,
         };
-        let Some(seed_scope) = SeedScope::parse(&row.seed_scope) else {
-            return Ok(None);
-        };
-        Ok(Some(StoredFeed {
-            seed_scope,
-            candidates_fetched_at: parse_dt_opt(row.candidates_fetched_at.as_deref()),
-            computed_at: parse_dt(&row.computed_at),
-            feed_json,
-        }))
+        Ok(
+            SeedScope::parse(&row.seed_scope).map(|seed_scope| StoredFeed {
+                seed_scope,
+                candidates_fetched_at: parse_dt_opt(row.candidates_fetched_at.as_deref()),
+                computed_at: parse_dt(&row.computed_at),
+                feed_json,
+            }),
+        )
     }
 
     /// The feed text `version`'s `parts` pieces join into, or `None` when

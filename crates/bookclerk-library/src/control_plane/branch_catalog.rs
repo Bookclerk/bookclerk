@@ -871,14 +871,11 @@ async fn write_catalog_statements(
         let reply =
             batch::execute_host_batch(store, request(&prepared.operation_id, statements.clone()))
                 .await?;
-        if batch::rows_affected(&reply, 0) != 1 {
-            return Ok(None);
-        }
-        return Ok(Some(
+        return Ok((batch::rows_affected(&reply, 0) == 1).then(|| {
             (1..=prepared.titles)
                 .map(|index| batch::rows_affected(&reply, index))
-                .sum(),
-        ));
+                .sum()
+        }));
     }
     let body_end = 1 + prepared.titles + prepared.held;
     let mut binds = vec![text(&stamp()), text(node_id)];
@@ -926,10 +923,7 @@ async fn write_catalog_statements(
     let mut last = vec![statements[0].clone()];
     last.extend(statements[body_end..].iter().cloned());
     let reply = batch::execute_host_batch(store, request(&prepared.operation_id, last)).await?;
-    if batch::rows_affected(&reply, 0) != 1 {
-        return Ok(None);
-    }
-    Ok(Some(upserted))
+    Ok((batch::rows_affected(&reply, 0) == 1).then_some(upserted))
 }
 
 /// Writes a prepared batch ([`write_catalog_statements`];

@@ -156,11 +156,23 @@ mod tests {
 
     /// Inserts one `plugin_kv` row keyed `(plugin, namespace, key)`.
     async fn put(store: &LibraryStore, plugin: &str, namespace: &str, key: &str) {
+        put_value(store, plugin, namespace, key, "").await;
+    }
+
+    /// Inserts one `plugin_kv` row keyed `(plugin, namespace, key)` holding
+    /// `value`.
+    async fn put_value(
+        store: &LibraryStore,
+        plugin: &str,
+        namespace: &str,
+        key: &str,
+        value: &str,
+    ) {
         plugin_kv::ActiveModel {
             plugin_key: Set(plugin.into()),
             namespace: Set(namespace.into()),
             key: Set(key.into()),
-            value: Set(String::new()),
+            value: Set(value.into()),
             metadata: Set(String::new()),
             expires_at: Set(String::new()),
             updated_at: Set(String::new()),
@@ -264,5 +276,34 @@ mod tests {
         expected.sort();
         assert_eq!(got.len(), 8);
         assert_eq!(got, expected);
+    }
+
+    /// A page the plugin refuses as over its reply limit is read again at
+    /// half the rows until it fits, and the smaller size is kept; a single
+    /// row still over the limit is an error.
+    #[tokio::test]
+    async fn a_refused_page_is_read_again_at_half_the_rows() {
+        let _lock = crate::master_key::master_key_test_lock_async().await;
+        let dir = tempfile::tempdir().unwrap();
+        let (store, caps) = crate::control_plane::capped_store(dir.path()).await;
+        let value = "v".repeat(100);
+        for key in ["1", "2", "3", "4", "5"] {
+            put_value(&store, "a", "x", key, &value).await;
+        }
+        // Stored before the cap applies: the insert reads its row back.
+        put_value(&store, "b", "x", "1", &"w".repeat(400)).await;
+        caps.reply.store(250, std::sync::atomic::Ordering::SeqCst);
+        let mut page = 12;
+        let narrow = plugin_kv::Entity::find().filter(plugin_kv::Column::PluginKey.eq("a"));
+        let rows = read_keyset_pages(&store, narrow, &KEY, &mut page)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 5);
+        assert_eq!(page, 1, "12, 6 and 3 rows are over the cap");
+
+        let err = read_keyset_pages(&store, plugin_kv::Entity::find(), &KEY, &mut page)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LibraryError::Orm(_)), "{err}");
     }
 }
