@@ -59,6 +59,16 @@ paths = [
 ]
 
 [[test_input]]
+package = "bookclerk-plugin-manifest"
+# `fmt_corpus_is_current` formats every first-party manifest into
+# crates/bookclerk-plugin-abi/fixtures/tools/fmt-corpus/ and compares.
+paths = [
+    "crates/bookclerk-plugins/**/plugin.toml",
+    "examples/**/plugin.toml",
+    "crates/bookclerk-plugin-abi/fixtures/tools/fmt-corpus/**",
+]
+
+[[test_input]]
 package = "bookclerk-plugin-tools"
 paths = ["crates/bookclerk-plugin-abi/fixtures/tools/**"]
 
@@ -530,6 +540,12 @@ checks = ["plugin_sdk_abi", "python_sdk"]
 # through them.
 paths = ["crates/bookclerk-db-testkit/**"]
 checks = ["plugin_sdk_abi", "python_sdk", "plugin_examples", "workerd_guests"]
+
+[[check_input]]
+# The SDK formatter tests format every first-party manifest the corpus index
+# names and compare the result with the Rust corpus.
+paths = ["crates/bookclerk-plugins/**/plugin.toml", "examples/**/plugin.toml"]
+checks = ["plugin_sdk_abi", "python_sdk"]
 
 [[check_input]]
 # `bookclerk-plugin test` runs each database example's suite per profile.

@@ -187,14 +187,20 @@ export type Manifest = {
    * "outbound"`.
    */
   sockets?: { binding?: string };
+  /** `[[webhooks]]` — inbound HTTP endpoints the host receives for the plugin. */
+  webhooks?: WebhookToml[];
+  /** How a storefront's store sign-ins may be shared (top-level `credentials`). */
+  credentials?: "shareable" | "single_keeper";
   /** Network policy the operator must consent to. */
   capabilities: {
     /** Egress policy (`deny` / `outbound`, plus hostname domains for workerd). */
     network: {
       mode: string;
       domains?: string[];
-      /** TCP grants (`host` + `ports`), for `connect()` and `tls://` streams. */
+      /** Native socket grants: one host and the ports it may be dialed on. */
       tcp?: Array<{ host: string; ports: number[] }>;
+      /** Operator-style address grants (`10.0.0.0/8`, `fd00::/8`, one IP). */
+      address_cidrs?: string[];
       /**
        * Hosts that receive the plugin's own `User-Agent` instead of the
        * host's `bookclerk/<version>` agent, with the reason the consent form
@@ -207,6 +213,33 @@ export type Manifest = {
   cli?: unknown;
   /** Optional `[[oidc.clients]]` relying-party templates. */
   oidc?: { clients?: Array<Record<string, unknown>> };
+};
+
+/** One `[[webhooks]]` row. */
+export type WebhookToml = {
+  /** Endpoint name (`[a-z0-9][a-z0-9-]*`), unique within the plugin. */
+  name: string;
+  /** Largest accepted body in bytes (1 to 1 MiB; default 64 KiB). */
+  max_body_bytes?: number;
+  /** Requests accepted per minute for one instance (1 to 600; default 60). */
+  rate_per_minute?: number;
+  /** Seconds a stored delivery waits for the plugin (60 to 7 days; default 1 day). */
+  retention_secs?: number;
+  /** Lowercase request header names kept with each delivery. */
+  headers?: string[];
+  /** How the host checks a delivery came from the sender. */
+  signature: {
+    /** `none`, or `hmac-sha256` with the fields below. */
+    scheme: string;
+    /** Header carrying the signature (lowercase). */
+    header?: string;
+    /** Text before the signature in that header (at most 16 visible ASCII). */
+    prefix?: string;
+    /** `hex` (default) or `base64`. */
+    encoding?: string;
+    /** Key of the `type = "secret"` setting holding the shared secret. */
+    secret_setting?: string;
+  };
 };
 
 /** One `[[events.consumers]]` row. */
@@ -484,201 +517,266 @@ export type SettingToml = {
   description?: string;
   /** Columns of a `type = "table"` setting, in display order. */
   columns?: SettingColumnToml[];
+  /**
+   * Network grant the value names once the operator approves it (`fetch` or
+   * `tcp`); only a `string` setting may declare it.
+   */
+  network?: (typeof SETTING_NETWORKS)[number];
+  /** Port a value without one uses (1-65535); needs `network`. */
+  default_port?: number;
+};
+
+/** Most `values` one enum entry may declare. */
+const MAX_SETTING_VALUES = 64;
+
+/** Longest string value (and enum id) a setting may hold, in UTF-8 bytes. */
+const MAX_SETTING_STRING_BYTES = 1024;
+
+/** Network grant kinds a string setting may declare (`network`). */
+const SETTING_NETWORKS = ["fetch", "tcp"] as const;
+
+/** One entry the settings checks read: a `[[settings]]` row or a table column. */
+type SettingEntry = {
+  /** Setting or column key. */
+  key?: unknown;
+  /** Declared value type. */
+  type?: unknown;
+  /** Allowed values of an enum. */
+  values?: Array<{ id?: unknown }>;
+  /** Declared default. */
+  default?: unknown;
+  /** Whether a value is required. */
+  required?: unknown;
+  /** Columns of a table setting. */
+  columns?: SettingEntry[];
+  /** Network grant kind of a string setting. */
+  network?: unknown;
+  /** Port the network grant uses when the value names none. */
+  default_port?: unknown;
 };
 
 /**
- * Validates an enum entry's `values`, or that a non-enum declares none.
+ * UTF-8 length of `text` in bytes.
  *
- * @param where - Message prefix naming the entry.
- * @param type - The entry's declared type.
- * @param values - The entry's `values`.
- * @throws {Error} When an enum has no values or a duplicated or empty id, or a
- *   non-enum declares values.
+ * @param text - Value.
+ * @returns Byte count.
  */
-function validateEnumValues(
-  where: string,
-  type: string,
-  values: Array<{ id: string; label?: string }>,
-): void {
-  if (type === "enum") {
-    if (values.length === 0) {
-      throw new Error(`plugin.toml: [[settings]] enum ${where} must declare \`values\``);
+function utf8Length(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+/**
+ * Checks an entry's `values` the way the host's `validate_values` does.
+ *
+ * @param entry - Setting or column.
+ * @returns The first failed rule, or `null`.
+ */
+function settingValuesError(entry: SettingEntry): string | null {
+  const key = String(entry.key ?? "");
+  const values = entry.values ?? [];
+  if (entry.type === "enum") {
+    if (values.length === 0) return `enum setting \`${key}\` must declare \`values\``;
+    if (values.length > MAX_SETTING_VALUES) {
+      return `enum setting \`${key}\` declares more than ${MAX_SETTING_VALUES} values`;
     }
     const ids = new Set<string>();
     for (const value of values) {
-      const id = String(value.id ?? "");
-      if (!id || ids.has(id)) {
-        throw new Error(
-          `plugin.toml: [[settings]] enum ${where} has an invalid or duplicated value id`,
-        );
+      const id = typeof value.id === "string" ? value.id : "";
+      if (!id || utf8Length(id) > MAX_SETTING_STRING_BYTES) {
+        return `enum setting \`${key}\` has an invalid value id`;
       }
+      if (ids.has(id)) return `enum setting \`${key}\` value \`${id}\` is duplicated`;
       ids.add(id);
     }
   } else if (values.length > 0) {
-    throw new Error(`plugin.toml: [[settings]] ${where} declares \`values\` but is not an enum`);
+    return `setting \`${key}\` declares \`values\` but is not an enum`;
   }
+  return null;
 }
 
 /**
- * Whether `value` fits a scalar entry of `type`.
+ * Checks one value against an entry the way the host's `check_value` does.
  *
- * @param type - Declared scalar type.
- * @param values - Allowed ids of an enum.
+ * @param entry - Setting or column.
  * @param value - Candidate value.
- * @returns True when the value has the type's JSON shape (and is an allowed id).
+ * @returns The first failed rule, or `null`.
  */
-function scalarFits(
-  type: string,
-  values: Array<{ id: string; label?: string }>,
-  value: unknown,
-): boolean {
-  return type === "bool"
-    ? typeof value === "boolean"
-    : type === "integer"
-      ? typeof value === "number" && Number.isInteger(value)
-      : type === "enum"
-        ? typeof value === "string" && values.some((v) => v.id === value)
-        : typeof value === "string";
+function settingValueError(entry: SettingEntry, value: unknown): string | null {
+  const key = String(entry.key ?? "");
+  switch (entry.type) {
+    case "secret":
+      return `setting \`${key}\` is a secret; store it through the secrets binding`;
+    case "bool":
+      return typeof value === "boolean" ? null : `setting \`${key}\` must be a boolean`;
+    case "integer":
+      return (typeof value === "number" && Number.isInteger(value)) || typeof value === "bigint"
+        ? null
+        : `setting \`${key}\` must be an integer`;
+    case "enum": {
+      const ids = (entry.values ?? []).map((v) => String(v.id ?? ""));
+      return typeof value === "string" && ids.includes(value)
+        ? null
+        : `setting \`${key}\` must be one of: ${ids.join(", ")}`;
+    }
+    case "table":
+      return settingRowsError(entry, value);
+    default:
+      if (typeof value !== "string") return `setting \`${key}\` must be a string`;
+      return utf8Length(value) <= MAX_SETTING_STRING_BYTES && !value.includes("\0")
+        ? null
+        : `setting \`${key}\` must be at most ${MAX_SETTING_STRING_BYTES} bytes`;
+  }
 }
 
 /**
- * Validates the columns of a `table` setting and, when given, its default rows.
+ * Checks a table value's rows the way the host's `check_rows` does.
  *
- * @param key - The table setting's key.
- * @param spec - The table setting.
- * @throws {Error} When the columns are missing, too many, duplicated, not
- *   scalar, or badly declared, or the default rows do not fit them.
+ * @param entry - Table setting.
+ * @param value - Candidate rows.
+ * @returns The first failed rule, or `null`.
  */
-function validateTableColumns(key: string, spec: SettingToml): void {
-  const columns = spec.columns ?? [];
-  if (columns.length === 0) {
-    throw new Error(`plugin.toml: [[settings]] table setting \`${key}\` must declare \`columns\``);
+function settingRowsError(entry: SettingEntry, value: unknown): string | null {
+  const key = String(entry.key ?? "");
+  if (!Array.isArray(value)) return `setting \`${key}\` must be an array of rows`;
+  if (value.length > MAX_TABLE_ROWS) {
+    return `setting \`${key}\` may hold at most ${MAX_TABLE_ROWS} rows`;
   }
+  const columns = entry.columns ?? [];
+  for (const [index, row] of value.entries()) {
+    const number = index + 1;
+    if (!row || typeof row !== "object" || Array.isArray(row)) {
+      return `setting \`${key}\` row ${number} must be an object`;
+    }
+    const fields = row as Record<string, unknown>;
+    // The host reads rows as sorted JSON objects.
+    for (const field of Object.keys(fields).sort()) {
+      const column = columns.find((c) => c.key === field);
+      if (!column) return `setting \`${key}\` row ${number}: column \`${field}\` is not declared`;
+      const err = settingValueError(column, fields[field]);
+      if (err) return `setting \`${key}\` row ${number}: ${err}`;
+    }
+    for (const column of columns) {
+      const name = String(column.key ?? "");
+      if (
+        column.required === true &&
+        column.default === undefined &&
+        !Object.hasOwn(fields, name)
+      ) {
+        return `setting \`${key}\` row ${number}: column \`${name}\` is required`;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Checks a setting's columns the way the host's `validate_columns` does.
+ *
+ * @param entry - Setting.
+ * @returns The first failed rule, or `null`.
+ */
+function settingColumnsError(entry: SettingEntry): string | null {
+  const key = String(entry.key ?? "");
+  const columns = entry.columns ?? [];
+  if (entry.type !== "table") {
+    return columns.length === 0
+      ? null
+      : `setting \`${key}\` declares \`columns\` but is not a table`;
+  }
+  if (columns.length === 0) return `table setting \`${key}\` must declare \`columns\``;
   if (columns.length > MAX_TABLE_COLUMNS) {
-    throw new Error(
-      `plugin.toml: [[settings]] table setting \`${key}\` declares more than ${MAX_TABLE_COLUMNS} columns`,
-    );
+    return `table setting \`${key}\` declares more than ${MAX_TABLE_COLUMNS} columns`;
   }
   const seen = new Set<string>();
   for (const column of columns) {
     const name = String(column.key ?? "");
     const where = `table setting \`${key}\` column \`${name}\``;
-    if (!/^[a-z][a-z0-9_]{0,63}$/.test(name)) {
-      throw new Error(`plugin.toml: [[settings]] ${where} must match ^[a-z][a-z0-9_]{0,63}$`);
-    }
-    if (seen.has(name)) {
-      throw new Error(`plugin.toml: [[settings]] ${where} is duplicated`);
-    }
+    if (!SETTING_KEY_RE.test(name)) return `${where} must match ^[a-z][a-z0-9_]{0,63}$`;
+    if (seen.has(name)) return `${where} is duplicated`;
     seen.add(name);
     if (!(COLUMN_TYPES as readonly string[]).includes(String(column.type))) {
-      throw new Error(`plugin.toml: [[settings]] ${where} must be a string, bool, integer or enum`);
+      return `${where} must be a string, bool, integer or enum`;
     }
-    if ("columns" in column) {
-      throw new Error(`plugin.toml: [[settings]] ${where} may not declare columns`);
+    if ((column.columns ?? []).length > 0) return `${where} may not declare columns`;
+    if (column.network !== undefined || column.default_port !== undefined) {
+      return `${where} may not declare \`network\` or \`default_port\``;
     }
-    const values = column.values ?? [];
-    validateEnumValues(where, column.type, values);
-    if (column.default !== undefined && !scalarFits(column.type, values, column.default)) {
-      throw new Error(`plugin.toml: [[settings]] default for ${where} does not match its type`);
+    const valuesErr = settingValuesError(column);
+    if (valuesErr) return `table setting \`${key}\`: ${valuesErr}`;
+    if (column.default !== undefined) {
+      const err = settingValueError(column, column.default);
+      if (err) return `table setting \`${key}\` column default: ${err}`;
     }
   }
-  if (spec.default === undefined) return;
-  const rows = spec.default;
-  const fits =
-    Array.isArray(rows) &&
-    rows.length <= MAX_TABLE_ROWS &&
-    rows.every(
-      (row) =>
-        !!row &&
-        typeof row === "object" &&
-        !Array.isArray(row) &&
-        Object.entries(row).every(([field, cell]) => {
-          const column = columns.find((c) => c.key === field);
-          return !!column && scalarFits(column.type, column.values ?? [], cell);
-        }) &&
-        columns.every(
-          (column) => !column.required || column.default !== undefined || fieldIn(row, column.key),
-        ),
-    );
-  if (!fits) {
-    throw new Error(
-      `plugin.toml: [[settings]] default for setting \`${key}\` does not match its columns`,
-    );
-  }
+  return null;
 }
 
 /**
- * Whether a default row sets `field`.
+ * Checks a setting's network grant the way the host's `validate_network` does.
  *
- * @param row - Row table from a `table` default.
- * @param field - Column key.
- * @returns True when the row has an own entry for the field.
+ * @param entry - Setting.
+ * @returns The first failed rule, or `null`.
  */
-function fieldIn(row: object, field: string): boolean {
-  return Object.prototype.hasOwnProperty.call(row, field);
+function settingNetworkError(entry: SettingEntry): string | null {
+  const key = String(entry.key ?? "");
+  if (entry.network === undefined) {
+    return entry.default_port === undefined
+      ? null
+      : `setting \`${key}\` declares \`default_port\` without \`network\``;
+  }
+  if (!(SETTING_NETWORKS as readonly unknown[]).includes(entry.network)) {
+    return `setting \`${key}\` network must be one of ${SETTING_NETWORKS.join(", ")}`;
+  }
+  if (entry.type !== "string") return `setting \`${key}\` declares \`network\` but is not a string`;
+  const port = entry.default_port;
+  if (
+    port !== undefined &&
+    (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535)
+  ) {
+    return `setting \`${key}\` \`default_port\` must be 1-65535`;
+  }
+  return null;
 }
 
+/** Setting key and column key grammar (host `is_valid_setting_key`). */
+const SETTING_KEY_RE = /^[a-z][a-z0-9_]{0,63}$/;
+
 /**
- * Validates `[[settings]]` the way `bookclerk-plugin-manifest` does.
+ * Validates `[[settings]]` the way the host's settings schema does, in its
+ * order and with its messages.
  *
  * @param m - Manifest under validation.
- * @throws {Error} When a key, type, enum value list, or default is invalid.
+ * @throws {Error} When a key, type, value list, column, network grant or
+ *   default is invalid, or the binding a value travels in is missing.
  */
 function validateSettings(m: Manifest): void {
-  const settings = m.settings ?? [];
-  if (settings.length > 32) {
-    throw new Error("plugin.toml: [[settings]] at most 32 settings may be declared");
-  }
+  const settings = (m.settings ?? []) as SettingEntry[];
+  const fail = (message: string): never => {
+    throw new Error(`plugin.toml: [[settings]] ${message}`);
+  };
+  if (settings.length > 32) fail("at most 32 settings may be declared");
   const seen = new Set<string>();
   for (const spec of settings) {
     const key = String(spec.key ?? "");
-    if (!/^[a-z][a-z0-9_]{0,63}$/.test(key)) {
-      throw new Error(
-        `plugin.toml: [[settings]] settings key \`${key}\` must match ^[a-z][a-z0-9_]{0,63}$`,
-      );
-    }
-    if (seen.has(key)) {
-      throw new Error(`plugin.toml: [[settings]] settings key \`${key}\` is duplicated`);
-    }
+    if (!SETTING_KEY_RE.test(key))
+      fail(`settings key \`${key}\` must match ^[a-z][a-z0-9_]{0,63}$`);
+    if (seen.has(key)) fail(`settings key \`${key}\` is duplicated`);
     seen.add(key);
     if (!(SETTING_TYPES as readonly string[]).includes(String(spec.type))) {
-      throw new Error(
-        `plugin.toml: [[settings]] setting \`${key}\` type must be one of ${SETTING_TYPES.join(", ")}`,
-      );
+      fail(`setting \`${key}\` type must be one of ${SETTING_TYPES.join(", ")}`);
     }
-    const values = spec.values ?? [];
-    validateEnumValues(`setting \`${key}\``, spec.type, values);
-    if (spec.type === "table") {
-      validateTableColumns(key, spec);
-    } else if (spec.columns !== undefined) {
-      throw new Error(
-        `plugin.toml: [[settings]] setting \`${key}\` declares \`columns\` but is not a table`,
-      );
-    }
+    const shapeErr =
+      settingValuesError(spec) ?? settingColumnsError(spec) ?? settingNetworkError(spec);
+    if (shapeErr) fail(shapeErr);
     if (spec.type === "secret") {
-      if (spec.default !== undefined) {
-        throw new Error(
-          `plugin.toml: [[settings]] secret setting \`${key}\` may not declare a default`,
-        );
-      }
-      if (!m.secrets) {
-        throw new Error(
-          `plugin.toml: [[settings]] secret setting \`${key}\` requires the \`[secrets]\` binding`,
-        );
-      }
+      if (spec.default !== undefined) fail(`secret setting \`${key}\` may not declare a default`);
+      if (!m.secrets) fail(`secret setting \`${key}\` requires the \`[secrets]\` binding`);
       continue;
     }
-    if (m.vars === undefined) {
-      throw new Error(
-        `plugin.toml: [[settings]] setting \`${key}\` requires the \`[vars]\` binding`,
-      );
-    }
-    const def = spec.default;
-    if (def === undefined || spec.type === "table") continue;
-    if (!scalarFits(spec.type, values, def)) {
-      throw new Error(
-        `plugin.toml: [[settings]] default for setting \`${key}\` does not match its type`,
-      );
+    if (m.vars === undefined) fail(`setting \`${key}\` requires the \`[vars]\` binding`);
+    if (spec.default !== undefined) {
+      const err = settingValueError(spec, spec.default);
+      if (err) fail(`default for ${err}`);
     }
   }
 }
@@ -718,6 +816,7 @@ const METADATA_FIELDS = [
   "series",
   "chapters",
   "duration",
+  "explicitness",
 ];
 
 /** Credit roles a `[[metadata_files.dialects]].credit_roles` entry may name. */
@@ -1483,6 +1582,14 @@ function validateEmbeddedPath(trimmed: string): { kind: "embedded"; value: strin
  * @throws {Error} When any semantic rule fails (message prefixed with `plugin.toml:`).
  */
 export function validateManifest(m: Manifest): void {
+  // Checks run in the host's order (`PluginManifest::validate`), so a
+  // manifest that breaks two rules gets the same first error everywhere.
+  // The host refuses an unknown `credentials` value while decoding, before
+  // any rule runs.
+  const credentials: unknown = m.credentials;
+  if (credentials != null && credentials !== "shareable" && credentials !== "single_keeper") {
+    throw new Error("plugin.toml: `credentials` must be `shareable` or `single_keeper`");
+  }
   if (!m.id || !String(m.id).trim()) {
     throw new Error("plugin.toml: `id` is required");
   }
@@ -1495,34 +1602,31 @@ export function validateManifest(m: Manifest): void {
   if (m.api_version !== 3) {
     throw new Error("plugin.toml: `api_version` must be 3");
   }
+  // An unknown entrypoint name is a parse error on the host, before any rule.
+  validateEntrypointNames(m);
   if (m.logo != null) {
     validateLogo(String(m.logo));
   }
   validateMedia(m);
   validateAcquire(m);
+  validateWebhooks(m);
   validateMetadataFiles(m);
   validateNotifier(m);
   validateNotificationTypes(m);
   validateIngress(m);
   validateProvisioning(m);
   validateAi(m);
-  validateSurface(m);
-  validateSettings(m);
-  validateOwnUserAgent(m);
-  if (m.sockets && m.capabilities?.network?.mode !== "outbound") {
+  const entrypoints = (m.entrypoints ?? []) as readonly string[];
+  if (m.credentials != null && !entrypoints.includes("storefront")) {
     throw new Error(
-      'plugin.toml: [sockets] needs capabilities.network.mode = "outbound" (every socket URL must pass the network grant)',
+      "plugin.toml: `credentials` needs the `storefront` entrypoint (only storefronts connect store accounts)",
     );
   }
+  validateOidcClients(m);
   const runtime = m.runtime ?? "native";
   if (runtime === "native") {
     if (!m.command || !String(m.command).trim()) {
       throw new Error('plugin.toml: `command` is required when runtime = "native"');
-    }
-    if (m.capabilities?.network?.domains && m.capabilities.network.domains.length > 0) {
-      throw new Error(
-        'plugin.toml: capabilities.network.domains is only valid for runtime = "workerd" (native guests use capabilities.network.tcp for mediated connect(); omit domains)',
-      );
     }
   } else if (runtime === "workerd") {
     if (!m.workerd) {
@@ -1539,19 +1643,47 @@ export function validateManifest(m: Manifest): void {
     validateAuthorCompatibilityDate(m.workerd.compatibility_date);
     validateModuleDeclarations(m.workerd.main_module, m.modules ?? []);
     validateAuthorCompatibilityFlags(m.workerd.compatibility_flags ?? [], declaresPython(m));
-    // `fetch` needs `domains`; a host-held `tls://` stream needs `tcp`.
-    if (
-      m.capabilities?.network?.mode === "outbound" &&
-      (!m.capabilities.network.domains || m.capabilities.network.domains.length === 0) &&
-      (!m.capabilities.network.tcp || m.capabilities.network.tcp.length === 0)
-    ) {
-      throw new Error(
-        'plugin.toml: capabilities.network.domains or tcp is required when runtime = "workerd" and mode = "outbound"',
-      );
-    }
   } else {
     throw new Error(`plugin.toml: unknown runtime ${runtime}`);
   }
+  const network = m.capabilities?.network;
+  if (m.sockets && network?.mode !== "outbound") {
+    throw new Error(
+      'plugin.toml: [sockets] needs capabilities.network.mode = "outbound" (every socket URL must pass the network grant)',
+    );
+  }
+  const domains = network?.domains ?? [];
+  if (runtime === "native" && domains.length > 0) {
+    throw new Error(
+      'plugin.toml: capabilities.network.domains is only valid for runtime = "workerd" (native guests use capabilities.network.tcp for mediated connect(); omit domains)',
+    );
+  }
+  // `fetch` needs `domains`; a host-held `tls://` stream needs `tcp`.
+  if (
+    runtime === "workerd" &&
+    network?.mode === "outbound" &&
+    domains.length === 0 &&
+    (network.tcp ?? []).length === 0
+  ) {
+    throw new Error(
+      'plugin.toml: capabilities.network.domains or tcp is required when runtime = "workerd" and mode = "outbound"',
+    );
+  }
+  validateNetworkGrants(m);
+  validateOwnUserAgent(m);
+  validateSurface(m);
+  if (m.cli != null && !entrypoints.includes("cli")) {
+    throw new Error('plugin.toml: `[cli]` requires `"cli"` in `entrypoints`');
+  }
+  validateSettings(m);
+  if ((m.oidc?.clients?.length ?? 0) > 0 && !entrypoints.includes("oidc")) {
+    throw new Error('plugin.toml: `[[oidc.clients]]` requires `"oidc"` in `entrypoints`');
+  }
+  validateBindings(m);
+  validateTriggers(m);
+  validateEventTables(m);
+  validateQueues(m);
+  validateKvNamespaces(m);
 }
 
 /** Work kinds a `[media].works` entry may name. */
@@ -1706,19 +1838,41 @@ function isOwnUserAgentHost(raw: string): boolean {
   while (end > 0 && trimmed[end - 1] === ".") end--;
   const pattern = trimmed.slice(0, end);
   const host = pattern.startsWith("*.") ? pattern.slice(2) : pattern;
-  if (!host || host === "*" || FORBIDDEN_HOST_CHARS.test(host)) return false;
+  if (!host || host === "*") return false;
+  return hostnameAscii(host, FORBIDDEN_HOST_CHARS) !== null;
+}
+
+/**
+ * Forbidden domain code points for a `domains` or `tcp` host: as
+ * {@link FORBIDDEN_HOST_CHARS} but without the comma, which only the
+ * own-`User-Agent` list refuses (it is a list separator there).
+ */
+// eslint-disable-next-line no-control-regex
+const FORBIDDEN_NAME_CHARS = /[\u0000-\u0020#%/:<>?@[\\\]^|\u007f]/;
+
+/**
+ * The ASCII form of a hostname, as the host's IDNA step (`normalize_hostname`)
+ * produces it.
+ *
+ * @param host - Hostname with no port, trailing dot or `*.` prefix.
+ * @param forbidden - Code points refused before and after IDNA mapping.
+ * @returns The ASCII hostname, or `null` when the host would refuse it.
+ */
+function hostnameAscii(host: string, forbidden: RegExp): string | null {
+  if (!host || forbidden.test(host)) return null;
   // The host checks IDNA only. A URL also parses a last label of digits as
   // IPv4, so a known label is appended to leave that check out.
   // IDNA maps some Unicode forms (a fullwidth comma, say) to these ASCII
   // characters, so the normalized name is checked again.
   try {
-    const ascii = new URL(`http://${host}.example/`).hostname;
-    if (ascii.length === 0 || FORBIDDEN_HOST_CHARS.test(ascii)) return false;
+    const url = new URL(`http://${host}.example/`).hostname;
+    const ascii = url.slice(0, -".example".length);
+    if (ascii.length === 0 || forbidden.test(ascii)) return null;
     // Some URL parsers pass an `xn--` label through unchecked; the host's
     // IDNA step requires each to decode to the label it encodes.
-    return ascii.split(".").every(isValidALabel);
+    return url.split(".").every(isValidALabel) ? ascii : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -1762,94 +1916,70 @@ function validateOwnUserAgent(m: Manifest): void {
 }
 
 /**
- * Validates the exported surface: entrypoint names, duplicates, and the
- * "declare at least one entrypoint or trigger" rule.
+ * Refuses an `entrypoints` name the host does not know.
  *
  * @param m - Manifest under validation.
- * @throws {Error} When the surface is empty, unknown, or inconsistent.
+ * @throws {Error} Naming the first unknown entrypoint.
  */
-function validateSurface(m: Manifest): void {
-  const entrypoints = m.entrypoints ?? [];
-  const seen = new Set<string>();
-  for (const entrypoint of entrypoints) {
+function validateEntrypointNames(m: Manifest): void {
+  for (const entrypoint of m.entrypoints ?? []) {
     if (!(ENTRYPOINT_NAMES as readonly string[]).includes(entrypoint)) {
       throw new Error(
         `plugin.toml: unknown entrypoint \`${entrypoint}\` (expected one of ${ENTRYPOINT_NAMES.join(", ")})`,
       );
     }
-    if (seen.has(entrypoint)) {
-      throw new Error(`plugin.toml: entrypoints entry \`${entrypoint}\` is duplicated`);
-    }
-    seen.add(entrypoint);
   }
-  const consumers = m.events?.consumers ?? [];
-  const queueConsumers = m.queues?.consumers ?? [];
-  const jobs = m.triggers?.jobs ?? [];
-  const crons = m.triggers?.crons ?? [];
+}
+
+/**
+ * Validates the exported surface: the "declare at least one entrypoint or
+ * trigger" rule, then duplicate entrypoints.
+ *
+ * @param m - Manifest under validation.
+ * @throws {Error} When the surface is empty or an entrypoint repeats.
+ */
+function validateSurface(m: Manifest): void {
+  const entrypoints = m.entrypoints ?? [];
   if (
     entrypoints.length === 0 &&
-    consumers.length === 0 &&
-    queueConsumers.length === 0 &&
-    jobs.length === 0 &&
-    crons.length === 0
+    (m.events?.consumers ?? []).length === 0 &&
+    (m.queues?.consumers ?? []).length === 0 &&
+    (m.triggers?.jobs ?? []).length === 0 &&
+    (m.triggers?.crons ?? []).length === 0
   ) {
     throw new Error(
       "plugin.toml: declare at least one of `entrypoints`, `[[events.consumers]]`, `[[queues.consumers]]`, `[triggers].jobs`, or `[triggers].crons`",
     );
   }
-  validateCrons(crons);
-  if (Array.isArray(crons) && crons.length > 0) {
-    // Crons fire only on integration deployments (host `validate`).
-    for (const registry of ["storefront", "storage", "databaseAdapter"]) {
-      if ((entrypoints as readonly string[]).includes(registry)) {
-        throw new Error(
-          `plugin.toml: \`[triggers].crons\` cannot be combined with the \`${registry}\` entrypoint; put the schedule in a separate integration plugin`,
-        );
-      }
+  const seen = new Set<string>();
+  for (const entrypoint of entrypoints) {
+    if (seen.has(entrypoint)) {
+      throw new Error(`plugin.toml: entrypoints entry \`${entrypoint}\` is duplicated`);
     }
+    seen.add(entrypoint);
   }
-  validateQueues(m);
-  validateKvNamespaces(m);
-  for (const [i, consumer] of consumers.entries()) {
-    const type = typeof consumer.type === "string" ? consumer.type : "";
-    if (!type.trim()) {
-      throw new Error(`plugin.toml: events.consumers[${i}].type is required`);
-    }
-    if (!EVENT_TYPE_RE.test(type)) {
-      throw new Error(
-        `plugin.toml: events.consumers[${i}].type \`${type}\` must be snake_case \`[a-z][a-z0-9_]*\``,
-      );
-    }
-    validateMessageRetention(`events.consumers[${i}]`, consumer.message_retention_period);
-  }
-  const produced = new Set<string>();
-  for (const [i, producer] of (m.events?.producers ?? []).entries()) {
-    const type = typeof producer.type === "string" ? producer.type : "";
-    if (!EVENT_TYPE_RE.test(type)) {
-      throw new Error(
-        `plugin.toml: events.producers[${i}].type \`${type}\` must be snake_case \`[a-z][a-z0-9_]*\``,
-      );
-    }
-    if (produced.has(type)) {
-      throw new Error(`plugin.toml: events.producers[${i}].type \`${type}\` is duplicated`);
-    }
-    produced.add(type);
-    if (HOST_EVENT_TYPES.has(producer.type)) {
-      throw new Error(
-        `plugin.toml: events.producers[${i}].type \`${producer.type}\` is emitted by the host ` +
-          "(after a source's acquire handler returns); plugins may consume it but not publish it",
-      );
-    }
-  }
-  if (m.cli != null && !seen.has("cli")) {
-    throw new Error('plugin.toml: `[cli]` requires `"cli"` in `entrypoints`');
-  }
-  if ((m.oidc?.clients?.length ?? 0) > 0 && !seen.has("oidc")) {
-    throw new Error('plugin.toml: `[[oidc.clients]]` requires `"oidc"` in `entrypoints`');
+}
+
+/** Most `[[databases]]` bindings one plugin may declare. */
+const MAX_DATABASE_BINDINGS = 8;
+
+/**
+ * Validates `[[databases]]` and every named `env` binding: grammar, reserved
+ * names and collisions, as the host does.
+ *
+ * @param m - Manifest under validation.
+ * @throws {Error} Naming the first bad or colliding binding by its row.
+ */
+function validateBindings(m: Manifest): void {
+  const databases = m.databases ?? [];
+  if (databases.length > MAX_DATABASE_BINDINGS) {
+    throw new Error(
+      `plugin.toml: [[databases]] lists ${databases.length} bindings; max is ${MAX_DATABASE_BINDINGS}`,
+    );
   }
   const bindings = new Set<string>();
-  for (const db of m.databases ?? []) {
-    const name = db.binding;
+  for (const db of databases) {
+    const name = String(db.binding ?? "");
     if (!/^[A-Z][A-Z0-9_]*$/.test(name) || name.length > 32) {
       throw new Error(
         `plugin.toml: [[databases]] binding \`${name}\` must be \`[A-Z][A-Z0-9_]*\` and at most 32 chars`,
@@ -1865,7 +1995,9 @@ function validateSurface(m: Manifest): void {
     }
     bindings.add(name);
   }
-  const reserved = new Set(["CONFIG", "SECRETS", "EVENTS", "WORK_FS", "OAUTH", "SOCKETS"]);
+  // Names a KV namespace or queue producer may not take even when the table
+  // that defaults to it is absent.
+  const reserved = new Set(["CONFIG", "SECRETS", "EVENTS", "WORK_FS", "OAUTH"]);
   // Row index, not the binding text. The text can be an oauth name, and an
   // error that includes it is logged as clear text.
   const named: Array<[string, string, number]> = [];
@@ -1875,6 +2007,7 @@ function validateSurface(m: Manifest): void {
   if (m.sockets) named.push(["sockets", m.sockets.binding || "SOCKETS", 0]);
   if ((m.notifications?.types ?? []).length > 0) named.push(["notifications", "NOTIFY", 0]);
   if ((m.ai?.calls ?? []).length > 0) named.push(["ai", "AI", 0]);
+  if ((m.webhooks ?? []).length > 0) named.push(["webhooks", "WEBHOOKS", 0]);
   for (const [index, kv] of (m.kv_namespaces ?? []).entries()) {
     named.push(["kv_namespaces", kv.binding || "KV", index]);
   }
@@ -1916,6 +2049,475 @@ function validateSurface(m: Manifest): void {
   ) {
     throw new Error("plugin.toml: [sockets][0] binding collides with another binding");
   }
+}
+
+/**
+ * Validates `[triggers]`: crons only on integration plugins, the cron list
+ * shape, and snake_case job types.
+ *
+ * @param m - Manifest under validation.
+ * @throws {Error} Naming the first bad trigger.
+ */
+function validateTriggers(m: Manifest): void {
+  const entrypoints = (m.entrypoints ?? []) as readonly string[];
+  const crons = m.triggers?.crons ?? [];
+  // A malformed schedule fails to parse before the host looks at entrypoints.
+  validateCrons(crons);
+  if (Array.isArray(crons) && crons.length > 0) {
+    // Crons fire only on integration deployments.
+    for (const registry of ["storefront", "storage", "databaseAdapter", "ingress"]) {
+      if (entrypoints.includes(registry)) {
+        throw new Error(
+          `plugin.toml: \`[triggers].crons\` cannot be combined with the \`${registry}\` entrypoint; put the schedule in a separate integration plugin`,
+        );
+      }
+    }
+  }
+  for (const [i, job] of (m.triggers?.jobs ?? []).entries()) {
+    if (typeof job !== "string" || !EVENT_TYPE_RE.test(job)) {
+      throw new Error(
+        `plugin.toml: triggers.jobs[${i}] \`${String(job)}\` must be snake_case \`[a-z][a-z0-9_]*\``,
+      );
+    }
+  }
+}
+
+/**
+ * Validates `[[events.consumers]]` and `[[events.producers]]` as the host does.
+ *
+ * @param m - Manifest under validation.
+ * @throws {Error} Naming the first bad consumer or producer row.
+ */
+function validateEventTables(m: Manifest): void {
+  for (const [i, consumer] of (m.events?.consumers ?? []).entries()) {
+    const type = typeof consumer.type === "string" ? consumer.type : "";
+    if (!type.trim()) {
+      throw new Error(`plugin.toml: events.consumers[${i}].type is required`);
+    }
+    if (!EVENT_TYPE_RE.test(type)) {
+      throw new Error(
+        `plugin.toml: events.consumers[${i}].type \`${type}\` must be snake_case \`[a-z][a-z0-9_]*\``,
+      );
+    }
+    const versions: unknown = consumer.schema_versions;
+    if (versions !== undefined) {
+      if (!Array.isArray(versions) || versions.length === 0) {
+        throw new Error(`plugin.toml: events.consumers[${i}].schema_versions must not be empty`);
+      }
+      if (
+        versions.some(
+          (v) => !Number.isInteger(v) || (v as number) < 0 || (v as number) > 0xffffffff,
+        )
+      ) {
+        throw new Error(
+          `plugin.toml: events.consumers[${i}].schema_versions entries must be integers from 0 to 4294967295`,
+        );
+      }
+    }
+    const resourceClass =
+      typeof consumer.resource_class === "string" ? consumer.resource_class.trim() : "";
+    if (resourceClass && resourceClass !== "network") {
+      throw new Error(
+        `plugin.toml: events.consumers[${i}].resource_class \`${resourceClass}\` is not supported (only \`network\`)`,
+      );
+    }
+    validateMessageRetention(`events.consumers[${i}]`, consumer.message_retention_period);
+  }
+  const produced = new Set<string>();
+  for (const [i, producer] of (m.events?.producers ?? []).entries()) {
+    const type = typeof producer.type === "string" ? producer.type : "";
+    if (!EVENT_TYPE_RE.test(type)) {
+      throw new Error(
+        `plugin.toml: events.producers[${i}].type \`${type}\` must be snake_case \`[a-z][a-z0-9_]*\``,
+      );
+    }
+    if (produced.has(type)) {
+      throw new Error(`plugin.toml: events.producers[${i}].type \`${type}\` is duplicated`);
+    }
+    produced.add(type);
+    if (HOST_EVENT_TYPES.has(producer.type)) {
+      throw new Error(
+        `plugin.toml: events.producers[${i}].type \`${producer.type}\` is emitted by the host ` +
+          "(after a source's acquire handler returns); plugins may consume it but not publish it",
+      );
+    }
+  }
+}
+
+/**
+ * Validates `[[oidc.clients]]` fields as the host does.
+ *
+ * @param m - Manifest under validation.
+ * @throws {Error} Naming the first client with a missing or bad field.
+ */
+function validateOidcClients(m: Manifest): void {
+  for (const [i, client] of (m.oidc?.clients ?? []).entries()) {
+    const text = (field: string): string =>
+      typeof client[field] === "string" ? (client[field] as string) : "";
+    if (!text("client_id").trim()) {
+      throw new Error(`plugin.toml: oidc.clients[${i}].client_id is required`);
+    }
+    const callback = text("callback_path");
+    if (!callback.trim() || !callback.startsWith("/")) {
+      throw new Error(`plugin.toml: oidc.clients[${i}].callback_path must start with \`/\``);
+    }
+    if (!text("origin_config_key").trim()) {
+      throw new Error(`plugin.toml: oidc.clients[${i}].origin_config_key is required`);
+    }
+  }
+}
+
+/** Most `[[webhooks]]` rows one plugin may declare. */
+const MAX_WEBHOOKS = 8;
+
+/** Longest webhook name, in bytes (ABI `maxWebhookNameBytes`). */
+const MAX_WEBHOOK_NAME_BYTES = 32;
+
+/** Largest body cap a row may declare, in bytes (ABI `maxWebhookBodyBytes`). */
+const MAX_WEBHOOK_BODY_BYTES = 1024 * 1024;
+
+/** Highest request rate per minute a row may declare. */
+const MAX_WEBHOOK_RATE_PER_MINUTE = 600;
+
+/** Longest time a stored delivery may wait, in seconds (7 days). */
+const MAX_WEBHOOK_RETENTION_SECS = 7 * 86_400;
+
+/** Most request headers a row may keep (ABI `maxWebhookHeaders`). */
+const MAX_WEBHOOK_HEADERS = 16;
+
+/** Longest header name a row may name, in bytes. */
+const MAX_WEBHOOK_HEADER_NAME_BYTES = 64;
+
+/** Longest signature prefix, in bytes. */
+const MAX_WEBHOOK_SIGNATURE_PREFIX_LEN = 16;
+
+/** Headers a row may never keep: they carry credentials or describe the hop. */
+const FORBIDDEN_WEBHOOK_HEADERS = [
+  "authorization",
+  "connection",
+  "cookie",
+  "forwarded",
+  "host",
+  "keep-alive",
+  "proxy-authorization",
+  "set-cookie",
+  "transfer-encoding",
+  "upgrade",
+  "x-forwarded-for",
+  "x-real-ip",
+];
+
+/**
+ * Whether `name` is a lowercase HTTP header name (RFC 9110 token characters).
+ *
+ * @param name - Candidate header name.
+ * @returns Whether the host accepts it.
+ */
+function isWebhookHeaderName(name: unknown): boolean {
+  return (
+    typeof name === "string" &&
+    name.length > 0 &&
+    name.length <= MAX_WEBHOOK_HEADER_NAME_BYTES &&
+    /^[a-z0-9!#$%&'*+\-.^_`|~]+$/.test(name)
+  );
+}
+
+/**
+ * An integer field of a webhook row, or its default when absent.
+ *
+ * @param row - Webhook row.
+ * @param field - Field name.
+ * @param fallback - Default.
+ * @returns The value (`NaN` when not an integer).
+ */
+function webhookNumber(row: WebhookToml, field: keyof WebhookToml, fallback: number): number {
+  const value = row[field];
+  if (value === undefined) return fallback;
+  return typeof value === "number" && Number.isInteger(value) ? value : Number.NaN;
+}
+
+/**
+ * Validates `[[webhooks]]` the way the host's `validate_webhooks` does.
+ *
+ * @param m - Manifest under validation.
+ * @throws {Error} Naming the first bad row by its index.
+ */
+function validateWebhooks(m: Manifest): void {
+  const rows = m.webhooks ?? [];
+  if (rows.length > MAX_WEBHOOKS) {
+    throw new Error(`plugin.toml: at most ${MAX_WEBHOOKS} [[webhooks]] rows`);
+  }
+  const names = new Set<string>();
+  for (const [i, row] of rows.entries()) {
+    const name = typeof row.name === "string" ? row.name : "";
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(name) || name.length > MAX_WEBHOOK_NAME_BYTES) {
+      throw new Error(
+        `plugin.toml: webhooks[${i}].name must be \`[a-z0-9][a-z0-9-]*\` and at most ${MAX_WEBHOOK_NAME_BYTES} chars`,
+      );
+    }
+    if (names.has(name)) {
+      throw new Error(`plugin.toml: webhooks[${i}].name repeats an earlier row`);
+    }
+    names.add(name);
+    const body = webhookNumber(row, "max_body_bytes", 64 * 1024);
+    if (!(body >= 1 && body <= MAX_WEBHOOK_BODY_BYTES)) {
+      throw new Error(
+        `plugin.toml: webhooks[${i}].max_body_bytes must be 1..=${MAX_WEBHOOK_BODY_BYTES}`,
+      );
+    }
+    const rate = webhookNumber(row, "rate_per_minute", 60);
+    if (!(rate >= 1 && rate <= MAX_WEBHOOK_RATE_PER_MINUTE)) {
+      throw new Error(
+        `plugin.toml: webhooks[${i}].rate_per_minute must be 1..=${MAX_WEBHOOK_RATE_PER_MINUTE}`,
+      );
+    }
+    const retention = webhookNumber(row, "retention_secs", 86_400);
+    if (!(retention >= 60 && retention <= MAX_WEBHOOK_RETENTION_SECS)) {
+      throw new Error(
+        `plugin.toml: webhooks[${i}].retention_secs must be 60..=${MAX_WEBHOOK_RETENTION_SECS}`,
+      );
+    }
+    const headers = row.headers ?? [];
+    if (headers.length > MAX_WEBHOOK_HEADERS) {
+      throw new Error(
+        `plugin.toml: webhooks[${i}].headers lists more than ${MAX_WEBHOOK_HEADERS} names`,
+      );
+    }
+    const kept = new Set<string>();
+    for (const header of headers) {
+      if (!isWebhookHeaderName(header)) {
+        throw new Error(
+          `plugin.toml: webhooks[${i}].headers entries must be lowercase header names`,
+        );
+      }
+      if (FORBIDDEN_WEBHOOK_HEADERS.includes(header)) {
+        throw new Error(`plugin.toml: webhooks[${i}].headers may not keep \`${header}\``);
+      }
+      if (kept.has(header)) {
+        throw new Error(`plugin.toml: webhooks[${i}].headers repeats \`${header}\``);
+      }
+      kept.add(header);
+    }
+    const signature = row.signature ?? { scheme: "" };
+    if (signature.scheme === "none") continue;
+    if (signature.scheme !== "hmac-sha256") {
+      throw new Error(
+        `plugin.toml: webhooks[${i}].signature.scheme must be \`none\` or \`hmac-sha256\``,
+      );
+    }
+    const header = signature.header ?? "";
+    if (!isWebhookHeaderName(header) || FORBIDDEN_WEBHOOK_HEADERS.includes(header)) {
+      throw new Error(
+        `plugin.toml: webhooks[${i}].signature.header must be a lowercase header name the host may read`,
+      );
+    }
+    const prefix = signature.prefix ?? "";
+    if (prefix.length > MAX_WEBHOOK_SIGNATURE_PREFIX_LEN || !/^[\x21-\x7e]*$/.test(prefix)) {
+      throw new Error(
+        `plugin.toml: webhooks[${i}].signature.prefix must be at most ${MAX_WEBHOOK_SIGNATURE_PREFIX_LEN} visible ASCII characters`,
+      );
+    }
+    const encoding: unknown = signature.encoding;
+    if (encoding !== undefined && encoding !== "hex" && encoding !== "base64") {
+      throw new Error(
+        `plugin.toml: webhooks[${i}].signature.encoding must be \`hex\` or \`base64\``,
+      );
+    }
+    const secret = signature.secret_setting ?? "";
+    if (!(m.settings ?? []).some((s) => s.key === secret && s.type === "secret")) {
+      throw new Error(
+        `plugin.toml: webhooks[${i}].signature.secret_setting must name a \`type = "secret"\` entry in [[settings]]`,
+      );
+    }
+  }
+}
+
+/**
+ * Validates the network grants as the host does: `domains` entries, `tcp`
+ * hosts and ports, and `address_cidrs`.
+ *
+ * @param m - Manifest under validation.
+ * @throws {Error} Naming the first entry the host would refuse.
+ */
+function validateNetworkGrants(m: Manifest): void {
+  const network = m.capabilities?.network;
+  for (const domain of network?.domains ?? []) {
+    if (!isDomainPattern(String(domain))) {
+      throw new Error(
+        `plugin.toml: capabilities.network.domains entry \`${domain}\` is not a valid hostname with an optional \`:port\` (IDNA ToASCII failed, percent-encoded host, a port on \`*\`, or a port that is not 1-65535 in plain digits)`,
+      );
+    }
+  }
+  for (const tcp of network?.tcp ?? []) {
+    const host = String(tcp.host ?? "");
+    const pattern = hostPattern(unbracketed(host));
+    if (pattern === null || pattern === "*") {
+      throw new Error(
+        `plugin.toml: capabilities.network.tcp host \`${host}\` is not a valid hostname (\`*\` is a fetch grant only)`,
+      );
+    }
+    const ports: unknown[] = tcp.ports ?? [];
+    if (ports.length === 0) {
+      throw new Error(
+        `plugin.toml: capabilities.network.tcp host \`${host}\` must declare at least one port`,
+      );
+    }
+    if (
+      ports.some(
+        (port) => !Number.isInteger(port) || (port as number) < 0 || (port as number) > 65535,
+      )
+    ) {
+      throw new Error(
+        `plugin.toml: capabilities.network.tcp host \`${host}\` ports must be integers from 0 to 65535`,
+      );
+    }
+  }
+  for (const cidr of network?.address_cidrs ?? []) {
+    const err = cidrError(String(cidr));
+    if (err) {
+      throw new Error(`plugin.toml: capabilities.network.address_cidrs entry \`${cidr}\`: ${err}`);
+    }
+  }
+}
+
+/**
+ * `host` without URL-form IPv6 brackets.
+ *
+ * @param host - Host as written.
+ * @returns Trimmed host, brackets removed when both are present.
+ */
+function unbracketed(host: string): string {
+  const trimmed = host.trim();
+  return trimmed.startsWith("[") && trimmed.endsWith("]") ? trimmed.slice(1, -1) : trimmed;
+}
+
+/**
+ * A port in canonical decimal (1-65535, no sign or leading zero).
+ *
+ * @param text - Port text.
+ * @returns The port, or `null`.
+ */
+function canonicalPort(text: string): number | null {
+  if (!/^[1-9][0-9]*$/.test(text)) return null;
+  const port = Number(text);
+  return port <= 65535 ? port : null;
+}
+
+/**
+ * Splits a `domains` entry into its host pattern and optional port, as the
+ * host's `split_domain_entry` does.
+ *
+ * @param entry - Trimmed entry.
+ * @returns `[host, port]`, or `null` when a port or bracket is malformed.
+ */
+function splitDomainEntry(entry: string): [string, number | null] | null {
+  if (entry.startsWith("[")) {
+    const close = entry.indexOf("]");
+    if (close < 0) return null;
+    const host = entry.slice(1, close);
+    const after = entry.slice(close + 1);
+    if (after === "") return [host, null];
+    if (!after.startsWith(":")) return null;
+    const port = canonicalPort(after.slice(1));
+    return port === null ? null : [host, port];
+  }
+  const colon = entry.lastIndexOf(":");
+  if (colon >= 0 && !entry.slice(0, colon).includes(":")) {
+    const port = canonicalPort(entry.slice(colon + 1));
+    return port === null ? null : [entry.slice(0, colon), port];
+  }
+  return [entry, null];
+}
+
+/**
+ * Whether `text` is an IPv6 address literal (no brackets or zone).
+ *
+ * @param text - Candidate.
+ * @returns Whether it parses as IPv6.
+ */
+function isIpv6(text: string): boolean {
+  if (!text.includes(":") || !/^[0-9A-Fa-f:.]+$/.test(text)) return false;
+  try {
+    new URL(`http://[${text}]/`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether `text` is a dotted-quad IPv4 address in strict form.
+ *
+ * @param text - Candidate.
+ * @returns Whether it parses as IPv4.
+ */
+function isIpv4(text: string): boolean {
+  const parts = text.split(".");
+  return (
+    parts.length === 4 && parts.every((p) => /^(0|[1-9][0-9]{0,2})$/.test(p) && Number(p) <= 255)
+  );
+}
+
+/**
+ * The host pattern a `domains` or `tcp` host normalizes to, as the host's
+ * `normalize_host_pattern` judges it: `*`, a `*.` wildcard, an IPv6 literal
+ * or a valid IDNA hostname, trailing dots dropped.
+ *
+ * @param raw - Host half of the entry (no port).
+ * @returns `"*"`, another non-null marker for a valid host, or `null`.
+ */
+function hostPattern(raw: string): string | null {
+  const trimmed = raw.trim();
+  // A scan, not `/\.+$/`, which backtracks on long runs of dots.
+  let end = trimmed.length;
+  while (end > 0 && trimmed[end - 1] === ".") end--;
+  const host = trimmed.slice(0, end);
+  if (!host || host.includes("%")) return null;
+  if (host === "*") return "*";
+  if (host.startsWith("*.")) return hostnameAscii(host.slice(2), FORBIDDEN_NAME_CHARS);
+  if (isIpv6(host)) return host;
+  return hostnameAscii(host, FORBIDDEN_NAME_CHARS);
+}
+
+/**
+ * Whether a `domains` entry is one the host's `normalize_domain_pattern`
+ * accepts.
+ *
+ * @param raw - Entry as written.
+ * @returns Whether the host accepts it.
+ */
+function isDomainPattern(raw: string): boolean {
+  const entry = raw.trim();
+  if (!entry || entry.includes("%")) return false;
+  const split = splitDomainEntry(entry);
+  if (split === null) return false;
+  const pattern = hostPattern(split[0]);
+  return pattern !== null && !(pattern === "*" && split[1] !== null);
+}
+
+/**
+ * Parses an `address_cidrs` entry the way the host's `CidrGrant::parse` does.
+ *
+ * @param raw - Entry as written.
+ * @returns The host's error text, or `null` when it parses.
+ */
+function cidrError(raw: string): string | null {
+  const text = raw.trim();
+  if (!text) return "empty CIDR";
+  const slash = text.indexOf("/");
+  if (slash < 0) {
+    return isIpv4(text) || isIpv6(text) ? null : `invalid IP \`${text}\``;
+  }
+  const addr = text.slice(0, slash);
+  const prefixText = text.slice(slash + 1);
+  if (!/^\+?[0-9]+$/.test(prefixText) || Number(prefixText.replace("+", "")) > 255) {
+    return `invalid CIDR prefix \`${prefixText}\``;
+  }
+  const v4 = isIpv4(addr);
+  if (!v4 && !isIpv6(addr)) return `invalid CIDR address \`${addr}\``;
+  const prefix = Number(prefixText.replace("+", ""));
+  const max = v4 ? 32 : 128;
+  return prefix > max ? `CIDR prefix ${prefix} exceeds ${max}` : null;
 }
 
 /** Newest compatibility date the pinned workerd binary honors. */

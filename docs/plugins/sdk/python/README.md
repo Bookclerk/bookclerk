@@ -230,9 +230,20 @@ every profile. A plugin's own `pyproject.toml` is what makes
 ```bash
 python -m bookclerk_plugin_sdk check .
 python -m bookclerk_plugin_sdk types .
+python -m bookclerk_plugin_sdk fmt plugin.toml
+python -m bookclerk_plugin_sdk fmt --check plugin.toml
 python -m bookclerk_plugin_sdk package --out dist .
 python -m bookclerk_plugin_sdk smoke .   # download the pinned workerd, then describe + health
 ```
+
+`check` validates `plugin.toml` with the host's rules, in the host's order
+and with its messages, so a manifest that fails gets the error the host
+would give first. It also checks that a workerd `main_module` exists. A
+native `command` is checked only when a `.require-binary` file sits in the
+plugin folder, so passing `check` does not prove a native binary is there. `fmt` writes `plugin.toml`
+exactly as the Rust `bookclerk-plugin fmt` does: every table the manifest
+declares, in the host's field order, with the defaults the host fills in.
+Comments are not kept.
 
 `smoke` does not need a built `bookclerk-workerd`. It downloads the
 pinned Cloudflare `workerd` into `~/.cache/bookclerk/workerd` (override

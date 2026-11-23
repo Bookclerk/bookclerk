@@ -1,0 +1,55 @@
+api_version = 3
+id = "echo_workerd_python"
+name = "Echo Integration (workerd Python)"
+version = "1.0.0"
+runtime = "workerd"
+entrypoints = ["cli"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+compatibility_flags = [
+    "python_workers",
+    "disable_python_external_sdk",
+]
+main_module = "plugin.py"
+modules_dir = "modules"
+entrypoint = "default"
+
+[workerd.limits]
+cpu_ms = 30000
+subrequests = 50
+
+[[modules]]
+name = "plugin.py"
+path = "plugin.py"
+type = "python"
+
+[[modules]]
+name = "notes.py"
+path = "notes.py"
+type = "python"
+
+[[events.consumers]]
+type = "book_acquired"
+schema_versions = [1]
+supports_suspend = false
+resource_class = "network"
+
+[[databases]]
+binding = "DB"
+
+[vars]
+
+[[queues.producers]]
+queue = "echo.out"
+binding = "ECHO_OUT"
+
+[[queues.consumers]]
+queue = "echo"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 2
+retry_delay = 0
+
+[capabilities.network]
+mode = "deny"
