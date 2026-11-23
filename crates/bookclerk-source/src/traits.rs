@@ -190,6 +190,12 @@ pub trait ContentSource: Send + Sync {
     ///
     /// Default: none. Used when search/expand hits are lean (e.g. HTML scrape)
     /// and a title detail dialog needs narrator, runtime, description, etc.
+    ///
+    /// # Errors
+    ///
+    /// Returns the source's error when it could not answer (an external
+    /// guest's failed call included); `Ok(None)` means the store answered
+    /// and does not list the product.
     async fn catalog_detail(&self, product_id: &str) -> Result<Option<CatalogHit>> {
         let _ = product_id;
         Ok(None)
@@ -223,7 +229,10 @@ pub trait ContentSource: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns the source's error; external guests soft-fail to `Ok(None)`.
+    /// Returns the source's error, including an external guest's failed
+    /// call, so a caller can tell a store that did not answer from one
+    /// that does not list the title; callers that only gap-fill soft-fail
+    /// on it themselves.
     async fn catalog_detail_by_isbn(&self, isbn: &str) -> Result<Option<CatalogHit>> {
         self.catalog_detail(isbn).await
     }
