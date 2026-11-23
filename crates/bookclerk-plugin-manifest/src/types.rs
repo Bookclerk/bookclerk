@@ -3442,6 +3442,7 @@ mod tests {
                 PluginFamily::Integration,
                 PluginFamily::Ingress,
                 PluginFamily::Integration,
+                PluginFamily::Integration,
             ]
         );
     }

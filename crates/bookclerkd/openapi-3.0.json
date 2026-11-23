@@ -68878,7 +68878,8 @@
               },
               "deprovision": {
                 "type": "boolean",
-                "description": "Whether the plugin removes what it created, which the screen offers\nbefore the instance is deleted."
+                "description": "Whether the plugin removes what it created, which the screen offers\nbefore the instance is deleted.",
+                "example": true
               }
             },
             "nullable": true
@@ -70456,7 +70457,8 @@
           },
           "deprovision": {
             "type": "boolean",
-            "description": "Whether the plugin removes what it created, which the screen offers\nbefore the instance is deleted."
+            "description": "Whether the plugin removes what it created, which the screen offers\nbefore the instance is deleted.",
+            "example": true
           }
         }
       },

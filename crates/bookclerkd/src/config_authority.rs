@@ -1979,6 +1979,7 @@ pub(crate) struct ProvisioningView {
     outputs: Vec<String>,
     /// Whether the plugin removes what it created, which the screen offers
     /// before the instance is deleted.
+    #[schema(example = true)]
     deprovision: bool,
 }
 
