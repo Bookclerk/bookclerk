@@ -1124,6 +1124,67 @@ impl LibraryStore {
         Ok(live.is_some())
     }
 
+    /// Which of the `guarded` library copies other than `copy` already has
+    /// a file of `owner` at `key`, on any destination; `None` when none
+    /// does.
+    ///
+    /// The library finds a copy's files by key across destinations, so a
+    /// copy written where another copy of the same edition sits would let
+    /// it take one copy's file for the other's. Only copies in `guarded`
+    /// (the ones the library still makes) count: a key a copy the library
+    /// no longer makes left behind may be written again.
+    ///
+    /// # Arguments
+    ///
+    /// * `owner` - The edition the files belong to.
+    /// * `key` - The storage key about to be written.
+    /// * `copy` - The copy about to write it.
+    /// * `guarded` - The copies whose files `copy` must not replace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the read fails.
+    pub async fn key_held_by_another_copy(
+        &self,
+        owner: &FileOwner,
+        key: &str,
+        copy: &bookclerk_config::OutputCopy,
+        guarded: &[bookclerk_config::OutputCopy],
+    ) -> Result<Option<bookclerk_config::OutputCopy>> {
+        let others: Vec<&bookclerk_config::OutputCopy> =
+            guarded.iter().filter(|other| *other != copy).collect();
+        if others.is_empty() {
+            return Ok(None);
+        }
+        let mut labels = Condition::any();
+        for other in &others {
+            labels = labels.add(
+                Condition::all()
+                    .add(edition_files::Column::CopyFormat.eq(other.format.as_str()))
+                    .add(edition_files::Column::CopyQuality.eq(other.quality.to_string())),
+            );
+        }
+        let Some(row) = edition_files::Entity::find()
+            .filter(edition_files::Column::StorageKey.eq(key))
+            .filter(edition_files::Column::OwnerKind.eq(owner.kind()))
+            .filter(edition_files::Column::OwnerId.eq(owner.id()))
+            .filter(labels)
+            .order_by_asc(edition_files::Column::Destination)
+            .one(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(None);
+        };
+        Ok(others
+            .into_iter()
+            .find(|other| {
+                row.copy_format.as_deref() == Some(other.format.as_str())
+                    && row.copy_quality.as_deref() == Some(other.quality.to_string().as_str())
+            })
+            .cloned())
+    }
+
     /// The edition a store's listing sells; `None` while the listing is
     /// not in this library.
     ///

@@ -93,30 +93,60 @@ impl FetchStop {
     ///
     /// The error the call ends with: [`bookclerk_plugin_sdk::PluginError::cancelled`]
     /// or, over budget, [`bookclerk_plugin_sdk::PluginError::limit_exceeded`].
+    ///
+    /// Before it returns, it removes what this fetch added to `dir` (each
+    /// file or folder that was not there when the call started), so a
+    /// stopped download leaves nothing behind; what an earlier fetch left
+    /// stays, since its acquire may still be reading it.
     async fn wait(self) -> bookclerk_plugin_sdk::PluginError {
+        let earlier = dir_entries(&self.dir).await;
         let start = match self.max_bytes {
             Some(_) => dir_bytes(&self.dir).await,
             None => 0,
         };
-        loop {
+        let stopped = loop {
             tokio::time::sleep(FETCH_STOP_POLL).await;
             if self
                 .cancel
                 .as_ref()
                 .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
             {
-                return bookclerk_plugin_sdk::PluginError::cancelled("the acquire was cancelled");
+                break bookclerk_plugin_sdk::PluginError::cancelled("the acquire was cancelled");
             }
             if let Some(max) = self.max_bytes {
                 let used = dir_bytes(&self.dir).await.saturating_sub(start);
                 if used > max {
-                    return bookclerk_plugin_sdk::PluginError::limit_exceeded(
+                    break bookclerk_plugin_sdk::PluginError::limit_exceeded(
                         bookclerk_plugin_abi::LimitExceeded::new("acquire scratch", max, used),
                     );
                 }
             }
+        };
+        for name in dir_entries(&self.dir).await.difference(&earlier) {
+            let path = self.dir.join(name);
+            let removed = match tokio::fs::symlink_metadata(&path).await {
+                Ok(meta) if meta.is_dir() => tokio::fs::remove_dir_all(&path).await,
+                Ok(_) => tokio::fs::remove_file(&path).await,
+                Err(err) => Err(err),
+            };
+            if let Err(err) = removed {
+                tracing::debug!(path = %path.display(), error = %err, "could not remove a stopped fetch's file");
+            }
         }
+        stopped
     }
+}
+
+/// The names directly under `dir`; empty when it cannot be read.
+async fn dir_entries(dir: &std::path::Path) -> std::collections::BTreeSet<std::ffi::OsString> {
+    let mut names = std::collections::BTreeSet::new();
+    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
+        return names;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        names.insert(entry.file_name());
+    }
+    names
 }
 
 /// Bytes the files under `root` take together; a directory that cannot be
@@ -2307,7 +2337,8 @@ mod tests {
 
     /// A guest fetch stops once the acquire is cancelled, and once the
     /// guest's own scratch grows past the budget; files already there when
-    /// the call started do not count against it.
+    /// the call started do not count against it and stay, while what the
+    /// stopped fetch wrote is removed.
     #[tokio::test(start_paused = true)]
     async fn a_guest_fetch_stops_on_cancel_and_over_its_budget() {
         use bookclerk_plugin_sdk::PluginErrorCode;
@@ -2331,12 +2362,23 @@ mod tests {
         std::fs::write(dir.path().join("title").join("part.bin"), [0u8; 17]).unwrap();
         let over = stop.await.unwrap();
         assert_eq!(over.code, PluginErrorCode::LimitExceeded, "{over}");
+        assert!(
+            !dir.path().join("title").exists(),
+            "the stopped fetch's files go"
+        );
+        assert!(
+            dir.path().join("earlier.bin").exists(),
+            "an earlier fetch's stay"
+        );
 
         let stop = tokio::spawn(FetchStop::new(&opts(None), dir.path().to_path_buf()).wait());
         tokio::time::sleep(FETCH_STOP_POLL * 3).await;
         assert!(!stop.is_finished(), "an unbounded fetch runs on");
+        std::fs::write(dir.path().join("partial.bin"), [0u8; 4]).unwrap();
         cancel.store(true, Ordering::SeqCst);
         let cancelled = stop.await.unwrap();
         assert_eq!(cancelled.code, PluginErrorCode::Cancelled, "{cancelled}");
+        assert!(!dir.path().join("partial.bin").exists());
+        assert!(dir.path().join("earlier.bin").exists());
     }
 }

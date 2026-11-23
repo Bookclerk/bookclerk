@@ -163,6 +163,13 @@ pub async fn convert_copy(
     {
         req.library_copies.stored_from().set(store);
     }
+    // The new copy never writes where another copy of the edition is:
+    // every copy it already has, and the main output.
+    let mut guarded: Vec<OutputCopy> = files.iter().filter_map(|file| file.copy.clone()).collect();
+    guarded.extend(main.clone());
+    guarded.sort();
+    guarded.dedup();
+    let guard = crate::record::AcquireRun::guarding(guarded);
     let recorded = recording_copy_destinations(
         library,
         &target,
@@ -170,7 +177,7 @@ pub async fn convert_copy(
         &req.source,
         req.library_copies.stored_from(),
         copy,
-        &crate::record::AcquireRun::new(),
+        &guard,
     );
     req.options = recorded.primary_destination().options.clone();
     req.destination_keys =

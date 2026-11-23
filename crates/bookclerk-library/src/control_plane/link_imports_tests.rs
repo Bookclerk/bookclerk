@@ -530,6 +530,84 @@ async fn a_key_is_held_only_by_another_live_edition() {
     }
 }
 
+/// A copy asks whether another copy of its edition has a file at a key, on
+/// any destination: only a copy the library still makes counts, and the
+/// copy's own file, another edition's, or an unrecorded key never does.
+#[tokio::test]
+async fn a_key_is_held_only_by_another_copy_the_library_makes() {
+    let copy = |text: &str| bookclerk_config::OutputCopy::parse(text).unwrap();
+    for profile in Profile::ALL {
+        let store = kit(profile).await;
+        let name = profile.name();
+        connect(&store, "own-acct", None).await;
+        let ours = store
+            .upsert_book(&library_row("own-acct", "P1"))
+            .await
+            .unwrap();
+        let theirs = store
+            .upsert_book(&library_row("own-acct", "P2"))
+            .await
+            .unwrap();
+        let owner = store
+            .file_owner_of_holding(&ours.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let their_owner = store
+            .file_owner_of_holding(&theirs.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let (main, phone, old) = (copy("m4b:original"), copy("mp3:64k"), copy("mp3:128k"));
+        store
+            .record_edition_copy_file("local", "T/T.m4b", &owner, FileRole::Audio, Some(&main))
+            .await
+            .unwrap();
+        store
+            .record_edition_copy_file("local", "T/old.mp3", &owner, FileRole::Audio, Some(&old))
+            .await
+            .unwrap();
+        store
+            .record_edition_copy_file(
+                "local",
+                "T/theirs.mp3",
+                &their_owner,
+                FileRole::Audio,
+                Some(&main),
+            )
+            .await
+            .unwrap();
+        let guarded = [main.clone(), phone.clone()];
+        let held = |key: &'static str, writing: &bookclerk_config::OutputCopy| {
+            let (store, owner, writing, guarded) = (
+                store.clone(),
+                owner.clone(),
+                writing.clone(),
+                guarded.clone(),
+            );
+            async move {
+                store
+                    .key_held_by_another_copy(&owner, key, &writing, &guarded)
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(held("T/T.m4b", &phone).await, Some(main.clone()), "{name}");
+        assert_eq!(held("T/T.m4b", &main).await, None, "{name}");
+        assert_eq!(held("T/old.mp3", &phone).await, None, "{name}");
+        assert_eq!(held("T/theirs.mp3", &phone).await, None, "{name}");
+        assert_eq!(held("T/free.mp3", &phone).await, None, "{name}");
+        assert_eq!(
+            store
+                .key_held_by_another_copy(&owner, "T/T.m4b", &phone, &[])
+                .await
+                .unwrap(),
+            None,
+            "{name}"
+        );
+    }
+}
+
 /// An acquire run records under a writer of its own, and releases only a
 /// record it made: not one the edition held before, nor one another run
 /// recorded since.

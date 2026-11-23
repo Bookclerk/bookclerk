@@ -654,7 +654,9 @@ alike), the acquire stops with an error before it stores anything. A
 path limit that shortens a part or chapter file's longer name further
 than the planned folder is caught as the files are written instead: a
 copy never writes a file where another copy of the same acquire wrote
-one, on any destination, so that copy fails and is retried. Give
+one, on any destination, or where an earlier acquire recorded a file of
+another copy the library makes, so that copy fails and is retried. A key
+left by a copy the library no longer makes may be written again. Give
 each destination one copy with filters
 when a player scans the whole destination, so it doesn't see the book
 twice.

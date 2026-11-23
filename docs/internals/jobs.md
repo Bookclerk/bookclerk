@@ -563,8 +563,9 @@ libraries scan` ([Libraries and branch nodes](../server/branches.md)).
   flight, not only the work between titles. The job's cancel flag reaches
   the guest's `fetchTitle` call, which the host drops on the plugin's own
   thread, as it drops a call over the scratch quota; the job then fails or
-  is cancelled as usual. A branch running a library's acquire passes the
-  job's cancel flag the same way.
+  is cancelled as usual. The host then removes what that fetch added to
+  the guest's scratch, leaving files an earlier fetch left there. A branch
+  running a library's acquire passes the job's cancel flag the same way.
 
 Scan, listen-sync, and integration-scan retries are idempotent (upserts /
 remote rescan). Acquire retries skip titles already `acquired`, except when

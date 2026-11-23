@@ -300,8 +300,9 @@ pub async fn acquire_book_indexed(
     req.library_copies = req.library_copies.for_one_acquire();
     // Every write of this acquire is recorded under one run, so a failed
     // write releases only this run's record and no copy writes at a key
-    // another of its copies wrote.
-    let run = AcquireRun::new();
+    // another copy wrote, in this run or an earlier one.
+    let plan = destinations.copy_plan();
+    let run = AcquireRun::guarding(plan.iter().map(|(copy, _)| copy.clone()).collect());
     let recorded = recording_destinations(
         library,
         destinations,
@@ -310,8 +311,7 @@ pub async fn acquire_book_indexed(
         req.library_copies.stored_from(),
         &run,
     );
-    let copies: Vec<CopyTarget> = destinations
-        .copy_plan()
+    let copies: Vec<CopyTarget> = plan
         .into_iter()
         .map(|(copy, targets)| CopyTarget {
             destinations: recording_copy_destinations(
@@ -8005,13 +8005,90 @@ mod tests {
             .await
             .unwrap();
 
-        let later = wrap(&phone, "mp3:64k", &crate::record::AcquireRun::new());
-        later
+        // A later run of the library's copies is refused the main copy's
+        // key too, though the main copy is not written in that run.
+        let guarded = vec![output_copy("m4b:original"), output_copy("mp3:64k")];
+        let later_run = crate::record::AcquireRun::guarding(guarded.clone());
+        let later = wrap(&phone, "mp3:64k", &later_run);
+        let refused = later
+            .primary_destination()
+            .backend
+            .put_file(key, &src, ObjectMeta::default())
+            .await
+            .expect_err("an earlier run recorded the key for the main copy");
+        assert!(refused.to_string().contains("m4b:original"), "{refused}");
+        assert!(!tmp.path().join("phone").join(key).exists());
+        // The main copy itself may write it again in a later run.
+        let main_run = crate::record::AcquireRun::guarding(guarded);
+        wrap(&main_dest, "m4b:original", &main_run)
             .primary_destination()
             .backend
             .put_file(key, &src, ObjectMeta::default())
             .await
             .unwrap();
+        // Once the library no longer makes that copy, its key is free.
+        let unguarded_run = crate::record::AcquireRun::guarding(vec![output_copy("mp3:64k")]);
+        wrap(&phone, "mp3:64k", &unguarded_run)
+            .primary_destination()
+            .backend
+            .put_file(key, &src, ObjectMeta::default())
+            .await
+            .unwrap();
+    }
+
+    /// Two chapter-split copies whose chapter keys a tight path limit cut
+    /// to the same key never write over each other, on one destination.
+    #[tokio::test]
+    async fn chapter_files_of_two_copies_never_share_a_key() {
+        let store = test_store().await;
+        let uuid = edition_book(&store, "B00CHAP", "user-1", "Chapters", None).await;
+        let owner = store.file_owner_of_holding(&uuid).await.unwrap().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let local = counting_destinations(&tmp.path().join("local"), Arc::default());
+        let low = output_copy("mp3_chapters:64k-mono");
+        let high = output_copy("mp3_chapters:128k");
+        let run = crate::record::AcquireRun::guarding(vec![low.clone(), high.clone()]);
+        let wrap = |copy: &bookclerk_config::OutputCopy, run| {
+            recording_copy_destinations(
+                &store,
+                &local,
+                Some(&owner),
+                "audible",
+                &crate::library_copies::StoredFrom::default(),
+                copy,
+                run,
+            )
+        };
+        let src = tmp.path().join("chapter.mp3");
+        std::fs::write(&src, b"audio").unwrap();
+        // The part a short key budget leaves of each copy's chapter names.
+        let chapters = ["Chap/Chap - 001.mp3", "Chap/Chap - 002.mp3"];
+        let first = wrap(&low, &run);
+        for key in chapters {
+            first
+                .primary_destination()
+                .backend
+                .put_file(key, &src, ObjectMeta::default())
+                .await
+                .unwrap();
+        }
+        let second = wrap(&high, &run);
+        let refused = second
+            .primary_destination()
+            .backend
+            .put_file(chapters[1], &src, ObjectMeta::default())
+            .await
+            .expect_err("the other copy wrote this chapter's key");
+        assert!(refused.to_string().contains("copy's file"), "{refused}");
+        // A later run is refused the same key from the record alone.
+        let later_run = crate::record::AcquireRun::guarding(vec![low.clone(), high.clone()]);
+        let refused = wrap(&high, &later_run)
+            .primary_destination()
+            .backend
+            .put_file(chapters[0], &src, ObjectMeta::default())
+            .await
+            .expect_err("an earlier run recorded the chapter for the other copy");
+        assert!(refused.to_string().contains(&low.to_string()), "{refused}");
     }
 
     /// A later copy that no destination stores leaves the main output

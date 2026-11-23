@@ -13,7 +13,8 @@
 //! writer id ([`AcquireWriter`]), so a write that fails releases exactly the
 //! record this run made for it, and the keys each of the run's copies
 //! (`output.copies`) wrote, so no copy writes at a key another copy of the
-//! same run wrote, on any destination.
+//! same run wrote, on any destination. Nor does a copy write where an
+//! earlier run recorded a file of another copy the library makes.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -46,14 +47,26 @@ pub(crate) struct AcquireRun {
     /// files by key, so two copies at one key, even on two destinations,
     /// would let it take one for the other.
     copy_keys: Mutex<BTreeMap<String, OutputCopy>>,
+    /// The library copies whose files, recorded by earlier runs, no copy
+    /// of this run may replace: every copy the library makes.
+    guarded: Vec<OutputCopy>,
 }
 
 impl AcquireRun {
-    /// A new run with a writer id of its own.
+    /// A new run with a writer id of its own, guarding no earlier copy's
+    /// files.
     pub(crate) fn new() -> Arc<Self> {
+        Self::guarding(Vec::new())
+    }
+
+    /// A new run with a writer id of its own whose copies never write
+    /// where an earlier run recorded a file of another of the `guarded`
+    /// copies ([`LibraryStore::key_held_by_another_copy`]).
+    pub(crate) fn guarding(guarded: Vec<OutputCopy>) -> Arc<Self> {
         Arc::new(Self {
             writer: AcquireWriter::for_run(),
             copy_keys: Mutex::default(),
+            guarded,
         })
     }
 
@@ -203,17 +216,24 @@ impl RecordingBackend {
     ///
     /// Returns [`StorageError::Other`] when the record cannot be written,
     /// when another live edition holds `key`, or when another copy of this
-    /// run already wrote `key` ([`AcquireRun::claim_for_copy`]); the write
+    /// run already wrote `key` ([`AcquireRun::claim_for_copy`]) or an
+    /// earlier run recorded it for another copy the library makes; the write
     /// is then not attempted, so no file goes unrecorded and no edition's
     /// or copy's file is replaced by another's.
     async fn record(&self, key: &str) -> bookclerk_storage::Result<(FileRole, RecordedFile)> {
         if let Some(copy) = &self.copy {
             if let Some(other) = self.run.claim_for_copy(key, copy) {
-                return Err(StorageError::Other(anyhow::anyhow!(
-                    "{key} is the {other} copy's file; the {copy} copy would replace it \
-                     (give the destinations templates or path limits that keep each \
-                     copy's folder apart)"
-                )));
+                return Err(copy_collision(key, &other, copy));
+            }
+            let earlier = self
+                .library
+                .key_held_by_another_copy(&self.owner, key, copy, &self.run.guarded)
+                .await
+                .map_err(|err| {
+                    StorageError::Other(anyhow::anyhow!("could not read a title's files: {err}"))
+                })?;
+            if let Some(other) = earlier {
+                return Err(copy_collision(key, &other, copy));
             }
         }
         let role = self.role_of(key);
@@ -287,6 +307,16 @@ impl RecordingBackend {
         }
         Ok(role)
     }
+}
+
+/// The refusal of a write of `key` by `copy` where the `other` copy's file
+/// is.
+fn copy_collision(key: &str, other: &OutputCopy, copy: &OutputCopy) -> StorageError {
+    StorageError::Other(anyhow::anyhow!(
+        "{key} is the {other} copy's file; the {copy} copy would replace it \
+         (give the destinations templates or path limits that keep each \
+         copy's folder apart)"
+    ))
 }
 
 /// `source` as a file row may name it: a store's plain id (lowercase
