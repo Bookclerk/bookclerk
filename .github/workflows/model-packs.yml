@@ -1,0 +1,309 @@
+# Builds, checks and publishes the embedding model packs the first-party
+# `embedder` plugin reads (docs/internals/model-packs.md):
+#
+#   ghcr.io/<owner>/models/<model id>   one OCI artifact per model
+#
+# Each model is built from upstream files pinned by revision and SHA-256 in
+# scripts/model-packs/models.json, then every check text is tokenized and
+# embedded twice: by the published tokenizer and ONNX graph, and by the
+# plugin's own code from the pack. Token ids must be equal and vectors equal
+# to rounding. The build must also be the pinned one: the SHA-256 of its
+# `model.json` and of its OCI manifest are in models.json, so what a node
+# downloads is what this workflow built from the reviewed sources.
+#
+# When it runs: on a pull request that touches the builder, the pack layout,
+# the tokenizer or the plugin (build and check only, `contents: read`); on
+# main for the same paths, and by hand from main, which also publish. A
+# publish is addressed by digest and tagged `sha256-<12 hex of the manifest
+# digest>`; publishing a pack that is already there changes nothing. Every
+# published artifact carries a GitHub build-provenance attestation, signed
+# through Sigstore with this workflow's OIDC identity:
+#   gh attestation verify oci://ghcr.io/<owner>/models/<model id>@sha256:<digest> --owner <owner>
+#
+# The build job holds `contents: read` only. The publish and attest jobs get
+# `packages: write` (the pack, and its attestation stored beside it); only
+# the attest job gets `id-token: write` and `attestations: write`.
+name: Model packs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/model-packs.yml"
+      - "scripts/model_packs.py"
+      - "scripts/model-packs/**"
+      - "scripts/vendor-sentencepiece-lite.sh"
+      - "third_party/sentencepiece-lite/**"
+      - "crates/bookclerk-model-pack/**"
+      - "crates/bookclerk-sentencepiece/**"
+      - "crates/bookclerk-onnxruntime/**"
+      - "crates/bookclerk-plugins/platform/ai-embedder/**"
+  pull_request:
+    # Drafts skip this workflow's jobs; `ready_for_review` runs them
+    # (docs/contributing/ci.md#draft-pull-requests).
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - ".github/workflows/model-packs.yml"
+      - "scripts/model_packs.py"
+      - "scripts/model-packs/**"
+      - "scripts/vendor-sentencepiece-lite.sh"
+      - "third_party/sentencepiece-lite/**"
+      - "crates/bookclerk-model-pack/**"
+      - "crates/bookclerk-sentencepiece/**"
+      - "crates/bookclerk-onnxruntime/**"
+      - "crates/bookclerk-plugins/platform/ai-embedder/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A pull request's newer run cancels its older one. Runs that are not for a
+# pull request never cancel each other and queue by branch, so a manual run
+# from another branch (which publishes nothing) cannot take the place of a
+# publish waiting on main. A publish waiting on main can only be replaced by
+# a newer one from main, which publishes what main then pins.
+concurrency:
+  group: model-packs-${{ github.event_name == 'pull_request' && 'pr' || 'push' }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build:
+    name: build ${{ matrix.model }}
+    # Deferred on a draft pull request until it is ready for review.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [bekko-a8m, harrier-270m-q4]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: The matrix lists every pinned model
+        run: |
+          set -euo pipefail
+          test "$(python3 scripts/model_packs.py list)" = '["bekko-a8m", "harrier-270m-q4"]'
+
+      - name: Read tool pins
+        id: pins
+        run: python3 scripts/tool_versions.py github-output >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ steps.pins.outputs.rust }}
+          # The components rust-toolchain.toml lists; otherwise rustup
+          # installs them on the first cargo call.
+          components: rustfmt, clippy
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install the builder's Python packages
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --require-hashes -r scripts/model-packs/requirements.txt
+
+      - name: Install capnproto
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends capnproto
+
+      - name: Cache the tokenizer converter
+        id: converter
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: target/model-packs/tools
+          key: spm-to-fb-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/model-packs/build-spm-to-fb.sh', 'scripts/vendor-sentencepiece-lite.sh') }}
+
+      - name: Build the tokenizer converter
+        if: steps.converter.outputs.cache-hit != 'true'
+        run: scripts/model-packs/build-spm-to-fb.sh target/model-packs/tools
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: model-packs
+          cache-on-failure: true
+          save-if: ${{ github.event_name != 'pull_request' && matrix.model == 'bekko-a8m' }}
+
+      - name: Build the plugin's examples and fetch ONNX Runtime
+        run: |
+          set -euo pipefail
+          cargo build --release --locked -p bookclerk-plugin-ai-embedder --example embed --example tokens
+          cargo ensure-onnxruntime
+
+      - name: Fetch the pinned upstream files
+        env:
+          MODEL: ${{ matrix.model }}
+        run: |
+          "$RUNNER_TEMP/venv/bin/python" scripts/model_packs.py fetch --model "$MODEL"
+
+      - name: Build the pack
+        env:
+          MODEL: ${{ matrix.model }}
+        run: |
+          "$RUNNER_TEMP/venv/bin/python" scripts/model_packs.py build --model "$MODEL" \
+            --spm-to-fb target/model-packs/tools/spm_to_fb
+
+      - name: Check token ids and vectors against the published model
+        env:
+          MODEL: ${{ matrix.model }}
+        run: |
+          set -euo pipefail
+          version="$(python3 -c 'import json; print(json.load(open("crates/bookclerk-onnxruntime/onnxruntime-pin.json"))["version"])')"
+          "$RUNNER_TEMP/venv/bin/python" scripts/model_packs.py check --model "$MODEL" \
+            --examples target/release/examples \
+            --onnxruntime "target/onnxruntime-$version/libonnxruntime.so" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: The build is the pinned one
+        env:
+          MODEL: ${{ matrix.model }}
+        run: |
+          "$RUNNER_TEMP/venv/bin/python" scripts/model_packs.py pin --model "$MODEL"
+
+      - name: Keep the pack for the publish job
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: model-pack-${{ matrix.model }}
+          path: |
+            target/model-packs/out/${{ matrix.model }}/
+            target/model-packs/out/${{ matrix.model }}.oci-manifest.json
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
+  publish:
+    name: publish ${{ matrix.model }}
+    needs: build
+    # From main only, and only from the repository the pins name: a fork
+    # builds and checks but has nowhere pinned to publish to.
+    if: >-
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+      && github.repository == 'bookclerk/bookclerk'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [bekko-a8m, harrier-270m-q4]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: model-pack-${{ matrix.model }}
+          path: target/model-packs/out
+
+      # `publish` measures the files again and refuses anything but the
+      # pinned build, so the artifact handed over by the build job is not
+      # trusted on its own.
+      - name: Publish
+        id: publish
+        env:
+          MODEL: ${{ matrix.model }}
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/model_packs.py publish --model "$MODEL" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Keep the digest for the attest job
+        env:
+          MODEL: ${{ matrix.model }}
+          NAME: ${{ steps.publish.outputs.name }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf '{"name":"%s","digest":"%s"}\n' "$NAME" "$DIGEST" > "published-$MODEL.json"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: model-pack-published-${{ matrix.model }}
+          path: published-${{ matrix.model }}.json
+          retention-days: 1
+          if-no-files-found: error
+
+  attest:
+    name: attest ${{ matrix.model }}
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [bekko-a8m, harrier-270m-q4]
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: model-pack-published-${{ matrix.model }}
+
+      # `actions/attest` stores the attestation beside the artifact with the
+      # registry credentials Docker holds.
+      - name: Log in to the registry
+        env:
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$REGISTRY_PASSWORD" | docker login ghcr.io --username "$REGISTRY_USERNAME" --password-stdin
+
+      # An artifact that is already attested (a publish of the same pack
+      # again) is left alone. That takes both halves: GitHub's record (the
+      # API answers 404 when there is none) and the copy in the registry,
+      # looked for under the tag `sha256-<the artifact's digest>`, where a
+      # registry without the referrers API keeps it. When either is not
+      # found the artifact is attested again, so a run that failed between
+      # the two is repaired by the next one; a second attestation of the
+      # same artifact is harmless.
+      - name: Digest
+        id: digest
+        env:
+          MODEL: ${{ matrix.model }}
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          name="$(jq -r .name "published-$MODEL.json")"
+          digest="$(jq -r .digest "published-$MODEL.json")"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$name" =~ ^ghcr\.io/[a-z0-9._/-]+$ ]]
+          count="$(gh api "repos/$GH_REPO/attestations/$digest" --jq '.attestations | length' 2>/dev/null)" || count=0
+          [[ "$count" =~ ^[0-9]+$ ]] || count=0
+          if [[ "$count" -gt 0 ]] && docker manifest inspect "$name:sha256-${digest#sha256:}" >/dev/null 2>&1; then
+            echo "$name@$digest is already attested"
+            digest=""
+          fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance
+        if: steps.digest.outputs.digest != ''
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.digest.outputs.name }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          push-to-registry: true

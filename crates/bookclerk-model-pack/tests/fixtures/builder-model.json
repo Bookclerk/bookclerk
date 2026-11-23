@@ -1,0 +1,54 @@
+{
+  "format": 1,
+  "model_id": "tiny",
+  "dimensions": 4,
+  "max_tokens": 16,
+  "graph": {
+    "model": {
+      "file": "core.onnx",
+      "bytes": 5,
+      "sha256": "eef93e1d14482804277fca0172464032d1a4fdbcc338524059fa1e861454ad4d"
+    },
+    "ids_input": "input_ids",
+    "mask_input": "attention_mask",
+    "output": "last_hidden_state",
+    "pooling": "mean"
+  },
+  "tokenizer": {
+    "model": {
+      "file": "tokenizer.spm.fb",
+      "bytes": 9,
+      "sha256": "5f97e3774c51edd1d63706c2ec3826c564a067794770cdab0f8c4797971cacf9"
+    },
+    "literal_pieces": [
+      "\n",
+      "<br>"
+    ],
+    "prefix_pieces": [
+      "<bos>"
+    ],
+    "suffix_pieces": [
+      "<eos>"
+    ],
+    "document_prefix": "",
+    "query_prefix": "Query: "
+  },
+  "tables": [
+    {
+      "input": "embeddings.weight",
+      "element": "i8",
+      "width": 2
+    },
+    {
+      "input": "embeddings.scale",
+      "element": "f32",
+      "width": 1
+    }
+  ],
+  "base_rows": {
+    "file": "base.rows",
+    "bytes": 76,
+    "sha256": "f75e62868a63dd0b4d2e1ce79b3e0bd1e2f937177022deee5ebfd69ec6cae58b"
+  },
+  "languages": {}
+}

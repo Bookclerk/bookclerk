@@ -44,6 +44,11 @@ pub const MAX_SOCKET_ATTACHMENT_BYTES: u32 = crate::plugin_capnp::MAX_SOCKET_ATT
 /// Most host-brokered sockets one plugin instance may hold open at once.
 pub const MAX_SOCKETS_PER_INSTANCE: u32 = crate::plugin_capnp::MAX_SOCKETS_PER_INSTANCE;
 
+/// Most sockets into the library (accepted `Origin.connect` upgrades) one
+/// relay ingress instance may hold, apart from [`MAX_SOCKETS_PER_INSTANCE`].
+pub const MAX_ORIGIN_SOCKETS_PER_INSTANCE: u32 =
+    crate::plugin_capnp::MAX_ORIGIN_SOCKETS_PER_INSTANCE;
+
 /// Most heartbeat pairs one `Sockets.connect` may declare.
 pub const MAX_SOCKET_AUTO_RESPONSES: u32 = crate::plugin_capnp::MAX_SOCKET_AUTO_RESPONSES;
 
@@ -70,6 +75,10 @@ pub const MAX_ORIGIN_TARGET_BYTES: u32 = crate::plugin_capnp::MAX_ORIGIN_TARGET_
 
 /// Longest host name in `IngressStarted.origin`, in bytes.
 pub const MAX_INGRESS_ORIGIN_BYTES: u32 = crate::plugin_capnp::MAX_INGRESS_ORIGIN_BYTES;
+
+/// Largest body of an [`crate::OriginRefusal`]: the library's answer to a
+/// WebSocket upgrade it did not accept. A longer body is cut to this.
+pub const MAX_ORIGIN_REFUSAL_BODY_BYTES: u32 = crate::plugin_capnp::MAX_ORIGIN_REFUSAL_BODY_BYTES;
 
 /// Most deliveries one `Webhooks.pull` returns.
 pub const MAX_WEBHOOK_PULL_BATCH: u32 = crate::plugin_capnp::MAX_WEBHOOK_PULL_BATCH;

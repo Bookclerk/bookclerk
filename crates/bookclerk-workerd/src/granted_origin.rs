@@ -1,5 +1,10 @@
-//! `POST /origin/fetch` on the granted channel: the `ORIGIN` binding of a
-//! relay `ingress` plugin.
+//! `POST /origin/fetch` and `POST /origin/connect` on the granted channel:
+//! the `ORIGIN` binding of a relay `ingress` plugin.
+//!
+//! `POST /origin/connect` carries one `env.ORIGIN.connect` as JSON
+//! ([`bookclerk_plugin_abi::origin::OriginConnectBody`]) and answers `200`
+//! with the [`OriginConnected`] as JSON: the socket, now one of the
+//! instance's `SOCKETS`, or the library's refusal.
 //!
 //! The adapter isolate sends one request per `env.ORIGIN.fetch`. Its body is
 //! a framed head ([`bookclerk_plugin_abi::origin::encode_origin_frame`]: a
@@ -17,10 +22,11 @@ use std::rc::Rc;
 
 use anyhow::{Context as _, Result};
 use bookclerk_plugin_abi::origin::{
-    check_origin_response, decode_origin_request_frame, encode_origin_frame, split_origin_frame,
-    CheckedOriginRequest, OriginResponseHead,
+    check_origin_refusal, check_origin_response, decode_origin_connect_body,
+    decode_origin_request_frame, encode_origin_frame, split_origin_frame, CheckedOriginRequest,
+    OriginResponseHead,
 };
-use bookclerk_plugin_abi::{Origin, PluginError};
+use bookclerk_plugin_abi::{Origin, OriginConnected, PluginError};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 
@@ -160,6 +166,98 @@ async fn write_chunk<W: AsyncWrite + Unpin>(writer: &mut W, chunk: &[u8]) -> Res
     Ok(())
 }
 
+/// Serves one `POST /origin/connect` whose body has been read.
+///
+/// # Errors
+///
+/// An I/O error on the connection.
+pub(super) async fn serve_connect<W>(
+    writer: &mut W,
+    body: &[u8],
+    invocation: String,
+    cmds: mpsc::Sender<GrantedCmd>,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let (request, attachment) = match decode_origin_connect_body(body) {
+        Ok(decoded) => decoded,
+        Err(err) => {
+            write_plugin_error(writer, &err).await?;
+            return Ok(());
+        }
+    };
+    let (resp_tx, resp_rx) = oneshot::channel();
+    cmds.send(GrantedCmd::OriginConnect {
+        invocation,
+        request,
+        attachment,
+        resp: resp_tx,
+    })
+    .await
+    .context("granted dispatch closed")?;
+    match resp_rx.await.context("granted origin connect dropped")? {
+        Ok(connected) => {
+            let payload = serde_json::to_vec(&connected).context("encode origin connect")?;
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                payload.len()
+            );
+            writer.write_all(head.as_bytes()).await?;
+            writer.write_all(&payload).await?;
+            writer.flush().await?;
+        }
+        Err(err) => write_plugin_error(writer, &err).await?,
+    }
+    Ok(())
+}
+
+/// The `ORIGIN` binding of a grant slot.
+///
+/// # Errors
+///
+/// `unauthorized` for an unknown, revoked or expired grant, `forbidden`
+/// for a grant without `ORIGIN`.
+fn granted_origin(table: &GrantedTable, invocation: &str) -> Result<Rc<dyn Origin>, PluginError> {
+    let mut table = table.borrow_mut();
+    let slot = table.get_mut(invocation).ok_or_else(|| {
+        PluginError::new(
+            bookclerk_plugin_abi::PluginErrorCode::Unauthorized,
+            "unknown or revoked grant",
+        )
+    })?;
+    if slot.expires <= std::time::Instant::now() {
+        table.remove(invocation);
+        return Err(PluginError::new(
+            bookclerk_plugin_abi::PluginErrorCode::Unauthorized,
+            "grant expired",
+        ));
+    }
+    slot.origin
+        .clone()
+        .ok_or_else(|| PluginError::forbidden("ORIGIN is not granted to this invocation"))
+}
+
+/// Vat side of one upgrade: the slot must carry the `ORIGIN` binding; a
+/// refusal is checked again before it goes back.
+///
+/// # Errors
+///
+/// The grant's refusal ([`granted_origin`]) or the library's.
+pub(super) async fn dispatch_connect(
+    table: &GrantedTable,
+    invocation: String,
+    request: CheckedOriginRequest,
+    attachment: Vec<u8>,
+) -> Result<OriginConnected, PluginError> {
+    let origin = granted_origin(table, &invocation)?;
+    let connected = origin.connect(request, attachment).await?;
+    if let OriginConnected::Refused(refusal) = &connected {
+        check_origin_refusal(refusal)?;
+    }
+    Ok(connected)
+}
+
 /// Vat side of one origin request: the slot must carry the `ORIGIN`
 /// binding; the library's response head is checked before it goes back.
 ///
@@ -173,25 +271,7 @@ pub(super) async fn dispatch(
     request: CheckedOriginRequest,
     body_rx: mpsc::Receiver<Result<Vec<u8>, String>>,
 ) -> Result<OriginOpened, PluginError> {
-    let origin: Rc<dyn Origin> = {
-        let mut table = table.borrow_mut();
-        let slot = table.get_mut(&invocation).ok_or_else(|| {
-            PluginError::new(
-                bookclerk_plugin_abi::PluginErrorCode::Unauthorized,
-                "unknown or revoked grant",
-            )
-        })?;
-        if slot.expires <= std::time::Instant::now() {
-            table.remove(&invocation);
-            return Err(PluginError::new(
-                bookclerk_plugin_abi::PluginErrorCode::Unauthorized,
-                "grant expired",
-            ));
-        }
-        slot.origin
-            .clone()
-            .ok_or_else(|| PluginError::forbidden("ORIGIN is not granted to this invocation"))?
-    };
+    let origin = granted_origin(table, &invocation)?;
     let body: Pin<Box<dyn AsyncRead + Send>> = Box::pin(ChannelReader {
         rx: body_rx,
         buf: Vec::new(),

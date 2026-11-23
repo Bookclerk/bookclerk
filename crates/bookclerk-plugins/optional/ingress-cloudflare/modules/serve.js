@@ -5,9 +5,13 @@
  * The whole exchange runs inside the socket message that announced it, so
  * every stream it touches belongs to that one invocation. The relay sends
  * a socket no new notice until the push is done.
+ *
+ * An upgrade opens a socket to the library through `env.ORIGIN.connect`
+ * instead; its attachment ({@link LiveAttachment}) pairs it with the
+ * relay's connection, and `lifecycle.ts` carries its messages.
  */
 import { framed, readFrame } from "./relay-core.js";
-import { HOP_BY_HOP, RELAY_PULL_PATH, RELAY_PUSH_PATH, encodeFrame, parseRequestHead, } from "./protocol.js";
+import { HOP_BY_HOP, RELAY_PULL_PATH, RELAY_PUSH_PATH, RELAY_SOCKET_HEADER, encodeFrame, parseRequestHead, } from "./protocol.js";
 /** Statuses whose responses carry no body. */
 const NULL_BODY = new Set([101, 204, 205, 304]);
 /**
@@ -126,6 +130,8 @@ export async function serveRequest(ctx, id) {
     const bodyless = head.method === "GET" || head.method === "HEAD";
     if (bodyless)
         await frame.body.cancel().catch(() => { });
+    if (head.upgrade)
+        return serveUpgrade(ctx, id, head);
     const headers = new Headers();
     for (const field of head.headers)
         headers.append(field.name, field.value);
@@ -150,4 +156,48 @@ export async function serveRequest(ctx, id) {
     if (!body)
         await response.body?.cancel().catch(() => { });
     return (await push(ctx, id, responseHead(response), body)) ? "served" : "push_failed";
+}
+/**
+ * Serves one relayed upgrade: open a socket to the library and tell the
+ * relay which socket carries the connection, or pass on the library's
+ * refusal.
+ *
+ * @param ctx - The relay, its token and the library.
+ * @param id - The request's id, from now on the connection's.
+ * @param head - The upgrade's head.
+ * @returns How it ended.
+ */
+async function serveUpgrade(ctx, id, head) {
+    const headers = new Headers();
+    for (const field of head.headers)
+        headers.append(field.name, field.value);
+    const request = new Request(`https://${ctx.host}${head.target}`, { method: "GET", headers });
+    const attachment = { live: id, relay: ctx.via };
+    let result;
+    try {
+        result = await ctx.origin.connect(request, {
+            attachment,
+            ...(head.client ? { clientAddress: head.client } : {}),
+        });
+    }
+    catch {
+        const answer = errorAnswer(502, "The library could not open the connection.");
+        await push(ctx, id, answer.head, answer.body);
+        return "library_failed";
+    }
+    if ("response" in result) {
+        const { response } = result;
+        const body = NULL_BODY.has(response.status) ? null : response.body;
+        if (!body)
+            await response.body?.cancel().catch(() => { });
+        return (await push(ctx, id, responseHead(response), body)) ? "served" : "push_failed";
+    }
+    const { socket } = result;
+    const fields = [{ name: RELAY_SOCKET_HEADER, value: socket.id }];
+    if (socket.protocol)
+        fields.push({ name: "sec-websocket-protocol", value: socket.protocol });
+    if (await push(ctx, id, { status: 101, headers: fields }, null))
+        return "served";
+    await socket.close(1011, "the relay did not take the connection").catch(() => { });
+    return "push_failed";
 }

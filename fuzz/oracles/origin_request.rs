@@ -2,11 +2,13 @@
 //! `bookclerk-plugin-abi` corpus replay test
 //! (`docs/adr/untrusted-input-fuzzing.md`).
 //!
-//! The input is one thing a relay `ingress` plugin hands the host. Byte 0
-//! modulo 4 selects the form: 0 is the body of a `POST /origin/fetch` on the
-//! isolate bridge (a framed head, then the request body), 1 is a request
-//! head's JSON, 2 is a response head's JSON, and 3 is the origin an ingress
-//! plugin reports from `start` (lossy UTF-8). The invariants:
+//! The input is one thing a relay `ingress` plugin hands the host, or the
+//! host hands back. Byte 0 modulo 6 selects the form: 0 is the body of a
+//! `POST /origin/fetch` on the isolate bridge (a framed head, then the
+//! request body), 1 is a request head's JSON, 2 is a response head's JSON,
+//! 3 is the origin an ingress plugin reports from `start` (lossy UTF-8), 4
+//! is the body of a `POST /origin/connect` (a WebSocket upgrade), and 5 is
+//! the JSON of the library's refusal of an upgrade. The invariants:
 //!
 //! - splitting, decoding and checking never panic;
 //! - [`split_origin_frame`] waits for more bytes exactly while the frame is
@@ -20,6 +22,12 @@
 //!   exactly the `host` and forwarding fields, and frames back to itself;
 //! - a response head is accepted exactly when the restated status and
 //!   header rules hold;
+//! - an upgrade is accepted exactly when its head passes the request rules,
+//!   its method is `GET` and its attachment fits; an accepted one keeps the
+//!   attachment and drops exactly the `host`, forwarding and handshake
+//!   fields;
+//! - a refusal is accepted exactly when its status is final (200 to 599),
+//!   its headers pass and its body fits;
 //! - an ingress origin is accepted exactly when the restated host-name
 //!   rules hold, and a WHATWG URL parser (the `url` crate) reads every
 //!   accepted origin as `https`, the same host, no port, user info, path,
@@ -28,12 +36,14 @@
 use std::net::IpAddr;
 
 use bookclerk_plugin_abi::origin::{
-    decode_origin_request_frame, decode_origin_response_frame, encode_origin_frame,
-    parse_ingress_origin, split_origin_frame, OriginResponseHead, MAX_ORIGIN_FRAME_HEAD_BYTES,
+    check_origin_refusal, decode_origin_connect_body, decode_origin_request_frame,
+    decode_origin_response_frame, encode_origin_frame, parse_ingress_origin, split_origin_frame,
+    OriginConnectBody, OriginResponseHead, MAX_ORIGIN_FRAME_HEAD_BYTES,
 };
 use bookclerk_plugin_abi::{
-    IngressStarted, OriginHeader, OriginRequest, MAX_INGRESS_ORIGIN_BYTES, MAX_ORIGIN_HEADERS,
-    MAX_ORIGIN_HEADER_BYTES, MAX_ORIGIN_TARGET_BYTES,
+    IngressStarted, OriginHeader, OriginRefusal, OriginRequest, MAX_INGRESS_ORIGIN_BYTES,
+    MAX_ORIGIN_HEADERS, MAX_ORIGIN_HEADER_BYTES, MAX_ORIGIN_REFUSAL_BODY_BYTES,
+    MAX_ORIGIN_TARGET_BYTES, MAX_SOCKET_ATTACHMENT_BYTES,
 };
 
 /// Largest input worth parsing: a whole frame at its limit plus some body.
@@ -60,6 +70,15 @@ const IGNORED: [&str; 6] = [
     "x-forwarded-host",
     "x-forwarded-proto",
     "x-real-ip",
+];
+
+/// WebSocket handshake fields the host writes itself on an upgrade,
+/// restated (lowercase).
+const HANDSHAKE: [&str; 4] = [
+    "sec-websocket-key",
+    "sec-websocket-version",
+    "sec-websocket-extensions",
+    "sec-websocket-accept",
 ];
 
 /// Longest method the host accepts, restated.
@@ -207,6 +226,49 @@ fn check_response_json(json: &[u8]) {
     );
 }
 
+/// Checks one `POST /origin/connect` body against the restated rules.
+fn check_connect_json(json: &[u8]) {
+    let decoded = decode_origin_connect_body(json);
+    let Ok(body) = serde_json::from_slice::<OriginConnectBody>(json) else {
+        assert!(decoded.is_err(), "a body that is not a connect body passed");
+        return;
+    };
+    let client = request_ok(&body.request).filter(|_| {
+        body.request.method == "GET"
+            && body.attachment.len() <= MAX_SOCKET_ATTACHMENT_BYTES as usize
+    });
+    let (checked, attachment) = match (decoded, client) {
+        (Ok(decoded), Some(_)) => decoded,
+        (Err(_), None) => return,
+        (Ok(_), None) => panic!("an upgrade breaking a rule passed: {body:?}"),
+        (Err(err), Some(_)) => panic!("an acceptable upgrade was refused: {err:?} {body:?}"),
+    };
+    assert_eq!(attachment, body.attachment);
+    assert_eq!(checked.target, body.request.target);
+    let kept: Vec<&OriginHeader> = body
+        .request
+        .headers
+        .iter()
+        .filter(|h| !listed(&h.name, &IGNORED) && !listed(&h.name, &HANDSHAKE))
+        .collect();
+    assert_eq!(checked.headers.iter().collect::<Vec<_>>(), kept);
+}
+
+/// Checks the JSON of one refusal against the restated rules.
+fn check_refusal_json(json: &[u8]) {
+    let Ok(refusal) = serde_json::from_slice::<OriginRefusal>(json) else {
+        return;
+    };
+    let ok = (200..=599).contains(&refusal.status)
+        && refusal.body.len() <= MAX_ORIGIN_REFUSAL_BODY_BYTES as usize
+        && headers_ok(&refusal.headers);
+    assert_eq!(
+        check_origin_refusal(&refusal).is_ok(),
+        ok,
+        "refusal verdict differs: {refusal:?}"
+    );
+}
+
 /// Checks an ingress origin against the restated rules and a URL parser.
 fn check_origin(text: &str) {
     let parsed = parse_ingress_origin(&IngressStarted {
@@ -269,10 +331,12 @@ pub fn check(data: &[u8]) {
     let Some((&form, rest)) = data.split_first() else {
         return;
     };
-    match form % 4 {
+    match form % 6 {
         0 => check_frame(rest),
         1 => check_request_json(rest),
         2 => check_response_json(rest),
-        _ => check_origin(&String::from_utf8_lossy(rest)),
+        3 => check_origin(&String::from_utf8_lossy(rest)),
+        4 => check_connect_json(rest),
+        _ => check_refusal_json(rest),
     }
 }

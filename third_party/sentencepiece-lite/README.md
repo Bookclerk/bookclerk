@@ -22,3 +22,8 @@ Never edit these files by hand. To move to newer upstream commits, change
 the pins at the top of `scripts/vendor-sentencepiece-lite.sh`, run it, update
 the table above, and run `cargo test -p bookclerk-sentencepiece`: its tests
 compare token ids with ids full SentencePiece produced.
+
+Upstream's converter `spm_to_fb`, which writes the file the runtime reads,
+is not vendored. `scripts/model-packs/build-spm-to-fb.sh` builds it from
+the same pinned commit for the model pack builder and the test fixtures;
+when the pins move, update the commits it checks.

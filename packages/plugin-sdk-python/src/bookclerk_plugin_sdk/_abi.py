@@ -154,6 +154,12 @@ MAX_SOCKET_ATTACHMENT_BYTES: int = 2048
 MAX_SOCKETS_PER_INSTANCE: int = 8
 """Most host-brokered sockets one plugin instance may hold open at once."""
 
+MAX_ORIGIN_SOCKETS_PER_INSTANCE: int = 256
+"""Most sockets into the library (accepted `Origin.connect` upgrades) one
+relay ingress instance may hold at once, apart from `maxSocketsPerInstance`:
+the host holds them in process, not in the socket broker.
+"""
+
 MAX_SOCKET_AUTO_RESPONSES: int = 4
 """Most heartbeat pairs one `Sockets.connect` may declare."""
 
@@ -181,6 +187,11 @@ MAX_ORIGIN_TARGET_BYTES: int = 8192
 
 MAX_INGRESS_ORIGIN_BYTES: int = 253
 """Longest `IngressStarted.origin`, in bytes."""
+
+MAX_ORIGIN_REFUSAL_BODY_BYTES: int = 65536
+"""Largest body of an `OriginRefusal` (the library's answer to a WebSocket
+upgrade it did not accept), in bytes; a longer body is cut to this.
+"""
 
 MAX_WEBHOOK_PULL_BATCH: int = 100
 """Most deliveries one `Webhooks.pull` returns."""
@@ -538,6 +549,7 @@ __all__ = [
     "MAX_SOCKET_FRAME_BYTES",
     "MAX_SOCKET_ATTACHMENT_BYTES",
     "MAX_SOCKETS_PER_INSTANCE",
+    "MAX_ORIGIN_SOCKETS_PER_INSTANCE",
     "MAX_SOCKET_AUTO_RESPONSES",
     "MAX_SOCKET_AUTO_RESPONSE_BYTES",
     "MAX_SOCKET_URL_BYTES",
@@ -546,6 +558,7 @@ __all__ = [
     "MAX_ORIGIN_HEADER_BYTES",
     "MAX_ORIGIN_TARGET_BYTES",
     "MAX_INGRESS_ORIGIN_BYTES",
+    "MAX_ORIGIN_REFUSAL_BODY_BYTES",
     "MAX_WEBHOOK_PULL_BATCH",
     "MAX_WEBHOOK_LEASE_ID_BYTES",
     "MAX_WEBHOOK_VISIBILITY_MS",

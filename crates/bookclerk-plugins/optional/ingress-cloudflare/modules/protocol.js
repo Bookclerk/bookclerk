@@ -19,6 +19,14 @@
  *    to {@link RELAY_PUSH_PATH}`<id>` in the same framing: the response head
  *    ({@link RelayResponseHead}), then the response body.
  *
+ * A WebSocket upgrade takes the same steps with `upgrade: true` on the
+ * request head. The plugin opens a socket to the library and, when the
+ * library accepts, pushes a `101` head whose {@link RELAY_SOCKET_HEADER}
+ * names the plugin's socket. From then on the connection's messages travel
+ * as binary live frames ({@link encodeLiveFrame}) on the plugin socket that
+ * served the upgrade: the relay addresses the plugin's socket id, the
+ * plugin addresses the request id.
+ *
  * Every relay path needs `Authorization: Bearer <token>`, the token the
  * plugin derived and deployed with the Worker. Each end parses what the
  * other sends with the functions here, sans IO, so the fuzz tests drive the
@@ -36,7 +44,9 @@ export const RELAY_PULL_PATH = `${RELAY_PREFIX}pull/`;
 export const RELAY_PUSH_PATH = `${RELAY_PREFIX}push/`;
 /**
  * Sockets the plugin keeps open, and so the requests it serves at once. The
- * host lets an instance hold 8 sockets; two stay free for reconnecting.
+ * host lets an instance hold 8 outbound sockets; two stay free for
+ * reconnecting. Live connections ride on these sockets rather than taking
+ * their own.
  */
 export const RELAY_SOCKETS = 6;
 /** Bytes of the big-endian length that opens a frame. */
@@ -313,6 +323,12 @@ export function parseRequestHead(json) {
             return "client is not an IP address";
         head.client = client;
     }
+    const { upgrade } = record;
+    if (upgrade !== undefined) {
+        if (upgrade !== true || method !== "GET")
+            return "upgrade is not true on a GET";
+        head.upgrade = true;
+    }
     return head;
 }
 /**
@@ -326,8 +342,10 @@ export function parseResponseHead(json) {
     if (typeof record === "string")
         return record;
     const { status, headers } = record;
-    if (typeof status !== "number" || !Number.isInteger(status) || status < 200 || status > 599) {
-        return "status is not 200 to 599";
+    if (typeof status !== "number" ||
+        !Number.isInteger(status) ||
+        (status !== 101 && (status < 200 || status > 599))) {
+        return "status is not 101 or 200 to 599";
     }
     const fields = parseHeaders(headers);
     if (typeof fields === "string")
@@ -399,4 +417,196 @@ export function bearerToken(header) {
         return null;
     const match = /^Bearer ([A-Za-z0-9_-]{16,128})$/.exec(header);
     return match?.[1] ?? null;
+}
+/**
+ * Response header on a `101` push naming the plugin's socket for the
+ * connection; the relay keeps it and never passes it to the client.
+ */
+export const RELAY_SOCKET_HEADER = "x-bookclerk-relay-socket";
+/**
+ * Largest live frame either end sends: the host's `maxSocketFrameBytes`,
+ * since each frame is one message on a host-brokered socket.
+ */
+export const MAX_LIVE_FRAME_BYTES = 262144;
+/** Bytes before a live frame's payload at most: op, id length and id. */
+export const LIVE_FRAME_OVERHEAD = 2 + MAX_ID_LENGTH;
+/**
+ * Largest message a live connection carries in either direction; a client
+ * or library message past it closes the connection with 1009.
+ */
+export const MAX_LIVE_MESSAGE_BYTES = MAX_LIVE_FRAME_BYTES - LIVE_FRAME_OVERHEAD;
+/** Longest close reason in bytes (a close frame's 125 less the code). */
+export const MAX_CLOSE_REASON_BYTES = 123;
+/** Op byte of a text message. */
+const OP_TEXT = 1;
+/** Op byte of a binary message. */
+const OP_BINARY = 2;
+/** Op byte of a close. */
+const OP_CLOSE = 3;
+/**
+ * Whether a close code may be sent on to the other side. Both the Workers
+ * runtime and the host accept these.
+ *
+ * @param code - Candidate code.
+ * @returns `true` for 1000 to 1003, 1007 to 1014 and 3000 to 4999.
+ */
+export function isSendableCloseCode(code) {
+    return (Number.isInteger(code) &&
+        ((code >= 1000 && code <= 1003) ||
+            (code >= 1007 && code <= 1014) ||
+            (code >= 3000 && code <= 4999)));
+}
+/**
+ * The code to pass on for a close the other side reported.
+ *
+ * @param code - The reported code.
+ * @returns It when sendable; 1011 for an abnormal close (1006); else 1000.
+ */
+export function sendableCloseCode(code) {
+    if (isSendableCloseCode(code))
+        return code;
+    return code === 1006 ? 1011 : 1000;
+}
+/**
+ * A close reason cut to {@link MAX_CLOSE_REASON_BYTES} bytes on a character
+ * boundary.
+ *
+ * @param reason - The reported reason.
+ * @returns The reason, shortened when needed.
+ */
+export function sendableCloseReason(reason) {
+    const encoder = new TextEncoder();
+    if (encoder.encode(reason).length <= MAX_CLOSE_REASON_BYTES)
+        return reason;
+    let out = "";
+    let bytes = 0;
+    for (const ch of reason) {
+        const size = encoder.encode(ch).length;
+        if (bytes + size > MAX_CLOSE_REASON_BYTES)
+            break;
+        out += ch;
+        bytes += size;
+    }
+    return out;
+}
+/**
+ * Encodes a live frame: an op byte (1 text, 2 binary, 3 close), the id's
+ * length in one byte, the id in ASCII, then the payload (the message, or a
+ * big-endian close code and the reason in UTF-8).
+ *
+ * @param frame - The frame.
+ * @returns Its bytes.
+ * @throws {RangeError} When the id is not a request id, the close code or
+ *   reason may not be sent, or the frame is over
+ *   {@link MAX_LIVE_FRAME_BYTES}.
+ */
+export function encodeLiveFrame(frame) {
+    if (!isRequestId(frame.id))
+        throw new RangeError("live frame id is not a request id");
+    const encoder = new TextEncoder();
+    let op;
+    let payload;
+    switch (frame.op) {
+        case "text":
+            op = OP_TEXT;
+            payload = encoder.encode(frame.text);
+            break;
+        case "binary":
+            op = OP_BINARY;
+            payload = frame.data;
+            break;
+        case "close": {
+            op = OP_CLOSE;
+            if (!isSendableCloseCode(frame.code))
+                throw new RangeError("close code may not be sent");
+            const reason = encoder.encode(frame.reason);
+            if (reason.length > MAX_CLOSE_REASON_BYTES)
+                throw new RangeError("close reason is too long");
+            payload = new Uint8Array(2 + reason.length);
+            new DataView(payload.buffer).setUint16(0, frame.code, false);
+            payload.set(reason, 2);
+            break;
+        }
+    }
+    const size = 2 + frame.id.length + payload.length;
+    if (size > MAX_LIVE_FRAME_BYTES)
+        throw new RangeError("live frame is too large");
+    const out = new Uint8Array(size);
+    out[0] = op;
+    out[1] = frame.id.length;
+    for (let i = 0; i < frame.id.length; i++)
+        out[2 + i] = frame.id.charCodeAt(i);
+    out.set(payload, 2 + frame.id.length);
+    return out;
+}
+/**
+ * Parses a live frame the other end sent.
+ *
+ * @param bytes - The binary socket message.
+ * @returns The frame, or why it is refused.
+ */
+export function parseLiveFrame(bytes) {
+    if (bytes.length > MAX_LIVE_FRAME_BYTES)
+        return "live frame is too large";
+    if (bytes.length < 2)
+        return "live frame is too short";
+    const op = bytes[0];
+    const idLength = bytes[1] ?? 0;
+    if (bytes.length < 2 + idLength)
+        return "live frame ends inside its id";
+    let id = "";
+    for (let i = 0; i < idLength; i++)
+        id += String.fromCharCode(bytes[2 + i] ?? 0);
+    if (!isRequestId(id))
+        return "live frame id is not a request id";
+    const payload = bytes.slice(2 + idLength);
+    if (op === OP_TEXT) {
+        try {
+            const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(payload);
+            return { op: "text", id, text };
+        }
+        catch {
+            return "live text is not UTF-8";
+        }
+    }
+    if (op === OP_BINARY)
+        return { op: "binary", id, data: payload };
+    if (op === OP_CLOSE) {
+        if (payload.length < 2)
+            return "live close has no code";
+        if (payload.length > 2 + MAX_CLOSE_REASON_BYTES)
+            return "live close reason is too long";
+        const code = ((payload[0] ?? 0) << 8) | (payload[1] ?? 0);
+        if (!isSendableCloseCode(code))
+            return "live close code may not be sent";
+        try {
+            const reason = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(payload.subarray(2));
+            return { op: "close", id, code, reason };
+        }
+        catch {
+            return "live close reason is not UTF-8";
+        }
+    }
+    return "live frame op is unknown";
+}
+/**
+ * The live frame carrying one message of a live connection.
+ *
+ * @param id - The connection's id on the receiving end.
+ * @param message - A socket message: text, or binary bytes.
+ * @returns The frame, or `null` when the message is over
+ *   {@link MAX_LIVE_MESSAGE_BYTES} (the sender then closes with 1009).
+ * @throws {RangeError} When `id` is not a request id.
+ */
+export function messageFrame(id, message) {
+    if (typeof message === "string") {
+        const bytes = new TextEncoder().encode(message);
+        if (bytes.length > MAX_LIVE_MESSAGE_BYTES)
+            return null;
+        return encodeLiveFrame({ op: "text", id, text: message });
+    }
+    const data = message instanceof Uint8Array ? message : new Uint8Array(message);
+    if (data.length > MAX_LIVE_MESSAGE_BYTES)
+        return null;
+    return encodeLiveFrame({ op: "binary", id, data });
 }
