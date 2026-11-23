@@ -1484,6 +1484,8 @@ mod results_and_uploads {
         latest_seen: Arc<Mutex<Vec<Option<Vec<u8>>>>>,
         /// This install's own copies of accounts it keeps.
         keeper: Option<Arc<dyn super::super::host_jobs::LocalKeeper>>,
+        /// File keys another edition in this install's own library holds.
+        held_keys: Vec<String>,
     }
 
     /// A [`super::super::host_jobs::LocalKeeper`] that keeps every account,
@@ -1653,6 +1655,15 @@ mod results_and_uploads {
                 .lock()
                 .unwrap()
                 .push((copy.holding_id.to_owned(), copy.files.to_vec()));
+        }
+
+        async fn local_key_held_elsewhere(
+            &self,
+            _book: &NewBook,
+            _destination: &bookclerk_config::DestinationId,
+            key: &str,
+        ) -> anyhow::Result<bool> {
+            Ok(self.held_keys.iter().any(|held| held == key))
         }
 
         fn work_dir(&self) -> PathBuf {
@@ -4995,6 +5006,7 @@ mod results_and_uploads {
             ..StubGuests::default()
         };
         let outbox = work.path().join("t1");
+        let book = owner_book("riley-acct", "P1");
         let key = "Author/Title/Title.m4b".to_string();
         let source = destination_outbox(&outbox, 0).join(&key);
         tokio::fs::create_dir_all(source.parent().unwrap())
@@ -5007,7 +5019,7 @@ mod results_and_uploads {
             keys: vec![vec![key.clone()]],
         };
         let copied = Mutex::new(Vec::new());
-        let placed = copy_to_local_destinations(&guests, "t1", &outbox, &acquired, &copied)
+        let placed = copy_to_local_destinations(&guests, &book, "t1", &outbox, &acquired, &copied)
             .await
             .unwrap();
         assert_eq!(
@@ -5034,7 +5046,7 @@ mod results_and_uploads {
             .unwrap();
         tokio::fs::write(&copy, b"earlier").await.unwrap();
         let copied = Mutex::new(Vec::new());
-        copy_to_local_destinations(&guests, "t1", &outbox, &acquired, &copied)
+        copy_to_local_destinations(&guests, &book, "t1", &outbox, &acquired, &copied)
             .await
             .unwrap();
         let copies = copied.into_inner().unwrap();
@@ -5043,6 +5055,50 @@ mod results_and_uploads {
         assert!(
             copy.is_file(),
             "the rollback leaves a key it did not create"
+        );
+    }
+
+    /// A key another edition in this host's own library holds is never
+    /// overwritten: the host keeps no copy of the title at all.
+    #[tokio::test]
+    async fn local_copy_skips_a_key_another_edition_holds() {
+        use super::super::host_jobs::copy_to_local_destinations;
+
+        let host_local = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let key = "Author/Title/Title.m4b".to_string();
+        let guests = StubGuests {
+            local: Some(host_local.path().to_path_buf()),
+            held_keys: vec![key.clone()],
+            ..StubGuests::default()
+        };
+        let book = owner_book("riley-acct", "P1");
+        let outbox = work.path().join("t1");
+        let source = destination_outbox(&outbox, 0).join(&key);
+        tokio::fs::create_dir_all(source.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&source, b"audio").await.unwrap();
+        let theirs = host_local.path().join(&key);
+        tokio::fs::create_dir_all(theirs.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&theirs, b"another edition").await.unwrap();
+        let acquired = AcquiredTitle {
+            primary_key: key.clone(),
+            pdf_key: None,
+            keys: vec![vec![key.clone()]],
+        };
+        let copied = Mutex::new(Vec::new());
+        let placed = copy_to_local_destinations(&guests, &book, "t1", &outbox, &acquired, &copied)
+            .await
+            .unwrap();
+        assert!(placed.is_empty(), "no copy is kept here");
+        assert!(copied.into_inner().unwrap().is_empty());
+        assert_eq!(
+            tokio::fs::read(&theirs).await.unwrap(),
+            b"another edition",
+            "the other edition's file is untouched"
         );
     }
     /// One GET of a copy's file on the owner's listener: the status line

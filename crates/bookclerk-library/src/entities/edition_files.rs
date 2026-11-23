@@ -61,8 +61,8 @@ pub struct Model {
     /// The running time a player sees, in milliseconds; null when unknown,
     /// never zero.
     pub duration_ms: Option<i64>,
-    /// The host upload id that claimed the key last, or
-    /// [`crate::store::ACQUIRE_WRITER`] for an acquire run on this node.
+    /// The host upload id that claimed the key last, or an acquire's
+    /// writer ([`crate::store::AcquireWriter`]) for an acquire on this node.
     pub writer: String,
     /// RFC 3339 time of the latest claim.
     pub written_at: String,

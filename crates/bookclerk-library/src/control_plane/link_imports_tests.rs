@@ -465,3 +465,152 @@ async fn a_copy_taken_from_a_library_is_recorded_once_for_that_library() {
         );
     }
 }
+
+/// A branch keeping its own copy of a title asks whether a key belongs to
+/// another edition here: an unrecorded key, one the title's own edition
+/// holds, or one of an edition no longer here is free; another live
+/// edition's is not, and neither is any live edition's when the title has
+/// no edition here yet.
+#[tokio::test]
+async fn a_key_is_held_only_by_another_live_edition() {
+    for profile in Profile::ALL {
+        let store = kit(profile).await;
+        let name = profile.name();
+        connect(&store, "own-acct", None).await;
+        let ours = store
+            .upsert_book(&library_row("own-acct", "P1"))
+            .await
+            .unwrap();
+        let theirs = store
+            .upsert_book(&library_row("own-acct", "P2"))
+            .await
+            .unwrap();
+        let edition = store
+            .edition_of_listing(PLUGIN, "US", "P1")
+            .await
+            .unwrap()
+            .expect("the listing's edition");
+        assert_eq!(edition, ours.edition_id, "{name}");
+        assert_eq!(
+            store.edition_of_listing(PLUGIN, "us", "P9").await.unwrap(),
+            None,
+            "{name}"
+        );
+        let their_owner = store
+            .file_owner_of_holding(&theirs.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let our_owner = store
+            .file_owner_of_holding(&ours.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
+        store
+            .record_edition_file("local", "T/theirs.m4b", &their_owner, FileRole::Audio)
+            .await
+            .unwrap();
+        store
+            .record_edition_file("local", "T/ours.m4b", &our_owner, FileRole::Audio)
+            .await
+            .unwrap();
+        let held = |key: &'static str, edition: Option<String>| {
+            let store = store.clone();
+            async move {
+                store
+                    .key_held_by_another_edition("local", key, edition.as_deref())
+                    .await
+                    .unwrap()
+            }
+        };
+        assert!(held("T/theirs.m4b", Some(edition.clone())).await, "{name}");
+        assert!(!held("T/ours.m4b", Some(edition.clone())).await, "{name}");
+        assert!(!held("T/free.m4b", Some(edition.clone())).await, "{name}");
+        assert!(held("T/ours.m4b", None).await, "{name}");
+    }
+}
+
+/// An acquire run records under a writer of its own, and releases only a
+/// record it made: not one the edition held before, nor one another run
+/// recorded since.
+#[tokio::test]
+async fn a_run_releases_only_its_own_new_record() {
+    for profile in Profile::ALL {
+        let store = kit(profile).await;
+        let name = profile.name();
+        connect(&store, "own-acct", None).await;
+        let book = store
+            .upsert_book(&library_row("own-acct", "P1"))
+            .await
+            .unwrap();
+        let owner = store
+            .file_owner_of_holding(&book.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let (one, two) = (
+            crate::store::AcquireWriter::for_run(),
+            crate::store::AcquireWriter::for_run(),
+        );
+        assert_ne!(one, two, "{name}");
+        assert!(crate::store::AcquireWriter::is_acquire(one.as_str()));
+        assert!(crate::store::AcquireWriter::is_acquire("acquire"));
+        assert!(!crate::store::AcquireWriter::is_acquire("acquire:"));
+        assert!(!crate::store::AcquireWriter::is_acquire("upload-1"));
+        let record = |key: &'static str, writer: &crate::store::AcquireWriter| {
+            let (store, owner, writer) = (store.clone(), owner.clone(), writer.clone());
+            async move {
+                store
+                    .record_run_edition_file("local", key, &owner, FileRole::Audio, None, &writer)
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(
+            record("T/a.m4b", &one).await,
+            crate::store::RecordedFile::New,
+            "{name}"
+        );
+        // A second run takes the key over; the first run's release then
+        // leaves the second run's record.
+        assert_eq!(
+            record("T/a.m4b", &two).await,
+            crate::store::RecordedFile::TakenOver,
+            "{name}"
+        );
+        assert!(
+            !store
+                .release_run_edition_file("local", "T/a.m4b", &one)
+                .await
+                .unwrap(),
+            "{name}"
+        );
+        assert!(
+            store
+                .release_run_edition_file("local", "T/a.m4b", &two)
+                .await
+                .unwrap(),
+            "{name}"
+        );
+        assert_eq!(store.edition_file("local", "T/a.m4b").await.unwrap(), None);
+        // Another live edition's key is refused.
+        let other = store
+            .upsert_book(&library_row("own-acct", "P2"))
+            .await
+            .unwrap();
+        let other_owner = store
+            .file_owner_of_holding(&other.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
+        store
+            .record_edition_file("local", "T/b.m4b", &other_owner, FileRole::Audio)
+            .await
+            .unwrap();
+        assert_eq!(
+            record("T/b.m4b", &one).await,
+            crate::store::RecordedFile::Refused,
+            "{name}"
+        );
+    }
+}

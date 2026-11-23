@@ -553,7 +553,17 @@ libraries scan` ([Libraries and branch nodes](../server/branches.md)).
   discovered during audio acquire) are bounded by the remaining quota: sources
   can call `FetchOptions::enforce_cache_budget`, the pipeline watchdog cancels
   a stage that crosses the budget, and PDF bodies are streamed with an
-  explicit remaining-byte cap.
+  explicit remaining-byte cap. An external guest downloads into its own
+  jail-granted scratch (`plugin-state/<PluginKey fs-id>/tmp/fetch`), not
+  the acquire's scratch dir, so the host measures that directory while the
+  guest's `fetchTitle` runs: what it gains during the call counts against
+  the remaining quota (files an earlier fetch left there do not).
+- Cancelling an acquire job, or losing its fence, stops the store fetch in
+  flight, not only the work between titles. The job's cancel flag reaches
+  the guest's `fetchTitle` call, which the host drops on the plugin's own
+  thread, as it drops a call over the scratch quota; the job then fails or
+  is cancelled as usual. A branch running a library's acquire passes the
+  job's cancel flag the same way.
 
 Scan, listen-sync, and integration-scan retries are idempotent (upserts /
 remote rescan). Acquire retries skip titles already `acquired`, except when

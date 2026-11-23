@@ -704,6 +704,12 @@ there only when **Keep copies of other members' books** is on (see
 [Work settings on the branch](#work-settings-on-the-branch)). The owner
 says which titles are whose with each job.
 
+The host never replaces another book's file to keep its copy. Before it
+writes anything, it checks each file name against its own library: when
+another edition there already holds one of the names, the host keeps no
+copy of the title at all (and so doesn't add it to its own library). The
+title is still uploaded to the owner.
+
 Once the owner has committed one of the owner's own titles, the host also
 adds it to its own library: the title, acquired, with its copy's files,
 held by the store account that bought it. This happens only when that
@@ -915,7 +921,10 @@ library it joined, in turn, for the copy of that listing.
   the store is not asked. The files then go through the branch's own
   acquire like a store download: converted to the branch's output
   format, named by its templates, tagged, probed and recorded. Chapters
-  are read from the downloaded file in the confined media worker.
+  are read from the downloaded file in the confined media worker. A
+  branch whose output re-encodes or repackages the audio checks the
+  encoding first, as for a copy from another store: one the media worker
+  can't decode is removed, and the branch fetches from its store.
 - **Several audio files: the store.** A book the library holds as parts
   or as one file per chapter is fetched from the branch's store. The
   grant lists those files by name, which need not be playing order.
