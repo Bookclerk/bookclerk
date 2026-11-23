@@ -953,6 +953,31 @@ const QR_SVG = (() => {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-2 -2 29 29"><rect x="-2" y="-2" width="29" height="29" fill="#fff"/><path d="${cells.join("")}" fill="#000"/></svg>`;
 })();
 
+/**
+ * A sample book as a row of `GET /api/library/works`.
+ *
+ * @param b - The book.
+ * @returns Its work summary.
+ */
+function workSummary(b: Book): Record<string, unknown> {
+  return {
+    id: b.id,
+    kind: "book",
+    title: b.title,
+    authors: b.authors,
+    series: b.series ?? null,
+    series_position: b.position ?? null,
+    cover_edition_id: b.edition,
+    media_kinds: ["audio"],
+    acquire_status: b.status,
+    edition_count: 1,
+    holding_count: b.status === "acquired" ? 1 : 0,
+    added_at: ago(b.boughtDaysAgo * DAY),
+    length_minutes: b.minutes,
+    purchased_at: ago(b.boughtDaysAgo * DAY),
+  };
+}
+
 /** Answers by `METHOD /path` for one viewer. */
 export type Routes = Record<string, (body: unknown) => Answer>;
 
@@ -1069,25 +1094,10 @@ function signedIn(viewer: "owner" | "operator"): Routes {
       })),
     }),
     "GET /api/library/works": () => ({
-      json: {
-        works: BOOKS.map((b) => ({
-          id: b.id,
-          kind: "book",
-          title: b.title,
-          authors: b.authors,
-          series: b.series ?? null,
-          series_position: b.position ?? null,
-          cover_edition_id: b.edition,
-          media_kinds: ["audio"],
-          acquire_status: b.status,
-          edition_count: 1,
-          holding_count: b.status === "acquired" ? 1 : 0,
-          added_at: ago(b.boughtDaysAgo * DAY),
-          length_minutes: b.minutes,
-          purchased_at: ago(b.boughtDaysAgo * DAY),
-        })),
-        next_cursor: null,
-      },
+      json: { works: BOOKS.map(workSummary), next_cursor: null },
+    }),
+    "GET /api/library/works/meaning": () => ({
+      json: { search: "ready", similar: "ready" },
     }),
     "GET /api/playback/progress": () => ({
       json: {
@@ -1612,8 +1622,20 @@ export function answer(
     if (method === "GET" && playback) {
       return { json: manifest(decodeURIComponent(playback[1] ?? "")) };
     }
+    const similar = /^\/api\/library\/works\/([^/]+)\/similar$/.exec(pathname);
+    if (method === "GET" && similar) {
+      const id = decodeURIComponent(similar[1] ?? "");
+      return {
+        json: {
+          state: "ready",
+          works: BOOKS.filter((b) => b.id !== id)
+            .slice(0, 4)
+            .map(workSummary),
+        },
+      };
+    }
     const work = /^\/api\/library\/works\/([^/]+)$/.exec(pathname);
-    if (method === "GET" && work) {
+    if (method === "GET" && work && work[1] !== "meaning") {
       const detail = workDetail(decodeURIComponent(work[1] ?? ""));
       return detail ? { json: detail } : { status: 404, json: { error: "no such work" } };
     }
