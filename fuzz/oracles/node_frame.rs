@@ -28,6 +28,12 @@
 //! - every marketplace a `catalog.sync` title the library would accept
 //!   carries is at most 16 lowercase ASCII letters and digits, checked byte
 //!   by byte here, since the library scopes ASIN identifiers to it.
+//! - every catalog reference a `catalog.upload`, `catalog.session` or
+//!   `catalog.accepted` frame carries that its receiver would act on
+//!   (`CatalogRef::is_well_formed`) names a store and a marketplace without
+//!   `:` or `@`, checked byte by byte here, since the library stores the
+//!   three parts as one `store@marketplace:product_id` text and reads them
+//!   back by those separators.
 //! - a `catalog.ask` or `catalog.found` frame the library or branch would
 //!   accept (`questions_problem` / `found_problem` find nothing) names at
 //!   most 100 works, each once, with plain correlation keys; every
@@ -179,6 +185,7 @@ pub fn check(data: &[u8]) {
             );
         }
     }
+    check_catalog_refs(&frame.body);
     check_lookup(&frame.body);
     check_requests(&frame.body);
     check_window(&frame.body);
@@ -677,5 +684,38 @@ fn same(a: &Value, b: &Value) -> bool {
                     .all(|(key, x)| y.get(key).is_some_and(|y| same(x, y)))
         }
         _ => a == b,
+    }
+}
+
+/// The catalog references of `body` its receiver would act on keep `:` and
+/// `@` out of their store and marketplace.
+fn check_catalog_refs(body: &Body) {
+    let refs: Vec<bookclerk_node_proto::CatalogRef> = match body {
+        Body::CatalogUpload {
+            store,
+            product_id,
+            marketplace,
+            ..
+        } => vec![bookclerk_node_proto::CatalogRef {
+            store: store.clone(),
+            product_id: product_id.clone(),
+            marketplace: marketplace.clone(),
+        }],
+        Body::CatalogSession { wanted, .. } | Body::CatalogAccepted { wanted, .. } => {
+            wanted.clone()
+        }
+        _ => Vec::new(),
+    };
+    for reference in refs.iter().filter(|r| r.is_well_formed()) {
+        for part in [&reference.store, &reference.marketplace] {
+            assert!(
+                !part.bytes().any(|b| matches!(b, b':' | b'@')),
+                "catalog reference part {part:?} accepted"
+            );
+        }
+        assert!(
+            !reference.store.is_empty(),
+            "an empty store accepted in {reference:?}"
+        );
     }
 }

@@ -75,6 +75,15 @@ const BRANCH_ENTRY_PAGE: u64 = if cfg!(test) {
     FORWARDABLE_KEYS_MAX_PAGE
 };
 
+/// Passes in a row whose listing of one title's files may fail before
+/// the title is skipped like one not shareable as it stands: an hour at
+/// [`SYNC_INTERVAL`]. Until then the pass keeps its cursor before the title
+/// and does not end, so a destination that is briefly unreachable
+/// withdraws nothing; after it, a title that can never be listed (a prefix
+/// without permission, a folder this install cannot read) no longer stops
+/// every pass from ending.
+const MAX_UNLISTED_PASSES: u32 = 12;
+
 /// Largest serialized `catalog.sync` batch (well under a frame).
 const MAX_BATCH_BYTES: usize = 768 * 1024;
 
@@ -156,7 +165,7 @@ enum Loaded {
 struct Entry {
     /// Sort key and cursor: last change, kind, id.
     order: String,
-    /// Store and product id.
+    /// Store, product id and marketplace.
     reference: CatalogRef,
     /// Where it comes from.
     source: Source,
@@ -165,13 +174,17 @@ struct Entry {
 /// The catalog sync of one link.
 pub struct CatalogSync<S> {
     /// This install's library.
-    pub library: LibraryStore,
-    /// The library (library) this install is a branch of.
-    pub library_id: String,
+    library: LibraryStore,
+    /// The library this install is a branch of.
+    library_id: String,
     /// The link's client.
-    pub handle: HostClientHandle,
+    handle: HostClientHandle,
     /// This install's files.
-    pub shelf: S,
+    shelf: S,
+    /// Titles whose files could not be listed, with the passes in a row
+    /// that failed to list them ([`MAX_UNLISTED_PASSES`]). Kept for the
+    /// process's life only: a restart gives each title its retries again.
+    unlisted: std::sync::Mutex<BTreeMap<CatalogRef, u32>>,
 }
 
 /// Text for a store id: the book's plugin alias, lowercased.
@@ -321,6 +334,54 @@ impl UploadSource for ShelfFile<'_> {
 }
 
 impl<S: BranchShelf> CatalogSync<S> {
+    /// The catalog sync of the link to `library_id`, sharing from `shelf`.
+    ///
+    /// # Arguments
+    ///
+    /// * `library` - This install's library.
+    /// * `library_id` - The library this install is a branch of.
+    /// * `handle` - The link's client.
+    /// * `shelf` - Where this install's files are.
+    pub fn new(
+        library: LibraryStore,
+        library_id: String,
+        handle: HostClientHandle,
+        shelf: S,
+    ) -> Self {
+        Self {
+            library,
+            library_id,
+            handle,
+            shelf,
+            unlisted: std::sync::Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    /// Counts one more failed listing of `reference`'s files.
+    ///
+    /// # Returns
+    ///
+    /// `true` while the title still has retries left, so the pass keeps
+    /// its cursor before it; `false` once it has failed
+    /// [`MAX_UNLISTED_PASSES`] passes in a row, so it is skipped.
+    fn listing_failed(&self, reference: &CatalogRef) -> bool {
+        let mut unlisted = self
+            .unlisted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let failures = unlisted.entry(reference.clone()).or_insert(0);
+        *failures = failures.saturating_add(1);
+        *failures < MAX_UNLISTED_PASSES
+    }
+
+    /// Forgets the failed listings of `reference`, listed again.
+    fn listing_worked(&self, reference: &CatalogRef) {
+        self.unlisted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(reference);
+    }
+
     /// Runs passes until `shutdown` turns true: on each welcomed
     /// connection, every [`SYNC_INTERVAL`], and on
     /// [`notify_sharing_changed`].
@@ -367,7 +428,8 @@ impl<S: BranchShelf> CatalogSync<S> {
     }
 
     /// Every title this install may share now, in sync order, one per
-    /// store and product id (an own book wins over a branch's).
+    /// store, product id and marketplace (an own book wins over a
+    /// branch's).
     ///
     /// Reads identity columns only, in keyset pages, so the pass's memory
     /// and every read stay small however large the library is.
@@ -395,6 +457,7 @@ impl<S: BranchShelf> CatalogSync<S> {
                 let reference = CatalogRef {
                     store: store_id(&key.source),
                     product_id: key.product_id.clone(),
+                    marketplace: own_marketplace(&key.marketplace),
                 };
                 // A requested book counts as changed when it was last
                 // asked for, so one already past the cursor still goes up.
@@ -422,10 +485,7 @@ impl<S: BranchShelf> CatalogSync<S> {
                 let full = u64::try_from(page.len()).unwrap_or(u64::MAX) >= BRANCH_ENTRY_PAGE;
                 after = page.last().map(|key| key.id.clone());
                 for key in page.into_iter().filter(|key| key.delivered) {
-                    let reference = CatalogRef {
-                        store: key.store.clone(),
-                        product_id: key.product_id.clone(),
-                    };
+                    let reference = key.reference.clone();
                     if !seen.insert(reference.clone()) {
                         continue;
                     }
@@ -488,7 +548,7 @@ impl<S: BranchShelf> CatalogSync<S> {
                 Ok(CatalogTitle {
                     store: entry.reference.store.clone(),
                     product_id: entry.reference.product_id.clone(),
-                    marketplace: own_marketplace(&book.marketplace),
+                    marketplace: entry.reference.marketplace.clone(),
                     metadata: own_metadata(book),
                     primary_key: primary.to_string(),
                     pdf_key,
@@ -558,8 +618,10 @@ impl<S: BranchShelf> CatalogSync<S> {
         // Set once a title's files could not be listed: the cursor stays
         // before it (the titles after it are still sent) and the pass does
         // not end, so the library withdraws nothing it did not see and the
-        // next pass tries that title again. A title that is not shareable
-        // as it stands is skipped for good, and withdrawn if shared before.
+        // next pass tries that title again, until it has failed
+        // `MAX_UNLISTED_PASSES` passes in a row. A title that is not
+        // shareable as it stands, or out of retries, is skipped for good,
+        // and withdrawn if shared before.
         let mut unlisted = false;
         for entry in pending {
             // A read failure ends the pass (the next one resumes after what
@@ -574,7 +636,11 @@ impl<S: BranchShelf> CatalogSync<S> {
                 }
                 continue;
             };
-            match self.title(shelf.as_ref(), entry, &loaded).await {
+            let title = self.title(shelf.as_ref(), entry, &loaded).await;
+            if title.is_ok() {
+                self.listing_worked(&entry.reference);
+            }
+            match title {
                 Ok(title) if title.problem().is_none() => {
                     let size = serde_json::to_string(&title).map_or(0, |text| text.len());
                     if !batch.is_empty()
@@ -602,7 +668,10 @@ impl<S: BranchShelf> CatalogSync<S> {
                     problem = title.problem().unwrap_or_default(),
                     "a title is not shareable as it stands; skipped"
                 ),
-                Err(err) if err.downcast_ref::<ListingFailed>().is_some() => {
+                Err(err)
+                    if err.downcast_ref::<ListingFailed>().is_some()
+                        && self.listing_failed(&entry.reference) =>
+                {
                     tracing::warn!(
                         product_id = %entry.reference.product_id,
                         error = %err,
@@ -613,7 +682,8 @@ impl<S: BranchShelf> CatalogSync<S> {
                 Err(err) => tracing::warn!(
                     product_id = %entry.reference.product_id,
                     error = %err,
-                    "a title is not shareable as it stands; skipped"
+                    "a title is not shareable as it stands, or its files could not be \
+                     listed on too many passes in a row; skipped"
                 ),
             }
             if !unlisted {
@@ -793,11 +863,11 @@ fn call_error(what: &str, err: &OwnerCallError) -> anyhow::Error {
 }
 
 /// Adds own title `key`, changed at `changed`, to the pass's entries, one
-/// entry per store and product id.
+/// entry per store, product id and marketplace.
 ///
 /// The first key of a title represents it; a later sibling holding of the
-/// same title (another account, or another marketplace's listing) only
-/// moves the entry's change time forward, so a sibling's newer change or
+/// same title (another account's) only moves the entry's change time
+/// forward, so a sibling's newer change or
 /// request still sends the title past the cursor.
 ///
 /// # Arguments

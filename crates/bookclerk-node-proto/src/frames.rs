@@ -582,6 +582,10 @@ pub enum Body {
         store: String,
         /// Product id of the title.
         product_id: String,
+        /// Marketplace of the title ([`crate::CatalogRef::marketplace`]);
+        /// empty, and left out of the frame, when the store has none.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        marketplace: String,
         /// The title's files, in upload order, each copied to every
         /// destination of the session under its manifest key.
         files: Vec<UploadFile>,
@@ -2064,10 +2068,18 @@ mod tests {
                     cursor: "c".into(),
                     ancestry: vec!["lib-a".into()],
                     destinations: vec!["local".into()],
-                    wanted: vec![crate::CatalogRef {
-                        store: "audible".into(),
-                        product_id: "B1".into(),
-                    }],
+                    wanted: vec![
+                        crate::CatalogRef {
+                            store: "audible".into(),
+                            product_id: "B1".into(),
+                            marketplace: String::new(),
+                        },
+                        crate::CatalogRef {
+                            store: "audible".into(),
+                            product_id: "B1".into(),
+                            marketplace: "uk".into(),
+                        },
+                    ],
                     members_books: true,
                 },
                 "catalog.session",
@@ -2111,6 +2123,7 @@ mod tests {
                     fence: 3,
                     store: "audible".into(),
                     product_id: "B1".into(),
+                    marketplace: "uk".into(),
                     files: Vec::new(),
                 },
                 "catalog.upload",

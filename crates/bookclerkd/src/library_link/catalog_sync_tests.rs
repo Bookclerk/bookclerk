@@ -344,12 +344,12 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
 
     // C → B.
     let (c_handle, _c_stop) = start(&c, &c_link).await;
-    let c_sync = CatalogSync {
-        library: c.clone(),
-        library_id: c_link.parent_library_id.clone(),
-        handle: c_handle,
-        shelf: DirShelf(c_shelf.path().to_path_buf()),
-    };
+    let c_sync = CatalogSync::new(
+        c.clone(),
+        c_link.parent_library_id.clone(),
+        c_handle,
+        DirShelf(c_shelf.path().to_path_buf()),
+    );
     let report = c_sync.sync_once().await.unwrap();
     assert_eq!((report.sent, report.upserted, report.delivered), (1, 1, 1));
     assert_eq!(
@@ -371,12 +371,12 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
 
     // B → A: B's own book and the one C shared; the echo is skipped.
     let (b_handle, _b_stop) = start(&b, &b_link).await;
-    let b_sync = CatalogSync {
-        library: b.clone(),
-        library_id: b_link.parent_library_id.clone(),
-        handle: b_handle,
-        shelf: DirShelf(b_out.path().to_path_buf()),
-    };
+    let b_sync = CatalogSync::new(
+        b.clone(),
+        b_link.parent_library_id.clone(),
+        b_handle,
+        DirShelf(b_out.path().to_path_buf()),
+    );
     // What crosses the link: store, product id, marketplace, metadata, files only.
     for entry in b_sync.entries(true, false).await.unwrap() {
         let shelf = b_sync.shelf.primary().await.unwrap();
@@ -504,6 +504,21 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
     )
     .await
     .is_ok());
+    // At the depth limit a branch join is refused, but the loop check a
+    // shared branch join (or an inspect) makes still passes; a loop is
+    // refused by both.
+    let deep: Vec<String> = (0..bookclerk_node_proto::MAX_ANCESTRY)
+        .map(|n| format!("lib-{n}"))
+        .collect();
+    assert!(matches!(
+        refuse_cycle(&c, &deep).await,
+        Err(JoinError::AncestryTooDeep)
+    ));
+    assert!(bookclerk_node_client::refuse_loop(&c, &deep).await.is_ok());
+    assert!(matches!(
+        bookclerk_node_client::refuse_loop(&a, &b_ancestry).await,
+        Err(JoinError::Cycle)
+    ));
 
     // "Include books from my own branches" off: C's title is withdrawn
     // from A; B's own stays; the files stay. The pass from the start this
@@ -707,15 +722,15 @@ async fn a_title_that_cannot_be_listed_now_is_not_withdrawn() {
     let b_link = join(&a, &b, riley, &a_origin, None).await.unwrap();
     let (b_handle, _b_stop) = start(&b, &b_link).await;
     let fail = Arc::new(std::sync::Mutex::new(None));
-    let b_sync = CatalogSync {
-        library: b.clone(),
-        library_id: b_link.parent_library_id.clone(),
-        handle: b_handle,
-        shelf: FlakyList {
+    let b_sync = CatalogSync::new(
+        b.clone(),
+        b_link.parent_library_id.clone(),
+        b_handle,
+        FlakyList {
             inner: bookclerk_storage::LocalFsBackend::new(b_out.path().to_path_buf()).unwrap(),
             fail: Arc::clone(&fail),
         },
-    };
+    );
     let listed: Vec<String> = b_sync
         .entries(false, false)
         .await
@@ -748,6 +763,22 @@ async fn a_title_that_cannot_be_listed_now_is_not_withdrawn() {
     assert_eq!(report.sent, 2, "the pass resumed before {first}");
     assert!(shares(&a, &first).await);
     assert_eq!(b_sync.sync_once().await.unwrap().sent, 0);
+
+    // A title whose files can never be listed holds a pass from the start
+    // open only for its retries: then it is skipped, the pass ends, and
+    // the library withdraws it.
+    set_library_link_sharing(&b, &b_link.parent_library_id, true, true)
+        .await
+        .unwrap();
+    *fail.lock().unwrap() = Some(format!("Author/{first}/"));
+    for pass in 1..super::MAX_UNLISTED_PASSES {
+        b_sync.sync_once().await.unwrap();
+        assert!(shares(&a, &first).await, "still retried on pass {pass}");
+    }
+    b_sync.sync_once().await.unwrap();
+    assert!(!shares(&a, &first).await, "skipped once out of retries");
+    let other = if first == "b1" { "b2" } else { "b1" };
+    assert!(shares(&a, other).await);
 }
 
 /// A store account's key of title `product_id` held by `holding_id`.
@@ -771,6 +802,7 @@ fn a_later_siblings_newer_change_moves_the_titles_entry() {
     let reference = super::CatalogRef {
         store: super::store_id("audible"),
         product_id: "B000TEST01".to_owned(),
+        marketplace: "us".to_owned(),
     };
     let cursor = chrono::DateTime::parse_from_rfc3339("2026-11-01T00:00:00Z")
         .map(|at| at.with_timezone(&chrono::Utc))

@@ -554,6 +554,12 @@ A shared branch that isn't running can be removed there
 elevating, since removing one deletes its records. Stop Bookclerk on it
 first.
 
+A shared branch that was cut off from the database for a while reads as
+not running and can be removed while it still runs. When it reconnects
+it notices it was removed: it logs an error, writes no heartbeat and
+queues no work, so it never comes back half-registered. Stop Bookclerk
+on it, or restart it to register it again.
+
 > [!WARNING]
 > Removing a shared branch doesn't take back the database credentials or key it
 > held. Rotate them if it is no longer trusted.
@@ -1035,7 +1041,9 @@ C is B's.
   members' books stay on B, unless A requests one or A's operator turns on
   **Acquire all of this branch's members' books** (see below). Each title
   carries its store, product id, marketplace, metadata (with its ASIN,
-  ISBN and kind) and file list, nothing else. A matches each one to the edition it already knows, as a
+  ISBN and kind) and file list, nothing else. One product held in two
+  marketplaces (the same ASIN on Audible US and UK) is two titles, each
+  shared on its own. A matches each one to the edition it already knows, as a
   store scan would, and records B as holding it, so C's books are simply
   B's books there, belonging to the A user who owns B. A title B got from
   A, or acquired for A and added to its own library, isn't sent back.
@@ -1045,11 +1053,19 @@ C is B's.
   uses is recorded, but its files aren't sent. Neither are the files of an
   edition A already has (acquired there, or delivered by another branch),
   so each edition arrives once. If A has no output deployed, it records
-  the titles without files.
+  the titles without files. If a title A already has the files of later
+  moves to another edition (an Administrator pins its listing there, or
+  the listing is linked again to another edition), those files belong to
+  the edition it matched before: A counts the title as not delivered
+  again and asks B for its files.
 - **Sync** runs when the branch connects, every 5 minutes, and at once
   when a setting changes. It is incremental and resumes after a
   reconnect. A full pass (after a setting changes, and once a day) also
-  withdraws titles B no longer has.
+  withdraws titles B no longer has. If B can't list a title's files (its
+  destination is briefly unreachable), the pass keeps the title and tries
+  again on the next one. After 12 passes in a row (about an hour) B skips
+  the title, so a folder B can never read doesn't stop every pass from
+  finishing, and A withdraws it like any title B no longer has.
 
 ### Sharing settings on the branch
 
@@ -1344,10 +1360,13 @@ and every library above it.
   A ← B ← C ← A can be made.
 - A tree holds at most 64 libraries along one path. A join that would take
   the joining install's ancestry past that is refused
-  (`409 ancestry_too_deep`).
+  (`409 ancestry_too_deep`) when it starts and when its code is redeemed.
+  Inspecting a library checks only for a loop, since the depth depends
+  on whether you join as a branch or a shared branch.
 
 A shared branch is the same point in the tree as its
-library.
+library, so it adds no depth: a shared branch join to a library at the
+limit is not refused.
 
 ## Leaving
 

@@ -3,11 +3,10 @@
 //! Admission fixes a job's required plugin instances
 //! (`control_plane::resolve_job_requirements`); this loop re-resolves them
 //! for jobs still pending after deployments change, using the node-bound
-//! output keys only the daemon can discover
-//! (`jobs::sweep_node_bound_output_keys`: this node's discovered keys plus
-//! every instance keyed as the first-party `local` destination, so a holder
-//! without that plugin, or whose discovery failed, never strips them; a pass
-//! that cannot read them is skipped). The rules (apply at once when
+//! output keys (`jobs::node_bound_output_keys`: every instance keyed as the
+//! first-party `local` destination, the same set admission uses on every
+//! node whatever is installed there; a pass that cannot read them is
+//! skipped). The rules (apply at once when
 //! some node runs everything, otherwise wait out [`REQUIREMENTS_GRACE`]
 //! before dropping a retired instance or failing the job as `unroutable`)
 //! live in `control_plane::sweep_job_requirements`.
@@ -119,7 +118,7 @@ pub async fn run_requirements_sweep(state: &AppState) -> Option<RequirementsSwee
     // Hold off while a database swap is in progress, as admission does.
     let _permit = state.job_runtime.read().await;
     let library = state.library_snapshot().await;
-    let bound = match crate::jobs::sweep_node_bound_output_keys(state, &library).await {
+    let bound = match crate::jobs::node_bound_output_keys(&library).await {
         Ok(bound) => bound,
         Err(err) => {
             warn!(error = %err, "node-bound outputs unavailable; requirements sweep skipped");

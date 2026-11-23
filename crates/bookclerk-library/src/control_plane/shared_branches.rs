@@ -137,8 +137,9 @@ pub async fn shared_nodes_visible_to(
 /// holds the stale heartbeat that was checked, so a heartbeat that lands
 /// in between refuses the removal. A node that was only cut off from the
 /// database for longer than its liveness window can still be removed while
-/// it runs; its next heartbeat writes a status row again, but not its node
-/// row. Removing a node does not take back the
+/// it runs; when it reconnects, the daemon's heartbeat finds its node row
+/// gone and writes no status row (it logs that the node was removed and
+/// queues no node-pinned work). Removing a node does not take back the
 /// database credentials or DEK it held; rotate those when it is not
 /// trusted any more.
 ///

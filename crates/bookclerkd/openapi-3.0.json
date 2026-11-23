@@ -12079,20 +12079,13 @@
             }
           },
           "409": {
-            "description": "Joining would make a loop (`join_cycle`, `ancestry_too_deep`), or the library's address is not the one given (`origin_mismatch`, with the address to use in `origin`).",
+            "description": "Joining would make a loop (`join_cycle`), or the library's address is not the one given (`origin_mismatch`, with the address to use in `origin`). How deep the library sits is checked once the join's kind is chosen, at `start` and when the code is redeemed.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/JoinConflict"
                 },
                 "examples": {
-                  "ancestry_too_deep": {
-                    "summary": "The library sits too deep in its tree of libraries.",
-                    "value": {
-                      "detail": "that library sits too deep in its tree of libraries; joining it could hide a loop",
-                      "error": "ancestry_too_deep"
-                    }
-                  },
                   "join_cycle": {
                     "summary": "The library is this one or one of its branches.",
                     "value": {
@@ -12320,7 +12313,7 @@
             }
           },
           "409": {
-            "description": "The library's fingerprint is not confirmed, or changed since the card signed in (`fingerprint_unconfirmed`), this install holds data of its own for a shared branch join (`not_empty`), joining would make a loop (`join_cycle`, `ancestry_too_deep`), or the library's address is not the one given, or no longer the card's library (`origin_mismatch`).",
+            "description": "The library's fingerprint is not confirmed, or changed since the card signed in (`fingerprint_unconfirmed`), this install holds data of its own for a shared branch join (`not_empty`), joining would make a loop (`join_cycle`) or, for a branch (not a shared branch, which adds no depth), make the tree too deep (`ancestry_too_deep`), or the library's address is not the one given, or no longer the card's library (`origin_mismatch`).",
             "content": {
               "application/json": {
                 "schema": {

@@ -1521,6 +1521,7 @@ impl HostClientHandle {
                 fence,
                 store: title.store.clone(),
                 product_id: title.product_id.clone(),
+                marketplace: title.marketplace.clone(),
                 files,
             })
             .await?

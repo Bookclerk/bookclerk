@@ -548,6 +548,7 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
             fence,
             store,
             product_id,
+            marketplace,
             files,
         } => {
             super::host_catalog::upload(
@@ -555,7 +556,11 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
                 host,
                 id.clone(),
                 fence,
-                (store, product_id),
+                &bookclerk_node_proto::CatalogRef {
+                    store,
+                    product_id,
+                    marketplace,
+                },
                 files,
             )
             .await

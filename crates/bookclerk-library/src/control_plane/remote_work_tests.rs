@@ -4676,8 +4676,11 @@ async fn a_job_upload_takes_over_a_branch_delivered_copy_of_its_edition() {
         branch,
         opened.fence,
         "owner",
-        "test",
-        "t1",
+        &bookclerk_node_proto::CatalogRef {
+            store: "test".into(),
+            product_id: "t1".into(),
+            marketplace: "us".into(),
+        },
         &files,
         &["local".to_string()],
     )
