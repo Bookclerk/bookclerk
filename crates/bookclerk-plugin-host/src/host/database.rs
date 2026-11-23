@@ -2143,7 +2143,7 @@ impl RpcAtomicBackend {
 
 /// Maps guest RPC failures: lost/ambiguous replies become [`LibraryError::Unavailable`].
 fn map_plugin_err(err: crate::PluginError) -> bookclerk_library::LibraryError {
-    if let crate::PluginError::Abi { code, message } = &err {
+    if let crate::PluginError::Abi { code, message, .. } = &err {
         if code == "limit_exceeded" {
             if let Some(limit) = bookclerk_plugin_abi::LimitExceeded::from_message(message) {
                 return bookclerk_library::LibraryError::LimitExceeded(limit);
@@ -2171,7 +2171,15 @@ fn map_atomic_rpc_err(err: crate::PluginError) -> bookclerk_library::LibraryErro
 /// granted job session returns to guests.
 fn host_err_to_abi(err: crate::PluginError) -> AbiPluginError {
     match err {
-        crate::PluginError::Abi { code, message } => AbiPluginError::from_wire(&code, message),
+        crate::PluginError::Abi {
+            code,
+            message,
+            details,
+        } => {
+            let mut err = AbiPluginError::from_wire(&code, message);
+            err.details = details;
+            err
+        }
         crate::PluginError::Unavailable(message) => AbiPluginError::unavailable(message),
         other => AbiPluginError::internal(other.to_string()),
     }
@@ -3255,6 +3263,7 @@ mod tests {
         let err = crate::PluginError::Abi {
             code: "limit_exceeded".into(),
             message: limit.to_message(),
+            details: None,
         };
         assert!(matches!(
             map_plugin_err(err),
@@ -3280,6 +3289,7 @@ mod tests {
         let vague = crate::PluginError::Abi {
             code: "limit_exceeded".into(),
             message: "too big".into(),
+            details: None,
         };
         assert!(matches!(
             map_plugin_err(vague),

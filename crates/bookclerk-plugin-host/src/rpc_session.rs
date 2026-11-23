@@ -2302,8 +2302,7 @@ fn map_abi(err: bookclerk_plugin_sdk::PluginError) -> PluginError {
             message: err.message,
         };
     }
-    let code = err.wire_str().to_string();
-    PluginError::from_abi(Some(&code), err.message)
+    PluginError::from_abi_error(err)
 }
 
 /// Collects an adapter's streamed reply into one [`ExecuteReply`] under
@@ -2335,8 +2334,14 @@ async fn collect_streamed(
 /// [`bookclerk_plugin_abi::PluginErrorCode`].
 pub(crate) fn host_err_to_abi(err: PluginError) -> bookclerk_plugin_abi::PluginError {
     match err {
-        PluginError::Abi { code, message } => {
-            bookclerk_plugin_abi::PluginError::from_wire(&code, message)
+        PluginError::Abi {
+            code,
+            message,
+            details,
+        } => {
+            let mut err = bookclerk_plugin_abi::PluginError::from_wire(&code, message);
+            err.details = details;
+            err
         }
         PluginError::Unavailable(message) => {
             bookclerk_plugin_abi::PluginError::unavailable(message)
@@ -4822,16 +4827,16 @@ impl PluginStorage {
 
     fn map_err(err: PluginError) -> StorageError {
         match err {
-            PluginError::Abi { code, message } if code == "not_found" => {
+            PluginError::Abi { code, message, .. } if code == "not_found" => {
                 StorageError::NotFound(message)
             }
-            PluginError::Abi { code, message } if code == "payload_too_large" => {
+            PluginError::Abi { code, message, .. } if code == "payload_too_large" => {
                 StorageError::PayloadTooLarge(message)
             }
-            PluginError::Abi { code, message } if code == "invalid_cursor" => {
+            PluginError::Abi { code, message, .. } if code == "invalid_cursor" => {
                 StorageError::InvalidCursor(message)
             }
-            PluginError::Abi { code, message } if code == "conflict" => {
+            PluginError::Abi { code, message, .. } if code == "conflict" => {
                 StorageError::Conflict(message)
             }
             PluginError::Abi { message, .. } if message.starts_with("integrity:") => {
@@ -5275,6 +5280,30 @@ fn meta_to_probe(meta: ObjectMetadata) -> bookclerk_storage::Result<ObjectProbe>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guest_error_details_survive_the_host_error_type() {
+        let mut details = serde_json::Map::new();
+        details.insert("engineCode".into(), serde_json::Value::from("SQLITE_BUSY"));
+        let mut guest = bookclerk_sdk_error("conflict", "busy");
+        guest.details = Some(details.clone());
+        let host = map_abi(guest);
+        assert!(matches!(
+            &host,
+            PluginError::Abi { code, details: Some(d), .. } if code == "conflict" && *d == details
+        ));
+        let back = host_err_to_abi(host);
+        assert_eq!(back.wire_str(), "conflict");
+        assert_eq!(back.message, "busy");
+        assert_eq!(back.details, Some(details));
+        let unknown = map_abi(bookclerk_sdk_error("brand_new_code", "later"));
+        assert_eq!(host_err_to_abi(unknown).wire_str(), "brand_new_code");
+    }
+
+    /// A guest ABI error with `code` and `message`.
+    fn bookclerk_sdk_error(code: &str, message: &str) -> bookclerk_plugin_sdk::PluginError {
+        bookclerk_plugin_sdk::PluginError::from_wire(code, message)
+    }
 
     /// The `media` line a test manifest with `entrypoints` needs: storefronts
     /// and metadata providers must declare their media; other plugins must not.
