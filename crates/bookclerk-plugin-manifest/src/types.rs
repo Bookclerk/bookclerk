@@ -3425,6 +3425,10 @@ mod tests {
     }
 
     /// A plugin with a guided setup, its `token_url` line replaced.
+    ///
+    /// # Errors
+    ///
+    /// The parse error when `token_url` breaks the manifest rules.
     fn provisioning_manifest(token_url: &str) -> Result<PluginManifest> {
         PluginManifest::parse(&format!(
             r#"
