@@ -12,7 +12,8 @@ pub struct Model {
     /// Discover subject (`operator`, `user:<id>`, `portal:<id>`); one feed each.
     #[sea_orm(unique)]
     pub subject_key: String,
-    /// The ranked feed as JSON (`bookclerk_discover::DiscoverFeed`), before hidden shelves are removed.
+    /// The ranked feed as JSON (`bookclerk_discover::DiscoverFeed`), before hidden shelves are
+    /// removed; empty when [`Self::feed_version`] names pieces in `discover_feed_parts` instead.
     pub feed_json: String,
     /// Which seeds the feed was ranked from: `own` or `household`.
     pub seed_scope: String,
@@ -20,6 +21,11 @@ pub struct Model {
     pub candidates_fetched_at: Option<String>,
     /// RFC 3339 timestamp when the feed was ranked.
     pub computed_at: String,
+    /// The `discover_feed_parts` version holding the feed, when it was too wide for one
+    /// statement or cell; `None` when [`Self::feed_json`] holds it whole.
+    pub feed_version: Option<String>,
+    /// How many pieces [`Self::feed_version`] has (`seq` 0 to this less one), when it is set.
+    pub feed_parts: Option<i64>,
 }
 
 /// Declared SeaORM relations (none unless FK edges are modeled).

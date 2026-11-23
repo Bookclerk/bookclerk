@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use bookclerk_resolve as resolve;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter};
 
-use super::library_model::{find_chunked, find_chunked_by};
+use super::library_model::{find_chunked, find_chunked_by, find_chunked_paged};
 use super::LibraryStore;
 use crate::column_read::SelectColumnExt;
 use crate::entities::{
@@ -432,12 +432,17 @@ impl SnapshotReader<'_> {
             );
         }
         out.extend(
-            find_chunked(self.store, &miss, |part| {
-                resolution_overrides::Entity::find()
-                    .filter(resolution_overrides::Column::SubjectKind.eq("listing"))
-                    .filter(resolution_overrides::Column::Action.eq("pin_edition"))
-                    .filter(resolution_overrides::Column::SubjectId.is_in(part.iter().cloned()))
-            })
+            find_chunked_paged(
+                self.store,
+                &miss,
+                &[resolution_overrides::Column::SubjectId],
+                |part| {
+                    resolution_overrides::Entity::find()
+                        .filter(resolution_overrides::Column::SubjectKind.eq("listing"))
+                        .filter(resolution_overrides::Column::Action.eq("pin_edition"))
+                        .filter(resolution_overrides::Column::SubjectId.is_in(part.iter().cloned()))
+                },
+            )
             .await?,
         );
         Ok(out)
@@ -519,10 +524,20 @@ impl SnapshotReader<'_> {
             );
         }
         out.extend(
-            find_chunked(self.store, &miss, |part| {
-                edition_identifiers::Entity::find()
-                    .filter(edition_identifiers::Column::EditionId.is_in(part.iter().cloned()))
-            })
+            find_chunked_paged(
+                self.store,
+                &miss,
+                &[
+                    edition_identifiers::Column::EditionId,
+                    edition_identifiers::Column::Scheme,
+                    edition_identifiers::Column::Value,
+                    edition_identifiers::Column::Marketplace,
+                ],
+                |part| {
+                    edition_identifiers::Entity::find()
+                        .filter(edition_identifiers::Column::EditionId.is_in(part.iter().cloned()))
+                },
+            )
             .await?,
         );
         Ok(out)
@@ -599,7 +614,7 @@ impl SnapshotReader<'_> {
     /// chunks the backend accepts, so a page costs a few reads however
     /// many keys it lists.
     pub(crate) async fn works_with_match_keys(&self, keys: &[String]) -> Result<Vec<works::Model>> {
-        find_chunked(self.store, keys, |part| {
+        find_chunked_paged(self.store, keys, &[works::Column::Id], |part| {
             works::Entity::find().filter(works::Column::MatchKey.is_in(part.iter().cloned()))
         })
         .await
@@ -643,7 +658,7 @@ impl SnapshotReader<'_> {
             );
         }
         out.extend(
-            find_chunked(self.store, &miss, |part| {
+            find_chunked_paged(self.store, &miss, &[expressions::Column::Id], |part| {
                 expressions::Entity::find()
                     .filter(expressions::Column::WorkId.is_in(part.iter().cloned()))
             })
@@ -670,12 +685,17 @@ impl SnapshotReader<'_> {
             );
         }
         out.extend(
-            find_chunked(self.store, &miss, |part| {
-                resolution_overrides::Entity::find()
-                    .filter(resolution_overrides::Column::SubjectKind.eq("work"))
-                    .filter(resolution_overrides::Column::Action.eq("isolate"))
-                    .filter(resolution_overrides::Column::SubjectId.is_in(part.iter().cloned()))
-            })
+            find_chunked_paged(
+                self.store,
+                &miss,
+                &[resolution_overrides::Column::SubjectId],
+                |part| {
+                    resolution_overrides::Entity::find()
+                        .filter(resolution_overrides::Column::SubjectKind.eq("work"))
+                        .filter(resolution_overrides::Column::Action.eq("isolate"))
+                        .filter(resolution_overrides::Column::SubjectId.is_in(part.iter().cloned()))
+                },
+            )
             .await?,
         );
         Ok(out)
@@ -701,7 +721,7 @@ impl SnapshotReader<'_> {
             })
             .collect();
         out.extend(
-            find_chunked(self.store, &miss, |part| {
+            find_chunked_paged(self.store, &miss, &[holdings::Column::Id], |part| {
                 super::holdings::find_holdings()
                     .filter(holdings::Column::Holder.eq(holder))
                     .filter(holdings::Column::ListingId.is_in(part.iter().cloned()))
@@ -732,12 +752,21 @@ impl SnapshotReader<'_> {
             .cloned()
             .collect();
         out.extend(
-            find_chunked(self.store, &miss, |part| {
-                credits::Entity::find()
-                    .filter(credits::Column::TargetKind.eq(kind.as_str()))
-                    .filter(credits::Column::TargetId.is_in(part.iter().cloned()))
-                    .filter(credits::Column::Position.eq(0))
-            })
+            find_chunked_paged(
+                self.store,
+                &miss,
+                &[
+                    credits::Column::TargetId,
+                    credits::Column::ContributorId,
+                    credits::Column::Role,
+                ],
+                |part| {
+                    credits::Entity::find()
+                        .filter(credits::Column::TargetKind.eq(kind.as_str()))
+                        .filter(credits::Column::TargetId.is_in(part.iter().cloned()))
+                        .filter(credits::Column::Position.eq(0))
+                },
+            )
             .await?
             .into_iter()
             .map(|c| c.target_id),
@@ -756,10 +785,18 @@ impl SnapshotReader<'_> {
             .cloned()
             .collect();
         out.extend(
-            find_chunked(self.store, &miss, |part| {
-                series_entries::Entity::find()
-                    .filter(series_entries::Column::WorkId.is_in(part.iter().cloned()))
-            })
+            find_chunked_paged(
+                self.store,
+                &miss,
+                &[
+                    series_entries::Column::WorkId,
+                    series_entries::Column::SeriesId,
+                ],
+                |part| {
+                    series_entries::Entity::find()
+                        .filter(series_entries::Column::WorkId.is_in(part.iter().cloned()))
+                },
+            )
             .await?
             .into_iter()
             .map(|e| e.work_id),
@@ -774,12 +811,15 @@ impl SnapshotReader<'_> {
     ///
     /// Returns [`LibraryError`] when a read fails.
     pub(crate) async fn works_with_episodes(&self, work_ids: &[String]) -> Result<Vec<String>> {
-        Ok(find_chunked(self.store, work_ids, |part| {
-            works::Entity::find().filter(works::Column::ParentWorkId.is_in(part.iter().cloned()))
-        })
-        .await?
-        .into_iter()
-        .filter_map(|w| w.parent_work_id)
-        .collect())
+        Ok(
+            find_chunked_paged(self.store, work_ids, &[works::Column::Id], |part| {
+                works::Entity::find()
+                    .filter(works::Column::ParentWorkId.is_in(part.iter().cloned()))
+            })
+            .await?
+            .into_iter()
+            .filter_map(|w| w.parent_work_id)
+            .collect(),
+        )
     }
 }

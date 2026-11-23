@@ -11,7 +11,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 use super::library_index::WorkRowInputs;
 use super::library_model::{find_chunked, find_chunked_paged};
@@ -294,12 +294,12 @@ impl LibraryStore {
         })
         .await?;
         let top_ids: Vec<String> = found.iter().map(|w| w.id.clone()).collect();
-        let episodes = find_chunked_paged::<works::Entity, _>(self, &top_ids, |part| {
-            works::Entity::find()
-                .filter(works::Column::ParentWorkId.is_in(part.iter().cloned()))
-                .order_by_asc(works::Column::Id)
-        })
-        .await?;
+        let episodes =
+            find_chunked_paged::<works::Entity, _>(self, &top_ids, &[works::Column::Id], |part| {
+                works::Entity::find()
+                    .filter(works::Column::ParentWorkId.is_in(part.iter().cloned()))
+            })
+            .await?;
         // Each work, episode or not, to the top-level work its rows count for.
         let mut top_of: HashMap<String, String> =
             top_ids.iter().map(|id| (id.clone(), id.clone())).collect();
@@ -309,38 +309,52 @@ impl LibraryStore {
             }
         }
         let all_work_ids: Vec<String> = top_of.keys().cloned().collect();
-        let expressions =
-            find_chunked_paged::<expressions::Entity, _>(self, &all_work_ids, |part| {
+        let expressions = find_chunked_paged::<expressions::Entity, _>(
+            self,
+            &all_work_ids,
+            &[expressions::Column::Id],
+            |part| {
                 expressions::Entity::find()
                     .filter(expressions::Column::WorkId.is_in(part.iter().cloned()))
-                    .order_by_asc(expressions::Column::Id)
-            })
-            .await?;
+            },
+        )
+        .await?;
         let work_of_expression: HashMap<&str, &str> = expressions
             .iter()
             .map(|x| (x.id.as_str(), x.work_id.as_str()))
             .collect();
         let expression_ids: Vec<String> = expressions.iter().map(|x| x.id.clone()).collect();
-        let editions = find_chunked_paged::<editions::Entity, _>(self, &expression_ids, |part| {
-            editions::Entity::find()
-                .filter(editions::Column::ExpressionId.is_in(part.iter().cloned()))
-                .order_by_asc(editions::Column::Id)
-        })
+        let editions = find_chunked_paged::<editions::Entity, _>(
+            self,
+            &expression_ids,
+            &[editions::Column::Id],
+            |part| {
+                editions::Entity::find()
+                    .filter(editions::Column::ExpressionId.is_in(part.iter().cloned()))
+            },
+        )
         .await?;
         let edition_ids: Vec<String> = editions.iter().map(|e| e.id.clone()).collect();
-        let listings =
-            find_chunked_paged::<store_listings::Entity, _>(self, &edition_ids, |part| {
+        let listings = find_chunked_paged::<store_listings::Entity, _>(
+            self,
+            &edition_ids,
+            &[store_listings::Column::Id],
+            |part| {
                 store_listings::Entity::find()
                     .filter(store_listings::Column::EditionId.is_in(part.iter().cloned()))
-                    .order_by_asc(store_listings::Column::Id)
-            })
-            .await?;
+            },
+        )
+        .await?;
         let listing_ids: Vec<String> = listings.iter().map(|l| l.id.clone()).collect();
-        let holdings = find_chunked_paged::<holdings::Entity, _>(self, &listing_ids, |part| {
-            holdings::Entity::find()
-                .filter(holdings::Column::ListingId.is_in(part.iter().cloned()))
-                .order_by_asc(holdings::Column::Id)
-        })
+        let holdings = find_chunked_paged::<holdings::Entity, _>(
+            self,
+            &listing_ids,
+            &[holdings::Column::Id],
+            |part| {
+                holdings::Entity::find()
+                    .filter(holdings::Column::ListingId.is_in(part.iter().cloned()))
+            },
+        )
         .await?;
         let acquisitions =
             find_chunked::<edition_acquisitions::Entity, _>(self, &edition_ids, |part| {
@@ -354,16 +368,22 @@ impl LibraryStore {
         targets.extend(edition_ids.iter().cloned());
         targets.extend(editions.iter().map(|e| e.expression_id.clone()));
         let targets: Vec<String> = targets.into_iter().collect();
-        let mut credit_rows = find_chunked_paged::<credits::Entity, _>(self, &targets, |part| {
-            credits::Entity::find()
-                .filter(credits::Column::TargetKind.is_in(CREDIT_TARGET_KINDS))
-                .filter(credits::Column::TargetId.is_in(part.iter().cloned()))
-                .filter(credits::Column::Role.is_in(CREDIT_ROLES))
-                .order_by_asc(credits::Column::TargetKind)
-                .order_by_asc(credits::Column::TargetId)
-                .order_by_asc(credits::Column::ContributorId)
-                .order_by_asc(credits::Column::Role)
-        })
+        let mut credit_rows = find_chunked_paged::<credits::Entity, _>(
+            self,
+            &targets,
+            &[
+                credits::Column::TargetKind,
+                credits::Column::TargetId,
+                credits::Column::ContributorId,
+                credits::Column::Role,
+            ],
+            |part| {
+                credits::Entity::find()
+                    .filter(credits::Column::TargetKind.is_in(CREDIT_TARGET_KINDS))
+                    .filter(credits::Column::TargetId.is_in(part.iter().cloned()))
+                    .filter(credits::Column::Role.is_in(CREDIT_ROLES))
+            },
+        )
         .await?;
         credit_rows.sort_by(|a, b| {
             (a.position, a.contributor_id.as_str()).cmp(&(b.position, b.contributor_id.as_str()))
@@ -379,12 +399,18 @@ impl LibraryStore {
                 .filter(contributors::Column::Id.is_in(part.iter().cloned()))
         })
         .await?;
-        let entries = find_chunked_paged::<series_entries::Entity, _>(self, &top_ids, |part| {
-            series_entries::Entity::find()
-                .filter(series_entries::Column::WorkId.is_in(part.iter().cloned()))
-                .order_by_asc(series_entries::Column::WorkId)
-                .order_by_asc(series_entries::Column::SeriesId)
-        })
+        let entries = find_chunked_paged::<series_entries::Entity, _>(
+            self,
+            &top_ids,
+            &[
+                series_entries::Column::WorkId,
+                series_entries::Column::SeriesId,
+            ],
+            |part| {
+                series_entries::Entity::find()
+                    .filter(series_entries::Column::WorkId.is_in(part.iter().cloned()))
+            },
+        )
         .await?;
         let series_ids: Vec<String> = entries
             .iter()
@@ -402,23 +428,35 @@ impl LibraryStore {
         let file_rows = if collections.collections.is_empty() {
             Vec::new()
         } else {
-            find_chunked_paged::<edition_files::Entity, _>(self, &edition_ids, |part| {
-                edition_files::Entity::find()
-                    .filter(edition_files::Column::OwnerKind.eq("edition"))
-                    .filter(edition_files::Column::OwnerId.is_in(part.iter().cloned()))
-                    .order_by_asc(edition_files::Column::OwnerId)
-                    .order_by_asc(edition_files::Column::Destination)
-                    .order_by_asc(edition_files::Column::StorageKey)
-            })
+            find_chunked_paged::<edition_files::Entity, _>(
+                self,
+                &edition_ids,
+                &[
+                    edition_files::Column::OwnerId,
+                    edition_files::Column::Destination,
+                    edition_files::Column::StorageKey,
+                ],
+                |part| {
+                    edition_files::Entity::find()
+                        .filter(edition_files::Column::OwnerKind.eq("edition"))
+                        .filter(edition_files::Column::OwnerId.is_in(part.iter().cloned()))
+                },
+            )
             .await?
         };
-        let tag_rows = find_chunked_paged::<work_tags::Entity, _>(self, &top_ids, |part| {
-            work_tags::Entity::find()
-                .filter(work_tags::Column::WorkId.is_in(part.iter().cloned()))
-                .order_by_asc(work_tags::Column::WorkId)
-                .order_by_asc(work_tags::Column::Key)
-                .order_by_asc(work_tags::Column::Source)
-        })
+        let tag_rows = find_chunked_paged::<work_tags::Entity, _>(
+            self,
+            &top_ids,
+            &[
+                work_tags::Column::WorkId,
+                work_tags::Column::Key,
+                work_tags::Column::Source,
+            ],
+            |part| {
+                work_tags::Entity::find()
+                    .filter(work_tags::Column::WorkId.is_in(part.iter().cloned()))
+            },
+        )
         .await?;
 
         let mut assembler = Assembler {

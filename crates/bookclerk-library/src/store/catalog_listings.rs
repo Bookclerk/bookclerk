@@ -18,7 +18,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 use bookclerk_plugin_abi::TypedDbStatement;
 use bookclerk_resolve as resolve;
@@ -777,10 +777,10 @@ impl LibraryStore {
         let rows = super::library_model::find_chunked_paged::<store_listings::Entity, _>(
             self,
             &products,
+            &[store_listings::Column::Id],
             |part| {
                 store_listings::Entity::find()
                     .filter(store_listings::Column::ProductId.is_in(part.iter().cloned()))
-                    .order_by_asc(store_listings::Column::Id)
             },
         )
         .await?;
@@ -991,10 +991,10 @@ impl LibraryStore {
         let rows = super::library_model::find_chunked_paged::<store_listings::Entity, _>(
             self,
             &ids,
+            &[store_listings::Column::Id],
             |part| {
                 store_listings::Entity::find()
                     .filter(store_listings::Column::ProductId.is_in(part.iter().cloned()))
-                    .order_by_asc(store_listings::Column::Id)
             },
         )
         .await?;
