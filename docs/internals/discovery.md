@@ -931,6 +931,13 @@ meaning (`crates/bookclerkd/src/search_rerank.rs`):
    both to lead, so an exact title match the stores put first stays near
    the top. The equal weights are a first setting, not yet measured on real
    searches.
+4. A model plugin runs its calls one after another, and a call a search
+   stopped waiting for still runs. The model therefore works for a search
+   in a task of its own that holds one of two slots until the model has
+   answered (up to the model call's own timeout). What it made is kept for
+   the next search of that page. A search that finds both slots taken, and
+   whose vectors are not all in the cache, asks the model for nothing and
+   keeps the stores' order.
 
 The page is ordered before it is returned, so nothing moves after a client
 shows it. Only the results of one page are ordered among themselves: pages
@@ -1005,7 +1012,7 @@ queue order; Discover personalizes the feed (including wishlist items).
 | Narrated by {Narrator} | `narrator` | Liked-narrator overlap |
 | Because you like {Genre} | `genre` | Category/subject overlap from finished titles |
 | Similar to books you finish | `similar_taste` | Embedding similarity |
-| Popular in {Genre} | `starter_genre` (`starter_genre:fantasy`, …) | Genre browse: the genres the taste leans to, and the starter genres while it is thin |
+| Popular in {Genre} | `starter_genre` (`starter_genre:fantasy`, …; a label in a non-Latin script also carries eight hex digits of its hash, so two such genres never share an id) | Genre browse: the genres the taste leans to, and the starter genres while it is thin |
 | Chirp deals right now | `chirp_deals` | Chirp top + free deals |
 | Picked for you on {Store} | `from_store` (`from_audible`, …) | Titles no personal shelf took, ranked by taste, under the store where they cost the person least |
 | Top picks for you | `top_picks` | Fallback when every other shelf is empty |

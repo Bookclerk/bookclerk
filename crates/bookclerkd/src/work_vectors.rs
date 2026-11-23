@@ -223,6 +223,26 @@ pub(crate) struct WorkVectors {
     held: Mutex<Held>,
     /// Vectors of store search hits.
     hits: Mutex<HitCache>,
+    /// The store searches whose model work is under way.
+    pub(crate) search_work: SearchSlots,
+}
+
+/// Most store searches whose model work may be under way at once. A model
+/// plugin runs its calls one after another, behind the embedding of the
+/// library; a search that finds every slot taken keeps the stores' order
+/// instead of joining that line.
+pub(crate) const SEARCH_WORK_SLOTS: usize = 2;
+
+/// The slots store searches take while the model works for them
+/// ([`SEARCH_WORK_SLOTS`]). A slot is held until the model has answered,
+/// not until the search stopped waiting, so searches that gave up cannot
+/// pile work onto the model.
+pub(crate) struct SearchSlots(pub(crate) Arc<tokio::sync::Semaphore>);
+
+impl Default for SearchSlots {
+    fn default() -> Self {
+        Self(Arc::new(tokio::sync::Semaphore::new(SEARCH_WORK_SLOTS)))
+    }
 }
 
 impl WorkVectors {

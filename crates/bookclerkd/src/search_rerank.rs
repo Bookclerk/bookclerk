@@ -16,7 +16,14 @@
 //!
 //! The model gets a short time ([`RERANK_BUDGET`]) inside the search's own
 //! budget. When it misses it, has no model here or fails, the page keeps
-//! the store's order: a search never fails or waits long for this. See
+//! the store's order: a search never fails or waits long for this.
+//!
+//! A model plugin runs its calls one after another, and a call a search
+//! stopped waiting for still runs. So the model works for a search in a
+//! task of its own that holds one of a few slots
+//! ([`crate::work_vectors::SEARCH_WORK_SLOTS`]) until the model has
+//! answered: what it made is kept for the next search of that page, and a
+//! search that finds every slot taken asks the model for nothing. See
 //! `docs/internals/discovery.md`, *Catalog search*.
 
 use std::collections::HashMap;
@@ -34,6 +41,12 @@ use crate::embedding::ModelEmbedder;
 /// that must first load its model misses this, and that page keeps the
 /// store's order.
 const RERANK_BUDGET: Duration = Duration::from_secs(3);
+
+/// The longest the model may take for one search's call once it is
+/// asked. Longer than a search waits ([`RERANK_BUDGET`]): the slot the call
+/// holds is given back when the model has answered, so the slots count
+/// what the model still has to do.
+const MODEL_DEADLINE: Duration = bookclerk_integrations::AI_RUN_TIMEOUT;
 
 /// Below this much time left in the search's budget the model is not
 /// asked at all.
@@ -102,8 +115,27 @@ fn blended_order(scores: &[f32]) -> Vec<usize> {
     order
 }
 
-/// How close each of `hits` is to `query` in meaning, in the order of
-/// `hits`.
+/// How close each of `texts` is to `query`, when the vectors of all of
+/// them are kept from earlier searches: no model is asked.
+async fn kept_scores(
+    state: &AppState,
+    model: &ModelEmbedder,
+    query: &str,
+    texts: &[String],
+) -> Option<Vec<f32>> {
+    let space = model.vector_space();
+    let query_vector = state.work_vectors.cached_query(space, query).await?;
+    state
+        .work_vectors
+        .cached_hits(space, texts)
+        .await
+        .into_iter()
+        .map(|vector| Some(cosine(&query_vector, vector?.as_slice())))
+        .collect()
+}
+
+/// How close each of `texts` (the texts of a page's results) is to
+/// `query` in meaning, in their order.
 ///
 /// # Errors
 ///
@@ -113,7 +145,7 @@ async fn scores(
     state: &AppState,
     model: &ModelEmbedder,
     query: &str,
-    hits: &[CatalogSearchHit],
+    texts: &[String],
     deadline: Duration,
 ) -> Result<Vec<f32>, DiscoverError> {
     let space = model.vector_space().clone();
@@ -128,8 +160,7 @@ async fn scores(
             vector
         }
     };
-    let texts: Vec<String> = hits.iter().map(hit_text).collect();
-    let mut vectors = state.work_vectors.cached_hits(&space, &texts).await;
+    let mut vectors = state.work_vectors.cached_hits(&space, texts).await;
     let mut missing: Vec<String> = texts
         .iter()
         .zip(&vectors)
@@ -185,7 +216,7 @@ async fn scores(
 ///
 /// Whether the page was reordered. `false` leaves `hits` untouched.
 pub(crate) async fn by_meaning(
-    state: &AppState,
+    state: &Arc<AppState>,
     query: &str,
     hits: &mut Vec<CatalogSearchHit>,
     budget: Duration,
@@ -194,12 +225,35 @@ pub(crate) async fn by_meaning(
     if hits.len() < 2 || budget < LEAST_BUDGET {
         return false;
     }
+    let texts: Vec<String> = hits.iter().map(hit_text).collect();
     let asked = async {
         let router = Arc::clone(&state.deployment_runtime().ai);
         let Some(model) = ModelEmbedder::current(&router).await else {
             return Ok(None);
         };
-        scores(state, &model, query, hits, budget).await.map(Some)
+        if let Some(kept) = kept_scores(state, &model, query, &texts).await {
+            return Ok(Some(kept));
+        }
+        // The model works in a task of its own, holding a slot until it
+        // has answered: this search may stop waiting first, and the call
+        // it left behind still occupies the model.
+        let Ok(slot) = Arc::clone(&state.work_vectors.search_work.0).try_acquire_owned() else {
+            return Err(DiscoverError::Embed(
+                "the model is busy with earlier searches".to_string(),
+            ));
+        };
+        let (state, query) = (Arc::clone(state), query.to_string());
+        tokio::spawn(async move {
+            let _slot = slot;
+            scores(&state, &model, &query, &texts, MODEL_DEADLINE).await
+        })
+        .await
+        .unwrap_or_else(|err| {
+            Err(DiscoverError::Embed(format!(
+                "the search's model task: {err}"
+            )))
+        })
+        .map(Some)
     };
     let scores = match tokio::time::timeout(budget, asked).await {
         Ok(Ok(Some(scores))) => scores,
@@ -333,6 +387,46 @@ mod tests {
         assert!(by_meaning(&state, "Dragon tales", &mut again, Duration::from_secs(5)).await);
         assert_eq!(titles(&again), titles(&hits));
         assert_eq!(model.texts_embedded(), 5);
+    }
+
+    #[tokio::test]
+    async fn a_search_asks_a_busy_model_for_nothing_new() {
+        let files = tempfile::tempdir().unwrap();
+        let model = FakeModel::new();
+        let (state, _library) = daemon(&files, &[], Some(&model)).await;
+        let page = || vec![hit("Emma"), hit("Dragon Flight"), hit("Dragon Song")];
+        let budget = Duration::from_secs(5);
+        // Earlier searches hold every slot: their model calls are still
+        // under way.
+        let slots = Arc::clone(&state.work_vectors.search_work.0);
+        let held = slots
+            .acquire_many(u32::try_from(crate::work_vectors::SEARCH_WORK_SLOTS).unwrap())
+            .await
+            .unwrap();
+        let mut hits = page();
+        assert!(!by_meaning(&state, "Dragon tales", &mut hits, budget).await);
+        assert_eq!(titles(&hits), ["Emma", "Dragon Flight", "Dragon Song"]);
+        assert_eq!(model.texts_embedded(), 0);
+        drop(held);
+        // With a slot free the page is ordered, and the slot comes back.
+        let mut hits = page();
+        assert!(by_meaning(&state, "Dragon tales", &mut hits, budget).await);
+        let asked = model.texts_embedded();
+        assert_eq!(asked, 4);
+        assert_eq!(
+            slots.available_permits(),
+            crate::work_vectors::SEARCH_WORK_SLOTS
+        );
+        // A page whose vectors are kept needs no slot and no model.
+        let held = slots
+            .acquire_many(u32::try_from(crate::work_vectors::SEARCH_WORK_SLOTS).unwrap())
+            .await
+            .unwrap();
+        let mut again = page();
+        assert!(by_meaning(&state, "Dragon tales", &mut again, budget).await);
+        assert_eq!(titles(&again), titles(&hits));
+        assert_eq!(model.texts_embedded(), asked);
+        drop(held);
     }
 
     #[tokio::test]
