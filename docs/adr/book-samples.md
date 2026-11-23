@@ -77,9 +77,10 @@ same-origin path (`/api/samples/{token}`) with this node's own key, as
 cover paths are signed, and fetches only paths it issued. The token is
 authenticated, not secret: it carries the URL in readable form, so
 anyone holding the path can read it, but nobody can make this node fetch
-a URL it did not sign. The download goes through the first `covers`
-plugin with `media = audio` (`CoverFetchParams.media`): public `https`
-hosts only and a size cap. The plugin refuses an answer whose
+a URL it did not sign. The download goes through the deployed `covers`
+plugins with `media = audio` (`CoverFetchParams.media`), in order, until
+one returns the body (a plugin that refuses audio passes it on): public
+`https` hosts only and a size cap. The plugin refuses an answer whose
 `Content-Type` names something else (text, HTML, JSON, an image); it
 keeps `audio/*`, `video/mp4` and `application/ogg` (which some CDNs send
 for M4A and Ogg audio), a generic octet stream, and an answer with no

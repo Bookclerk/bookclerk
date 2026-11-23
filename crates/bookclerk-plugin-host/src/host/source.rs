@@ -1260,12 +1260,15 @@ impl ExternalSource {
         )
     }
 
-    /// Calls the guest's `catalogDetail`, soft-failing to `None` so one slow
-    /// or broken store never fails a search or a detail dialog.
+    /// Calls the guest's `catalogDetail`. A failed call is an error, not
+    /// `None`, so a caller that caches a store's "not listed" answer (the
+    /// title sample) can tell it from a store that did not answer; search
+    /// and the detail dialog soft-fail on the error themselves.
     ///
     /// # Errors
     ///
-    /// Never returns an error today; the `Result` matches the trait methods.
+    /// [`bookclerk_source::SourceError::Api`] when the guest call fails or
+    /// the guest reports an error.
     async fn catalog_detail_call(
         &self,
         params: CatalogDetailParams,
@@ -1277,14 +1280,7 @@ impl ExternalSource {
             Ok(hit) => Ok(hit
                 .filter(|hit| self.declared_hit(hit))
                 .map(catalog_hit_from_abi)),
-            Err(err) => {
-                tracing::debug!(
-                    plugin = %self.id(),
-                    error = %err,
-                    "external catalog_detail soft-failed"
-                );
-                Ok(None)
-            }
+            Err(err) => Err(bookclerk_source::SourceError::api(err.to_string())),
         }
     }
 }

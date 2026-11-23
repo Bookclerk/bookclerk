@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Headphones, Loader2, Pause, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { TitleMetaQuery } from "@/lib/api";
-import { pauseBookFor, sampleSources } from "@/lib/sample";
+import { pauseBookFor, sampleSourceKey, sampleSources } from "@/lib/sample";
 import { webPlayer } from "@/lib/webPlayer";
 
 /**
@@ -36,7 +36,14 @@ export function SampleButton({
   editionId?: string | null;
   query: TitleMetaQuery;
 }) {
-  const [status, setStatus] = useState<SampleStatus>("idle");
+  const [stored, setStatus] = useState<SampleStatus>("idle");
+  // The sources a "none" answer was for. Enrichment can add a held edition
+  // or an identifier later; the answer then no longer holds and the control
+  // is offered again, while a playing or paused sample carries on.
+  const sourceKey = sampleSourceKey(editionId, query);
+  const [noneFor, setNoneFor] = useState<string | null>(null);
+  const askedForRef = useRef(sourceKey);
+  const status: SampleStatus = stored === "none" && noneFor !== sourceKey ? "idle" : stored;
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const sourcesRef = useRef<AsyncGenerator<string, void, undefined> | null>(null);
   // Whether a source's audio failed to load in this attempt, so running
@@ -78,6 +85,7 @@ export function SampleButton({
     if (sourcesRef.current !== sources) return;
     if (next.done) {
       sourcesRef.current = null;
+      setNoneFor(askedForRef.current);
       setStatus(audioFailedRef.current ? "failed" : "none");
       return;
     }
@@ -107,6 +115,7 @@ export function SampleButton({
       return;
     }
     audioFailedRef.current = false;
+    askedForRef.current = sourceKey;
     sourcesRef.current = sampleSources(editionId, query);
     void playNext();
   };

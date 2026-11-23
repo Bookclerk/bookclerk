@@ -32,6 +32,25 @@ export function isStoreSamplePath(path: string): boolean {
 }
 
 /**
+ * What the sample sources of a title depend on: the held edition and the
+ * identifiers the store lookup uses. When enrichment changes it, an
+ * earlier "no sample" answer no longer holds.
+ *
+ * @param editionId - The library edition, when the title is held.
+ * @param query - The title, as sent to title-meta.
+ * @returns A string equal for equal sources.
+ */
+export function sampleSourceKey(
+  editionId: string | null | undefined,
+  query: TitleMetaQuery,
+): string {
+  const editions = (query.store_editions ?? []).map(
+    (edition) => `${edition.source}:${edition.product_id}`,
+  );
+  return JSON.stringify([editionId ?? "", query.asin ?? "", query.isbn ?? "", editions]);
+}
+
+/**
  * The sample sources to try for a title, best first: one cut from the
  * edition this library holds, then the public sample a storefront that
  * listed the title offers. The store is asked only when the first source

@@ -201,6 +201,23 @@ const ENCODE_CHUNK_FRAMES: usize = 1152 * 8;
 /// for five minutes.
 const SAMPLE_BITRATE: mp3lame_encoder::Bitrate = mp3lame_encoder::Bitrate::Kbps64;
 
+/// The sample rates an MP3 stream can have (MPEG-1, -2 and -2.5), in Hz,
+/// slowest first.
+const MP3_RATES_HZ: [u32; 9] = [
+    8_000, 11_025, 12_000, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000,
+];
+
+/// The fastest MP3 rate no faster than `hz`, or the slowest MP3 rate when
+/// `hz` is below every one.
+fn mp3_rate_for(hz: u32) -> u32 {
+    MP3_RATES_HZ
+        .iter()
+        .rev()
+        .copied()
+        .find(|&rate| rate <= hz)
+        .unwrap_or(MP3_RATES_HZ[0])
+}
+
 /// A mono, constant bit rate MP3 encoder fed PCM in pieces, for a book
 /// sample streamed out as it is encoded (`bookclerk-media-worker pcm` in
 /// sample mode).
@@ -218,18 +235,21 @@ pub(crate) struct Mp3Stream {
 }
 
 impl Mp3Stream {
-    /// Encoder for mono PCM at `source_hz`, encoded at the same rate or at
-    /// `max_hz` when the source is faster.
+    /// Encoder for mono PCM at `source_hz`, encoded at the fastest MP3
+    /// rate ([`MP3_RATES_HZ`]) no faster than the source or `max_hz`, or the
+    /// slowest MP3 rate for a slower source. The PCM is resampled to that
+    /// rate before LAME sees it, and LAME's output rate is set to it, so
+    /// the stream is exactly that rate.
     ///
     /// # Returns
     ///
-    /// The encoder and the rate it encodes at, in Hz.
+    /// The encoder and the rate its MP3 frames are at, in Hz.
     ///
     /// # Errors
     ///
     /// [`MediaError::Native`] when LAME refuses the settings.
     pub(crate) fn new(source_hz: u32, max_hz: u32) -> Result<(Self, u32)> {
-        let target = source_hz.min(max_hz);
+        let target = mp3_rate_for(source_hz.min(max_hz));
         let mut builder = Builder::new()
             .ok_or_else(|| MediaError::Native("failed to create LAME encoder (mp3lame)".into()))?;
         builder
@@ -238,6 +258,9 @@ impl Mp3Stream {
         builder
             .set_sample_rate(target)
             .map_err(|err| MediaError::Native(format!("lame sample rate: {err:?}")))?;
+        builder
+            .set_output_sample_rate(std::num::NonZeroU32::new(target))
+            .map_err(|err| MediaError::Native(format!("lame output rate: {err:?}")))?;
         builder
             .set_vbr_mode(mp3lame_encoder::VbrMode::Off)
             .map_err(|err| MediaError::Native(format!("lame cbr mode: {err:?}")))?;
@@ -515,6 +538,19 @@ fn write_lame_tag(encoder: &Encoder, out_file: &mut File) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sample is encoded at a rate MP3 has, and says so.
+    #[test]
+    fn a_sample_is_encoded_at_an_mp3_rate() {
+        assert_eq!(mp3_rate_for(37_800), 32_000);
+        assert_eq!(mp3_rate_for(44_100), 44_100);
+        assert_eq!(mp3_rate_for(6_000), 8_000);
+        assert_eq!(mp3_rate_for(96_000), 48_000);
+        let (_, hz) = Mp3Stream::new(37_800, 48_000).unwrap();
+        assert_eq!(hz, 32_000);
+        let (_, hz) = Mp3Stream::new(96_000, 24_000).unwrap();
+        assert_eq!(hz, 24_000);
+    }
 
     #[test]
     fn linear_resampler_halves_mono_rate() {

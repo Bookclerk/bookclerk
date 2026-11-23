@@ -740,12 +740,14 @@ const DETAIL_BUDGET: std::time::Duration = std::time::Duration::from_secs(8);
 ///
 /// # Returns
 ///
-/// `None` when `product_id` is not an ASIN, or no marketplace tried within
-/// eight seconds knows it.
+/// `None` when `product_id` is not an ASIN, or every marketplace answered
+/// within eight seconds and none lists it.
 ///
 /// # Errors
 ///
-/// Returns an error when no HTTP client can be built.
+/// Returns an error when no HTTP client can be built, or when no
+/// marketplace listed the product and one of them failed or the eight
+/// seconds ran out first, so the product's absence is not settled.
 pub async fn catalog_detail(product_id: &str) -> bookclerk_storefront::Result<Option<CatalogHit>> {
     let asin = product_id.trim().to_ascii_uppercase();
     if !is_valid_asin(&asin) {
@@ -754,22 +756,33 @@ pub async fn catalog_detail(product_id: &str) -> bookclerk_storefront::Result<Op
     let http = public_http_client().map_err(|err| SourceError::Api(err.to_string()))?;
     let deadline = tokio::time::Instant::now() + DETAIL_BUDGET;
     let asins = [asin.as_str()];
+    // A marketplace that fails or runs out of time leaves the answer open:
+    // the lookup then errs instead of reporting the product absent, so
+    // nobody caches a failure as "not listed".
+    let mut failed = None;
     for region in DETAIL_REGIONS {
         let origin = catalog_origin(region);
         let lookup = fetch_products_by_asins(&http, &origin, &asins);
         let Ok(found) = tokio::time::timeout_at(deadline, lookup).await else {
+            failed = Some(format!("catalog detail ran out of time before {region}"));
             break;
         };
-        // A marketplace that fails or does not list the ASIN: try the next.
-        if let Some(product) = found.ok().and_then(|products| {
-            products
-                .into_iter()
-                .find(|p| p.asin.eq_ignore_ascii_case(&asin))
-        }) {
-            return Ok(Some(product_to_hit(product, "detail".to_owned())));
+        match found {
+            Ok(products) => {
+                if let Some(product) = products
+                    .into_iter()
+                    .find(|p| p.asin.eq_ignore_ascii_case(&asin))
+                {
+                    return Ok(Some(product_to_hit(product, "detail".to_owned())));
+                }
+            }
+            Err(err) => failed = Some(format!("catalog detail in {region}: {err}")),
         }
     }
-    Ok(None)
+    match failed {
+        Some(reason) => Err(SourceError::Api(reason)),
+        None => Ok(None),
+    }
 }
 
 /// Maps an Audible catalog product to a [`CatalogHit`] (the ASIN is both `product_id` and an identifier).

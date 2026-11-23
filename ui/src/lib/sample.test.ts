@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { isStoreSamplePath, pauseBookFor, sampleSources } from "@/lib/sample";
+import { isStoreSamplePath, pauseBookFor, sampleSourceKey, sampleSources } from "@/lib/sample";
 import type { TitleMetaQuery } from "@/lib/api";
 import type { PlayerState } from "@/lib/player";
 
@@ -50,6 +50,23 @@ describe("sampleSources", () => {
     expect(
       await all(sampleSources(undefined, query, async () => "https://evil.example/a.mp3")),
     ).toEqual([]);
+  });
+});
+
+describe("sampleSourceKey", () => {
+  const query: TitleMetaQuery = { title: "Elantris", asin: "B000000001" };
+
+  it("changes when enrichment adds a held edition or an identifier", () => {
+    const before = sampleSourceKey(null, query);
+    expect(sampleSourceKey(null, { ...query, title: "Elantris (10th)" })).toBe(before);
+    expect(sampleSourceKey("ed-1", query)).not.toBe(before);
+    expect(sampleSourceKey(null, { ...query, isbn: "9780000000001" })).not.toBe(before);
+    expect(
+      sampleSourceKey(null, {
+        ...query,
+        store_editions: [{ source: "libro", product_id: "9780000000001" }],
+      }),
+    ).not.toBe(before);
   });
 });
 

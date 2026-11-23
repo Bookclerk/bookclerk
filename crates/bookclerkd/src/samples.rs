@@ -784,44 +784,46 @@ pub(crate) async fn get_store_sample(
     ))
 }
 
-/// Downloads a store's sample through the first deployed `covers` plugin.
+/// Downloads a store's sample through the deployed `covers` plugins, in
+/// order, until one hands back a body: a plugin that refuses audio, fails,
+/// or answers without a body passes the download to the next.
 ///
 /// # Errors
 ///
 /// [`SampleFailure::Unavailable`] when no plugin fetches remote media or
-/// the call fails, [`SampleFailure::Refused`] when the download did.
+/// every call failed, [`SampleFailure::Refused`] when a plugin answered
+/// and none returned the sample.
 async fn download(
     integrations: &tokio::sync::RwLock<bookclerk_integrations::IntegrationRegistry>,
     url: String,
 ) -> Result<Vec<u8>, SampleFailure> {
-    let fetcher = integrations
-        .read()
-        .await
-        .cover_fetchers()
-        .into_iter()
-        .next()
-        .ok_or_else(|| {
-            SampleFailure::Unavailable("no deployed plugin fetches remote media".into())
-        })?;
-    let params = bookclerk_plugin_abi::CoverFetchParams {
-        urls: vec![url],
-        max_bytes: bookclerk_plugin_abi::MAX_COVER_BYTES,
-        conditions: Vec::new(),
-        media: bookclerk_plugin_abi::RemoteMedia::Audio,
-    };
-    let fetched = fetcher
-        .fetch_covers(params)
-        .await
-        .map_err(|err| SampleFailure::Unavailable(format!("sample fetch failed: {err}")))?;
-    let answer = fetched
-        .into_iter()
-        .next()
-        .ok_or_else(|| SampleFailure::Refused("no answer for the sample".into()))?;
-    match (answer.body, answer.error) {
-        (Some(bytes), _) => Ok(bytes),
-        (None, Some(error)) => Err(SampleFailure::Refused(error)),
-        (None, None) => Err(SampleFailure::Refused("no body".into())),
+    let fetchers = integrations.read().await.cover_fetchers();
+    let mut failure = SampleFailure::Unavailable("no deployed plugin fetches remote media".into());
+    for fetcher in fetchers {
+        let params = bookclerk_plugin_abi::CoverFetchParams {
+            urls: vec![url.clone()],
+            max_bytes: bookclerk_plugin_abi::MAX_COVER_BYTES,
+            conditions: Vec::new(),
+            media: bookclerk_plugin_abi::RemoteMedia::Audio,
+        };
+        let answer = match fetcher.fetch_covers(params).await {
+            Ok(fetched) => fetched.into_iter().next(),
+            Err(err) => {
+                // A refusal from an earlier plugin says more than a failed call.
+                if matches!(failure, SampleFailure::Unavailable(_)) {
+                    failure = SampleFailure::Unavailable(format!("sample fetch failed: {err}"));
+                }
+                continue;
+            }
+        };
+        match answer.map(|answer| (answer.body, answer.error)) {
+            Some((Some(bytes), _)) => return Ok(bytes),
+            Some((None, Some(error))) => failure = SampleFailure::Refused(error),
+            Some((None, None)) => failure = SampleFailure::Refused("no body".into()),
+            None => failure = SampleFailure::Refused("no answer for the sample".into()),
+        }
     }
+    Err(failure)
 }
 
 #[cfg(test)]
