@@ -222,7 +222,8 @@ pub use on_demand_storage::{
     storage_activates_on_demand, HeldSession, OnDemandStorage, STORAGE_IDLE_TIMEOUT,
 };
 pub use provisioning::{
-    deprovision_instance, provision_instance, ProvisionRunError, ProvisionToken, PROVISION_TIMEOUT,
+    deprovision_instance, provision_bootstrap, provision_instance, ProvisionRunError,
+    ProvisionToken, PROVISION_TIMEOUT,
 };
 pub use queue_producer::{OutboxQueueProducer, QueueOutbox};
 pub use registry::{

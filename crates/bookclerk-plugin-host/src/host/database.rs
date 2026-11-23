@@ -14,7 +14,7 @@ use std::thread::ThreadId;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use bookclerk_config::{resolve_d1_api_token, resolve_postgres_url, Config, DatabasePluginKind};
+use bookclerk_config::{resolve_postgres_url, Config, DatabasePluginKind};
 use bookclerk_db_exec::db_value_from_sea;
 use bookclerk_library::EntityKind;
 use bookclerk_plugin_abi::{
@@ -1525,8 +1525,7 @@ impl ExternalDatabase {
                 account_id: config.database.d1.account_id.clone(),
                 database_id: String::new(),
                 api_base: config.database.d1.api_base.clone(),
-                api_token: resolve_d1_api_token()
-                    .map_err(|err| PluginError::message(err.to_string()))?,
+                api_token: d1_api_token(config).map_err(PluginError::message)?,
                 binding: Some(binding.to_string()),
                 database_name: Some(unit_ref.to_string()),
                 provision,
@@ -2887,6 +2886,19 @@ pub fn database_connect_bindings(
     .map_err(|err| PluginError::message(err.to_string()))
 }
 
+/// The D1 API token: from the environment, or the credential
+/// `bookclerk database setup d1` sealed beside `master.key`.
+///
+/// # Errors
+///
+/// A message saying how to configure one, or why the stored one could not
+/// be read.
+fn d1_api_token(config: &Config) -> Result<String, String> {
+    bookclerk_library::database_credential::resolve_d1_api_token(&config.paths().files_dir)
+        .map(|token| token.as_str().to_string())
+        .map_err(|err| err.to_string())
+}
+
 /// Builds the database adapter's `PluginWorker.open` binding values from host
 /// config.
 ///
@@ -2914,7 +2926,7 @@ fn connect_bindings(
                 account_id: config.database.d1.account_id.clone(),
                 database_id: config.database.d1.database_id.clone(),
                 api_base: config.database.d1.api_base.clone(),
-                api_token: resolve_d1_api_token().map_err(map_config_err)?,
+                api_token: d1_api_token(config).map_err(DbErr::Custom)?,
                 binding: None,
                 database_name: None,
                 provision: true,
