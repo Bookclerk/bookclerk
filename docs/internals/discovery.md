@@ -357,12 +357,19 @@ Per [Open Library API guidelines](https://openlibrary.org/developers/api):
   and author, and only a result with the same title (ignoring case and
   punctuation) is used. The first record that fills a gap wins, and the
   work only takes the fields it lacks
-- Editions already enriched are skipped (the edition's `enrich_source`
-  `metadata:<provider>`, or the legacy `openlibrary`) — provenance cache.
-  The work, expression and cover are written first, each taking only the
-  fields it lacks, and the edition is marked last. A failure before
+- Only editions with a gap are asked. The work, expression and cover are
+  written first, each taking only the fields it lacks, and the edition is
+  marked last (`enrich_source` `metadata:<provider>`). A failure before
   the mark keeps whatever was already written and leaves the edition
   unmarked, so a later run asks again while any of its gaps is still open
+- An ask that leaves gaps open is recorded in `edition_enrich_attempts`:
+  `unmatched` when no record matched or filled a gap, `partial` when the
+  record filled only some. Such an edition is not asked again for 30
+  days, so titles that never match do not spend every run's 25 requests
+  ahead of titles that would, and a partly filled title is asked again
+  later for the rest. An ask that a provider failed is not recorded, so
+  the next run asks again
+- With no provider deployed, nothing is read or asked
 - For bulk data, use [monthly dumps](https://openlibrary.org/data), not the API
 
 WorldCat remains reserved (API key + ToS).
@@ -548,7 +555,9 @@ title is **not** in the household library.
   declares `catalog.detailByProductId` (Audible, Libro.fm, GraphicAudio) for its own
   product (two at most), then the stores that declare `catalog.detailByIsbn`
   (Libro.fm) for the ISBN, three lookups and 3.5 s at most. No plugin id is
-  named. `POST /api/discover/title-meta/batch` answers every title within
+  named. The server caches each answer under the set of deployed metadata
+  providers, so deploying or removing one asks again rather than serving
+  what the old set answered. `POST /api/discover/title-meta/batch` answers every title within
   6 s: a title still being looked up then answers with what it has and is
   flagged in the response's `incomplete` list, so the page shows it but
   does not cache it, and the log names the lookup it was waiting on. After multi-store
@@ -879,6 +888,14 @@ expression (recording) than the card's own store editions
 but an ASIN is checked as that Audible product. A price for a product the
 pool never listed stays, and so does every price when the pool knows none
 of the card's editions.
+
+A store's product id names one edition per marketplace, and the same id
+can name another recording in another marketplace. So the card's editions
+and its prices are placed by the pool's listings in the card's own
+marketplace (its `region`); a product the pool lists in no such
+marketplace falls back to its listings in every marketplace. Title-search
+records are pooled under the card's marketplace, and catalog search places
+its hits the same way.
 
 The batch route checks all of its cards in one pool read with its own
 1.5 second budget after the batch answers, so a batch that used its whole

@@ -880,8 +880,12 @@ pub async fn resolve_title_meta(
         .map(|ed| format!("{}:{}", ed.source.trim(), ed.product_id.trim()))
         .collect();
     let editions = editions.join(",");
+    // The deployed providers are part of the key: deploying or removing
+    // one asks again instead of serving what the old set answered.
+    let provider_set = providers.provider_keys().join(",");
     let key = cache_key(&[
         "title-meta-v10",
+        provider_set.as_str(),
         region,
         query.asin.as_deref().unwrap_or(""),
         query.isbn.as_deref().unwrap_or(""),
@@ -1209,6 +1213,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl MetadataProviders for SlowAsin {
+        fn provider_keys(&self) -> Vec<String> {
+            vec![String::from("test-provider")]
+        }
+
         async fn lookup(
             &self,
             params: &bookclerk_plugin_sdk::MetadataLookupParams,
@@ -1254,6 +1262,68 @@ mod tests {
             matches!(results[1], Ok(None)),
             "the quick query answered: {:?}",
             results[1]
+        );
+    }
+
+    /// Providers that answer nothing and count their lookups.
+    struct CountingLookups(std::sync::atomic::AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl MetadataProviders for CountingLookups {
+        fn provider_keys(&self) -> Vec<String> {
+            vec![String::from("counting")]
+        }
+
+        async fn lookup(
+            &self,
+            _params: &bookclerk_plugin_sdk::MetadataLookupParams,
+        ) -> bookclerk_enrich::MetadataAnswer {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            bookclerk_enrich::MetadataAnswer::default()
+        }
+
+        async fn search(
+            &self,
+            _params: &bookclerk_plugin_sdk::MetadataSearchParams,
+        ) -> bookclerk_enrich::MetadataAnswer {
+            bookclerk_enrich::MetadataAnswer::default()
+        }
+
+        async fn chapters(
+            &self,
+            _params: &bookclerk_plugin_sdk::MetadataChaptersParams,
+        ) -> bookclerk_enrich::ChaptersAnswer {
+            bookclerk_enrich::ChaptersAnswer::default()
+        }
+    }
+
+    /// A miss cached while no provider was deployed does not hide the
+    /// title from a provider deployed later; the new set's answer is
+    /// cached under its own key.
+    #[tokio::test]
+    async fn a_new_provider_set_is_asked_past_the_old_sets_miss() {
+        let mut asked = query(&[], None);
+        // An ASIN-shaped title is looked up at the providers directly, so
+        // no catalog search goes over the network.
+        asked.title = "B0KEYSET01".into();
+        let none = resolve_title_meta(
+            &asked,
+            Arc::new(bookclerk_enrich::NoMetadataProviders),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(none.is_none());
+        let counting = Arc::new(CountingLookups(std::sync::atomic::AtomicUsize::new(0)));
+        for _ in 0..2 {
+            resolve_title_meta(&asked, counting.clone(), None)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            counting.0.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "asked once past the old miss, then served from the cache"
         );
     }
 

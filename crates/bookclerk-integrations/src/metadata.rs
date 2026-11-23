@@ -67,6 +67,13 @@ fn failed(
 
 #[async_trait]
 impl MetadataProviders for IntegrationRegistry {
+    fn provider_keys(&self) -> Vec<String> {
+        self.metadata_providers()
+            .iter()
+            .map(|integration| integration.plugin_key().to_string())
+            .collect()
+    }
+
     async fn lookup(&self, params: &MetadataLookupParams) -> MetadataAnswer {
         let mut answer = MetadataAnswer::default();
         for integration in self.metadata_providers() {
@@ -124,6 +131,7 @@ impl MetadataProviders for IntegrationRegistry {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
     use async_trait::async_trait;
@@ -156,6 +164,8 @@ mod tests {
     struct Fake {
         key: &'static str,
         mode: Mode,
+        /// Calls this fake received, of any method.
+        calls: Arc<AtomicUsize>,
     }
 
     impl Fake {
@@ -171,8 +181,9 @@ mod tests {
             }
         }
 
-        /// Waits forever when this fake hangs.
+        /// Counts the call, then waits forever when this fake hangs.
         async fn maybe_hang(&self) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
             if matches!(self.mode, Mode::Hangs) {
                 std::future::pending::<()>().await;
             }
@@ -257,25 +268,36 @@ mod tests {
             Fake {
                 key: "plain",
                 mode: Mode::NotProvider,
+                calls: Arc::default(),
             },
             Fake {
                 key: "broken",
                 mode: Mode::Fails,
+                calls: Arc::default(),
             },
             Fake {
                 key: "first",
                 mode: Mode::Answers,
+                calls: Arc::default(),
             },
             Fake {
                 key: "empty",
                 mode: Mode::Empty,
+                calls: Arc::default(),
             },
             Fake {
                 key: "second",
                 mode: Mode::Answers,
+                calls: Arc::default(),
             },
         ]);
         assert_eq!(registry.metadata_providers().len(), 4);
+        assert_eq!(
+            registry.provider_keys(),
+            ["broken", "first", "empty", "second"],
+            "only metadata providers, in the order they are asked"
+        );
+        assert!(IntegrationRegistry::new().provider_keys().is_empty());
         for answer in [
             registry.lookup(&MetadataLookupParams::default()).await,
             registry.search(&MetadataSearchParams::default()).await,
@@ -296,10 +318,12 @@ mod tests {
             Fake {
                 key: "stuck",
                 mode: Mode::Hangs,
+                calls: Arc::default(),
             },
             Fake {
                 key: "first",
                 mode: Mode::Answers,
+                calls: Arc::default(),
             },
         ]);
         for answer in [
@@ -319,33 +343,34 @@ mod tests {
 
     #[tokio::test]
     async fn chapters_stop_at_the_first_layout() {
+        let counters: [Arc<AtomicUsize>; 4] = Default::default();
+        let fake = |key, mode, calls: &Arc<AtomicUsize>| Fake {
+            key,
+            mode,
+            calls: calls.clone(),
+        };
         let providers = registry(vec![
-            Fake {
-                key: "broken",
-                mode: Mode::Fails,
-            },
-            Fake {
-                key: "empty",
-                mode: Mode::Empty,
-            },
-            Fake {
-                key: "first",
-                mode: Mode::Answers,
-            },
-            Fake {
-                key: "second",
-                mode: Mode::Answers,
-            },
+            fake("broken", Mode::Fails, &counters[0]),
+            fake("empty", Mode::Empty, &counters[1]),
+            fake("first", Mode::Answers, &counters[2]),
+            fake("second", Mode::Answers, &counters[3]),
         ]);
         let answer = providers.chapters(&MetadataChaptersParams::default()).await;
         let found = answer.found.expect("a layout");
         assert_eq!(found.provider, "first");
         assert_eq!(found.chapters.chapters[0].title, "first");
         assert_eq!(answer.failures.len(), 1);
+        let asked: Vec<usize> = counters.iter().map(|c| c.load(Ordering::SeqCst)).collect();
+        assert_eq!(
+            asked,
+            [1, 1, 1, 0],
+            "each provider up to the first layout is asked once, none after it"
+        );
 
         let none = registry(vec![Fake {
             key: "empty",
             mode: Mode::Empty,
+            calls: Arc::default(),
         }])
         .chapters(&MetadataChaptersParams::default())
         .await;

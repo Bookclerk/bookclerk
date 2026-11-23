@@ -844,8 +844,9 @@ library holds as works, expressions and editions:
 - `works`, `expressions` and `editions`, with `work_identifiers` and
   `edition_identifiers` (a strong identifier is unique through
   `strong_key`); an edition records which metadata provider last filled
-  its gaps (`enrich_source`, `enrich_confidence`, `enrich_updated_at`), so
-  gap-filling skips it next time
+  its gaps (`enrich_source`, `enrich_confidence`, `enrich_updated_at`), and
+  `edition_enrich_attempts` records an ask that left gaps open
+  (`partial` or `unmatched`), so gap-filling waits before asking again
   ([Metadata gap-fill](../internals/discovery.md#metadata-gap-fill-open-library-compliance));
 - `store_listings` (one per plugin, marketplace and product, with the
   store's own text for it: synopsis, cover, credits as printed, series and

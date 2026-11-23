@@ -2509,6 +2509,22 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         FOREIGN KEY (plugin_instance_id) REFERENCES plugin_instances(plugin_instance_id) ON DELETE CASCADE
     )",
     ),
+    // Metadata gap-fill attempts that left an edition's gaps open
+    // (`store::edition_enrichment`): a record that filled only some gaps
+    // (`partial`) or no record that matched (`unmatched`). Gap-filling
+    // skips the edition until `attempted_at` is old enough, so titles that
+    // never match do not spend every run's request budget, and a partial
+    // fill is asked again later for the rest. One row per edition and
+    // enricher; a newer attempt replaces it.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS edition_enrich_attempts (
+        edition_id TEXT NOT NULL REFERENCES editions(id) ON DELETE CASCADE,
+        enricher TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK (outcome IN ('partial', 'unmatched')),
+        attempted_at TEXT NOT NULL,
+        PRIMARY KEY (edition_id, enricher)
+    )",
+    ),
 ];
 
 #[cfg(test)]
@@ -2640,6 +2656,15 @@ mod tests {
             "metadata_claims",
             "quality",
             crate::ClaimQuality::ALL.iter().map(|k| k.as_str()),
+        );
+    }
+
+    #[test]
+    fn enrich_attempt_outcomes_match_the_check() {
+        assert_check(
+            "edition_enrich_attempts",
+            "outcome",
+            crate::EnrichAttemptOutcome::ALL.iter().map(|o| o.as_str()),
         );
     }
 

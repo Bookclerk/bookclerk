@@ -234,6 +234,46 @@ impl ListingDetail {
     }
 }
 
+/// One store product as a marketplace lists it, the key
+/// [`LibraryStore::listing_expressions`] answers by.
+///
+/// A store's product id names one edition per marketplace, and the same id
+/// can name another recording in another marketplace, so a product is only
+/// placed reliably together with the marketplace it was seen in.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ListedProduct {
+    /// The store's PluginKey (`store_listings.plugin_key`).
+    pub plugin_key: String,
+    /// The marketplace the product was seen in (`us`, `uk`, ...); empty
+    /// when it is not known, which matches every marketplace.
+    pub marketplace: String,
+    /// The store's product id, as the store reports it (it is compared in
+    /// its stored spelling).
+    pub product_id: String,
+}
+
+impl ListedProduct {
+    /// A product of `plugin_key` seen in `marketplace`.
+    ///
+    /// # Arguments
+    ///
+    /// * `plugin_key` - The store's PluginKey.
+    /// * `marketplace` - The marketplace, or empty when unknown.
+    /// * `product_id` - The store's product id.
+    #[must_use]
+    pub fn new(
+        plugin_key: impl Into<String>,
+        marketplace: impl Into<String>,
+        product_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            plugin_key: plugin_key.into(),
+            marketplace: marketplace.into(),
+            product_id: product_id.into(),
+        }
+    }
+}
+
 /// One title a store's catalog answer reported.
 #[derive(Debug, Clone)]
 pub struct CatalogListing {
@@ -949,32 +989,40 @@ impl LibraryStore {
     }
 
     /// The expressions (recordings) the shared listing pool placed each
-    /// store product in, in any marketplace.
+    /// store product in, in the marketplace it was seen in.
     ///
-    /// A store's product id names one edition per marketplace, so a product
-    /// usually has one expression; a product listed in two marketplaces
-    /// under different editions has each of their expressions. A product
-    /// the pool never listed is left out.
+    /// A store's product id names one edition per marketplace, but one id
+    /// can name different recordings in two marketplaces. So a product is
+    /// placed by the listings of its own marketplace; only when the pool
+    /// lists it in no such marketplace (or the marketplace is not known)
+    /// do its listings in every marketplace count, each with its own
+    /// expression. A product the pool never listed is left out.
     ///
     /// # Arguments
     ///
-    /// * `products` - `(plugin_key, product_id)` pairs, as stores report
-    ///   them (the product id is compared in its stored spelling).
+    /// * `products` - The products asked about (the product id is compared
+    ///   in its stored spelling, the marketplace ignoring ASCII case).
     ///
     /// # Returns
     ///
-    /// Each pooled product's expression ids, keyed by the pair as given.
+    /// Each pooled product's expression ids, keyed by the product as given.
     ///
     /// # Errors
     ///
     /// Returns the database error.
     pub async fn listing_expressions(
         &self,
-        products: &[(String, String)],
-    ) -> Result<HashMap<(String, String), BTreeSet<String>>> {
-        let stored: Vec<(String, String, &(String, String))> = products
+        products: &[ListedProduct],
+    ) -> Result<HashMap<ListedProduct, BTreeSet<String>>> {
+        let stored: Vec<(String, String, &ListedProduct)> = products
             .iter()
-            .map(|pair| (pair.0.clone(), resolve::stored_product_id(&pair.1), pair))
+            .map(|asked| {
+                (
+                    asked.plugin_key.clone(),
+                    resolve::stored_product_id(&asked.product_id),
+                    asked,
+                )
+            })
             .filter(|(key, product, _)| !key.trim().is_empty() && !product.is_empty())
             .collect();
         let ids: Vec<String> = stored
@@ -998,27 +1046,47 @@ impl LibraryStore {
             },
         )
         .await?;
-        let mut editions_of: HashMap<(String, String), BTreeSet<String>> = HashMap::new();
+        // Each product's editions, with the marketplace that listed each.
+        let mut editions_of: HashMap<(String, String), Vec<(String, String)>> = HashMap::new();
         for row in rows {
             editions_of
                 .entry((row.plugin_key, row.product_id))
                 .or_default()
-                .insert(row.edition_id);
+                .push((row.marketplace, row.edition_id));
         }
-        let all_editions: BTreeSet<String> = editions_of.values().flatten().cloned().collect();
+        let all_editions: BTreeSet<String> = editions_of
+            .values()
+            .flatten()
+            .map(|(_, edition)| edition.clone())
+            .collect();
         let placement_of = self.placements_of_editions(all_editions).await?;
         let mut out = HashMap::new();
-        for (key, product, pair) in stored {
-            let Some(editions) = editions_of.get(&(key, product)) else {
+        for (key, product, asked) in stored {
+            let Some(listed) = editions_of.get(&(key, product)) else {
                 continue;
             };
-            let expressions: BTreeSet<String> = editions
+            let wanted = asked.marketplace.trim();
+            let in_market: Vec<&String> = listed
                 .iter()
+                .filter(|(market, _)| {
+                    !wanted.is_empty() && market.trim().eq_ignore_ascii_case(wanted)
+                })
+                .map(|(_, edition)| edition)
+                .collect();
+            // Listings of another marketplace count only when the pool
+            // lists the product in none it was asked about.
+            let editions: Vec<&String> = if in_market.is_empty() {
+                listed.iter().map(|(_, edition)| edition).collect()
+            } else {
+                in_market
+            };
+            let expressions: BTreeSet<String> = editions
+                .into_iter()
                 .filter_map(|edition| placement_of.get(edition))
                 .map(|placement| placement.expression_id.clone())
                 .collect();
             if !expressions.is_empty() {
-                out.insert(pair.clone(), expressions);
+                out.insert(asked.clone(), expressions);
             }
         }
         Ok(out)
@@ -1152,7 +1220,7 @@ mod tests {
             listings.extend((20..26).map(|n| title(&format!("97800000000{n}"))));
             let ids = store.record_catalog_listings(&listings).await.unwrap().ids;
             assert!(ids.iter().all(Option::is_some), "{profile:?}");
-            let pair = |key: &str, product: &str| (key.to_string(), product.to_string());
+            let pair = |key: &str, product: &str| ListedProduct::new(key, "us", product);
             let mut asked = vec![
                 pair("libro", "9780000000011"),
                 pair("chirp", "ga-12"),
@@ -1171,6 +1239,48 @@ mod tests {
             assert_eq!(&got[&pair("libro", " 9780000000011 ")], narration);
             assert_eq!(got.len(), 9, "every listed product answers ({profile:?})");
             assert!(store.listing_expressions(&[]).await.unwrap().is_empty());
+        }
+    }
+
+    /// One product id that names a narration in one marketplace and a
+    /// dramatisation in another is placed by the marketplace it was seen
+    /// in; a marketplace that lists it nowhere (or none given) falls back
+    /// to every listing.
+    #[tokio::test]
+    async fn listed_products_are_placed_in_their_own_marketplace() {
+        for profile in crate::test_support::Profile::ALL {
+            let store = crate::test_support::sqlite::memory(profile)
+                .await
+                .into_store();
+            let mut us = title("9780000000031");
+            us.draft.plugin_key = String::from("chirp");
+            us.draft.product_id = String::from("shared-31");
+            let mut uk = us.clone();
+            uk.draft.marketplace = Some(String::from("uk"));
+            uk.draft.expression_kind = Some(resolve::ExpressionKind::Dramatisation);
+            uk.draft.credits.truncate(1);
+            uk.draft.identifiers.clear();
+            store.record_catalog_listings(&[us, uk]).await.unwrap();
+            let asked = |market: &str| ListedProduct::new("chirp", market, "shared-31");
+            let got = store
+                .listing_expressions(&[asked("us"), asked("UK"), asked("ca"), asked("")])
+                .await
+                .unwrap();
+            let us = &got[&asked("us")];
+            let uk = &got[&asked("UK")];
+            assert_eq!(us.len(), 1, "{profile:?}");
+            assert_eq!(uk.len(), 1, "{profile:?}");
+            assert_ne!(
+                us, uk,
+                "each marketplace names its own recording ({profile:?})"
+            );
+            let both: BTreeSet<String> = us.union(uk).cloned().collect();
+            assert_eq!(
+                got[&asked("ca")],
+                both,
+                "unlisted marketplace ({profile:?})"
+            );
+            assert_eq!(got[&asked("")], both, "unknown marketplace ({profile:?})");
         }
     }
 

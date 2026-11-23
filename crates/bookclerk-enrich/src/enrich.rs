@@ -117,7 +117,8 @@ pub async fn lookup_by_metadata(
 ///
 /// # Returns
 ///
-/// The highest-scoring candidate at or above `min_confidence`.
+/// The highest-scoring candidate at or above `min_confidence`; `None`
+/// without any catalog search when no metadata provider is deployed.
 ///
 /// # Errors
 ///
@@ -132,6 +133,11 @@ pub async fn lookup_by_metadata_with_client(
     let title = query.title.trim();
     let isbn_norm = query.isbn.map(normalize_isbn).filter(|s| !s.is_empty());
     if title.is_empty() && isbn_norm.is_none() {
+        return Ok(None);
+    }
+    // Candidates are scored on provider records only, so with no provider
+    // deployed no candidate can match: skip the catalog searches.
+    if providers.provider_keys().is_empty() {
         return Ok(None);
     }
     let region = normalize_region(region);
@@ -397,6 +403,10 @@ pub async fn enrich_editions_from_audible(
     providers: &dyn MetadataProviders,
     min_confidence_percent: u8,
 ) -> Result<usize> {
+    // No provider, no record to score a match with: nothing to walk.
+    if providers.provider_keys().is_empty() {
+        return Ok(0);
+    }
     let min_confidence = f64::from(min_confidence_percent.min(100)) / 100.0;
     let http = public_http_client()?;
     let mut enriched = 0usize;
@@ -786,6 +796,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl MetadataProviders for ByAsin {
+        fn provider_keys(&self) -> Vec<String> {
+            vec![String::from("test-provider")]
+        }
+
         async fn lookup(&self, params: &MetadataLookupParams) -> MetadataAnswer {
             let asin = &params.identifiers[0].value;
             MetadataAnswer {
@@ -1074,11 +1088,61 @@ mod tests {
         assert!(is_valid_asin(&matched.enrichment.asin));
     }
 
+    /// With no provider deployed no candidate could be scored, so the
+    /// match answers `None` without searching the catalog (a search would
+    /// fail offline, or reach the lookup, which panics here).
+    #[tokio::test]
+    async fn no_provider_skips_the_catalog_search() {
+        struct NoneDeployed;
+
+        #[async_trait::async_trait]
+        impl MetadataProviders for NoneDeployed {
+            fn provider_keys(&self) -> Vec<String> {
+                Vec::new()
+            }
+
+            async fn lookup(&self, _params: &MetadataLookupParams) -> MetadataAnswer {
+                panic!("no provider is deployed, so none is asked")
+            }
+
+            async fn search(
+                &self,
+                _params: &bookclerk_plugin_sdk::MetadataSearchParams,
+            ) -> MetadataAnswer {
+                panic!("no provider is deployed, so none is asked")
+            }
+
+            async fn chapters(
+                &self,
+                _params: &bookclerk_plugin_sdk::MetadataChaptersParams,
+            ) -> crate::ChaptersAnswer {
+                panic!("no provider is deployed, so none is asked")
+            }
+        }
+
+        let query = MatchQuery {
+            title: "A Title The Catalog Would Be Searched For",
+            subtitle: None,
+            author: Some("Ann Author"),
+            narrator: None,
+            isbn: Some("9780441172719"),
+            duration_minutes: None,
+        };
+        let matched = lookup_by_metadata(&NoneDeployed, &query, "us", 0.5)
+            .await
+            .expect("no search, so no search error");
+        assert!(matched.is_none());
+    }
+
     /// Answers every ASIN lookup with one record, under the asked ASIN.
     struct EveryAsin(MetadataRecord);
 
     #[async_trait::async_trait]
     impl MetadataProviders for EveryAsin {
+        fn provider_keys(&self) -> Vec<String> {
+            vec![String::from("test-provider")]
+        }
+
         async fn lookup(&self, _params: &MetadataLookupParams) -> MetadataAnswer {
             MetadataAnswer {
                 records: vec![ProvidedRecord {
