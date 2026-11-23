@@ -1364,7 +1364,7 @@ kind: each is refused unless its size and SHA-256 match the pin in
   - Oracle: Rust is analyzed exactly when some NUL-separated name is not
     UTF-8, ends in `.rs`, `.capnp`, `.proto`, `.cc` or `.h`, is named `Cargo.toml`, `Cargo.lock`
     or `rust-toolchain.toml`, sits under a `.cargo/` directory, or is the
-    workflow or one of the two scripts, checked with string operations
+    workflow or one of the three scripts that choose and reuse, checked with string operations
     rather than glob patterns.
 
 - **Rust result reuse** (`candidate_runs`, `rust_job_succeeded` and
@@ -1382,6 +1382,31 @@ kind: each is refused unless its size and SHA-256 match the pin in
     reused only when it has exactly one successful `Analyze (rust)` job.
     A SARIF file is accepted only when it is version 2.1.0, every run is
     from CodeQL, and every run carries the id `/language:rust`.
+
+- **Visual approval carry-over** (`lock_only_parent`, `newest_run` and
+  `ci_verdict_problem` in `scripts/ci_carry.py`). It reads GitHub API
+  responses and the plan and `CI Gate` verdict that the same pull
+  request's previous run kept. Those come from the pull request's own
+  workflow, which its author controls on any push anyway, so it isn't an
+  untrusted boundary. Its output decides whether a pull request's head
+  re-reports its parent's results instead of running (see
+  [Visual approval commits](ci.md#visual-approval-commits)), though, so it
+  is fuzzed the same way.
+  - Test and corpus: `scripts/tests/test_ci_carry.py`,
+    `scripts/tests/ci_carry_corpus/` (files named `commit__<case>`,
+    `runs__<case>` or `verdict__<case>`), replayed and mutated both as
+    bytes and as JSON values.
+  - Oracle: explicit walks with exact type checks. A commit qualifies only
+    when it has exactly one parent with a 40-hex id and exactly one file,
+    `ui/visual/baselines.lock`, `modified` with no `previous_filename`. The
+    parent run is the `pull_request` run for the parent commit from the
+    same head repository and branch with the largest `created_at` and id,
+    among runs with positive integer `id` and `run_attempt` and a string
+    `status`. A verdict passes only when its run id and attempt are that
+    run's, both step outcomes are `success`, every stranded job is an OS
+    leg job, the jobs are exactly the plan's plus `plan`, each with a
+    string result, `plan` succeeded, and every job but `ui-visual` succeeded
+    when the plan expects it and was skipped otherwise.
 
 - **Missing-runner recovery** (`queued_pr`, `pr_run_attempt`,
   `run_lineage`, `newer_run`, `stranded_jobs`, `not_acquired`, `pr_head`,

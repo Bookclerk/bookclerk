@@ -49,6 +49,10 @@ from .plan import (
 )
 
 SCHEMA_VERSION = 5
+
+# The one file a visual approval commit changes (scripts/ci_carry.py).
+VISUAL_LOCK_PATH = "ui/visual/baselines.lock"
+
 ARTIFACT_NAME = "ci-plan.json"
 # One path segment. A fresh id is minted per resolve so marker dirs cannot
 # collide across local re-resolves that share a temp dir, commit, and run id.
@@ -351,6 +355,7 @@ def resolve(
     workspace: Path | None = None,
     paths: Sequence[str] | None = None,
     metadata: Mapping[str, Any] | None = None,
+    carried_from: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Predicts the plan and resolves one execution the jobs must perform.
 
@@ -364,13 +369,26 @@ def resolve(
     the pull request is ready for review. ``linux_only`` (any pull request
     run) defers ``QUEUE_ONLY_CHECKS`` and the Windows and macOS legs to the
     merge queue.
+    ``carried_from`` (a visual approval commit, ``scripts/ci_carry.py``)
+    records the parent run whose results this run carries over; ``base``
+    is then the parent commit, so the plan covers only the lock change.
+    It is kept only for a selective plan, which runs just what that change
+    selects.
 
     Raises:
         ExecError: ``build_only`` was set with ``draft`` or ``linux_only``
-            (a push to ``main`` is never a pull request run).
+            (a push to ``main`` is never a pull request run), or
+            ``carried_from`` is malformed, set on a draft or names a parent
+            other than ``base``.
     """
     if build_only and (draft or linux_only):
         raise ExecError("a run is either build-only (push to main) or a pull request run, not both")
+    if carried_from is not None:
+        problem = carried_from_problem(carried_from)
+        if problem is not None:
+            raise ExecError(problem)
+        if draft or build_only or carried_from["head_sha"] != base:
+            raise ExecError("a carried-over run is a ready pull request run whose base is the parent commit")
     predicted = plan_from_event(
         base=base,
         head=head,
@@ -432,9 +450,33 @@ def resolve(
         "draft": bool(draft),
         "linux_only": bool(linux_only),
         "deferred": sorted(deferred),
+        "carried_from": dict(carried_from) if carried_from is not None and mode == "selective" else None,
         "predicted": plan_to_dict(predicted),
         "execution": plan_to_dict(execution),
     }
+
+
+def carried_from_problem(value: Any) -> str | None:
+    """Checks a plan's ``carried_from`` record.
+
+    Args:
+        value: The record: the parent run's ``run_id`` and ``run_attempt``
+            (positive integers) and the parent commit ``head_sha``.
+
+    Returns:
+        None when it has exactly those keys with valid values; otherwise a
+        sentence saying what is wrong.
+    """
+    if not isinstance(value, Mapping) or set(value) != {"run_id", "run_attempt", "head_sha"}:
+        return f"plan carried_from {value!r} is not a parent run record"
+    for key in ("run_id", "run_attempt"):
+        number = value[key]
+        if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
+            return f"plan carried_from {key} {number!r} is not a positive integer"
+    sha = value["head_sha"]
+    if not isinstance(sha, str) or re.fullmatch(r"[0-9a-f]{40}", sha) is None:
+        return f"plan carried_from head_sha {sha!r} is not a full commit id"
+    return None
 
 
 def _example_runners(plan: Plan) -> list[str]:
@@ -555,6 +597,15 @@ def validate(
         raise ExecError(f"plan defers {deferred!r}, which this run may not defer")
     if artifact["mode"] not in ("full", "shadow", "selective"):
         raise ExecError(f"plan mode {artifact['mode']!r} is invalid")
+    # Optional: plans written before visual approval commits were carried
+    # over have no such key.
+    carried = artifact.get("carried_from")
+    if carried is not None:
+        problem = carried_from_problem(carried)
+        if problem is not None:
+            raise ExecError(problem)
+        if artifact["draft"] or artifact["build_only"] or artifact["mode"] != "selective":
+            raise ExecError("only a ready selective pull request plan carries results over")
     if run_id is not None and str(artifact["run_id"]) != str(run_id):
         raise ExecError(f"plan run_id {artifact['run_id']} != this run {run_id}")
     if checkout_sha is not None and artifact["checkout_sha"] != checkout_sha:
@@ -1981,6 +2032,14 @@ def artifact_summary(artifact: Mapping[str, Any]) -> str:
         banner += (
             " **Linux only**: the Windows legs, `windows_cluster` and the macOS job run in the"
             " merge queue, which runs every platform before a merge."
+        )
+    carried = artifact.get("carried_from")
+    if carried:
+        banner += (
+            f" **Visual approval commit**: only `{VISUAL_LOCK_PATH}` changed since"
+            f" `{str(carried['head_sha'])[:12]}`, so only what that change selects runs; every other"
+            f" result is carried over from run {carried['run_id']} (attempt {carried['run_attempt']})."
+            " The merge queue runs the full suite."
         )
     parts = [f"# CI execution: `{mode}`", "", banner, "", plan_to_summary(execution_plan(artifact), "Execution", artifact.get("deferred") or ())]
     if mode == "shadow":

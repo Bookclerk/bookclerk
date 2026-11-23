@@ -56,6 +56,55 @@ check can be skipped before a merge.
 > once the pull request is ready. Coverage covers only the areas the `test`
 > and `check` jobs measure; Worker coverage arrives with the ready run.
 
+### Visual approval commits
+
+Approving a pull request's screenshots commits only
+`ui/visual/baselines.lock` to its branch (see
+[Visual and accessibility testing](ui/visual-testing.md#baselines)). The
+code is the code CI just tested, so that commit carries the earlier
+results over instead of running every workflow again, as if the approval
+had been recorded without a push.
+[`scripts/ci_carry.py`](../../scripts/ci_carry.py) decides:
+
+1. The head commit must have exactly one parent and change exactly one
+   file, the lock, in place. Who made the commit doesn't matter: every
+   other file is the parent's, byte for byte.
+2. It looks up the newest `pull_request` run of the same workflow for the
+   parent commit, from the same head repository and branch. That run must
+   have finished.
+3. CI's plan job also downloads that run's plan and the `CI Gate` verdict
+   its latest attempt kept (`ci-gate-verdict-<attempt>`: each job's result
+   and the coverage and Web API contract step outcomes). The plan must be
+   a ready pull request plan for the parent commit. Replaying the gate over
+   the verdict, with the `ui-visual` job taken as passing, must find
+   nothing, and both steps must have succeeded. The other workflows need
+   that run to have succeeded.
+
+When all of that holds:
+
+- CI plans the lock change alone (the parent commit is the base), so only
+  the `ui-visual` job and the `ui` and `api_docs` checks the lock selects
+  run. The plan records the parent run under `carried_from`, and its
+  summary says so. `CI Gate` then checks this run as usual and keeps its
+  own verdict, so a later approval commit can carry it over in turn.
+- CodeQL uploads the parent run's analysis of each language again. Every
+  pull request run keeps its SARIF as `codeql-sarif-<language>` for that.
+- ClusterFuzzLite, the Docker image, the image publishing dry run and the
+  model packs skip their jobs.
+- The Codecov upload finds the parent run again from the GitHub API, the
+  same way, and sends its reports for the new commit.
+
+Anything else prints why in the step summary and runs the workflow as
+usual. That covers a commit that touches another file or merges, a parent
+whose run failed, was cancelled or ran a draft plan, and a verdict that has
+expired after 14 days.
+
+> [!NOTE]
+> The carried results were tested with `main` as it was at the parent's
+> run. That's where a green pull request nobody pushes to already stands,
+> and the merge queue runs the full suite on the real merge before
+> anything lands. No required check is dropped.
+
 ### Platform legs in the merge queue
 
 Every pull request run, draft or ready, also resolves with `--linux-only`
@@ -1063,6 +1112,14 @@ report the same, because nothing it reads changed. The job matrix stays
 the same either way, because code scanning records the matrix values with
 each analysis and a pull request has to match `main`'s configuration.
 
+A [visual approval commit](#visual-approval-commits) uploads its parent
+run's results for every language instead: the `Choose languages` job finds
+the parent run, and each `Analyze (<language>)` job downloads that run's
+`codeql-sarif-<language>` artifact, checks that it is CodeQL SARIF of the
+job's category and uploads it. A missing or wrong file means that language
+is analyzed as usual. Every pull request run keeps its SARIF under that
+name for 14 days.
+
 Pushes to `main`, the Monday schedule and manual runs analyze every
 language, and the Rust job keeps its SARIF as the `codeql-rust-sarif`
 artifact for 30 days. The Rust extractor's own cargo output (build
@@ -1387,6 +1444,13 @@ each CI run of a pull request or merge group finishes:
 3. It uploads each area under its own flag, signing in to Codecov with
    OIDC, so there is no Codecov token secret. The commit, branch and pull
    request come from the CI run GitHub recorded, never from an artifact.
+
+A run that carried a [visual approval commit](#visual-approval-commits)
+over measured nothing itself. Its plan says so, and the upload then finds
+the parent run again from the GitHub API, with the same checks CI's plan
+job used, and sends that run's reports and plan for the new commit. When it
+can't find one, nothing is uploaded and Codecov carries the earlier figures
+forward.
 
 A newer CI run on the same pull request branch cancels an upload still
 waiting or running; each merge group's upload runs to the end.

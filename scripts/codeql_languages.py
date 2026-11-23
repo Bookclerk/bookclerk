@@ -68,6 +68,7 @@ RUST_INPUTS: tuple[str, ...] = (
     ".github/workflows/codeql.yml",
     "scripts/codeql_languages.py",
     "scripts/codeql_reuse.py",
+    "scripts/ci_carry.py",
 )
 
 # A directory holding Cargo configuration; any file under one, at any depth,

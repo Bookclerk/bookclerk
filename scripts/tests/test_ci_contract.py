@@ -875,6 +875,10 @@ class DraftDeferredWorkflowTests(unittest.TestCase):
         "model-packs.yml": "build",
     }
     GATE = "github.event_name != 'pull_request' || !github.event.pull_request.draft"
+    # Workflows whose gated job also skips for a visual approval commit
+    # carried over (scripts/ci_carry.py), found by their `carry` job.
+    CARRIED = frozenset({"cflite-pr.yml", "docker-image.yml", "images-publish.yml", "model-packs.yml"})
+    CARRIED_GATE = f"!cancelled() && ({GATE}) && needs.carry.outputs.run-id == ''"
 
     def test_heavy_workflows_skip_drafts_and_run_when_ready(self) -> None:
         for name, root in self.DEFERRED.items():
@@ -884,12 +888,51 @@ class DraftDeferredWorkflowTests(unittest.TestCase):
                 self.assertEqual(
                     on["pull_request"]["types"], ["opened", "synchronize", "reopened", "ready_for_review"]
                 )
-                self.assertEqual(wf["jobs"][root]["if"], self.GATE)
+                if name in self.CARRIED:
+                    self.assertEqual(wf["jobs"][root]["if"], self.CARRIED_GATE)
+                    self.assertEqual(wf["jobs"][root]["needs"], "carry")
+                    self.assertIn("!github.event.pull_request.draft", wf["jobs"]["carry"]["if"])
+                else:
+                    self.assertEqual(wf["jobs"][root]["if"], self.GATE)
                 # Every other job depends on the gated one, so none starts on a draft.
                 for job, body in wf["jobs"].items():
-                    if job != root:
+                    if job not in (root, "carry"):
                         needs = body.get("needs", [])
                         self.assertIn(root, [needs] if isinstance(needs, str) else needs, job)
+
+    def test_visual_approval_commits_look_for_their_parent_run(self) -> None:
+        """Each carried workflow asks ci_carry.py about its own runs only."""
+        wf_dir = REPO / ".github" / "workflows"
+        for name in sorted(self.CARRIED):
+            with self.subTest(workflow=name):
+                wf = yaml.safe_load((wf_dir / name).read_text(encoding="utf-8"))
+                carry = wf["jobs"]["carry"]
+                self.assertEqual(carry["permissions"], {"contents": "read", "actions": "read"})
+                self.assertEqual(carry["outputs"], {"run-id": "${{ steps.carry.outputs.run-id }}"})
+                step = next(s for s in carry["steps"] if s.get("id") == "carry")
+                self.assertIn(f"scripts/ci_carry.py find --repo \"$REPO\" --workflow {name}", step["run"])
+                self.assertIn("--kind run", step["run"])
+        codeql = yaml.safe_load((wf_dir / "codeql.yml").read_text(encoding="utf-8"))
+        step = next(s for s in codeql["jobs"]["languages"]["steps"] if s.get("id") == "carry")
+        self.assertIn("--workflow codeql.yml", step["run"])
+        self.assertIn("--kind run", step["run"])
+        ci = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        plan_steps = ci["jobs"]["plan"]["steps"]
+        ids = [s.get("id") for s in plan_steps]
+        # The parent is found before the base is chosen and the plan resolved.
+        self.assertLess(ids.index("carry"), ids.index("shas"))
+        self.assertLess(ids.index("shas"), ids.index("resolve"))
+        step = plan_steps[ids.index("carry")]
+        self.assertIn("--workflow ci.yml", step["run"])
+        self.assertIn("--kind ci", step["run"])
+        self.assertIn("!github.event.pull_request.draft", step["if"])
+        self.assertIn("!inputs.private-head", step["if"])
+        gate_steps = ci["jobs"]["ci-gate"]["steps"]
+        keep = next(s for s in gate_steps if s.get("name") == "Keep the gate verdict")
+        self.assertEqual(keep["with"]["name"], "ci-gate-verdict-${{ github.run_attempt }}")
+        write = next(s for s in gate_steps if s.get("name") == "Write the gate verdict")
+        self.assertEqual(write["env"]["COVERAGE_OUTCOME"], "${{ steps.coverage.outcome }}")
+        self.assertEqual(write["env"]["CONTRACT_OUTCOME"], "${{ steps.contract.outcome }}")
 
     def test_superseded_pull_request_runs_are_cancelled(self) -> None:
         wf_dir = REPO / ".github" / "workflows"
@@ -979,7 +1022,7 @@ class DraftDeferredWorkflowTests(unittest.TestCase):
         lanes = self._lanes()
         wf_dir = REPO / ".github" / "workflows"
         slots: set[str] = set()
-        for name, extra in (("codeql.yml", {"languages"}), ("cflite-pr.yml", set())):
+        for name, extra in (("codeql.yml", {"languages"}), ("cflite-pr.yml", {"carry"})):
             wf = yaml.safe_load((wf_dir / name).read_text(encoding="utf-8"))
             for job, body in wf["jobs"].items():
                 if job in extra:
