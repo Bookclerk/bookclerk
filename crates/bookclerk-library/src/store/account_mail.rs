@@ -65,6 +65,21 @@ fn random_token() -> String {
     hex::encode(bytes)
 }
 
+/// The `bookclerk_slots` key that serializes rate-limited queueing of one
+/// kind of account mail for one user.
+///
+/// The row is never deleted: a batch waiting on the bump must find the
+/// row the holder bumped, or two later batches could run unserialized.
+///
+/// # Arguments
+///
+/// * `kind` - The kind of message.
+/// * `user_id` - The user the message goes to.
+#[must_use]
+pub fn account_mail_slot(kind: AccountMailKind, user_id: i64) -> String {
+    format!("account-mail:{}:{user_id}", kind.as_str())
+}
+
 impl LibraryStore {
     /// The instance account mail goes through; `None` when none is chosen.
     ///
@@ -162,9 +177,13 @@ impl LibraryStore {
     }
 
     /// [`Self::queue_account_mail`], refused when a message of the same
-    /// kind for the user was recorded after `since`. The check and the
-    /// insert are one statement, so two overlapping requests cannot both
-    /// pass it.
+    /// kind for the user was recorded after `since`.
+    ///
+    /// With `since`, the batch first takes the user's `bookclerk_slots`
+    /// write lock for that kind ([`account_mail_slot`]), so on every
+    /// database profile (`READ COMMITTED` PostgreSQL included) the guard
+    /// reads what an overlapping request committed, and two overlapping
+    /// requests cannot both pass it.
     ///
     /// # Returns
     ///
@@ -193,8 +212,21 @@ impl LibraryStore {
             batch::text(&now),
             batch::text(&now),
         ];
+        let mut statements = Vec::new();
         let guard = match since {
             Some(since) => {
+                let slot = account_mail_slot(kind, user_id);
+                statements.push(batch::exec(
+                    "INSERT OR IGNORE INTO bookclerk_slots (slot_key, bump) \
+                     SELECT ?, 0 WHERE NOT EXISTS (\
+                        SELECT 1 FROM bookclerk_slots WHERE slot_key = ?\
+                     )",
+                    vec![batch::text(&slot), batch::text(&slot)],
+                ));
+                statements.push(batch::exec(
+                    "UPDATE bookclerk_slots SET bump = bump + 1 WHERE slot_key = ?",
+                    vec![batch::text(&slot)],
+                ));
                 parameters.push(batch::int(user_id));
                 parameters.push(batch::text(kind.as_str()));
                 parameters.push(batch::text(&since.to_rfc3339()));
@@ -203,20 +235,22 @@ impl LibraryStore {
             }
             None => "1 = 1",
         };
+        let insert_index = statements.len();
+        statements.push(batch::exec(
+            &format!(
+                "INSERT INTO account_mail (id, kind, user_id, address, \
+                 plugin_instance_id, created_at, updated_at) \
+                 SELECT ?, ?, ?, ?, ?, ?, ? WHERE {guard}"
+            ),
+            parameters,
+        ));
         let reply = self
             .execute_host_batch(batch::request(
                 &format!("account-mail-queue-{id}"),
-                vec![batch::exec(
-                    &format!(
-                        "INSERT INTO account_mail (id, kind, user_id, address, \
-                         plugin_instance_id, created_at, updated_at) \
-                         SELECT ?, ?, ?, ?, ?, ?, ? WHERE {guard}"
-                    ),
-                    parameters,
-                )],
+                statements,
             ))
             .await?;
-        if batch::rows_affected(&reply, 0) != 1 {
+        if batch::rows_affected(&reply, insert_index) != 1 {
             return Ok(None);
         }
         if let Err(err) = self

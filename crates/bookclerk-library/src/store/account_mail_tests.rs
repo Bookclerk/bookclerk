@@ -481,3 +481,49 @@ fn the_request_bodies_follow_their_rules() {
         assert!(parse_verify_email_request(bad.as_bytes()).is_err());
     }
 }
+
+#[tokio::test]
+async fn overlapping_resends_record_one_message_under_every_profile() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = memory(profile).await.into_store();
+        store
+            .set_account_mail_instance(Some("email-1"))
+            .await
+            .unwrap();
+        let user = member(&store, "sam@example.com").await;
+        let since = Some(Utc::now() - Duration::minutes(5));
+        let queue = || {
+            store.queue_account_mail_unless_since(
+                AccountMailKind::VerifyEmail,
+                user,
+                "sam@example.com",
+                "email-1",
+                LIMITS,
+                since,
+            )
+        };
+        let (first, second, third) = tokio::join!(queue(), queue(), queue());
+        let recorded = [first.unwrap(), second.unwrap(), third.unwrap()]
+            .into_iter()
+            .flatten()
+            .count();
+        assert_eq!(recorded, 1, "{name}: one resend passes the gap");
+        // The lock row stays, so later batches still serialize on it.
+        let slot = super::account_mail::account_mail_slot(AccountMailKind::VerifyEmail, user);
+        assert!(slot.starts_with("account-mail:"), "{name}");
+        // Once the gap has passed, the next resend is recorded.
+        let later = store
+            .queue_account_mail_unless_since(
+                AccountMailKind::VerifyEmail,
+                user,
+                "sam@example.com",
+                "email-1",
+                LIMITS,
+                Some(Utc::now() + Duration::seconds(1)),
+            )
+            .await
+            .unwrap();
+        assert!(later.is_some(), "{name}");
+    }
+}

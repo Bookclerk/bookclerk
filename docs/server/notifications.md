@@ -263,7 +263,9 @@ Once it is ready:
   it. The link works once, for 24 hours, and only while the patron still
   has that address; changing the address marks it unverified again. A
   patron who lost the message can ask for a new one from their profile,
-  once every five minutes. Opening the link needs no sign-in.
+  once every five minutes; requests that overlap record one message,
+  and the rest are answered `429` with `Retry-After`. Opening the link
+  needs no sign-in.
 
 Each message's link is made by its send job at the moment it is sent.
 Only a hash of the token is stored, the link is written nowhere but the
