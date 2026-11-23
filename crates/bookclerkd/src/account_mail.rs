@@ -216,6 +216,34 @@ async fn queue(
     user_id: i64,
     address: &str,
 ) -> Result<Result<String, NotReady>, ApiError> {
+    match queue_unless_since(state, kind, user_id, address, None).await? {
+        Ok(Some(id)) => Ok(Ok(id)),
+        Ok(None) => Err(store_error(
+            "account_mail_queue",
+            LibraryError::Other(anyhow::anyhow!("account mail was not recorded")),
+        )),
+        Err(why) => Ok(Err(why)),
+    }
+}
+
+/// [`queue`], refused when a message of the same kind for the user was
+/// recorded after `since`; the store checks and records in one statement.
+///
+/// # Returns
+///
+/// The message id, `None` when a recent message refused it, or why
+/// account mail is not ready.
+///
+/// # Errors
+///
+/// An error answer when the library cannot be read or written.
+async fn queue_unless_since(
+    state: &AppState,
+    kind: AccountMailKind,
+    user_id: i64,
+    address: &str,
+    since: Option<DateTime<Utc>>,
+) -> Result<Result<Option<String>, NotReady>, ApiError> {
     // Hold off a database reload from the snapshot through the enqueue, so
     // the job never lands on a superseded store.
     let _permit = crate::jobs::admission_permit(state)
@@ -235,7 +263,7 @@ async fn queue(
     };
     let limits = notify_queue_limits(state).await;
     let id = library
-        .queue_account_mail(kind, user_id, address, &instance, limits)
+        .queue_account_mail_unless_since(kind, user_id, address, &instance, limits, since)
         .await
         .map_err(|err| store_error("account_mail_queue", err))?;
     Ok(Ok(id))
@@ -323,8 +351,8 @@ pub(crate) async fn get_account_mail(
 #[allow(dead_code)] // Documents the body; the route parses the raw bytes.
 pub(crate) struct AccountMailSettingsBody {
     /// A notifier instance whose plugin sends account mail, or `null` to
-    /// turn account mail off.
-    #[schema(example = "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b")]
+    /// turn account mail off. The key is required.
+    #[schema(required = true, example = "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b")]
     plugin_instance_id: Option<String>,
 }
 
@@ -446,15 +474,13 @@ pub(crate) async fn post_my_email_verification(
     if user.email_verified {
         return Err(conflict("your email address is already verified"));
     }
-    let last = library
-        .last_account_mail_at(user_id, AccountMailKind::VerifyEmail)
-        .await
-        .map_err(|err| store_error("post_my_email_verification", err))?;
-    if let Some(wait) = last
-        .map(|at| at + VERIFY_RESEND_GAP - Utc::now())
-        .filter(|wait| *wait > chrono::Duration::zero())
-    {
-        let seconds = wait.num_seconds().max(1);
+    // The answer to a link asked for too soon; the wait is read back so
+    // the client knows when to ask again.
+    let too_soon = |last: Option<DateTime<Utc>>| {
+        let seconds = last
+            .map(|at| (at + VERIFY_RESEND_GAP - Utc::now()).num_seconds())
+            .unwrap_or(0)
+            .clamp(1, VERIFY_RESEND_GAP.num_seconds());
         let mut response = (
             StatusCode::TOO_MANY_REQUESTS,
             Json(ErrorMessage::new(
@@ -467,11 +493,29 @@ pub(crate) async fn post_my_email_verification(
                 .headers_mut()
                 .insert(axum::http::header::RETRY_AFTER, value);
         }
-        return Ok(response);
-    }
-    match queue(&state, AccountMailKind::VerifyEmail, user_id, &address).await? {
-        Ok(mail_id) => {
+        response
+    };
+    // The store refuses the insert when a link was recorded within the
+    // gap, in the same statement, so overlapping requests queue one link.
+    let since = Utc::now() - VERIFY_RESEND_GAP;
+    match queue_unless_since(
+        &state,
+        AccountMailKind::VerifyEmail,
+        user_id,
+        &address,
+        Some(since),
+    )
+    .await?
+    {
+        Ok(Some(mail_id)) => {
             Ok((StatusCode::ACCEPTED, Json(AccountMailQueued { mail_id })).into_response())
+        }
+        Ok(None) => {
+            let last = library
+                .last_account_mail_at(user_id, AccountMailKind::VerifyEmail)
+                .await
+                .map_err(|err| store_error("post_my_email_verification", err))?;
+            Ok(too_soon(last))
         }
         Err(why) => Err(not_ready(why)),
     }
@@ -637,9 +681,12 @@ pub async fn run_account_mail_send(
             let identity = library
                 .ensure_local_portal_identity(user.id, user.display_name.as_deref())
                 .await?;
-            let ticket = library
-                .mint_invite_ticket(identity.id, &mail.address, INVITE_CREATED_BY)
-                .await?;
+            let Some(ticket) = library
+                .mint_invite_ticket(identity.id, &mail.address, INVITE_CREATED_BY, fence)
+                .await?
+            else {
+                anyhow::bail!("the send lost its lease before minting the invite");
+            };
             Composed {
                 title: "You're invited to a Bookclerk library".into(),
                 text: "Open this link to set up your sign-in. It works once and for 7 days; \
@@ -661,9 +708,12 @@ pub async fn run_account_mail_send(
                 )
                 .await;
             }
-            let token = library
-                .mint_email_verification(user.id, &mail.address)
-                .await?;
+            let Some(token) = library
+                .mint_email_verification(user.id, &mail.address, fence)
+                .await?
+            else {
+                anyhow::bail!("the send lost its lease before minting the link");
+            };
             Composed {
                 title: "Confirm your email address".into(),
                 text: "Open this link to confirm this address for your Bookclerk library. \
@@ -688,7 +738,15 @@ pub async fn run_account_mail_send(
     }
     let params = NotifySendParams {
         message: NotificationMessage {
-            notification_id: mail.id.clone(),
+            // A message with a link gets a new id on every attempt: the
+            // attempt minted a new link and voided the last, so a service
+            // that deduplicates on the id must not drop it as a repeat. A
+            // test carries no link and keeps one id.
+            notification_id: if composed.link.is_some() {
+                format!("{}:{}", mail.id, uuid::Uuid::new_v4().simple())
+            } else {
+                mail.id.clone()
+            },
             notification_type: ACCOUNT_MAIL_TYPE.into(),
             severity: NotificationSeverity::Info,
             title: composed.title,
@@ -823,6 +881,16 @@ pub(crate) async fn sweep_once(
     }
     let limits = notify_queue_limits(state).await;
     for mail in library.unscheduled_account_mail(batch).await? {
+        // A send job that ended before its link was written means the
+        // message is finished (cancelled or failed), not unscheduled.
+        match library.drop_account_mail_if_job_ended(&mail.id).await {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(err) => {
+                warn!(mail = %mail.id, error = %err, "account-mail sweep skipped a message");
+                continue;
+            }
+        }
         match library
             .enqueue_account_mail_send(&mail.id, &mail.plugin_instance_id, limits)
             .await

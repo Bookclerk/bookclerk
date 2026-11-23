@@ -1557,26 +1557,53 @@ impl LibraryStore {
     /// Set contact email (unique when set); does not bump security_version.
     ///
     /// A different address is no longer verified, and the old address's
-    /// pending verification link stops working.
+    /// pending verification link stops working. The same address writes
+    /// nothing, so it keeps its verification.
+    ///
+    /// The write applies only while the stored address is still the one
+    /// read here, so a stale request cannot pair an address with a
+    /// verification issued for another.
     ///
     /// # Errors
     ///
-    /// Returns an error when the operation fails.
+    /// [`LibraryError::Conflict`] when the address changed since it was
+    /// read (the caller reloads and retries); another error when the
+    /// address is invalid, already used, or the write fails.
     pub async fn set_user_email(&self, id: i64, email: Option<&str>) -> Result<UserRecord> {
+        use sea_orm::sea_query::Expr;
         let model = users::Entity::find_by_id(id)
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
             .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))?;
         let email = crate::email::normalize_user_email(email)?;
-        let changed = model.email != email;
-        let mut am: users::ActiveModel = model.into();
-        am.email = Set(email);
-        if changed {
-            am.email_verified_at = Set(None);
+        if model.email == email {
+            return Ok(map_user(model));
         }
-        am.updated_at = Set(now_str());
-        self.update_user_bumped(am, id).await
+        let update = users::Entity::update_many()
+            .col_expr(users::Column::Email, Expr::value(email))
+            .col_expr(
+                users::Column::EmailVerifiedAt,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(users::Column::UpdatedAt, Expr::value(now_str()))
+            .filter(users::Column::Id.eq(id));
+        let update = match model.email {
+            Some(read) => update.filter(users::Column::Email.eq(read)),
+            None => update.filter(users::Column::Email.is_null()),
+        };
+        if self
+            .exec_bumped(update, LiveTopic::Users, Bump::Always)
+            .await?
+            == 0
+        {
+            return Err(LibraryError::Conflict(
+                "the email address changed meanwhile; reload and try again".into(),
+            ));
+        }
+        self.get_user(id)
+            .await?
+            .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))
     }
 
     /// Set the user's picture source (`monogram` / `gravatar` / `upload` / `sso:{id}` / auto).

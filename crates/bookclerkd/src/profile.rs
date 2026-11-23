@@ -340,7 +340,7 @@ pub(crate) async fn require_self_user_id(
             ("nothing_to_change" = (summary = "The body changes nothing.", value = json!({"error": "bad_request", "message": "The request could not be understood.", "status": 400}))),
         )),
         (status = 404, description = "The caller's user no longer exists."),
-        (status = 409, description = "The email is used by another account (`email_in_use`).", body = crate::http_error::ErrorJson, example = json!({"error": "email_in_use", "message": "That email is already used by another account.", "status": 409})),
+        (status = 409, description = "The email is used by another account (`email_in_use`), or it changed since the profile was read (`email_changed`; reload and try again).", body = crate::http_error::ErrorJson, example = json!({"error": "email_in_use", "message": "That email is already used by another account.", "status": 409})),
         (status = 500, description = "The library could not be read or written."),
     ),
 )]
@@ -384,6 +384,13 @@ pub async fn patch_profile(
                     StatusCode::BAD_REQUEST,
                     "invalid_email",
                     "Enter a valid email address.",
+                ));
+            }
+            Err(bookclerk_library::LibraryError::Conflict(_)) => {
+                return Ok(crate::auth::json_auth_error(
+                    StatusCode::CONFLICT,
+                    "email_changed",
+                    "Your email address changed meanwhile. Reload and try again.",
                 ));
             }
             Err(err) if is_unique_violation(&err) => {

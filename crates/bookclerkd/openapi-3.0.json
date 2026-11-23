@@ -18230,7 +18230,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "example": "Failed to deserialize the JSON body into the target type: plugin_instance_id: invalid type: integer `1`, expected a string at line 1 column 23"
+                "example": "Failed to deserialize the JSON body into the target type: missing field `plugin_instance_id` at line 1 column 2"
               }
             }
           },
@@ -36917,7 +36917,7 @@
             }
           },
           "409": {
-            "description": "The email is used by another account (`email_in_use`).",
+            "description": "The email is used by another account (`email_in_use`), or it changed since the profile was read (`email_changed`; reload and try again).",
             "content": {
               "application/json": {
                 "schema": {
@@ -53188,10 +53188,13 @@
       "AccountMailSettingsBody": {
         "type": "object",
         "description": "The body of `PUT /api/notifications/account-mail`.",
+        "required": [
+          "plugin_instance_id"
+        ],
         "properties": {
           "plugin_instance_id": {
             "type": "string",
-            "description": "A notifier instance whose plugin sends account mail, or `null` to\nturn account mail off.",
+            "description": "A notifier instance whose plugin sends account mail, or `null` to\nturn account mail off. The key is required.",
             "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
             "nullable": true
           }

@@ -375,9 +375,10 @@ async fn a_verification_link_works_without_signing_in() {
     assert_eq!(public(unknown).await, StatusCode::BAD_REQUEST);
 
     let token = library
-        .mint_email_verification(member_id, "member@example.com")
+        .mint_email_verification(member_id, "member@example.com", None)
         .await
-        .expect("token");
+        .expect("token")
+        .expect("minted");
     let body = format!(r#"{{"token":"{}"}}"#, token.expose());
     assert_eq!(public(body.clone()).await, StatusCode::OK);
     assert!(

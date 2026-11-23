@@ -636,13 +636,17 @@ export function UserManagementPanel({
           ? `Invite emailed to ${res.user.email ?? "the new user"}. It works once and for 7 days.`
           : null,
       );
-      if (res.claim_ticket) {
-        setClaimTicket({
-          ticket: res.claim_ticket,
-          inviteUrl: res.invite_url,
-          label: `Invite for ${res.user.display_name || res.user.login_name || res.user.email || `user #${res.user.id}`}`,
-        });
-      }
+      // A creation without a ticket clears the last one, so another
+      // user's invite link is never shown beside this user's notice.
+      setClaimTicket(
+        res.claim_ticket
+          ? {
+              ticket: res.claim_ticket,
+              inviteUrl: res.invite_url,
+              label: `Invite for ${res.user.display_name || res.user.login_name || res.user.email || `user #${res.user.id}`}`,
+            }
+          : null,
+      );
       setCreateForm(EMPTY_USER_FORM);
       await onUsersChanged();
     } catch (err) {

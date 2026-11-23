@@ -170,13 +170,15 @@ async fn only_the_newest_invite_works_and_using_it_verifies_under_every_profile(
             .await
             .unwrap();
         let first = store
-            .mint_invite_ticket(identity.id, "lee@example.com", "account_mail")
+            .mint_invite_ticket(identity.id, "lee@example.com", "account_mail", None)
             .await
-            .unwrap();
+            .unwrap()
+            .expect("minted");
         let second = store
-            .mint_invite_ticket(identity.id, "lee@example.com", "account_mail")
+            .mint_invite_ticket(identity.id, "lee@example.com", "account_mail", None)
             .await
-            .unwrap();
+            .unwrap()
+            .expect("minted");
         assert!(store
             .get_claim_ticket_by_hash(&hash_token(first.expose()))
             .await
@@ -230,9 +232,10 @@ async fn a_verification_link_is_single_use_and_expires_under_every_profile() {
         let store = memory(profile).await.into_store();
         let user = member(&store, "ash@example.com").await;
         let minted = store
-            .mint_email_verification(user, "ash@example.com")
+            .mint_email_verification(user, "ash@example.com", None)
             .await
-            .unwrap();
+            .unwrap()
+            .expect("minted");
         let body = format!(r#"{{"token":"{}"}}"#, minted.expose());
         let token = parse_verify_email_request(body.as_bytes()).unwrap();
         // Past its 24 hours it does nothing, and is used up.
@@ -243,9 +246,10 @@ async fn a_verification_link_is_single_use_and_expires_under_every_profile() {
         );
 
         let minted = store
-            .mint_email_verification(user, "ash@example.com")
+            .mint_email_verification(user, "ash@example.com", None)
             .await
-            .unwrap();
+            .unwrap()
+            .expect("minted");
         let body = format!(r#"{{"token":"{}"}}"#, minted.expose());
         let token = parse_verify_email_request(body.as_bytes()).unwrap();
         let now = Utc::now();
@@ -261,13 +265,15 @@ async fn a_verification_link_is_single_use_and_expires_under_every_profile() {
 
         // A newer link voids the older one.
         let old = store
-            .mint_email_verification(user, "ash@example.com")
+            .mint_email_verification(user, "ash@example.com", None)
             .await
-            .unwrap();
+            .unwrap()
+            .expect("minted");
         let _new = store
-            .mint_email_verification(user, "ash@example.com")
+            .mint_email_verification(user, "ash@example.com", None)
             .await
-            .unwrap();
+            .unwrap()
+            .expect("minted");
         let body = format!(r#"{{"token":"{}"}}"#, old.expose());
         let token = parse_verify_email_request(body.as_bytes()).unwrap();
         assert_eq!(
@@ -276,6 +282,173 @@ async fn a_verification_link_is_single_use_and_expires_under_every_profile() {
         );
         // The pass prunes the remaining link once it expires.
         store.prune_account_mail(later).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_stale_send_mints_nothing_and_voids_no_link_under_every_profile() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = memory(profile).await.into_store();
+        let user = member(&store, "kit@example.com").await;
+        let identity = store
+            .ensure_local_portal_identity(user, Some("Kit"))
+            .await
+            .unwrap();
+        let live = store
+            .mint_invite_ticket(identity.id, "kit@example.com", "account_mail", None)
+            .await
+            .unwrap()
+            .expect("minted");
+        let link = store
+            .mint_email_verification(user, "kit@example.com", None)
+            .await
+            .unwrap()
+            .expect("minted");
+        // A claim on a job that is not running holds nothing.
+        let lost = crate::models::JobFence {
+            job_id: "gone".into(),
+            owner: "worker".into(),
+            generation: 1,
+        };
+        assert!(
+            store
+                .mint_invite_ticket(identity.id, "kit@example.com", "account_mail", Some(&lost))
+                .await
+                .unwrap()
+                .is_none(),
+            "{name}"
+        );
+        assert!(
+            store
+                .mint_email_verification(user, "kit@example.com", Some(&lost))
+                .await
+                .unwrap()
+                .is_none(),
+            "{name}"
+        );
+        assert!(
+            store
+                .get_claim_ticket_by_hash(&hash_token(live.expose()))
+                .await
+                .unwrap()
+                .is_some(),
+            "{name}: the delivered invite still works"
+        );
+        let body = format!(r#"{{"token":"{}"}}"#, link.expose());
+        let token = parse_verify_email_request(body.as_bytes()).unwrap();
+        assert_eq!(
+            store
+                .use_email_verification(&token, Utc::now())
+                .await
+                .unwrap(),
+            Some(user),
+            "{name}: the delivered link still works"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_sweep_drops_unlinked_mail_whose_job_ended_under_every_profile() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = memory(profile).await.into_store();
+        let user = member(&store, "jo@example.com").await;
+        // A full queue leaves the message without a job.
+        let full = NotifyQueueLimits {
+            max_pending: 0,
+            max_attempts: 3,
+        };
+        let id = store
+            .queue_account_mail(
+                AccountMailKind::Test,
+                user,
+                "jo@example.com",
+                "email-1",
+                full,
+            )
+            .await
+            .unwrap();
+        // Its send job exists, but the link write was lost.
+        let outcome = store
+            .enqueue_job(crate::models::EnqueueJobSpec {
+                kind: crate::models::JobKind::NotifySend,
+                payload: crate::models::JobPayload {
+                    account_mail: Some(id.clone()),
+                    ..crate::models::JobPayload::default()
+                },
+                priority: 0,
+                max_attempts: 1,
+                max_pending: 1_000,
+                run_after: None,
+            })
+            .await
+            .unwrap();
+        let crate::models::EnqueueOutcome::Created { id: job } = outcome else {
+            panic!("{name}: {outcome:?}");
+        };
+        assert!(
+            !store.drop_account_mail_if_job_ended(&id).await.unwrap(),
+            "{name}: a pending job keeps the message"
+        );
+        store.request_job_cancel(&job).await.unwrap();
+        assert!(
+            store.drop_account_mail_if_job_ended(&id).await.unwrap(),
+            "{name}"
+        );
+        let mail = store.account_mail(&id).await.unwrap().unwrap();
+        assert_eq!(mail.state, DeliveryState::Dropped, "{name}");
+    }
+}
+
+#[tokio::test]
+async fn pruning_expired_links_reads_no_rows_under_every_profile() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = memory(profile).await.into_store();
+        // More outstanding links than the smallest result cap.
+        for n in 0..3 {
+            let address = format!("p{n}@example.com");
+            let user = member(&store, &address).await;
+            store
+                .mint_email_verification(user, &address, None)
+                .await
+                .unwrap()
+                .expect("minted");
+        }
+        let later = Utc::now() + Duration::days(2);
+        for pass in 0..2 {
+            store
+                .prune_account_mail(later)
+                .await
+                .unwrap_or_else(|err| panic!("{name}: pass {pass}: {err}"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_same_address_keeps_its_verification_under_every_profile() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = memory(profile).await.into_store();
+        let user = member(&store, "max@example.com").await;
+        assert!(store
+            .verify_user_email_if(user, "max@example.com")
+            .await
+            .unwrap());
+        let same = store
+            .set_user_email(user, Some("max@example.com"))
+            .await
+            .unwrap();
+        assert!(same.email_verified, "{name}");
+        let other = store
+            .set_user_email(user, Some("max2@example.com"))
+            .await
+            .unwrap();
+        assert!(!other.email_verified, "{name}");
+        assert_eq!(other.email.as_deref(), Some("max2@example.com"), "{name}");
+        let cleared = store.set_user_email(user, None).await.unwrap();
+        assert_eq!(cleared.email, None, "{name}");
     }
 }
 

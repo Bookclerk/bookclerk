@@ -388,9 +388,10 @@ mod tests {
             .await
             .unwrap();
         let ticket = store
-            .mint_invite_ticket(identity.id, "mailed@example.com", "test")
+            .mint_invite_ticket(identity.id, "mailed@example.com", "test", None)
             .await
-            .unwrap();
+            .unwrap()
+            .expect("minted");
         let integrations = IntegrationsConfig::default();
         let nonce = hash_token(&["mailed", "-", "nonce"].concat());
         let (_session, redeemed) =

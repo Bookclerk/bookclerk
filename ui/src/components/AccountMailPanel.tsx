@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   getAccountMail,
@@ -19,6 +19,12 @@ const NOT_READY: Record<AccountMailNotReady, string> = {
     "Set the library's public address first; every link in account mail is built from it.",
 };
 
+/** How often the panel re-reads the status while a test is on its way. */
+const TEST_POLL_MS = 3_000;
+
+/** How long it keeps re-reading before it stops waiting for the test. */
+const TEST_POLL_LIMIT_MS = 60_000;
+
 /**
  * Settings → User Management → Account mail: which notifier sends invites
  * and verification links, whether it is ready, and a test to the
@@ -30,6 +36,9 @@ export function AccountMailPanel() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // The `tested_at` a sent test must replace, while one is on its way.
+  const [waitingPast, setWaitingPast] = useState<string | null | undefined>(undefined);
+  const mounted = useRef(true);
 
   const load = useCallback(async () => {
     try {
@@ -42,8 +51,40 @@ export function AccountMailPanel() {
   }, []);
 
   useEffect(() => {
+    mounted.current = true;
     void load();
+    return () => {
+      mounted.current = false;
+    };
   }, [load]);
+
+  // After a test is queued, re-read the status until its delivery shows as
+  // a new `tested_at`, or stop after a bounded wait.
+  useEffect(() => {
+    if (waitingPast === undefined) return;
+    const started = Date.now();
+    const timer = window.setInterval(() => {
+      void (async () => {
+        try {
+          const next = await getAccountMail();
+          if (!mounted.current) return;
+          setStatus(next);
+          if (next.tested_at && next.tested_at !== waitingPast) {
+            setWaitingPast(undefined);
+            setNotice("The test arrived.");
+            return;
+          }
+        } catch {
+          // A failed read is retried on the next tick.
+        }
+        if (Date.now() - started >= TEST_POLL_LIMIT_MS && mounted.current) {
+          setWaitingPast(undefined);
+          setNotice("The test has not arrived yet. Check the notifier, then try again.");
+        }
+      })();
+    }, TEST_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [waitingPast]);
 
   async function choose(id: string) {
     setBusy(true);
@@ -65,6 +106,7 @@ export function AccountMailPanel() {
     try {
       await sendAccountMailTest();
       setNotice("Test sent to your address. This page shows when it arrives.");
+      setWaitingPast(status?.tested_at ?? null);
     } catch (err) {
       setError(isApiError(err) ? err.message : "Could not send a test");
     } finally {

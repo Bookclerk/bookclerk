@@ -19,9 +19,11 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use super::notifications::fenced;
 use super::LibraryStore;
 use crate::control_plane::batch;
-use crate::entities::{account_mail, account_mail_settings, email_verifications};
+use crate::entities::{account_mail, account_mail_settings, email_verifications, jobs};
 use crate::error::{LibraryError, Result};
-use crate::models::{EnqueueJobSpec, EnqueueOutcome, JobFence, JobKind, JobPayload, JobTrigger};
+use crate::models::{
+    EnqueueJobSpec, EnqueueOutcome, JobFence, JobKind, JobPayload, JobState, JobTrigger,
+};
 use crate::notifications::{
     AccountMail, AccountMailKind, AccountMailSettings, DeliveryState, FailedAttempt, MintedToken,
     VerifyEmailToken, ACCOUNT_MAIL_RETENTION_DAYS, EMAIL_VERIFICATION_HOURS, INVITE_DAYS,
@@ -147,25 +149,76 @@ impl LibraryStore {
         plugin_instance_id: &str,
         limits: NotifyQueueLimits,
     ) -> Result<String> {
+        self.queue_account_mail_unless_since(
+            kind,
+            user_id,
+            address,
+            plugin_instance_id,
+            limits,
+            None,
+        )
+        .await?
+        .ok_or_else(|| LibraryError::Other(anyhow::anyhow!("account mail was not recorded")))
+    }
+
+    /// [`Self::queue_account_mail`], refused when a message of the same
+    /// kind for the user was recorded after `since`. The check and the
+    /// insert are one statement, so two overlapping requests cannot both
+    /// pass it.
+    ///
+    /// # Returns
+    ///
+    /// The message id, or `None` when a recent message refused it.
+    ///
+    /// # Errors
+    ///
+    /// An error when the write fails.
+    pub async fn queue_account_mail_unless_since(
+        &self,
+        kind: AccountMailKind,
+        user_id: i64,
+        address: &str,
+        plugin_instance_id: &str,
+        limits: NotifyQueueLimits,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Option<String>> {
         let id = uuid::Uuid::new_v4().hyphenated().to_string();
         let now = super::now_str();
-        self.execute_host_batch(batch::request(
-            &format!("account-mail-queue-{id}"),
-            vec![batch::exec(
-                "INSERT INTO account_mail (id, kind, user_id, address, plugin_instance_id, \
-                 created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                vec![
-                    batch::text(&id),
-                    batch::text(kind.as_str()),
-                    batch::int(user_id),
-                    batch::text(address),
-                    batch::text(plugin_instance_id),
-                    batch::text(&now),
-                    batch::text(&now),
-                ],
-            )],
-        ))
-        .await?;
+        let mut parameters = vec![
+            batch::text(&id),
+            batch::text(kind.as_str()),
+            batch::int(user_id),
+            batch::text(address),
+            batch::text(plugin_instance_id),
+            batch::text(&now),
+            batch::text(&now),
+        ];
+        let guard = match since {
+            Some(since) => {
+                parameters.push(batch::int(user_id));
+                parameters.push(batch::text(kind.as_str()));
+                parameters.push(batch::text(&since.to_rfc3339()));
+                "NOT EXISTS (SELECT 1 FROM account_mail WHERE user_id = ? AND kind = ? \
+                 AND created_at > ?)"
+            }
+            None => "1 = 1",
+        };
+        let reply = self
+            .execute_host_batch(batch::request(
+                &format!("account-mail-queue-{id}"),
+                vec![batch::exec(
+                    &format!(
+                        "INSERT INTO account_mail (id, kind, user_id, address, \
+                         plugin_instance_id, created_at, updated_at) \
+                         SELECT ?, ?, ?, ?, ?, ?, ? WHERE {guard}"
+                    ),
+                    parameters,
+                )],
+            ))
+            .await?;
+        if batch::rows_affected(&reply, 0) != 1 {
+            return Ok(None);
+        }
         if let Err(err) = self
             .enqueue_account_mail_send(&id, plugin_instance_id, limits)
             .await
@@ -176,7 +229,7 @@ impl LibraryStore {
                 "account-mail send enqueue failed; the sweep retries it"
             );
         }
-        Ok(id)
+        Ok(Some(id))
     }
 
     /// Enqueues the send job of one message and records its id.
@@ -311,6 +364,48 @@ impl LibraryStore {
             ))
             .await?;
         Ok(batch::rows_affected(&reply, 0))
+    }
+
+    /// Drops a pending message that has no job id when a send job for it
+    /// already ended: its enqueue succeeded but the link write did not,
+    /// and the job was then cancelled or failed. As
+    /// [`Self::drop_notify_delivery_if_job_ended`] does for deliveries, this
+    /// keeps the sweep from sending a message an operator cancelled, since
+    /// the ended job no longer blocks a new one with the same dedup key.
+    ///
+    /// # Returns
+    ///
+    /// Whether the message was dropped (and must not be enqueued again).
+    ///
+    /// # Errors
+    ///
+    /// An error when the read or the batch fails.
+    pub async fn drop_account_mail_if_job_ended(&self, mail_id: &str) -> Result<bool> {
+        let ended = jobs::Entity::find()
+            .filter(jobs::Column::DedupKey.eq(crate::models::account_mail_dedup_key(mail_id)))
+            .filter(
+                jobs::Column::State
+                    .is_not_in([JobState::Pending.as_str(), JobState::Running.as_str()]),
+            )
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .is_some();
+        if !ended {
+            return Ok(false);
+        }
+        let reply = self
+            .execute_host_batch(batch::request(
+                &format!("account-mail-unlinked-{mail_id}-{}", uuid::Uuid::new_v4()),
+                vec![batch::exec(
+                    "UPDATE account_mail SET state = 'dropped', \
+                     reason = 'the send job ended without a result', updated_at = ? \
+                     WHERE id = ? AND state = 'pending' AND job_id IS NULL",
+                    vec![batch::text(&super::now_str()), batch::text(mail_id)],
+                )],
+            ))
+            .await?;
+        Ok(batch::rows_affected(&reply, 0) == 1)
     }
 
     /// Records a delivered message. A delivered test marks the instance
@@ -465,10 +560,12 @@ impl LibraryStore {
     /// * `identity_id` - The user's local portal identity.
     /// * `emailed_to` - The address the invite goes to.
     /// * `created_by` - Audit label of whoever asked for the invite.
+    /// * `fence` - The send job's claim; nothing is minted or voided once
+    ///   it lost the job, so a stale send cannot void a newer link.
     ///
     /// # Returns
     ///
-    /// The raw ticket, for the link.
+    /// The raw ticket, for the link; `None` when the fence no longer holds.
     ///
     /// # Errors
     ///
@@ -478,32 +575,36 @@ impl LibraryStore {
         identity_id: i64,
         emailed_to: &str,
         created_by: &str,
-    ) -> Result<MintedToken> {
+        fence: Option<&JobFence>,
+    ) -> Result<Option<MintedToken>> {
         let raw = uuid::Uuid::new_v4().to_string();
         let now = Utc::now();
-        self.execute_host_batch(batch::request(
-            &format!("account-mail-invite-{}", uuid::Uuid::new_v4()),
-            vec![
-                batch::exec(
-                    "DELETE FROM claim_tickets WHERE identity_id = ? AND redeemed_at IS NULL",
-                    vec![batch::int(identity_id)],
-                ),
-                batch::exec(
-                    "INSERT INTO claim_tickets (token_hash, identity_id, expires_at, \
-                     created_by, created_at, emailed_to) VALUES (?, ?, ?, ?, ?, ?)",
-                    vec![
-                        batch::text(&hash_token(&raw)),
-                        batch::int(identity_id),
-                        batch::text(&(now + Duration::days(INVITE_DAYS)).to_rfc3339()),
-                        batch::text(created_by),
-                        batch::text(&now.to_rfc3339()),
-                        batch::text(emailed_to),
-                    ],
-                ),
-            ],
-        ))
-        .await?;
-        Ok(MintedToken::new(raw))
+        let reply = self
+            .execute_host_batch(batch::request(
+                &format!("account-mail-invite-{}", uuid::Uuid::new_v4()),
+                vec![
+                    fenced(
+                        "DELETE FROM claim_tickets WHERE identity_id = ? AND redeemed_at IS NULL",
+                        vec![batch::int(identity_id)],
+                        fence,
+                    ),
+                    fenced(
+                        "INSERT INTO claim_tickets (token_hash, identity_id, expires_at, \
+                         created_by, created_at, emailed_to) SELECT ?, ?, ?, ?, ?, ? WHERE 1 = 1",
+                        vec![
+                            batch::text(&hash_token(&raw)),
+                            batch::int(identity_id),
+                            batch::text(&(now + Duration::days(INVITE_DAYS)).to_rfc3339()),
+                            batch::text(created_by),
+                            batch::text(&now.to_rfc3339()),
+                            batch::text(emailed_to),
+                        ],
+                        fence,
+                    ),
+                ],
+            ))
+            .await?;
+        Ok((batch::rows_affected(&reply, 1) == 1).then(|| MintedToken::new(raw)))
     }
 
     /// Mints the link a verification message carries, voiding the user's
@@ -514,41 +615,51 @@ impl LibraryStore {
     /// * `user_id` - The user.
     /// * `email` - The address it goes to; the link verifies it only while
     ///   the user still has it.
+    /// * `fence` - The send job's claim; nothing is minted or voided once
+    ///   it lost the job, so a stale send cannot void a newer link.
     ///
     /// # Returns
     ///
-    /// The raw token, for the link.
+    /// The raw token, for the link; `None` when the fence no longer holds.
     ///
     /// # Errors
     ///
     /// An error when the batch fails.
-    pub async fn mint_email_verification(&self, user_id: i64, email: &str) -> Result<MintedToken> {
+    pub async fn mint_email_verification(
+        &self,
+        user_id: i64,
+        email: &str,
+        fence: Option<&JobFence>,
+    ) -> Result<Option<MintedToken>> {
         let raw = random_token();
         let now = Utc::now();
-        self.execute_host_batch(batch::request(
-            &format!("account-mail-verify-{}", uuid::Uuid::new_v4()),
-            vec![
-                batch::exec(
-                    "DELETE FROM email_verifications WHERE user_id = ?",
-                    vec![batch::int(user_id)],
-                ),
-                batch::exec(
-                    "INSERT INTO email_verifications (token_hash, user_id, email, expires_at, \
-                     created_at) VALUES (?, ?, ?, ?, ?)",
-                    vec![
-                        batch::text(&hash_token(&raw)),
-                        batch::int(user_id),
-                        batch::text(email),
-                        batch::text(
-                            &(now + Duration::hours(EMAIL_VERIFICATION_HOURS)).to_rfc3339(),
-                        ),
-                        batch::text(&now.to_rfc3339()),
-                    ],
-                ),
-            ],
-        ))
-        .await?;
-        Ok(MintedToken::new(raw))
+        let reply = self
+            .execute_host_batch(batch::request(
+                &format!("account-mail-verify-{}", uuid::Uuid::new_v4()),
+                vec![
+                    fenced(
+                        "DELETE FROM email_verifications WHERE user_id = ?",
+                        vec![batch::int(user_id)],
+                        fence,
+                    ),
+                    fenced(
+                        "INSERT INTO email_verifications (token_hash, user_id, email, \
+                         expires_at, created_at) SELECT ?, ?, ?, ?, ? WHERE 1 = 1",
+                        vec![
+                            batch::text(&hash_token(&raw)),
+                            batch::int(user_id),
+                            batch::text(email),
+                            batch::text(
+                                &(now + Duration::hours(EMAIL_VERIFICATION_HOURS)).to_rfc3339(),
+                            ),
+                            batch::text(&now.to_rfc3339()),
+                        ],
+                        fence,
+                    ),
+                ],
+            ))
+            .await?;
+        Ok((batch::rows_affected(&reply, 1) == 1).then(|| MintedToken::new(raw)))
     }
 
     /// Uses a verification link: the user's address is verified when the
@@ -674,27 +785,19 @@ impl LibraryStore {
     /// An error when the batch fails.
     pub async fn prune_account_mail(&self, now: DateTime<Utc>) -> Result<u64> {
         let cutoff = (now - Duration::days(ACCOUNT_MAIL_RETENTION_DAYS)).to_rfc3339();
-        let expired: Vec<String> = email_verifications::Entity::find()
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .filter(|row| {
-                DateTime::parse_from_rfc3339(&row.expires_at)
-                    .map_or(true, |expires| expires.with_timezone(&Utc) <= now)
-            })
-            .map(|row| row.token_hash)
-            .collect();
-        let mut statements = vec![batch::exec(
-            "DELETE FROM account_mail WHERE state <> 'pending' AND created_at < ?",
-            vec![batch::text(&cutoff)],
-        )];
-        for token_hash in &expired {
-            statements.push(batch::exec(
-                "DELETE FROM email_verifications WHERE token_hash = ?",
-                vec![batch::text(token_hash)],
-            ));
-        }
+        // Expiry is filtered in the database, so the step reads no rows
+        // and stays within any result cap. `expires_at` is always written
+        // here as UTC RFC 3339, so it compares as text.
+        let statements = vec![
+            batch::exec(
+                "DELETE FROM account_mail WHERE state <> 'pending' AND created_at < ?",
+                vec![batch::text(&cutoff)],
+            ),
+            batch::exec(
+                "DELETE FROM email_verifications WHERE expires_at <= ?",
+                vec![batch::text(&now.to_rfc3339())],
+            ),
+        ];
         let reply = self
             .execute_host_batch(batch::request(
                 &format!("account-mail-prune-{}", uuid::Uuid::new_v4()),
