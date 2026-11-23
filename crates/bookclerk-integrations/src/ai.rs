@@ -67,6 +67,10 @@ pub struct AiRouter {
     /// The model the library chose for each task. A task without a choice
     /// goes to the first deployed model that performs it.
     chosen: std::sync::RwLock<HashMap<AiTask, (String, String)>>,
+    /// Counts the times the models served here may have changed
+    /// ([`Self::forget_listings`]), for whoever keeps something derived
+    /// from a model current ([`Self::changes`]).
+    changed: tokio::sync::watch::Sender<u64>,
 }
 
 impl AiRouter {
@@ -85,6 +89,7 @@ impl AiRouter {
             integrations,
             listings: tokio::sync::Mutex::new(HashMap::new()),
             chosen: std::sync::RwLock::new(HashMap::new()),
+            changed: tokio::sync::watch::Sender::new(0),
         }
     }
 
@@ -115,6 +120,20 @@ impl AiRouter {
     /// model's files, which changes what a running plugin lists.
     pub async fn forget_listings(&self) {
         self.listings.lock().await.clear();
+        self.changed
+            .send_modify(|count| *count = count.wrapping_add(1));
+    }
+
+    /// A receiver that changes each time the models served on this node
+    /// may have changed: a model was installed or removed
+    /// ([`Self::forget_listings`]).
+    ///
+    /// # Returns
+    ///
+    /// The receiver; its value is a count with no meaning of its own.
+    #[must_use]
+    pub fn changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changed.subscribe()
     }
 
     /// The deployed model plugins, in registration order.
@@ -578,6 +597,21 @@ mod tests {
             .unwrap();
         assert_eq!(embedder.lists.load(Ordering::SeqCst), 1, "listed once");
         assert_eq!(embedder.runs.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn forgetting_the_listings_tells_whoever_watches_the_models() {
+        let embedder = Fake::new("embedder", "tiny", Mode::Answers);
+        let router = router(&[Arc::clone(&embedder)]);
+        let mut changes = router.changes();
+        assert!(!changes.has_changed().unwrap(), "nothing changed yet");
+        router.model_for(AiTask::TextEmbeddings).await.unwrap();
+        router.forget_listings().await;
+        assert!(changes.has_changed().unwrap());
+        changes.borrow_and_update();
+        router.model_for(AiTask::TextEmbeddings).await.unwrap();
+        assert_eq!(embedder.lists.load(Ordering::SeqCst), 2, "listed again");
+        assert!(!changes.has_changed().unwrap(), "a listing is no change");
     }
 
     #[tokio::test]

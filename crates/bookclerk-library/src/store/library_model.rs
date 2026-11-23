@@ -23,8 +23,8 @@ use super::listing_reads::{
 use super::{now_str, parse_dt, LibraryStore, NewBook};
 use crate::atomic_ops::{atomic_status, DbAtomicParams};
 use crate::entities::{
-    credits, edition_identifiers, editions, embeddings, expressions, series_entries,
-    store_listings, work_identifiers, works,
+    credits, edition_identifiers, editions, expressions, series_entries, store_listings,
+    work_identifiers, works,
 };
 use crate::error::{LibraryError, Result};
 use crate::library_link::{
@@ -1944,74 +1944,6 @@ impl LibraryStore {
             .collect();
         self.fill_work_names(&mut works).await?;
         Ok(works)
-    }
-
-    /// Stored text hashes of the `model` embeddings of `target_kind` targets
-    /// among `target_ids`, keyed by target id. Targets with no embedding are
-    /// absent.
-    ///
-    /// Reads in chunks sized from the adapter's bind limit, so one call
-    /// replaces a lookup per target.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LibraryError::Orm`] when a read fails.
-    pub async fn embedding_text_hashes(
-        &self,
-        target_kind: &str,
-        model: &str,
-        target_ids: &[String],
-    ) -> Result<std::collections::HashMap<String, String>> {
-        /// One stored hash, decoded by column name: the host database proxy
-        /// does not keep the select order, so a positional tuple read could
-        /// swap the columns.
-        #[derive(Debug, sea_orm::FromQueryResult)]
-        struct StoredHash {
-            /// `embeddings.target_id`.
-            target_id: String,
-            /// `embeddings.text_hash`.
-            text_hash: String,
-        }
-        let mut hashes = std::collections::HashMap::with_capacity(target_ids.len());
-        for chunk in target_ids.chunks(self.lookup_chunk()) {
-            let rows = embeddings::Entity::find()
-                .select_only()
-                .column(embeddings::Column::TargetId)
-                .column(embeddings::Column::TextHash)
-                .filter(embeddings::Column::TargetKind.eq(target_kind))
-                .filter(embeddings::Column::Model.eq(model))
-                .filter(embeddings::Column::TargetId.is_in(chunk.iter().cloned()))
-                .into_model::<StoredHash>()
-                .all(&self.db)
-                .await
-                .map_err(LibraryError::Orm)?;
-            hashes.extend(rows.into_iter().map(|row| (row.target_id, row.text_hash)));
-        }
-        Ok(hashes)
-    }
-
-    /// Deletes work embeddings (every model) whose work no longer exists,
-    /// and answers how many it removed.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LibraryError::Orm`] when the delete fails.
-    pub async fn prune_orphan_work_embeddings(&self) -> Result<u64> {
-        use sea_orm::sea_query::Query;
-        Ok(embeddings::Entity::delete_many()
-            .filter(embeddings::Column::TargetKind.eq("work"))
-            .filter(
-                embeddings::Column::TargetId.not_in_subquery(
-                    Query::select()
-                        .column(works::Column::Id)
-                        .from(works::Entity)
-                        .to_owned(),
-                ),
-            )
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .rows_affected)
     }
 
     /// Lists every work by title, with its work-level credits and series.
