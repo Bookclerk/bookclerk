@@ -64,7 +64,7 @@ boundary extends it.
 | `r2_event` | What the `r2` guest reads from Cloudflare to serve its change feed: Queues HTTP pull replies (the envelope, lease ids and base64 or text bodies) and the R2 event notifications in them, with their accounts, buckets and prefixes | `bookclerk-storage::r2_events` |
 | `b2_reply` | What the `b2` guest reads from Backblaze B2: native API replies (authorization, buckets, upload URLs, file versions, file-name and file-version listings, uploaded parts, errors) and download headers, and the percent-encoding of file names | `bookclerk-storage::b2_api` |
 | `b2_event` | What the `b2` guest reads to serve its change feed: B2 event notification webhook bodies (event types, buckets, object names, times) and `b2_get_bucket_notification_rules` / `b2_set_bucket_notification_rules` replies | `bookclerk-storage::b2_events` |
-| `socket_request` | A plugin's host-brokered socket request (`Sockets.connect`): its URL (`ws://`, `wss://` or `tls://host:port`), headers, subprotocols or ALPN ids, heartbeat pairs, attachment and trust anchors' DER shape, and the `SocketMessage` the host delivers to a socket handler | `bookclerk-plugin-abi::sockets` |
+| `socket_request` | A plugin's host-brokered socket request (`Sockets.connect`): its URL (`ws://`, `wss://` or `tls://host:port`), headers, subprotocols or ALPN ids, heartbeat pairs, attachment, trust anchors' DER shape and `tls://` server name, and the `SocketMessage` the host delivers to a socket handler | `bookclerk-plugin-abi::sockets` |
 | `origin_request` | What a relay ingress plugin hands the host: the framed `POST /origin/fetch` body on the isolate bridge, request heads (method, target, headers, client address), response heads, and the public origin `Ingress.start` reports | `bookclerk-plugin-abi::origin` |
 | `socket_broker` | What the socket broker does with a remote WebSocket server's frames and closes and a plugin's socket requests: heartbeat answers, deliveries, attachments, the per-instance limit and close reporting | `bookclerk-workerd::socket_table` |
 | `socket_route` | A workerd plugin's `env.SOCKETS` calls on the granted reverse channel: the `POST /sockets/<op>` JSON body for `connect`, `send`, `close`, `attachment` and `list` | `bookclerk-workerd::granted_sockets` |
@@ -644,8 +644,8 @@ only that. The others check:
   same scheme, host and port with no credentials or fragment, so the
   network grant and the connection can't disagree about the target.
   Connect validation accepts exactly the requests whose URL parses and
-  that an independent restatement of the header, subprotocol, heartbeat
-  and attachment rules accepts; heartbeat matching answers exactly the
+  that an independent restatement of the header, subprotocol, heartbeat,
+  attachment and server name rules accepts; heartbeat matching answers exactly the
   frames equal to a declared request; delivery checks agree with the
   restated id, frame and attachment bounds; and a decoded message
   survives `write` then `read` unchanged. The shared oracle is

@@ -12050,7 +12050,8 @@ function connectBody(url, options) {
       response: routeFrame(pair.response)
     })),
     attachment: toBase64(encodeAttachment(options?.attachment)),
-    trustAnchors: (options?.trustAnchors ?? []).map((anchor) => typeof anchor === "string" ? pemBody(anchor) : toBase64(anchor))
+    trustAnchors: (options?.trustAnchors ?? []).map((anchor) => typeof anchor === "string" ? pemBody(anchor) : toBase64(anchor)),
+    serverName: String(options?.serverName ?? "")
   };
 }
 function pemBody(pem) {

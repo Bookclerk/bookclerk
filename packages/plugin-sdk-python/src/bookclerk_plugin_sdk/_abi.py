@@ -172,6 +172,9 @@ MAX_SOCKET_TRUST_ANCHORS: int = 4
 MAX_SOCKET_TRUST_ANCHOR_BYTES: int = 8192
 """Largest DER certificate in `SocketConnectRequest.trustAnchors`, in bytes."""
 
+MAX_SOCKET_SERVER_NAME_BYTES: int = 253
+"""Longest `SocketConnectRequest.serverName`, in bytes (a DNS name's limit)."""
+
 MAX_SOCKET_URL_BYTES: int = 2048
 """Longest `SocketConnectRequest.url`, in bytes."""
 
@@ -566,6 +569,7 @@ __all__ = [
     "MAX_SOCKET_AUTO_RESPONSE_BYTES",
     "MAX_SOCKET_TRUST_ANCHORS",
     "MAX_SOCKET_TRUST_ANCHOR_BYTES",
+    "MAX_SOCKET_SERVER_NAME_BYTES",
     "MAX_SOCKET_URL_BYTES",
     "MAX_SOCKET_HEADERS",
     "MAX_ORIGIN_HEADERS",

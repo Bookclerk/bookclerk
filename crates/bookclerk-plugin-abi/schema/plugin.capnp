@@ -142,6 +142,8 @@ const maxSocketAutoResponseBytes :UInt32 = 256;
 const maxSocketTrustAnchors :UInt32 = 4;
 # Largest DER certificate in `SocketConnectRequest.trustAnchors`, in bytes.
 const maxSocketTrustAnchorBytes :UInt32 = 8192;
+# Longest `SocketConnectRequest.serverName`, in bytes (a DNS name's limit).
+const maxSocketServerNameBytes :UInt32 = 253;
 # Longest `SocketConnectRequest.url`, in bytes.
 const maxSocketUrlBytes :UInt32 = 2048;
 # Most request headers, and separately subprotocols, on one `Sockets.connect`.
@@ -4289,6 +4291,13 @@ struct SocketConnectRequest {
   # end in instead of Mozilla's roots, for a service that signs its own
   # (an ngrok or Cloudflare Tunnel agent endpoint). Empty uses Mozilla's.
   trustAnchors @5 :List(Data);
+  # `tls://` only: the DNS name to send as SNI and to check the server's
+  # certificate against, for an endpoint reached at one name that answers
+  # for another (a Cloudflare Tunnel edge, dialed at `region1.v2.argotunnel.com`
+  # and serving `h2.cftunnel.com`). It must be on a `tcp` grant for the
+  # URL's port too, so it can't route past the grant by name. At most
+  # `maxSocketServerNameBytes`; empty uses the URL's host.
+  serverName @6 :Text;
 }
 
 # One open host-brokered socket.

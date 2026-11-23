@@ -62,6 +62,10 @@ pub const MAX_SOCKET_TRUST_ANCHORS: u32 = crate::plugin_capnp::MAX_SOCKET_TRUST_
 /// anchor, in bytes.
 pub const MAX_SOCKET_TRUST_ANCHOR_BYTES: u32 = crate::plugin_capnp::MAX_SOCKET_TRUST_ANCHOR_BYTES;
 
+/// Longest server name a `tls://` `Sockets.connect` may send as SNI, in bytes
+/// (a DNS name's limit).
+pub const MAX_SOCKET_SERVER_NAME_BYTES: u32 = crate::plugin_capnp::MAX_SOCKET_SERVER_NAME_BYTES;
+
 /// Longest `Sockets.connect` URL, in bytes.
 pub const MAX_SOCKET_URL_BYTES: u32 = crate::plugin_capnp::MAX_SOCKET_URL_BYTES;
 

@@ -193,7 +193,10 @@ network grant. Send `Uint8Array`s; reads arrive in order as `ArrayBuffer`
 chunks of up to 64 KiB with no boundaries of their own, so the plugin
 frames the bytes itself. The server ending the stream closes it with code
 1000. For a service that signs its endpoint with its own CA, pass its root
-certificate as `trustAnchors` (DER bytes or a PEM block). See [Pushed sockets](../../abi.md#pushed-sockets-sockets).
+certificate as `trustAnchors` (DER bytes or a PEM block). For an endpoint
+dialed at one name that answers for another, pass `serverName`: it is sent
+as SNI and checked against the certificate, and it needs a `tcp` grant for
+the same port too. See [Pushed sockets](../../abi.md#pushed-sockets-sockets).
 
 A remote library whose message announced a new user returns
 `{ pollEvents: true }` from `webSocketMessage`, and the host calls

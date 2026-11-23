@@ -10227,13 +10227,13 @@ export const SocketAutoResponseCodec: StructCodec<T.SocketAutoResponse> = {
 };
 
 /**
- * Wire codec for `SocketConnectRequest` (0 data words, 6 pointers).
+ * Wire codec for `SocketConnectRequest` (0 data words, 7 pointers).
  *
  * @internal
  */
 export const SocketConnectRequestCodec: StructCodec<T.SocketConnectRequest> = {
   dataWords: 0,
-  pointerCount: 6,
+  pointerCount: 7,
   write(s, v, caps) {
     s.setText(0, v.url ?? "");
     s.setTextList(1, v.protocols ?? []);
@@ -10253,6 +10253,7 @@ export const SocketConnectRequestCodec: StructCodec<T.SocketConnectRequest> = {
     }
     s.setData(4, v.attachment ?? EMPTY_BYTES);
     s.setDataList(5, v.trustAnchors ?? []);
+    s.setText(6, v.serverName ?? "");
   },
   read(s, caps) {
     return {
@@ -10262,6 +10263,7 @@ export const SocketConnectRequestCodec: StructCodec<T.SocketConnectRequest> = {
       autoResponses: s.getStructList(3, 0, 2).map((item) => SocketAutoResponseCodec.read(item, caps)),
       attachment: s.getData(4),
       trustAnchors: s.getDataList(5),
+      serverName: s.getText(6),
     };
   },
 };
@@ -13706,12 +13708,12 @@ export const SocketsConnectParamsCodec: StructCodec<SocketsConnectParams> = {
   pointerCount: 1,
   write(s, v, caps) {
     if (v.request != null) {
-      SocketConnectRequestCodec.write(s.initStruct(0, 0, 6), v.request, caps);
+      SocketConnectRequestCodec.write(s.initStruct(0, 0, 7), v.request, caps);
     }
   },
   read(s, caps) {
     return {
-      request: SocketConnectRequestCodec.read(s.getStruct(0, 0, 6), caps),
+      request: SocketConnectRequestCodec.read(s.getStruct(0, 0, 7), caps),
     };
   },
 };
