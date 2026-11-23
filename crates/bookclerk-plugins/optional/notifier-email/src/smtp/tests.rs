@@ -304,8 +304,60 @@ fn dates_ids_and_html_escaping() {
     );
 }
 
+/// Decodes quoted-printable (RFC 2045 section 6.7), for checking bodies.
+pub(crate) fn decode_qp(encoded: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    let joined = encoded.replace("=\r\n", "");
+    let bytes = joined.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'=' {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap();
+            out.push(u8::from_str_radix(hex, 16).unwrap());
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 #[test]
-fn a_message_is_ascii_with_base64_bodies() {
+fn quoted_printable_keeps_ascii_readable_and_lines_short() {
+    assert_eq!(
+        encode_quoted_printable("Hello\nworld\r."),
+        "Hello\r\nworld\r\n."
+    );
+    assert_eq!(encode_quoted_printable("a=b é"), "a=3Db =C3=A9");
+    assert_eq!(
+        encode_quoted_printable("trailing \nTab\t"),
+        "trailing=20\r\nTab=09"
+    );
+    assert_eq!(
+        encode_quoted_printable("From here\nFrom"),
+        "=46rom here\r\nFrom"
+    );
+    assert_eq!(encode_quoted_printable("x\n"), "x\r\n");
+    let long = format!("{} {}", "a".repeat(100), "é".repeat(60));
+    let encoded = encode_quoted_printable(&long);
+    for line in encoded.split("\r\n") {
+        assert!(line.len() <= 76, "{line}");
+        assert!(line
+            .bytes()
+            .all(|b| (0x21..=0x7e).contains(&b) || b == b' '));
+        // A soft break never splits an `=XX`.
+        let body = line.strip_suffix('=').unwrap_or(line);
+        assert!(
+            !body.ends_with('=') && body.as_bytes().get(body.len().wrapping_sub(2)) != Some(&b'='),
+            "{line}"
+        );
+    }
+    assert_eq!(decode_qp(&encoded), long.as_bytes());
+}
+
+#[test]
+fn a_message_is_ascii_with_quoted_printable_bodies() {
     let to = vec!["pat@example.com".to_owned(), "lee@example.com".to_owned()];
     let html = format!("<p>{}</p>", "é".repeat(200));
     let base = MailContent {
@@ -315,6 +367,7 @@ fn a_message_is_ascii_with_base64_bodies() {
         subject: "Your invite\r\nBcc: evil@example.com",
         text: "Hello\nworld\r.\n",
         html: None,
+        images: &[],
         message_id: "n-1.d-1@example.com",
         date: "Mon, 23 Nov 2026 05:00:00 +0000",
         boundary: "=_b",
@@ -327,10 +380,11 @@ fn a_message_is_ascii_with_base64_bodies() {
     assert!(plain.contains("\r\nDate: Mon, 23 Nov 2026 05:00:00 +0000\r\n"));
     assert!(plain.contains("\r\nMessage-ID: <n-1.d-1@example.com>\r\n"));
     assert!(plain.contains("\r\nAuto-Submitted: auto-generated\r\n"));
-    assert!(plain.contains("\r\nContent-Type: text/plain; charset=utf-8\r\n"));
-    let body = plain.split("\r\n\r\n").nth(1).unwrap().replace("\r\n", "");
-    assert_eq!(BASE64.decode(body).unwrap(), b"Hello\r\nworld\r\n.\r\n");
-    assert!(plain.ends_with("\r\n"));
+    assert!(plain.contains(
+        "\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n"
+    ));
+    let body = plain.split_once("\r\n\r\n").unwrap().1;
+    assert_eq!(body, "Hello\r\nworld\r\n.\r\n\r\n");
     let both = build_message(&MailContent {
         html: Some(&html),
         ..base
@@ -338,11 +392,32 @@ fn a_message_is_ascii_with_base64_bodies() {
     assert!(both.contains("\r\nContent-Type: multipart/alternative; boundary=\"=_b\"\r\n"));
     assert!(both.contains("\r\n--=_b\r\nContent-Type: text/html; charset=utf-8\r\n"));
     assert!(both.ends_with("\r\n--=_b--\r\n"));
-    for line in both.split("\r\n") {
-        assert!(line.bytes().all(|b| (0x20..=0x7e).contains(&b)), "{line}");
-        assert!(line.len() <= 998);
+    assert!(!both.contains("multipart/related"));
+    let logo = [InlineImage {
+        content_id: "mark@bookclerk>\r\nBcc: x",
+        content_type: "image/png\r\nX: y",
+        filename: "a\"b.png",
+        bytes: &[0x89, b'P', b'N', b'G', 0, 1, 2, 255],
+    }];
+    let related = build_message(&MailContent {
+        html: Some(&html),
+        images: &logo,
+        ..base
+    });
+    assert!(related.contains(
+        "\r\n--=_b\r\nContent-Type: multipart/related; boundary=\"=_b_r\"; type=\"text/html\"\r\n\r\n--=_b_r\r\nContent-Type: text/html; charset=utf-8\r\n"
+    ));
+    assert!(related.contains(
+        "\r\n--=_b_r\r\nContent-Type: image/pngXy\r\nContent-Transfer-Encoding: base64\r\nContent-ID: <mark@bookclerkBccx>\r\nContent-Disposition: inline; filename=\"ab.png\"\r\n\r\niVBORwABAv8=\r\n--=_b_r--\r\n--=_b--\r\n"
+    ), "{related}");
+    assert!(!related.contains("\r\nBcc:"));
+    for message in [&both, &related] {
+        for line in message.split("\r\n") {
+            assert!(line.bytes().all(|b| (0x20..=0x7e).contains(&b)), "{line}");
+            assert!(line.len() <= 998);
+        }
+        assert!(!message.replace("\r\n", "").contains('\n'));
     }
-    assert!(!both.replace("\r\n", "").contains('\n'));
 }
 
 #[test]

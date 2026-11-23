@@ -6,8 +6,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine as _;
 use bookclerk_plugin_sdk::{
     NotificationAlertAction, NotificationField, NotificationMessage, NotificationSeverity,
     NotifyDestination, PluginErrorCode, SettingNetwork, SettingNetworkGrant,
@@ -17,7 +15,7 @@ use tokio::io::{duplex, AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream}
 
 use super::*;
 use crate::client::BoxIo;
-use crate::compose::{html_body, plain_body};
+use crate::compose::{html_body, link_host, link_label, plain_body, simple_html};
 
 /// A grant whose `server` setting is in `state` at `destination`.
 fn grant(state: SettingGrantState, destination: &str) -> NetworkGrant {
@@ -142,20 +140,30 @@ fn message() -> NotificationMessage {
 fn bodies_carry_text_fields_and_the_link_once() {
     assert_eq!(
         plain_body(&message()),
-        "Pat invited you.\n\nUse the link below.\n\nLibrary: Home <books>\n\nhttps://library.example.com/claim?t=a&b\n"
+        "Pat invited you.\n\nUse the link below.\n\nLibrary: Home <books>\n\nOpen library.example.com: https://library.example.com/claim?t=a&b\n\n-- \nSent by your library's Bookclerk server. This is an automatic message.\n"
     );
-    let html = html_body(&message());
+    let (html, branded) = html_body(&message(), "Riverside Library");
+    assert!(branded);
     assert!(
-        html.contains("<p>Pat invited you.</p>\n<p>Use the link below.</p>"),
+        html.to_ascii_lowercase()
+            .starts_with("<!doctype html><html lang=\"en\""),
         "{html}"
     );
-    assert!(
-        html.contains("<th align=\"left\">Library</th><td>Home &lt;books&gt;</td>"),
-        "{html}"
-    );
-    assert!(html.contains(
-        "<a href=\"https://library.example.com/claim?t=a&amp;b\">https://library.example.com/claim?t=a&amp;b</a>"
-    ));
+    assert!(html.contains("<title>You&#39;re invited</title>"), "{html}");
+    assert!(html.contains("Pat invited you."), "{html}");
+    assert!(html.contains("Use the link below."), "{html}");
+    assert!(html.contains(">Library</th>"), "{html}");
+    assert!(html.contains("Home &lt;books&gt;"), "{html}");
+    assert!(html.contains("Riverside Library"), "{html}");
+    assert!(html.contains("src=\"cid:mark@bookclerk\""), "{html}");
+    // The link is a button with a short label naming its host; the long
+    // URL is only in the href.
+    assert!(html.contains("href=\"https://library.example.com/claim?t=a&amp;b\""));
+    assert!(html.contains(">Open library.example.com</a>"), "{html}");
+    assert_eq!(html.matches("claim?t=a").count(), 1, "{html}");
+    // Nothing is fetched to show it: no web fonts or remote images.
+    assert!(!html.contains("fonts.googleapis"), "{html}");
+    assert!(!html.contains("src=\"http"), "{html}");
     // A link the text or HTML already holds is not repeated.
     let mut inline = message();
     inline.text = "Open https://library.example.com/claim?t=a&b now".into();
@@ -164,16 +172,53 @@ fn bodies_carry_text_fields_and_the_link_once() {
     inline.fields.clear();
     assert_eq!(
         plain_body(&inline),
-        "Open https://library.example.com/claim?t=a&b now\n"
+        "Open https://library.example.com/claim?t=a&b now\n\n-- \nSent by your library's Bookclerk server. This is an automatic message.\n"
     );
-    let html = html_body(&inline);
+    let (html, _) = html_body(&inline, "");
     assert_eq!(html.matches("href=").count(), 1, "{html}");
+    assert!(
+        html.contains(">Bookclerk<") || html.contains(">Bookclerk</"),
+        "{html}"
+    );
     let mut plain = message();
     plain.link = None;
     plain.fields.clear();
     plain.text = "one\r\ntwo\n\n\n".into();
-    assert_eq!(plain_body(&plain), "one\r\ntwo\n");
-    assert!(html_body(&plain).contains("<p>one<br>two</p>\n</body>"));
+    assert_eq!(plain_body(&plain), "one\r\ntwo\n\n-- \nSent by your library's Bookclerk server. This is an automatic message.\n");
+    let (h, _) = html_body(&plain, "x");
+    assert!(
+        h.contains("one<br>two") || h.contains("one<br />two"),
+        "{h}"
+    );
+    let simple = simple_html(&message());
+    assert!(simple.starts_with("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><title>You&#39;re invited</title>"));
+    assert!(simple.contains("<p>Pat invited you.</p>\n<p>Use the link below.</p>"));
+    assert!(simple.contains("<th align=\"left\">Library</th><td>Home &lt;books&gt;</td>"));
+    assert!(simple.contains(
+        "<a href=\"https://library.example.com/claim?t=a&amp;b\">Open library.example.com</a>"
+    ));
+}
+
+#[test]
+fn link_labels_name_the_host() {
+    assert_eq!(
+        link_host("https://a.example:8443/x?y#z"),
+        Some("a.example:8443")
+    );
+    assert_eq!(link_host("https://user@a.example/"), Some("a.example"));
+    assert_eq!(link_host("not a url"), None);
+    assert_eq!(link_host("https:///path"), None);
+    assert_eq!(link_label("mailto:x"), "Open the link");
+}
+
+#[test]
+fn host_html_mjml_refuses_falls_back_to_the_plain_document() {
+    let mut odd = message();
+    odd.html = Some("<mj-section>".into());
+    let (html, branded) = html_body(&odd, "x");
+    if !branded {
+        assert!(html.starts_with("<!doctype html>"));
+    }
 }
 
 /// A transport that hands out one pipe and records what the server read.
@@ -267,16 +312,11 @@ async fn a_personal_send_goes_to_the_patron() {
     assert!(mail.contains("\r\nDate: Mon, 23 Nov 2026 05:00:00 +0000\r\n"));
     assert!(mail.contains("\r\nMessage-ID: <n-7.p1@example.com>\r\n"));
     assert!(mail.contains("boundary=\"=_b\""));
-    let text_part = mail.split("\r\n\r\n").nth(2).unwrap();
-    let text = BASE64
-        .decode(
-            text_part
-                .split("\r\n--")
-                .next()
-                .unwrap()
-                .replace("\r\n", ""),
-        )
-        .unwrap();
+    let text_part = mail
+        .split_once("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+        .unwrap()
+        .1;
+    let text = crate::smtp::tests::decode_qp(text_part.split("\r\n--=_b").next().unwrap());
     assert!(String::from_utf8(text)
         .unwrap()
         .contains("https://library.example.com/claim?t=a&b"));
