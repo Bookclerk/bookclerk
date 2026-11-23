@@ -250,7 +250,7 @@ jobs:
       # changed, or main's copy was evicted), into its own scope.
       - name: Save the pinned upstream files
         if: steps.upstream-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target/model-packs/work/${{ matrix.model }}
           key: ${{ steps.upstream-cache.outputs.cache-primary-key }}
@@ -283,7 +283,7 @@ jobs:
         if: >-
           github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
           && steps.pack.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             target/model-packs/out/${{ matrix.model }}/
