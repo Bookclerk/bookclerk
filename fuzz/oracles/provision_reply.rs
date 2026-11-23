@@ -54,6 +54,8 @@ fn outputs() -> ProvisionOutputs {
 }
 
 /// Checks one input; panics when an invariant fails.
+// Oracle: a failed expectation is the invariant failing.
+#[allow(clippy::expect_used)]
 pub fn check(data: &[u8]) {
     let Some((&selector, rest)) = data.split_first() else {
         return;
@@ -121,6 +123,8 @@ fn control(text: &str) -> bool {
 }
 
 /// Checks the host's verdict on one answer.
+// Oracle: a failed expectation is the invariant failing.
+#[allow(clippy::expect_used)]
 fn check_answer(provisioned: &Provisioned, grant: Option<&str>) {
     let outputs = outputs();
     let first = check_provisioned(provisioned, &outputs, grant);

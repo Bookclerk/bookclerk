@@ -2726,6 +2726,8 @@ fn fuzz_corpus_provision_reply_holds_the_oracle() {
 
 /// The host's verdict on one wire-form `provision_reply` seed: `Some(true)`
 /// accepted, `Some(false)` refused by the checker, `None` a plugin error.
+// Test helper: a missing or unreadable seed is a failed test.
+#[allow(clippy::expect_used)]
 fn provision_seed_verdict(name: &str) -> Option<bool> {
     use bookclerk_plugin_abi::provision::{
         check_provisioned, decode_provision_reply_bytes, ProvisionOutputs,
