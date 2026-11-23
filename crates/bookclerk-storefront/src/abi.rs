@@ -238,6 +238,7 @@ impl From<CatalogHit> for abi::CatalogHit {
             parent_product_id: hit.parent_product_id,
             rank_hint: hit.rank_hint.filter(|rank| *rank > 0),
             explicitness: explicitness_from_flag(hit.is_explicit),
+            sample_url: hit.sample_url,
         }
     }
 }
@@ -272,6 +273,7 @@ impl From<abi::CatalogHit> for CatalogHit {
             series_entries: cleaned_series(hit.series_entries),
             parent_product_id: hit.parent_product_id,
             rank_hint: hit.rank_hint.filter(|rank| *rank > 0),
+            sample_url: hit.sample_url,
         }
     }
 }
@@ -987,9 +989,11 @@ mod tests {
             series_entries: records::series_entries(Some("S"), Some("1")),
             media_kind: MediaKind::Ebook,
             parent_product_id: Some("show".into()),
+            sample_url: Some("https://samples.example/p.mp3".into()),
             ..CatalogHit::default()
         };
         let back = CatalogHit::from(abi::CatalogHit::from(hit.clone()));
+        assert_eq!(back.sample_url, hit.sample_url);
         assert_eq!(back.authors().as_deref(), Some("A"));
         assert_eq!(back.narrators(), None);
         assert_eq!(back.isbn().as_deref(), Some("978"));

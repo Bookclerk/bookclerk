@@ -1939,7 +1939,7 @@
       "name": "CatalogHit",
       "file": "plugin.capnp",
       "dataWords": 6,
-      "pointerCount": 17,
+      "pointerCount": 18,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -2202,6 +2202,15 @@
             "name": "Explicitness"
           },
           "offset": 22
+        },
+        {
+          "name": "sampleUrl",
+          "codeOrder": 27,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 17
         }
       ]
     },
@@ -3570,6 +3579,16 @@
             }
           },
           "offset": 1
+        },
+        {
+          "name": "media",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "RemoteMedia"
+          },
+          "offset": 2
         }
       ]
     },
@@ -18157,6 +18176,14 @@
         "isbn",
         "asin",
         "title"
+      ]
+    },
+    "RemoteMedia": {
+      "name": "RemoteMedia",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "image",
+        "audio"
       ]
     },
     "ResolvedSqlType": {

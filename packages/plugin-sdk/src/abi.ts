@@ -529,6 +529,16 @@ export const OFFERED_AAC_PROFILES = ["unknown", "lc", "he", "heV2", "xhe"] as co
 export type OfferedAacProfile = (typeof OFFERED_AAC_PROFILES)[number];
 
 /**
+ * The kind of public media `CoverFetcher.fetchCovers` downloads.
+ *
+ * Ordinal-ordered `RemoteMedia` wire names (index = Cap'n Proto ordinal).
+ */
+export const REMOTE_MEDIAS = ["image", "audio"] as const;
+
+/** Union of `REMOTE_MEDIAS` wire names. */
+export type RemoteMedia = (typeof REMOTE_MEDIAS)[number];
+
+/**
  * A field of a `MetadataFileRecord`. Dialects declare in the manifest which
  * fields their format carries; a parsed record lists the ones its file
  * states, and a render request lists the ones to write.

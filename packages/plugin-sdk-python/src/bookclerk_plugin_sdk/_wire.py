@@ -3430,6 +3430,8 @@ def _write_catalog_hit(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("rankHint") is not None:
         s.set_u32(10, v["rankHint"])
     s.set_u16(22, _ord(A.EXPLICITNESSS, v["explicitness"], "Explicitness"))
+    if v.get("sampleUrl") is not None:
+        s.set_text(17, v["sampleUrl"])
 
 
 def _read_catalog_hit(s: _StructReader, caps: _CapTable) -> Any:
@@ -3494,22 +3496,25 @@ def _read_catalog_hit(s: _StructReader, caps: _CapTable) -> Any:
     rank_hint = s.get_u32(10)
     if not (rank_hint == 0):
         out["rankHint"] = rank_hint
+    sample_url = s.get_text(17)
+    if not (sample_url == ""):
+        out["sampleUrl"] = sample_url
     return out
 
 
-_catalog_hit_codec = _Codec(6, 17, _write_catalog_hit, _read_catalog_hit)
-"""Wire codec for ``CatalogHit`` (6 data words, 17 pointers)."""
+_catalog_hit_codec = _Codec(6, 18, _write_catalog_hit, _read_catalog_hit)
+"""Wire codec for ``CatalogHit`` (6 data words, 18 pointers)."""
 
 
 def _write_catalog_hits(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    items = s.init_struct_list(0, len(v["hits"]), 6, 17)
+    items = s.init_struct_list(0, len(v["hits"]), 6, 18)
     for item, elem in zip(items, v["hits"], strict=True):
         _catalog_hit_codec.write(item, elem, caps)
 
 
 def _read_catalog_hits(s: _StructReader, caps: _CapTable) -> Any:
     return {
-        "hits": [_catalog_hit_codec.read(item, caps) for item in s.get_struct_list(0, 6, 17)],
+        "hits": [_catalog_hit_codec.read(item, caps) for item in s.get_struct_list(0, 6, 18)],
     }
 
 
@@ -3545,13 +3550,13 @@ _catalog_hits_reply_codec = _Codec(1, 1, _write_catalog_hits_reply, _read_catalo
 def _write_catalog_detail(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_bool(0, v["found"])
     if v.get("hit") is not None:
-        _catalog_hit_codec.write(s.init_struct(0, 6, 17), v["hit"], caps)
+        _catalog_hit_codec.write(s.init_struct(0, 6, 18), v["hit"], caps)
 
 
 def _read_catalog_detail(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "found": s.get_bool(0),
-        "hit": _catalog_hit_codec.read(s.get_struct(0, 6, 17), caps),
+        "hit": _catalog_hit_codec.read(s.get_struct(0, 6, 18), caps),
     }
 
 
@@ -3667,14 +3672,14 @@ _purchase_hint_result_codec = _Codec(1, 2, _write_purchase_hint_result, _read_pu
 
 def _write_priced_record(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("record") is not None:
-        _catalog_hit_codec.write(s.init_struct(0, 6, 17), v["record"], caps)
+        _catalog_hit_codec.write(s.init_struct(0, 6, 18), v["record"], caps)
     if v.get("hint") is not None:
         _purchase_hint_codec.write(s.init_struct(1, 3, 7), v["hint"], caps)
 
 
 def _read_priced_record(s: _StructReader, caps: _CapTable) -> Any:
     return {
-        "record": _catalog_hit_codec.read(s.get_struct(0, 6, 17), caps),
+        "record": _catalog_hit_codec.read(s.get_struct(0, 6, 18), caps),
         "hint": _purchase_hint_codec.read(s.get_struct(1, 3, 7), caps),
     }
 
@@ -4936,6 +4941,7 @@ def _write_cover_fetch_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     items = s.init_struct_list(1, len(v["conditions"]), 0, 2)
     for item, elem in zip(items, v["conditions"], strict=True):
         _cover_condition_codec.write(item, elem, caps)
+    s.set_u16(2, _ord(A.REMOTE_MEDIAS, v["media"], "RemoteMedia"))
 
 
 def _read_cover_fetch_params(s: _StructReader, caps: _CapTable) -> Any:
@@ -4943,6 +4949,7 @@ def _read_cover_fetch_params(s: _StructReader, caps: _CapTable) -> Any:
         "urls": s.get_text_list(0),
         "maxBytes": s.get_u32(0),
         "conditions": [_cover_condition_codec.read(item, caps) for item in s.get_struct_list(1, 0, 2)],
+        "media": _from_ord(A.REMOTE_MEDIAS, s.get_u16(2), "RemoteMedia"),
     }
 
 

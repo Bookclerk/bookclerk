@@ -36,6 +36,7 @@ import type {
   Explicitness,
   OfferedCodec,
   OfferedAacProfile,
+  RemoteMedia,
   MetadataField,
   NotificationSeverity,
   NotificationAudience,
@@ -74,6 +75,7 @@ export type {
   Explicitness,
   OfferedCodec,
   OfferedAacProfile,
+  RemoteMedia,
   MetadataField,
   NotificationSeverity,
   NotificationAudience,
@@ -3181,6 +3183,16 @@ export interface CatalogHit {
   rankHint?: number;
   /** Whether the storefront marks the edition explicit (adult) content. */
   explicitness: Explicitness;
+  /**
+   * Absolute `https://` URL of a short audio sample of this edition that
+   * the storefront offers publicly (a few minutes, in any format the media
+   * worker decodes). The host never hands it to a client: a book's details
+   * play it through a same-origin path, fetched by a `covers` plugin with
+   * `media = audio` and re-encoded in the media worker. Empty when the store
+   * has none.
+   * Omitted when absent (wire zero value).
+   */
+  sampleUrl?: string;
 }
 
 /** Success payload of the catalog list methods. */
@@ -3972,6 +3984,13 @@ export interface CoverFetchParams {
    * remaining URLs are fetched unconditionally.
    */
   conditions: CoverCondition[];
+  /**
+   * What the URLs name: cover art (the default) or a storefront's audio
+   * sample (`CatalogHit.sampleUrl`). A fetcher sends a matching `Accept`
+   * header and refuses a body whose `Content-Type` names something else;
+   * the host checks and re-encodes either kind regardless.
+   */
+  media: RemoteMedia;
 }
 
 /**

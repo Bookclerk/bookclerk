@@ -20,6 +20,7 @@ import {
   fetchCovers,
   fetchOne,
   headerValueOk,
+  maybeAudio,
   maybeImage,
   passHeaders,
   type CoverSink,
@@ -95,9 +96,14 @@ test("the plugin version matches plugin.toml", () => {
 test("checkParams accepts the ABI bounds only", () => {
   assert.deepEqual(checkParams({ urls: ["https://a.example/"], maxBytes: 1 }), {
     urls: ["https://a.example/"],
+    media: "image",
     maxBytes: 1,
     conditions: [],
   });
+  assert.equal(
+    checkParams({ urls: ["https://a.example/"], maxBytes: 1, media: "audio" }).media,
+    "audio",
+  );
   const full = Array.from({ length: MAX_URLS }, (_, i) => `https://a.example/${i}`);
   assert.equal(checkParams({ urls: full, maxBytes: MAX_BYTES }).urls.length, MAX_URLS);
   for (const bad of [
@@ -113,6 +119,8 @@ test("checkParams accepts the ABI bounds only", () => {
     { urls: ["https://a.example/"], maxBytes: 1.5 },
     { urls: ["https://a.example/"], maxBytes: "1" },
     { urls: ["https://a.example/"], maxBytes: 1, conditions: "x" },
+    { urls: ["https://a.example/"], maxBytes: 1, media: "video" },
+    { urls: ["https://a.example/"], maxBytes: 1, media: 1 },
     { urls: ["https://a.example/"], maxBytes: 1, conditions: [{}, {}] },
     { urls: ["https://a.example/"], maxBytes: 1, conditions: [{ ifNoneMatch: 1 }] },
     { urls: ["https://a.example/"], maxBytes: 1, conditions: [{ ifNoneMatch: '"a"\r\nx: y' }] },
@@ -181,6 +189,61 @@ test("maybeImage refuses text-like types", () => {
   for (const bad of ["text/html", "application/json", "text/plain; charset=utf-8", "image"]) {
     assert.equal(maybeImage(bad), false, bad);
   }
+});
+
+test("maybeAudio refuses text-like and image types", () => {
+  for (const ok of [
+    null,
+    "",
+    "audio/mpeg",
+    "AUDIO/MP4; codecs=mp4a.40.2",
+    "video/mp4",
+    "application/ogg",
+    "application/octet-stream",
+    "binary/octet-stream",
+  ]) {
+    assert.equal(maybeAudio(ok), true, String(ok));
+  }
+  for (const bad of ["text/html", "application/json", "image/jpeg", "audio"]) {
+    assert.equal(maybeAudio(bad), false, bad);
+  }
+});
+
+test("fetchCovers asks for audio and refuses an image when media is audio", async () => {
+  const { options, seen } = scripted((url) =>
+    url.endsWith(".mp3")
+      ? new Response(new Uint8Array([0xff, 0xfb]), { headers: { "content-type": "audio/mpeg" } })
+      : image(new Uint8Array([0xff, 0xd8])),
+  );
+  const { sink, stored } = recordingSink();
+  const answers = await fetchCovers(
+    options,
+    {
+      urls: ["https://samples.example/a.mp3", "https://samples.example/b.jpg"],
+      maxBytes: 64,
+      media: "audio",
+    },
+    sink,
+  );
+  assert.deepEqual(answers, [
+    {
+      url: "https://samples.example/a.mp3",
+      stored: true,
+      notModified: false,
+      contentType: "audio/mpeg",
+    },
+    {
+      url: "https://samples.example/b.jpg",
+      stored: false,
+      notModified: false,
+      error: "not audio (image/jpeg)",
+    },
+  ]);
+  assert.deepEqual(
+    stored.map((s) => s.key),
+    ["0"],
+  );
+  assert.equal(new Headers(seen[0]?.init.headers).get("accept"), "audio/*");
 });
 
 test("capped passes small bodies and fails large ones", async () => {

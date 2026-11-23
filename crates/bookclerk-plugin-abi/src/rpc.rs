@@ -9393,6 +9393,7 @@ mod tests {
                             urls: urls.clone(),
                             max_bytes: 1024,
                             conditions: Vec::new(),
+                            media: crate::RemoteMedia::Image,
                         },
                         Box::new(DestClone(Arc::clone(&sink))),
                     )
@@ -9482,6 +9483,7 @@ mod tests {
                 .collect(),
             max_bytes: 1024,
             conditions: Vec::new(),
+            media: crate::RemoteMedia::Image,
         };
 
         let wrong = client(Arc::new(Wrong));

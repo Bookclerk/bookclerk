@@ -355,6 +355,7 @@ fn structured_cover_fetch_params() -> bookclerk_plugin_abi::CoverFetchParams {
             if_none_match: Some("\"5f2b\"".into()),
             if_modified_since: Some("Wed, 21 Oct 2026 07:28:00 GMT".into()),
         }],
+        media: bookclerk_plugin_abi::RemoteMedia::Image,
     }
 }
 

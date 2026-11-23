@@ -542,6 +542,23 @@ pub fn check_title_meta_query(
     Ok(())
 }
 
+/// The ISBN the store fill looks a title up by: its ISBN, or an ASIN
+/// shaped like one (Audible lists some print-matched titles that way).
+fn fill_isbn(query: &TitleMetaQuery) -> Option<&str> {
+    query
+        .isbn
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            query
+                .asin
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| isbn_like(s))
+        })
+}
+
 /// Plans the catalog-detail lookups that can fill `query`, in the order to
 /// try them.
 ///
@@ -587,19 +604,7 @@ pub fn plan_title_meta_fill<S>(
             break;
         }
     }
-    let isbn = query
-        .isbn
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            query
-                .asin
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| isbn_like(s))
-        });
-    if let Some(isbn) = isbn {
+    if let Some(isbn) = fill_isbn(query) {
         for store in isbn_stores {
             if plan.len() >= STORE_FILL_MAX_LOOKUPS {
                 break;
@@ -691,6 +696,155 @@ async fn fill_in_order(
         }
     }
     None
+}
+
+/// Process-wide TTL cache of title-sample answers (6 hours, 512 entries):
+/// the sample URL a store gave, or `None` when none had one.
+fn title_sample_cache() -> &'static TtlCache<Option<String>> {
+    static CACHE: OnceLock<TtlCache<Option<String>>> = OnceLock::new();
+    CACHE.get_or_init(|| TtlCache::new(Duration::from_secs(6 * 60 * 60), 512))
+}
+
+/// Longest a title-sample lookup spends on storefront calls. Longer than
+/// [`STORE_FILL_TIMEOUT`]: a person pressed play and waits for this one
+/// answer, and a store may try several marketplaces for a product id.
+const SAMPLE_LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The public audio sample a storefront offers for a title, for the
+/// "Play sample" control of a title's details.
+///
+/// Asks the same stores, in the same order, as the title-meta store fill
+/// ([`plan_title_meta_fill`]): the listing stores that declared
+/// `detailByProductId` by their own product ids, then the stores that
+/// declared `detailByIsbn` by the title's ISBN. The first catalog record
+/// with a `sample_url` wins; a store that fails is skipped, and the calls
+/// together stop after ten seconds. A URL is cached for six hours only when
+/// it is the first store's answer in that order, and is checked against
+/// `usable` again on every hit; a miss is cached only when every store
+/// answered and none offered a sample at all. A timeout, a failed store or
+/// a URL `usable` refused leaves nothing cached (a later store's URL is
+/// still returned), so callers with different rules never see each
+/// other's choice.
+///
+/// # Arguments
+///
+/// * `query` - The title, as the details dialog sends title-meta.
+/// * `sources` - Loaded storefronts.
+/// * `usable` - Whether the caller can serve a sample URL (for the
+///   daemon, one it can sign into a path); a record whose URL is not
+///   usable is passed over for the next store's.
+///
+/// # Returns
+///
+/// The sample's URL as the store gave it; the caller signs it into a
+/// same-origin path and never hands it to a client. `None` when no store
+/// offered a usable one.
+pub async fn resolve_title_sample(
+    query: &TitleMetaQuery,
+    sources: &SourceRegistry,
+    usable: fn(&str) -> bool,
+) -> Option<String> {
+    let editions: Vec<String> = query
+        .store_editions
+        .iter()
+        .map(|ed| format!("{}:{}", ed.source.trim(), ed.product_id.trim()))
+        .collect();
+    let editions = editions.join(",");
+    let key = cache_key(&[
+        "title-sample-v2",
+        fill_isbn(query).unwrap_or(""),
+        editions.as_str(),
+    ]);
+    match title_sample_cache().get(&key) {
+        Some(Some(url)) if usable(url.trim()) => return Some(url),
+        Some(None) => return None,
+        // Not cached, or cached for a caller that accepted a URL this one
+        // does not: ask the stores.
+        Some(Some(_)) | None => {}
+    }
+    let plan = store_fill_plan(query, sources);
+    let outcome = tokio::time::timeout(SAMPLE_LOOKUP_TIMEOUT, sample_in_order(plan, usable))
+        .await
+        .unwrap_or_else(|_| {
+            tracing::debug!(title = %query.title, "title-sample lookup timed out");
+            SampleOutcome::Unsettled
+        });
+    match outcome {
+        SampleOutcome::Found(url) => {
+            title_sample_cache().insert(key, Some(url.clone()));
+            Some(url)
+        }
+        SampleOutcome::NoneOffered => {
+            title_sample_cache().insert(key, None);
+            None
+        }
+        // A later store's sample, after a failed store or one whose URL
+        // this caller refused: served, but not cached, so the cache only
+        // ever holds the first store's answer and every caller judges it
+        // with its own rule.
+        SampleOutcome::FoundLater(url) => Some(url),
+        SampleOutcome::Unsettled => None,
+    }
+}
+
+/// What a run of the fill plan learned about a title's sample.
+#[derive(Debug, PartialEq, Eq)]
+enum SampleOutcome {
+    /// The first store's sample URL, every store before it having answered
+    /// with no sample; cacheable for every caller.
+    Found(String),
+    /// A usable sample URL found after a store failed or offered a URL the
+    /// caller refused; served to this caller but not cached.
+    FoundLater(String),
+    /// Every store answered and no record carried a sample URL.
+    NoneOffered,
+    /// No usable URL, but a store failed, the lookup timed out, or a record
+    /// carried a URL the caller could not use; another try (or another
+    /// caller) may find one, so this is not cached.
+    Unsettled,
+}
+
+/// Runs a fill plan in order and returns the first `usable` sample URL a
+/// record carries.
+async fn sample_in_order(
+    plan: Vec<(Arc<dyn ContentSource>, FillLookup)>,
+    usable: fn(&str) -> bool,
+) -> SampleOutcome {
+    let mut settled = true;
+    for (store, lookup) in plan {
+        let result = match &lookup {
+            FillLookup::Product(product_id) => store.catalog_detail(product_id).await,
+            FillLookup::Isbn(isbn) => store.catalog_detail_by_isbn(isbn).await,
+        };
+        match result {
+            Ok(Some(hit)) => match hit.sample_url {
+                Some(url) if usable(url.trim()) => {
+                    return if settled {
+                        SampleOutcome::Found(url)
+                    } else {
+                        SampleOutcome::FoundLater(url)
+                    };
+                }
+                Some(_) => settled = false,
+                None => {}
+            },
+            Ok(None) => {}
+            Err(err) => {
+                settled = false;
+                tracing::debug!(
+                    source = %store.id(),
+                    lookup = lookup.kind(),
+                    error = %err,
+                    "title-sample catalog_detail failed"
+                );
+            }
+        }
+    }
+    if settled {
+        SampleOutcome::NoneOffered
+    } else {
+        SampleOutcome::Unsettled
+    }
 }
 
 /// Resolve public metadata for a title detail dialog.
@@ -1168,6 +1322,207 @@ mod tests {
                 .is_none()
         );
         assert_eq!(isbn_calls.lock().unwrap().len(), 1);
+    }
+
+    /// The first record in fill order that carries a sample wins: a
+    /// listing store's record without one falls through to the ISBN store,
+    /// and the answer is cached so a second press asks no store again.
+    #[tokio::test]
+    async fn the_title_sample_comes_from_the_first_record_with_one() {
+        let (listing, listing_calls) = store("graphicaudio", false, true, "From GA.");
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let with_sample: Arc<dyn ContentSource> = Arc::new(DetailStore {
+            id: "libro",
+            by_isbn: true,
+            by_product_id: false,
+            answer: Some(CatalogHit {
+                product_id: "libro-1".into(),
+                title: "Mistborn".into(),
+                sample_url: Some("https://samples.example/mistborn.mp3".into()),
+                ..CatalogHit::default()
+            }),
+            fails: false,
+            calls: calls.clone(),
+            listed: Vec::new(),
+        });
+        let mut registry = SourceRegistry::new();
+        registry.register(listing);
+        registry.register(with_sample);
+
+        let query = query(&[("graphicaudio", "sample-1")], Some("9780000005551"));
+        let found = resolve_title_sample(&query, &registry, https).await;
+        assert_eq!(
+            found.as_deref(),
+            Some("https://samples.example/mistborn.mp3")
+        );
+        assert_eq!(*listing_calls.lock().unwrap(), vec!["product:sample-1"]);
+        assert_eq!(*calls.lock().unwrap(), vec!["isbn:9780000005551"]);
+
+        assert_eq!(
+            resolve_title_sample(&query, &registry, https)
+                .await
+                .as_deref(),
+            Some("https://samples.example/mistborn.mp3")
+        );
+        assert_eq!(calls.lock().unwrap().len(), 1, "answered from the cache");
+
+        // No store with a sample: none.
+        let (only_listing, _) = store("graphicaudio", false, true, "From GA.");
+        let mut bare = SourceRegistry::new();
+        bare.register(only_listing);
+        let miss = query_for_miss();
+        assert!(resolve_title_sample(&miss, &bare, https).await.is_none());
+    }
+
+    /// A record whose sample the caller cannot serve is passed over for
+    /// the next store's.
+    #[tokio::test]
+    async fn an_unusable_sample_url_falls_through() {
+        let detail = |id: &'static str, url: &str| -> Arc<dyn ContentSource> {
+            Arc::new(DetailStore {
+                id,
+                by_isbn: true,
+                by_product_id: false,
+                answer: Some(CatalogHit {
+                    product_id: format!("{id}-1"),
+                    title: "Elantris".into(),
+                    sample_url: Some(url.into()),
+                    ..CatalogHit::default()
+                }),
+                fails: false,
+                calls: Arc::new(std::sync::Mutex::new(Vec::new())),
+                listed: Vec::new(),
+            })
+        };
+        let mut registry = SourceRegistry::new();
+        registry.register(detail("chirp", "http://samples.example/plain.mp3"));
+        registry.register(detail("libro", "https://samples.example/elantris.mp3"));
+        // The ISBN comes from an ISBN-shaped ASIN, as the fill reads it.
+        let mut query = query(&[], None);
+        query.asin = Some("9780000005568".into());
+        let found = resolve_title_sample(&query, &registry, https).await;
+        assert_eq!(
+            found.as_deref(),
+            Some("https://samples.example/elantris.mp3")
+        );
+    }
+
+    /// A sample found past a URL one caller refused is not cached, so a
+    /// caller that accepts the first store's URL still gets that one.
+    #[tokio::test]
+    async fn a_sample_found_past_a_refused_url_is_not_cached() {
+        fn not_chirp(url: &str) -> bool {
+            !url.contains("chirp")
+        }
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let store = |id: &'static str, url: &str| -> Arc<dyn ContentSource> {
+            Arc::new(DetailStore {
+                id,
+                by_isbn: true,
+                by_product_id: false,
+                answer: Some(CatalogHit {
+                    product_id: format!("{id}-1"),
+                    title: "Mistborn".into(),
+                    sample_url: Some(url.into()),
+                    ..CatalogHit::default()
+                }),
+                fails: false,
+                calls: calls.clone(),
+                listed: Vec::new(),
+            })
+        };
+        let mut registry = SourceRegistry::new();
+        registry.register(store("chirp", "https://samples.example/chirp.mp3"));
+        registry.register(store("libro", "https://samples.example/libro.mp3"));
+        let asked = query(&[], Some("9780000005599"));
+        assert_eq!(
+            resolve_title_sample(&asked, &registry, not_chirp)
+                .await
+                .as_deref(),
+            Some("https://samples.example/libro.mp3")
+        );
+        assert_eq!(
+            resolve_title_sample(&asked, &registry, https)
+                .await
+                .as_deref(),
+            Some("https://samples.example/chirp.mp3"),
+            "the first store's sample, not the other caller's choice"
+        );
+    }
+
+    /// A cached URL is checked against each caller's rule, and a failed
+    /// store is asked again next time rather than cached as a miss.
+    #[tokio::test]
+    async fn the_sample_cache_keeps_each_callers_rule_and_retries_failures() {
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut registry = SourceRegistry::new();
+        registry.register(Arc::new(DetailStore {
+            id: "libro",
+            by_isbn: true,
+            by_product_id: false,
+            answer: Some(CatalogHit {
+                product_id: "libro-2".into(),
+                title: "Warbreaker".into(),
+                sample_url: Some("https://samples.example/warbreaker.mp3".into()),
+                ..CatalogHit::default()
+            }),
+            fails: false,
+            calls: calls.clone(),
+            listed: Vec::new(),
+        }));
+        let asked = query(&[], Some("9780000005575"));
+        assert!(resolve_title_sample(&asked, &registry, https)
+            .await
+            .is_some());
+        // A caller that refuses the cached URL is not handed it; the store
+        // is asked again and its refused answer is not cached as a miss.
+        assert!(resolve_title_sample(&asked, &registry, never)
+            .await
+            .is_none());
+        assert_eq!(calls.lock().unwrap().len(), 2);
+        assert!(resolve_title_sample(&asked, &registry, https)
+            .await
+            .is_some());
+        assert_eq!(
+            calls.lock().unwrap().len(),
+            2,
+            "the found URL stayed cached"
+        );
+
+        let failed_calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut failing = SourceRegistry::new();
+        failing.register(Arc::new(DetailStore {
+            id: "libro",
+            by_isbn: true,
+            by_product_id: false,
+            answer: None,
+            fails: true,
+            calls: failed_calls.clone(),
+            listed: Vec::new(),
+        }));
+        let down = query(&[], Some("9780000005582"));
+        assert!(resolve_title_sample(&down, &failing, https).await.is_none());
+        assert!(resolve_title_sample(&down, &failing, https).await.is_none());
+        assert_eq!(
+            failed_calls.lock().unwrap().len(),
+            2,
+            "a failure is not cached"
+        );
+    }
+
+    /// A rule that accepts no sample URL.
+    fn never(_url: &str) -> bool {
+        false
+    }
+
+    /// The test callers' rule for a usable sample URL: `https` only.
+    fn https(url: &str) -> bool {
+        url.starts_with("https://")
+    }
+
+    /// A query no store offers a sample for.
+    fn query_for_miss() -> TitleMetaQuery {
+        query(&[("graphicaudio", "sample-miss")], None)
     }
 
     /// Many editions, repeats and unknown stores still make at most

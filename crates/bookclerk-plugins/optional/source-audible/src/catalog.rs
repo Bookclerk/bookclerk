@@ -722,6 +722,69 @@ async fn purchase_answers_within(
     price_found(found, opts).await
 }
 
+/// Marketplaces a detail lookup by ASIN tries, in order, until one knows
+/// the product: a product id carries no marketplace.
+const DETAIL_REGIONS: [&str; 11] = [
+    "us", "uk", "ca", "au", "de", "fr", "it", "es", "in", "jp", "br",
+];
+
+/// Longest a detail lookup spends trying marketplaces.
+const DETAIL_BUDGET: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// The public catalog record for one ASIN (`catalogDetail` by product id):
+/// its bibliographic fields, cover and audio sample.
+///
+/// # Arguments
+///
+/// * `product_id` - The ASIN.
+///
+/// # Returns
+///
+/// `None` when `product_id` is not an ASIN, or every marketplace answered
+/// within eight seconds and none lists it.
+///
+/// # Errors
+///
+/// Returns an error when no HTTP client can be built, or when no
+/// marketplace listed the product and one of them failed or the eight
+/// seconds ran out first, so the product's absence is not settled.
+pub async fn catalog_detail(product_id: &str) -> bookclerk_storefront::Result<Option<CatalogHit>> {
+    let asin = product_id.trim().to_ascii_uppercase();
+    if !is_valid_asin(&asin) {
+        return Ok(None);
+    }
+    let http = public_http_client().map_err(|err| SourceError::Api(err.to_string()))?;
+    let deadline = tokio::time::Instant::now() + DETAIL_BUDGET;
+    let asins = [asin.as_str()];
+    // A marketplace that fails or runs out of time leaves the answer open:
+    // the lookup then errs instead of reporting the product absent, so
+    // nobody caches a failure as "not listed".
+    let mut failed = None;
+    for region in DETAIL_REGIONS {
+        let origin = catalog_origin(region);
+        let lookup = fetch_products_by_asins(&http, &origin, &asins);
+        let Ok(found) = tokio::time::timeout_at(deadline, lookup).await else {
+            failed = Some(format!("catalog detail ran out of time before {region}"));
+            break;
+        };
+        match found {
+            Ok(products) => {
+                if let Some(product) = products
+                    .into_iter()
+                    .find(|p| p.asin.eq_ignore_ascii_case(&asin))
+                {
+                    return Ok(Some(product_to_hit(product, "detail".to_owned())));
+                }
+            }
+            Err(err) => failed = Some(format!("catalog detail in {region}: {err}")),
+        }
+    }
+    match failed {
+        Some(reason) => Err(SourceError::Api(reason)),
+        None => Ok(None),
+    }
+}
+
 /// Maps an Audible catalog product to a [`CatalogHit`] (the ASIN is both `product_id` and an identifier).
 ///
 /// The catalog product carries display strings, so names are split with
@@ -771,6 +834,7 @@ fn product_to_hit(p: CatalogProduct, origin: String) -> CatalogHit {
         rating_overall: p.rating_overall,
         rating_count: p.rating_count,
         is_explicit: p.is_explicit,
+        sample_url: p.sample_url,
         work_kind: bookclerk_storefront::records::WorkKind::Book,
         expression_kind: bookclerk_storefront::records::ExpressionKind::Narration,
         media_kind: bookclerk_storefront::records::MediaKind::Audio,
@@ -880,6 +944,7 @@ fn region_host_suffix(region: &str) -> &'static str {
         "it" => ".it",
         "in" => ".in",
         "es" => ".es",
+        "br" => ".com.br",
         _ => ".com",
     }
 }
@@ -1111,6 +1176,7 @@ mod tests {
             rating_overall: None,
             rating_count: None,
             is_explicit: None,
+            sample_url: None,
         }
     }
 

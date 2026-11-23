@@ -280,6 +280,7 @@ impl CoverBackend for LiveBackend {
             urls: requests.into_iter().map(|request| request.url).collect(),
             max_bytes,
             conditions,
+            media: bookclerk_plugin_abi::RemoteMedia::Image,
         };
         let fetched = fetcher
             .fetch_covers(params)
@@ -1468,12 +1469,12 @@ fn below_floor(disk: DiskSpace, dir: &Path) -> bool {
 }
 
 /// A fresh token key from the thread-local CSPRNG (ChaCha seeded from the OS).
-fn random_key() -> TokenKey {
+pub(crate) fn random_key() -> TokenKey {
     TokenKey::from_bytes(rand::random())
 }
 
 /// Reads the token key, or creates it (owner-only on Unix).
-fn load_or_create_key(path: &Path) -> std::io::Result<TokenKey> {
+pub(crate) fn load_or_create_key(path: &Path) -> std::io::Result<TokenKey> {
     match std::fs::read(path) {
         Ok(bytes) => {
             if let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice()) {
