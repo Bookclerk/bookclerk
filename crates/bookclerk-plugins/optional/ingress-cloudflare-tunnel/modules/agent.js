@@ -171,10 +171,6 @@ export class Session {
     constructor(options) {
         this.options = options;
     }
-    /** Streams with state, for tests. */
-    get streamCount() {
-        return this.#streams.size;
-    }
     /**
      * Queues frames for the next write.
      *

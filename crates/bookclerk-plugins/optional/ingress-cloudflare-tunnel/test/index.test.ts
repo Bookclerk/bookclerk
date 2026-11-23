@@ -792,6 +792,46 @@ test("library sockets close with their session, and health sweeps orphans", asyn
   assert.equal(second.closedWith, 1001);
 });
 
+test("writes to the edge that fail", async () => {
+  // The first write fails: start reports the edge unavailable.
+  const broken = world();
+  const connect = broken.binding.connect.bind(broken.binding);
+  broken.binding.connect = async (url, options) => {
+    const ws = (await connect(url, options)) as FakeSocket;
+    ws.send = () => Promise.reject(new Error("broken pipe"));
+    return ws;
+  };
+  await assert.rejects(startAgent(ctxOf(broken)), /could not connect to the Cloudflare edge/);
+  assert.ok(broken.connects.length > 0);
+
+  // A ping that cannot be written reports the connection closed.
+  const w = world();
+  await startAgent(ctxOf(w));
+  const agent = w.open[0]!;
+  await handleMessage(w.env, agent, request(3, "/api/live", UPGRADE, false));
+  const live = w.open.find((ws) => ws.id.startsWith("live"))!;
+  const send = agent.send;
+  agent.send = () => Promise.reject(new Error("broken pipe"));
+  assert.deepEqual(await agentHealth(ctxOf(w)), {
+    serving: false,
+    detail: "the connection to the Cloudflare edge closed",
+  });
+  // A library message whose write to the edge fails closes the library socket.
+  await handleMessage(w.env, live, "news");
+  assert.equal(live.closedWith, 1001);
+  agent.send = send;
+
+  // A library message whose connector socket is gone from the host closes it too.
+  const x = world();
+  await startAgent(ctxOf(x));
+  const host = x.open[0]!;
+  await handleMessage(x.env, host, request(3, "/api/live", UPGRADE, false));
+  const other = x.open.find((ws) => ws.id.startsWith("live"))!;
+  x.open.splice(x.open.indexOf(host), 1);
+  await handleMessage(x.env, other, "news");
+  assert.equal(other.closedWith, 1001);
+});
+
 test("without ORIGIN, requests and upgrades are answered 502", async () => {
   const w = world();
   await startAgent(ctxOf(w));

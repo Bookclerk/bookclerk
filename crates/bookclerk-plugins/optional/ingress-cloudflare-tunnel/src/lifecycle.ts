@@ -121,12 +121,9 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function fromBase64(text: string): Uint8Array | null {
   const normal = text.replace(/-/g, "+").replace(/_/g, "/").replace(/=+$/, "");
   if (!/^[A-Za-z0-9+/]*$/.test(normal) || normal.length % 4 === 1) return null;
-  try {
-    const binary = atob(normal + "=".repeat((4 - (normal.length % 4)) % 4));
-    return Uint8Array.from(binary, (c) => c.charCodeAt(0));
-  } catch {
-    return null;
-  }
+  // The checks above leave only input `atob` accepts.
+  const binary = atob(normal + "=".repeat((4 - (normal.length % 4)) % 4));
+  return Uint8Array.from(binary, (c) => c.charCodeAt(0));
 }
 
 /**
