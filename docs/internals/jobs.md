@@ -206,7 +206,7 @@ stateDiagram-v2
 | `integration_scan` | `integration_scan:id={id}:force={0\|1}` | `network` | `run_integration_scan` |
 | `plugin_copy` | `plugin_copy:plugin={id}:from={key}:to={key}` | `network` | ABI `JobRunner` stream-copy (`run_plugin_copy`) |
 | `plugin_scheduled` | `plugin_scheduled:instance={id}:cron={schedule}` | `network` | `scheduled(controller)` on the instance (`run_plugin_scheduled`) |
-| `discover_candidates` | `discover_candidates:subject={key}` | `network` | `run_discover_candidates`, then admits the subject's `discover_feed` |
+| `discover_candidates` | `discover_candidates:subject={key}` (pinned: `…:instance={id}`) | `network` | `run_discover_candidates`: asks this node's stores, admits one pinned job per storefront instance deployed only elsewhere, then admits the subject's `discover_feed` |
 | `discover_feed` | `discover_feed:subject={key}` | `network` | `run_discover_feed` (no network; ranks stored candidates) |
 | `discover_embed` | `discover_embed:node={id}` | `network` | `run_discover_embed` on the node whose plugin serves the text embedding model (pinned by `payload.node_id`); embeds works whose vector is missing or stale, then admits every stored feed's `discover_feed` (see [Embedding the library](discovery.md#embedding-the-library)) |
 | `discover_request_queue` | `discover_request_queue` | `network` | `run_discover_request_queue` (no network; ranks the shared request queue) |

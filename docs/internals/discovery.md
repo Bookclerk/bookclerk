@@ -78,7 +78,16 @@ operator, a household user, or a portal identity) has a **subject key**
    `discover_candidates` rows are references to those listings plus what
    is personal to them: the seed that found the title, how the store found
    it and the starter genre.
-   `storefront_max_remote_calls` is split across the stores, so all stores
+   A storefront deployed only on other nodes is asked there: the subject's
+   job asks the stores this node runs, then queues one `discover_candidates`
+   job pinned to each other store's plugin instance, which routing sends to
+   a node that runs it. Each pinned job saves that store's rows and queues
+   the subject's ranking 5 s later, so several stores finishing together
+   fold into one ranking. Rows of a store no node deploys any more are
+   dropped when the subject's job runs, so a retired store's titles leave
+   the shelves.
+   `storefront_max_remote_calls` is split across all deployed stores, on
+   this node and the others, so all stores
    together never make more calls than it allows (deals count as one call,
    and a store whose share is zero is not asked). Only calls the store
    actually answers count: an answer read from the 24-hour store-call cache
@@ -241,7 +250,8 @@ announces it with `holding_added`. A catalog answer that fills or relinks a
 stored edition announces that change as a scan would.
 
 The `discover_candidates` and `discover_feed` jobs are deduplicated per
-subject, so a burst of triggers folds into
+subject (a pinned `discover_candidates` job per subject and plugin
+instance), so a burst of triggers folds into
 the job already waiting.
 
 `GET /api/discover/recommendations` reads the stored feed and returns at once,
