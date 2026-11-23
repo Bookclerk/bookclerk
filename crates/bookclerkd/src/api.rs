@@ -80,6 +80,9 @@ pub struct AppState {
     /// Cap concurrent discover/embed work so ONNX load + inference cannot saturate
     /// the Tokio blocking pool (and starve accept / `/health`) under page refresh.
     pub discover_gate: Arc<Semaphore>,
+    /// This node's in-memory index of the library's work vectors, read by
+    /// search by meaning and "more like this".
+    pub(crate) work_vectors: Arc<crate::work_vectors::WorkVectors>,
     /// Loaded integration guests used by watchers, the portal, and listening sync.
     pub integrations: Arc<RwLock<IntegrationRegistry>>,
     /// Loaded storefront source guests used by scan, acquire, and discover.
@@ -1654,6 +1657,8 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
 fn shared_routes() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
         .routes(routes!(crate::library_works::list_works))
+        .routes(routes!(crate::library_meaning::get_meaning_status))
+        .routes(routes!(crate::library_meaning::list_similar_works))
         .routes(routes!(crate::library_works::get_work))
         .routes(routes!(crate::library_works::put_work_state))
         .routes(routes!(crate::library_works::list_facet_values))
@@ -8780,6 +8785,7 @@ tcp = {tcp}
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
+            work_vectors: Arc::default(),
             integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
             sources: Arc::new(RwLock::new(SourceRegistry::new())),
             destinations: Arc::new(RwLock::new(DestinationRegistry::default())),
@@ -9408,6 +9414,7 @@ default_port = 5432
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
+            work_vectors: Arc::default(),
             integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
             sources: Arc::new(RwLock::new(SourceRegistry::new())),
             destinations: Arc::new(RwLock::new(DestinationRegistry::default())),
@@ -9513,6 +9520,7 @@ default_port = 5432
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
+            work_vectors: Arc::default(),
             integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
             sources: Arc::new(RwLock::new(SourceRegistry::new())),
             destinations: Arc::new(RwLock::new(DestinationRegistry::default())),
@@ -9676,6 +9684,7 @@ default_port = 5432
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
+            work_vectors: Arc::default(),
             integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
             sources: Arc::new(RwLock::new(SourceRegistry::new())),
             destinations: Arc::new(RwLock::new(DestinationRegistry::default())),
