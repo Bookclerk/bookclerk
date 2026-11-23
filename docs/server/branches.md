@@ -1402,6 +1402,13 @@ A shared branch is the same point in the tree as its
 library, so it adds no depth: a shared branch join to a library at the
 limit is not refused.
 
+When a library that is itself a branch has shared branches, they all read
+the same link to its parent and its node keys. Only one of them dials the
+parent at a time: it holds the link's dial lease (`library-link.dial:<parent
+id>` in `library_leases`) and renews it every few seconds. The others try
+again on the same beat and take over within 30 seconds of the holder
+stopping, or at once when it stops cleanly.
+
 ## Leaving
 
 Open **Settings → Library → Leave library**, or run

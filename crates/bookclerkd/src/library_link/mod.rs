@@ -72,8 +72,10 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use bookclerk_library::control_plane::{
-    current_process_incarnation, leave_library_link, list_library_links, load_library_link,
-    load_library_link_keys, mark_library_link_revoked, remote_job_fence, LibraryLink, NodeSampler,
+    acquire_lease, current_process_incarnation, leave_library_link, list_library_links,
+    load_library_link, load_library_link_keys, load_or_create_node_identity,
+    mark_library_link_revoked, release_lease, remote_job_fence, renew_lease, LibraryLease,
+    LibraryLink, NodeSampler,
 };
 use bookclerk_library::{JobKind, JobPayload, LibraryStore};
 use bookclerk_node_client::{
@@ -167,23 +169,64 @@ enum LinkStop {
     /// The link is active but enrolled as another node, so the client runs
     /// with an identity and keys the link no longer names.
     Replaced,
+    /// Another install sharing this library's database took the link's
+    /// dial lease ([`dial_lease_name`]), so it dials the parent now.
+    LeaseLost,
+}
+
+/// How long a link's dial lease lasts unrenewed. The watcher renews it
+/// every [`consent::CONSENT_POLL`], so a dialing install that dies hands
+/// the link to a sibling within this long.
+const DIAL_LEASE_TTL: Duration = Duration::from_secs(30);
+
+/// The lease an install holds while it dials the parent library
+/// `library_id`.
+///
+/// Shared branches of a library that is itself a branch share its
+/// `library_links` rows and node keys, so only the holder dials: two
+/// clients as the same node would replace each other's connection, and
+/// each `catalog.begin` would bump the fence and lose the other's batches.
+fn dial_lease_name(library_id: &str) -> String {
+    format!("library-link.dial:{library_id}")
+}
+
+/// The dial lease a running client holds, shared between its watcher
+/// (which renews it) and its task (which releases it once the client and
+/// its helpers have exited).
+type HeldDialLease = Arc<Mutex<Option<LibraryLease>>>;
+
+/// Gives up the dial lease in `held`, so a sibling install may dial at
+/// once. A failed release only delays the sibling until the lease expires.
+async fn release_dial_lease(library: &LibraryStore, held: &HeldDialLease) {
+    let lease = held
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .take();
+    if let Some(lease) = lease {
+        if let Err(err) = release_lease(library, &lease).await {
+            tracing::debug!(lease = %lease.name, error = %err, "library link dial lease not released; it expires");
+        }
+    }
 }
 
 /// Stops a link's client (through `stop`) once its row is gone, no longer
 /// active, or enrolled as another node than `node_id` (the one the client
-/// runs as), or when `shutdown` (the store's) turns true.
+/// runs as), when `shutdown` (the store's) turns true, or when the dial
+/// lease in `lease` (renewed on every poll; empty in tests) is lost.
 ///
 /// # Returns
 ///
-/// Why the client was stopped. On [`LinkStop::Replaced`] and
-/// [`LinkStop::Inactive`] the caller lets the supervisor start the
-/// library's next enrollment (the new node, or a later join).
+/// Why the client was stopped. On [`LinkStop::Replaced`],
+/// [`LinkStop::Inactive`] and [`LinkStop::LeaseLost`] the caller lets the
+/// supervisor start the library's next enrollment (the new node, a later
+/// join, or the link again once the lease is free).
 async fn stop_when_inactive(
     library: LibraryStore,
     library_id: String,
     node_id: String,
     stop: Arc<watch::Sender<bool>>,
     mut shutdown: watch::Receiver<bool>,
+    lease: HeldDialLease,
 ) -> LinkStop {
     let mut poll = tokio::time::interval(consent::CONSENT_POLL);
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -196,7 +239,13 @@ async fn stop_when_inactive(
                 }
             }
             _ = poll.tick() => match load_library_link(&library, &library_id).await {
-                Ok(Some(link)) if link.is_active() && link.remote_node_id == node_id => {}
+                Ok(Some(link)) if link.is_active() && link.remote_node_id == node_id => {
+                    if !renew_dial_lease(&library, &lease).await {
+                        tracing::info!(%library_id, "another install sharing this library took its dial lease; stopping this client");
+                        let _ = stop.send(true);
+                        return LinkStop::LeaseLost;
+                    }
+                }
                 Ok(Some(link)) if link.is_active() => {
                     tracing::info!(
                         %library_id,
@@ -215,6 +264,35 @@ async fn stop_when_inactive(
                 // A failed read is not a departure; the next poll retries.
                 Err(err) => tracing::warn!(%library_id, error = %err, "could not re-read the library link"),
             },
+        }
+    }
+}
+
+/// Renews the dial lease in `held`: `false` once another install holds
+/// it. A failed write is not a loss (the next poll retries, and a sibling
+/// takes the lease only after it expires); an empty `held` always keeps.
+async fn renew_dial_lease(library: &LibraryStore, held: &HeldDialLease) -> bool {
+    let lease = held
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clone();
+    let Some(lease) = lease else {
+        return true;
+    };
+    match renew_lease(library, &lease, DIAL_LEASE_TTL).await {
+        Ok(Some(renewed)) => {
+            *held.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(renewed);
+            true
+        }
+        Ok(None) => {
+            held.lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .take();
+            false
+        }
+        Err(err) => {
+            tracing::warn!(lease = %lease.name, error = %err, "could not renew the library link dial lease");
+            true
         }
     }
 }
@@ -689,6 +767,15 @@ async fn start_clients(
         let cfg = state.config.read().await;
         (cfg.paths().files_dir.clone(), cfg.clone())
     };
+    // The dial lease's holder: this install, not the node the link enrolled
+    // (shared branches share that), so a restart takes its own lease back.
+    let holder = match load_or_create_node_identity(&files_dir) {
+        Ok(identity) => identity.node_id,
+        Err(err) => {
+            tracing::warn!(error = %err, "node identity unavailable; library links not dialed yet");
+            return false;
+        }
+    };
     // A failed discovery approves no platform plugin automatically.
     let platform_installs: std::collections::BTreeMap<
         String,
@@ -697,6 +784,25 @@ async fn start_clients(
         .await
         .unwrap_or_default();
     for link in pending {
+        let lease = match acquire_lease(
+            library,
+            &dial_lease_name(&link.parent_library_id),
+            &holder,
+            DIAL_LEASE_TTL,
+        )
+        .await
+        {
+            Ok(Some(lease)) => lease,
+            // A sibling install sharing this database dials it; this one
+            // tries again each poll and takes over once that lease expires.
+            Ok(None) => continue,
+            Err(err) => {
+                tracing::warn!(library_id = %link.parent_library_id, error = %err, "library link dial lease unavailable; not connecting yet");
+                complete = false;
+                continue;
+            }
+        };
+        let lease: HeldDialLease = Arc::new(Mutex::new(Some(lease)));
         let keys = match load_library_link_keys(library, &link).await {
             Ok(keys) => keys,
             Err(err) => {
@@ -706,6 +812,7 @@ async fn start_clients(
                     error = %err,
                     "library link keys unavailable; not connecting yet"
                 );
+                release_dial_lease(library, &lease).await;
                 complete = false;
                 continue;
             }
@@ -757,6 +864,7 @@ async fn start_clients(
             Err(err) => {
                 tracing::error!(%library_id, error = %err, "library link refused by the transport policy");
                 failed().insert(failure);
+                release_dial_lease(library, &lease).await;
                 continue;
             }
         };
@@ -858,6 +966,7 @@ async fn start_clients(
             node_id.clone(),
             client_stop,
             shutdown.clone(),
+            Arc::clone(&lease),
         ))));
         let library = library.clone();
         let relink = relink.clone();
@@ -923,13 +1032,19 @@ async fn start_clients(
                 if let Some(stopped) = watcher.0.as_mut() {
                     // A stop for a swap ends with the store; any other lets
                     // the supervisor start the library's next enrollment.
-                    if matches!(stopped.await, Ok(LinkStop::Replaced | LinkStop::Inactive)) {
+                    let stopped = stopped.await;
+                    release_dial_lease(&library, &lease).await;
+                    if matches!(
+                        stopped,
+                        Ok(LinkStop::Replaced | LinkStop::Inactive | LinkStop::LeaseLost)
+                    ) {
                         let _ = relink.send(library_id);
                     }
                 }
                 return;
             }
             drop(watcher);
+            release_dial_lease(&library, &lease).await;
             // The link belongs to the store it was read from. Only the
             // enrollment this client ran as, and only while active, is
             // revoked: a re-enrollment recorded meanwhile keeps its new

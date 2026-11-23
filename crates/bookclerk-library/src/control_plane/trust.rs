@@ -880,10 +880,13 @@ pub async fn plan_scan(
 /// own job, so each title can go to any node trusted with it. `account`
 /// narrows to one store account and `plugin_instance_id` pins every job.
 ///
-/// - Operator authority, an Owner or an Administrator: one job per title,
-///   or one job for everything pending (it touches many accounts, and only
-///   nodes trusted with every one of them claim it; splitting it per
-///   account would repeat the storage listing for every account).
+/// - Operator authority, an Owner or an Administrator: a title named
+///   without an account becomes one job per account id it is in (or one
+///   unsplit job when it is in none), so a Host trusted with that account
+///   can take it; a named account gives one job per title. Everything
+///   pending stays one job (it touches many accounts, and only nodes
+///   trusted with every one of them claim it; splitting it per account
+///   would repeat the storage listing for every account).
 /// - Any other active user: a named account must be theirs, and so must
 ///   every library row a named title matches. A title named without an
 ///   account becomes one job per account id it is in, since a node trusted
@@ -939,21 +942,39 @@ pub async fn plan_acquire(
         }
     };
     let Some(user_id) = owner else {
-        let resolved = match account {
-            Some(needle) => {
-                // Within the pinned plugin, as the job runs; an unknown pin
-                // fails at run time.
-                let key = match pinned.as_deref().map(PluginInstanceId::parse) {
-                    Some(Ok(id)) => load_plugin_instance(store, &id)
-                        .await?
-                        .map(|instance| instance.plugin_key),
-                    _ => None,
-                };
-                Some(resolve_named_account(store, needle, key.as_deref()).await?)
-            }
-            None => None,
+        // Within the pinned plugin, as the job runs; an unknown pin fails at
+        // run time.
+        let key = match pinned.as_deref().map(PluginInstanceId::parse) {
+            Some(Ok(id)) => load_plugin_instance(store, &id)
+                .await?
+                .map(|instance| instance.plugin_key),
+            _ => None,
         };
-        return Ok(per_title(resolved.as_deref()));
+        if let Some(needle) = account {
+            let id = resolve_named_account(store, needle, key.as_deref()).await?;
+            return Ok(per_title(Some(&id)));
+        }
+        // A Host only takes work that names an account, so a title is
+        // planned once per account id it is in; one it is in nowhere keeps
+        // its unsplit job, which finds nothing to acquire when it runs.
+        let mut out = Vec::new();
+        for title in &titles {
+            let ids: BTreeSet<String> = store
+                .acquire_titles_named(None, title)
+                .await?
+                .into_iter()
+                .filter(|held| key.as_deref().is_none_or(|key| key == held.plugin_key))
+                .map(|held| held.account_id)
+                .collect();
+            if ids.is_empty() {
+                out.push(payload(None, Some(title)));
+            }
+            out.extend(ids.iter().map(|id| payload(Some(id), Some(title))));
+        }
+        if out.is_empty() {
+            out.push(payload(None, None));
+        }
+        return Ok(out);
     };
     let plugin_key = match pinned.as_deref() {
         Some(raw) => {

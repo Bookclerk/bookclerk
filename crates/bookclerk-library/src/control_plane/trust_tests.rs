@@ -1007,7 +1007,9 @@ async fn acquires_are_trusted_and_planned_per_item(owner_db: LibraryStore, host_
         );
     }
 
-    // The planner: privileged requests split per title only.
+    // The planner: privileged requests split per title, and a title per
+    // account id it is in, so a Host trusted with that account can take it;
+    // a title in no account keeps one unsplit job.
     let titles = |ids: &[&str]| ids.iter().map(|t| t.to_string()).collect::<Vec<_>>();
     let shape = |plan: Vec<JobPayload>| -> Vec<(Option<String>, Option<String>)> {
         plan.into_iter()
@@ -1020,12 +1022,21 @@ async fn acquires_are_trusted_and_planned_per_item(owner_db: LibraryStore, host_
             &host_db,
             requester,
             None,
-            &titles(&["B0RILEY", " b0riley ", "B0SAM", ""]),
+            &titles(&["B0RILEY", " b0riley ", "B0SAM", "B0BOTH", "B0NONE", ""]),
             None,
         )
         .await
         .unwrap();
-        assert_eq!(shape(plan), vec![(None, s("B0RILEY")), (None, s("B0SAM"))]);
+        assert_eq!(
+            shape(plan),
+            vec![
+                (s("a1"), s("B0RILEY")),
+                (s("a2"), s("B0SAM")),
+                (s("a1"), s("B0BOTH")),
+                (s("a2"), s("B0BOTH")),
+                (None, s("B0NONE")),
+            ]
+        );
         let plan = plan_acquire(&host_db, requester, None, &[], None)
             .await
             .unwrap();

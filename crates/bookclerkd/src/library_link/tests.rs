@@ -5774,6 +5774,7 @@ async fn leaving_stops_the_running_client() {
         "node-leave".into(),
         Arc::clone(&stop),
         shutdown,
+        super::HeldDialLease::default(),
     ));
     shut.send(true).unwrap();
     let why = tokio::time::timeout(Duration::from_secs(5), watcher)
@@ -5793,6 +5794,7 @@ async fn leaving_stops_the_running_client() {
         "node-leave".into(),
         Arc::clone(&stop),
         shutdown,
+        super::HeldDialLease::default(),
     ));
     assert!(
         tokio::time::timeout(Duration::from_millis(300), stopped.changed())
@@ -5840,6 +5842,7 @@ async fn a_rejoin_as_another_node_stops_the_previous_client() {
         "node-old".into(),
         Arc::new(stop),
         shutdown,
+        super::HeldDialLease::default(),
     ));
     assert!(
         tokio::time::timeout(Duration::from_millis(300), stopped.changed())
@@ -5856,6 +5859,103 @@ async fn a_rejoin_as_another_node_stops_the_previous_client() {
         .unwrap();
     assert!(*stopped.borrow());
     assert_eq!(watcher.await.unwrap(), super::LinkStop::Replaced);
+}
+
+/// A shared branch whose sibling took the link's dial lease stops its
+/// client, so the two never dial the parent as the same node at once.
+#[tokio::test]
+async fn a_lost_dial_lease_stops_the_client() {
+    use bookclerk_library::control_plane::{acquire_lease, release_lease};
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let _owner = crate::node_api::tests::test_state(&owner_files).await;
+    let host_files = tempfile::tempdir().unwrap();
+    let host = host_store(host_files.path()).await;
+    bookclerk_library::control_plane::record_library_link(
+        &host,
+        &bookclerk_library::control_plane::NewLibraryLink {
+            parent_library_id: "library-lease".into(),
+            owner_origin: "https://owner.example".into(),
+            remote_node_id: "node-lease".into(),
+            spki_pin: None,
+        },
+        &bookclerk_library::control_plane::LibraryLinkKeys::generate(),
+    )
+    .await
+    .unwrap();
+    let name = super::dial_lease_name("library-lease");
+    let ours = acquire_lease(&host, &name, "install-a", super::DIAL_LEASE_TTL)
+        .await
+        .unwrap()
+        .expect("a free lease");
+    let held: super::HeldDialLease = Arc::new(Mutex::new(Some(ours.clone())));
+
+    let (stop, mut stopped) = watch::channel(false);
+    let (_shut, shutdown) = watch::channel(false);
+    let watcher = tokio::spawn(super::stop_when_inactive(
+        host.clone(),
+        "library-lease".into(),
+        "node-lease".into(),
+        Arc::new(stop),
+        shutdown,
+        Arc::clone(&held),
+    ));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), stopped.changed())
+            .await
+            .is_err(),
+        "the holder keeps its client"
+    );
+    // The sibling takes the lease over (as after this install stalled past
+    // its expiry).
+    release_lease(&host, &ours).await.unwrap();
+    acquire_lease(&host, &name, "install-b", super::DIAL_LEASE_TTL)
+        .await
+        .unwrap()
+        .expect("the released lease");
+    tokio::time::timeout(super::consent::CONSENT_POLL * 3, stopped.changed())
+        .await
+        .expect("the client is stopped once the lease is lost")
+        .unwrap();
+    assert_eq!(watcher.await.unwrap(), super::LinkStop::LeaseLost);
+    assert!(held.lock().unwrap().is_none(), "nothing is left to release");
+}
+
+/// Through the running supervisor: a link whose dial lease a sibling
+/// install holds is not dialed, and is dialed once that lease is free.
+#[tokio::test]
+async fn a_link_a_sibling_dials_is_not_dialed_twice() {
+    use bookclerk_library::control_plane::{acquire_lease, release_lease};
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let host_files = tempfile::tempdir().unwrap();
+    let (state, owner) = crate::node_api::tests::test_state(&owner_files).await;
+    let addr = serve(crate::api::router(Arc::clone(&state), None)).await;
+    let origin = public_origin(&state, &format!("http://127.0.0.1:{}", addr.port())).await;
+    let (member, _token) = owner_account(&owner, b"riley-token-v1").await;
+
+    let (host_state, host) = crate::node_api::tests::test_state(&host_files).await;
+    let link = join(&owner, &host, member, &origin, None).await.unwrap();
+    let sibling = acquire_lease(
+        &host,
+        &super::dial_lease_name(&link.parent_library_id),
+        "sibling-install",
+        super::DIAL_LEASE_TTL,
+    )
+    .await
+    .unwrap()
+    .expect("a free lease");
+    super::spawn_library_links(Arc::clone(&host_state));
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        !crate::node_api::ws::node_session_live(&link.remote_node_id),
+        "the sibling holds the dial lease"
+    );
+    release_lease(&host, &sibling).await.unwrap();
+    eventually("the link to connect once the lease is free", || async {
+        crate::node_api::ws::node_session_live(&link.remote_node_id)
+    })
+    .await;
 }
 
 /// Through the running supervisor: after the host joins the same library

@@ -491,7 +491,10 @@ Every scan and acquire is admitted through a planner, whoever asks:
 - **Acquire** (`control_plane::plan_acquire`): each named title id
   (`titles`, UUID, ASIN, ISBN or product id) becomes its own job, so each
   can go to any node trusted with it. Operator authority, an Owner or an
-  Administrator acquiring everything gets one unsplit job. Anyone else must
+  Administrator acquiring everything gets one unsplit job; a title they name
+  without an account becomes one job per account id it is in (one unsplit
+  job when it is in none), so a branch trusted with that account can take
+  it. Anyone else must
   own the account they name, when they name one, and every account that
   holds a title a named id matches (a listing's product id, an ASIN or ISBN
   of its edition, or a holding id; 403 otherwise). An account is named by
