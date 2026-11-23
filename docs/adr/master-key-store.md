@@ -1,7 +1,8 @@
 # ADR: The library key can live in the OS keychain
 
 - **Status:** Accepted (decisions made with the maintainer on 2026-11-20;
-  decision 6 on 2026-11-21). All six decisions are built
+  decision 6 on 2026-11-21; decision 7 on 2026-11-23). All seven
+  decisions are built
 - **Date:** 2026-11-20
 - **Related:** [Control plane](control-plane.md),
   [Library catalog network](library-catalog-network.md),
@@ -144,6 +145,26 @@ installs, and a shared-branch join replaces it at runtime. So:
 - **Unsealing fails closed.** A sealed key that no longer opens is an
   error, as for a missing keychain item; the fix is the recovery copy.
 
+### 7. A hosted database's token follows the key
+
+A hosted database (Cloudflare D1) needs its API token before the library
+opens, so it can't be sealed in `encrypted_secrets`. The token that
+`bookclerk config database setup d1` mints is sealed with the DEK and kept
+in the same store as the key, even though it is already sealed:
+
+- On a file install `database.credential` holds the sealed token (`BCD1`).
+- On a keychain or `systemd-creds` install the sealed token goes in an
+  item of its own, and `database.credential` holds only a pointer (`BCD3`
+  or `BCD4`) with the DEK's fingerprint.
+- The items use their own names: keychain service
+  `app.bookclerk.database-credential`, `systemd-creds` credential
+  `bookclerk-database-credential` and files
+  `database-credential-<id>.cred`, so a unit-provided master key is never
+  read as the token, nor the other way round.
+- `config master-key move` takes the credential along. Reading fails
+  closed, like the key: a missing item or a token sealed under another key
+  is an error. `BOOKCLERK_D1_API_TOKEN` still overrides it.
+
 ## Consequences
 
 - A copied files directory no longer exposes sealed secrets on keychain
@@ -153,8 +174,8 @@ installs, and a shared-branch join replaces it at runtime. So:
 - Unsigned development builds on macOS see an "allow access" prompt after
   each rebuild, because Keychain Services ties access to the code signature.
   `cargo dev` runs `bookclerkd`, whose default is the file.
-- No new untrusted-input boundary: `master.key` and the keychain item are
-  written by the branch itself, and `import --from` reads a file the
+- No new untrusted-input boundary: `master.key`, `database.credential`
+  and their store items are written by the branch itself, and `import --from` reads a file the
   operator chose, with the same trust as `master.key` (whoever can hand the
   CLI that file can already replace `master.key`). The pointer and envelope
   parsers still have strict header and length tests.
