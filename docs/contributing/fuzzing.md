@@ -35,7 +35,7 @@ boundary extends it.
 | `db_stream` | `executeStreamed` frames an adapter sends, reassembled by the host and the SDKs under the streamed result budget. The TypeScript and Python SDK tests replay the same corpus as shared vectors against their own decoders | `bookclerk-plugin-abi::ExecuteStreamDecoder` |
 | `cover_sink_key` | The key a cover fetcher writes each image under, mapped to a URL slot | `bookclerk-plugin-abi::cover_sink_slot` |
 | `cover_process` | Cover images from any public website: sniff, decode under limits, resize, re-encode | `bookclerk-cover::process` |
-| `cover_token` | Cover tokens in `/api/covers` and `/api/images` paths, and Gravatar hashes in `/api/avatars` paths: which remote URL a route may fetch | `bookclerk-cover::token` |
+| `cover_token` | Cover tokens in `/api/covers` and `/api/images` paths, store-sample tokens in `/api/samples` paths, and Gravatar hashes in `/api/avatars` paths: which remote URL a route may fetch | `bookclerk-cover::token` |
 | `cover_wire` | Cover worker frames: requests the worker reads, replies the host reads | `bookclerk-cover::wire` |
 | `tags_read` | Embedded tags of media files on storage: MP4 `ilst` items, chapter tracks and the audio track's sample description, ID3v2 and ID3v1, FLAC metadata blocks, Ogg Opus and Vorbis headers and comments, read by range in the tag worker | `bookclerk-tags::TagReader` |
 | `tags_wire` | Tag worker frames: requests the worker reads, replies the host reads | `bookclerk-tags::wire` |
@@ -44,7 +44,7 @@ boundary extends it.
 | `archive_report` | The media worker's extract report, read by the host: written paths, sizes and totals | `bookclerk-archive::ExtractReport::validate` |
 | `media_keep_codec` | Audio parts the media worker copies into an M4B without re-encoding them (`output.keep_codec_in_m4b`): MP4 sample entries and tables, Ogg and FLAC headers and packets | `bookclerk-media::package_keeping_codec` |
 | `media_decode` | Audio the media worker demuxes and decodes before it encodes or repackages it: store downloads, library copies and files on storage, recognised by their bytes, never their names | `bookclerk-media::decode_pcm_bytes` |
-| `media_pcm_wire` | PCM worker frames for the desktop window's player: requests the worker reads, and the worker's whole output (byte-range requests, the stream format, samples, the end) the host reads while the worker decodes untrusted audio | `bookclerk-media::pcm_wire` |
+| `media_pcm_wire` | PCM worker frames for the desktop window's player and for book samples: requests the worker reads, and the worker's whole output (byte-range requests, the stream format, samples or encoded MP3, the end) the host reads while the worker decodes untrusted audio | `bookclerk-media::pcm_wire` |
 | `cache_headers` | `If-None-Match` on image requests, which decides a `304` answer, and an image host's caching headers, which decide whether and how long a fetched image is kept | `bookclerk-cover::http_cache` |
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
 | `scan_page` | One page of a storefront's library scan: its size caps, the cursor it hands back, the account it names, the media kinds of its titles and the refreshed credentials it carries | `bookclerk-plugin-abi::validate_scan_page` |
@@ -94,7 +94,7 @@ boundary extends it.
 | `clerk_authorize` | A clerk's authorization request, the `/oidc/authorize` query that decides whether the library shows its library card consent page and where it sends the code | `bookclerk-node-proto::parse_clerk_query`, `clerk_request_problem` |
 | `clerk_token_request` | A library card's token exchange, the body of `POST /api/clerk/v1/token` and its match against the code the library stored | `bookclerk-node-proto::parse_clerk_token_request`, `clerk_exchange_matches` |
 | `clerk_token_answer` | A library's answer to a clerk's token exchange, read on the clerk before it seals the library card and records the library | `bookclerk-node-proto::parse_clerk_token_answer` |
-| `copy_range` | The `Range` header of a copy download, `GET /api/copies/v1/{copy_id}/files/{n}`, which decides which bytes of a library's file are sent | `bookclerk-node-proto::parse_copy_range` |
+| `copy_range` | The `Range` header of a copy download, `GET /api/copies/v1/{copy_id}/files/{n}`, and of the book-sample routes (`/api/library/editions/{id}/sample`, `/api/samples/{token}`), which decides which bytes are sent | `bookclerk-node-proto::parse_copy_range` |
 | `upload_part` | The `Content-Range` header of an upload `PUT`, `/api/node/v1/uploads/{upload_id}/files/{n}`, which decides which bytes of a declared file the body is, or that it only asks where the owner is | `bookclerk-node-proto::parse_upload_range` |
 | `tunnel_policy` | Paths of requests a relay ingress plugin carries from the public internet on the `tunnel` transport, which reach the router unless refused as operator-only or outside the exposure the operator chose | `bookclerk-node-proto::normalize_tunnel_path`, `tunnel_refusal` |
 | `copy_answer` | A library's answer to a copy download, read on the branch or clerk that took the copy: where its head ends, how many bytes follow and where in the file they are written | `bookclerk-node-proto::copy_answer_head_end`, `parse_copy_answer` |
@@ -116,7 +116,7 @@ boundary extends it.
 | `collections_request` | An Administrator's collections for the library, the body of `PUT /api/library/collections` and the stored `core.collections` document | `bookclerk-library::control_plane::parse_collections_request` |
 | `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
 | `pace_request` | A person's pace for one of their store accounts, the body of `POST /api/portal/sources/{source}/connections/{account_id}/pace` | `bookclerk-library::pacing::parse_pace_request` |
-| `title_meta_fill` | A signed-in user's title-meta query (the body of `POST /api/discover/title-meta` and each entry of its batch route) and the storefront catalog-detail lookups its store editions and ISBN plan | `bookclerk-discover::check_title_meta_query`, `plan_title_meta_fill` |
+| `title_meta_fill` | A signed-in user's title-meta query (the body of `POST /api/discover/title-meta`, each entry of its batch route, and the body of `POST /api/discover/title-sample`) and the storefront catalog-detail lookups its store editions and ISBN plan | `bookclerk-discover::check_title_meta_query`, `plan_title_meta_fill` |
 | `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the window's own credential (the operator token or its patron's session cookies) unless refused, the URLs the window is asked to open, and which pages may start the window's live updates | `bookclerk-window-policy` |
 
 Some boundaries need more than a cell:
@@ -419,7 +419,10 @@ only that. The others check:
   come from the input: the replies it yields re-encode, concatenated, to
   exactly the bytes it consumed, it yields nothing after an error, and
   every `Pcm` that `ReplyOrder` admits holds whole frames of the `Format`
-  it admitted first. The shared oracle is `fuzz/oracles/media_pcm_wire.rs`,
+  it admitted first. When the first byte divided by 3 is odd, the output
+  is read as a sample's instead: `ReplyOrder` admits only a mono `Format` of at most 48 kHz, then
+  `Encoded` frames, and refuses `Pcm`; a PCM stream refuses `Encoded`. The
+  shared oracle is `fuzz/oracles/media_pcm_wire.rs`,
   replayed from `bookclerk-media`.
 - **`cache_headers`**: the first byte, modulo 4, picks a mode. A built
   `If-None-Match` list of well-formed tags matches exactly when one of
@@ -1975,8 +1978,10 @@ tree and on its text, in `npm test` (the `workerd_guests` check).
 The `covers` guest decides which URLs it requests: the host's URLs and every
 redirect `Location` an upstream server sends. It also passes header values
 both ways: the host's validators out as request headers, and an upstream
-server's caching headers back in its answer. Its `test/fuzz.test.ts` replays
-`fuzz/url/`, `fuzz/location/` and `fuzz/header/` and runs seeded text mutations in
+server's caching headers back in its answer, and it decides from an answer's
+`Content-Type` whether to keep an image or an audio sample. Its
+`test/fuzz.test.ts` replays `fuzz/url/`, `fuzz/location/`, `fuzz/header/` and
+`fuzz/content-type/` and runs seeded text mutations in
 `npm test` (the `workerd_guests` check); `FUZZ_SEED` and `FUZZ_ITERATIONS`
 pick another run.
 
@@ -1998,6 +2003,14 @@ pick another run.
   exactly when it is at most 1024 bytes of tab, space and `VCHAR`. A
   condition outside that is refused, and a response header outside it is
   dropped from the answer.
+- **Answer types and media** (`maybeImage`, `maybeAudio`, `fetchOne` and
+  `checkParams`'s `media`). Oracle, written from the documented lists and
+  RFC 9110's media-type syntax: with no type or an empty one the body is
+  kept; otherwise the type before the first `;`, without surrounding spaces
+  and tabs and compared without ASCII case, must be an `image/` type for an
+  image, an `audio/` type, `video/mp4` or `application/ogg` for audio, or a
+  generic octet stream for either. Each kind sends its own `Accept`. A
+  `media` other than `image`, `audio` or absent is refused.
 
 ### Cloudflare relay guest
 

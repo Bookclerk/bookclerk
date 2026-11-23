@@ -119,6 +119,7 @@ Build and agent conventions for this repository live in
 - [Desktop window identity](adr/desktop-window-identity.md): the window is the person signed in to the computer, named by a per-account profile
 - [Playback](adr/playback.md): playback is a host feature with one core that the web player, the desktop window and app-compatible clients share
 - [Player API](adr/player-api.md): the host serves apps made for Audiobookshelf servers at `/player`, with player cards and no account password
+- [Book samples](adr/book-samples.md): a book's details play a short sample, from a held edition or a storefront, that never counts as listening
 - [Storage destinations](adr/storage-destinations.md): every storage plugin instance is a destination with its own template and filter, opportunistic change feeds and host-held webhooks
 - [Master key store](adr/master-key-store.md): the library key can live in the OS keychain, with `master.key` as a pointer and recovery copies
 - [Uploads and ingest batches](adr/uploads-and-ingest.md): one batch per upload, patron holdings for uploaded books, strong identifiers only, archives expanded under caps

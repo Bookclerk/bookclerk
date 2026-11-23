@@ -7,7 +7,10 @@
 import { BookclerkEntrypoint, CoverEntrypoint, PluginError, } from "@bookclerk/plugin-sdk/workerd";
 import { CoverFailure, fetchCovers } from "./fetcher.js";
 import { VERSION } from "./version.js";
-/** `covers` entrypoint: downloads cover images into the host's sink. */
+/**
+ * `covers` entrypoint: downloads cover images, or a store's audio samples,
+ * into the host's sink.
+ */
 export class Covers extends CoverEntrypoint {
     /**
      * Reports ready without a request.
@@ -20,7 +23,7 @@ export class Covers extends CoverEntrypoint {
     /**
      * Fetches each URL and streams its body into `sink` under its index.
      *
-     * @param params - URLs and the per-image byte cap.
+     * @param params - URLs, the per-body byte cap, and what they name.
      * @param sink - The host's destination for the bodies.
      * @returns One answer per URL, in request order.
      * @throws {PluginError} `invalid_params` when the request is malformed.

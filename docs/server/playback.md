@@ -45,6 +45,11 @@ book may listen to it.
 | `GET`, `POST /api/library/editions/{id}/bookmarks`  | List or add the caller's bookmarks in an edition                                                             |
 | `PUT`, `DELETE /api/playback/bookmarks/{id}`        | Change or remove one                                                                                         |
 
+A book's **sample** (`GET /api/library/editions/{id}/sample`) follows
+the same rights check but is not playback: it opens no session, reads or
+writes no progress and publishes no event. See
+[Book samples](../adr/book-samples.md).
+
 ## How a player uses them
 
 1. Read the manifest. `playable` is true when this server has a

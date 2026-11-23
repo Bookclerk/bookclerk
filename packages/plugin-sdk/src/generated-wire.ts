@@ -6678,13 +6678,13 @@ export const RevokeAccountParamsCodec: StructCodec<T.RevokeAccountParams> = {
 };
 
 /**
- * Wire codec for `CatalogHit` (6 data words, 17 pointers).
+ * Wire codec for `CatalogHit` (6 data words, 18 pointers).
  *
  * @internal
  */
 export const CatalogHitCodec: StructCodec<T.CatalogHit> = {
   dataWords: 6,
-  pointerCount: 17,
+  pointerCount: 18,
   write(s, v, caps) {
     s.setText(0, v.productId ?? "");
     s.setText(1, v.title ?? "");
@@ -6763,6 +6763,9 @@ export const CatalogHitCodec: StructCodec<T.CatalogHit> = {
       s.setUint32(10, v.rankHint ?? 0);
     }
     s.setUint16(22, ord(A.EXPLICITNESSS, v.explicitness ?? A.EXPLICITNESSS[0]!, "Explicitness"));
+    if (v.sampleUrl !== undefined) {
+      s.setText(17, v.sampleUrl ?? "");
+    }
   },
   read(s, caps) {
     const out: T.CatalogHit = {
@@ -6842,6 +6845,10 @@ export const CatalogHitCodec: StructCodec<T.CatalogHit> = {
     if (!(rankHintValue === 0)) {
       out.rankHint = rankHintValue;
     }
+    const sampleUrlValue = s.getText(17);
+    if (!(sampleUrlValue === "")) {
+      out.sampleUrl = sampleUrlValue;
+    }
     return out;
   },
 };
@@ -6857,7 +6864,7 @@ export const CatalogHitsCodec: StructCodec<T.CatalogHits> = {
   write(s, v, caps) {
     {
       const list = v.hits ?? [];
-      const items = s.initStructList(0, list.length, 6, 17);
+      const items = s.initStructList(0, list.length, 6, 18);
       for (let i = 0; i < items.length; i++) {
         CatalogHitCodec.write(items[i]!, list[i]!, caps);
       }
@@ -6865,7 +6872,7 @@ export const CatalogHitsCodec: StructCodec<T.CatalogHits> = {
   },
   read(s, caps) {
     return {
-      hits: s.getStructList(0, 6, 17).map((item) => CatalogHitCodec.read(item, caps)),
+      hits: s.getStructList(0, 6, 18).map((item) => CatalogHitCodec.read(item, caps)),
     };
   },
 };
@@ -6920,13 +6927,13 @@ export const CatalogDetailCodec: StructCodec<T.CatalogDetail> = {
   write(s, v, caps) {
     s.setBool(0, v.found ?? false);
     if (v.hit != null) {
-      CatalogHitCodec.write(s.initStruct(0, 6, 17), v.hit, caps);
+      CatalogHitCodec.write(s.initStruct(0, 6, 18), v.hit, caps);
     }
   },
   read(s, caps) {
     return {
       found: s.getBool(0),
-      hit: CatalogHitCodec.read(s.getStruct(0, 6, 17), caps),
+      hit: CatalogHitCodec.read(s.getStruct(0, 6, 18), caps),
     };
   },
 };
@@ -7094,7 +7101,7 @@ export const PricedRecordCodec: StructCodec<T.PricedRecord> = {
   pointerCount: 2,
   write(s, v, caps) {
     if (v.record != null) {
-      CatalogHitCodec.write(s.initStruct(0, 6, 17), v.record, caps);
+      CatalogHitCodec.write(s.initStruct(0, 6, 18), v.record, caps);
     }
     if (v.hint != null) {
       PurchaseHintCodec.write(s.initStruct(1, 3, 7), v.hint, caps);
@@ -7102,7 +7109,7 @@ export const PricedRecordCodec: StructCodec<T.PricedRecord> = {
   },
   read(s, caps) {
     return {
-      record: CatalogHitCodec.read(s.getStruct(0, 6, 17), caps),
+      record: CatalogHitCodec.read(s.getStruct(0, 6, 18), caps),
       hint: PurchaseHintCodec.read(s.getStruct(1, 3, 7), caps),
     };
   },
@@ -8920,12 +8927,14 @@ export const CoverFetchParamsCodec: StructCodec<T.CoverFetchParams> = {
         CoverConditionCodec.write(items[i]!, list[i]!, caps);
       }
     }
+    s.setUint16(2, ord(A.REMOTE_MEDIAS, v.media ?? A.REMOTE_MEDIAS[0]!, "RemoteMedia"));
   },
   read(s, caps) {
     return {
       urls: s.getTextList(0),
       maxBytes: s.getUint32(0),
       conditions: s.getStructList(1, 0, 2).map((item) => CoverConditionCodec.read(item, caps)),
+      media: fromOrd(A.REMOTE_MEDIAS, s.getUint16(2), "RemoteMedia"),
     };
   },
 };

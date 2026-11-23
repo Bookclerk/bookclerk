@@ -162,6 +162,9 @@ the host's probed codecs are, so an offer compares with a held file.
 OfferedAacProfile = Literal["unknown", "lc", "he", "heV2", "xhe"]
 """AAC profile of an offered AAC stream (`QualityOffer.aacProfile`)."""
 
+RemoteMedia = Literal["image", "audio"]
+"""The kind of public media `CoverFetcher.fetchCovers` downloads."""
+
 MetadataField = Literal[
     "title",
     "subtitle",
@@ -4680,6 +4683,12 @@ class CatalogHit(TypedDict):
             for relevance and popularity sorts and puts unranked hits after ranked ones.
             Other catalog methods leave it 0. Omitted when absent (wire zero value).
         explicitness: Whether the storefront marks the edition explicit (adult) content.
+        sampleUrl: Absolute `https://` URL of a short audio sample of this edition that
+            the storefront offers publicly (a few minutes, in any format the media
+            worker decodes). The host never hands it to a client: a book's details play
+            it through a same-origin path, fetched by a `covers` plugin with `media =
+            audio` and re-encoded in the media worker. Empty when the store has none.
+            Omitted when absent (wire zero value).
     """
 
     productId: str
@@ -4709,6 +4718,7 @@ class CatalogHit(TypedDict):
     parentProductId: NotRequired[str]
     rankHint: NotRequired[int]
     explicitness: Explicitness
+    sampleUrl: NotRequired[str]
 
 
 class CatalogHits(TypedDict):
@@ -6044,11 +6054,16 @@ class CoverFetchParams(TypedDict):
         conditions: Conditional request headers per URL, in the same order as `urls`,
             from the host's cached copy. Empty, or shorter than `urls`, means the
             remaining URLs are fetched unconditionally.
+        media: What the URLs name: cover art (the default) or a storefront's audio
+            sample (`CatalogHit.sampleUrl`). A fetcher sends a matching `Accept` header
+            and refuses a body whose `Content-Type` names something else; the host
+            checks and re-encodes either kind regardless.
     """
 
     urls: list[str]
     maxBytes: int
     conditions: list[CoverCondition]
+    media: RemoteMedia
 
 
 class CoverCondition(TypedDict):
@@ -8833,6 +8848,7 @@ __all__ = [
     "Explicitness",
     "OfferedCodec",
     "OfferedAacProfile",
+    "RemoteMedia",
     "MetadataField",
     "NotificationSeverity",
     "NotificationAudience",

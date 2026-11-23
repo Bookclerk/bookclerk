@@ -1322,6 +1322,56 @@ impl From<plugin_capnp::OfferedAacProfile> for OfferedAacProfile {
     }
 }
 
+/// The kind of public media `CoverFetcher.fetchCovers` downloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RemoteMedia {
+    /// Cover art or another image.
+    #[default]
+    Image,
+    /// A short audio sample of a book.
+    Audio,
+}
+
+impl RemoteMedia {
+    /// Wire name of this enumerant (matches the TypeScript / Python SDK literal).
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Image => "image",
+            Self::Audio => "audio",
+        }
+    }
+
+    /// Parse a wire name; `None` for unknown strings.
+    #[must_use]
+    pub fn from_wire_name(name: &str) -> Option<Self> {
+        match name {
+            "image" => Some(Self::Image),
+            "audio" => Some(Self::Audio),
+            _ => None,
+        }
+    }
+}
+
+impl From<RemoteMedia> for plugin_capnp::RemoteMedia {
+    fn from(value: RemoteMedia) -> Self {
+        match value {
+            RemoteMedia::Image => Self::Image,
+            RemoteMedia::Audio => Self::Audio,
+        }
+    }
+}
+
+impl From<plugin_capnp::RemoteMedia> for RemoteMedia {
+    fn from(value: plugin_capnp::RemoteMedia) -> Self {
+        match value {
+            plugin_capnp::RemoteMedia::Image => Self::Image,
+            plugin_capnp::RemoteMedia::Audio => Self::Audio,
+        }
+    }
+}
+
 /// A field of a `MetadataFileRecord`. Dialects declare in the manifest which
 /// fields their format carries; a parsed record lists the ones its file
 /// states, and a render request lists the ones to write.
@@ -2864,6 +2914,15 @@ pub struct CatalogHit {
     /// Whether the storefront marks the edition explicit (adult) content.
     #[serde(default)]
     pub explicitness: Explicitness,
+    /// Absolute `https://` URL of a short audio sample of this edition that
+    /// the storefront offers publicly (a few minutes, in any format the media
+    /// worker decodes). The host never hands it to a client: a book's details
+    /// play it through a same-origin path, fetched by a `covers` plugin with
+    /// `media = audio` and re-encoded in the media worker. Empty when the store
+    /// has none.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_url: Option<String>,
 }
 
 /// Success payload of the catalog list methods.
@@ -3670,6 +3729,12 @@ pub struct CoverFetchParams {
     /// remaining URLs are fetched unconditionally.
     #[serde(default)]
     pub conditions: Vec<CoverCondition>,
+    /// What the URLs name: cover art (the default) or a storefront's audio
+    /// sample (`CatalogHit.sampleUrl`). A fetcher sends a matching `Accept`
+    /// header and refuses a body whose `Content-Type` names something else;
+    /// the host checks and re-encodes either kind regardless.
+    #[serde(default)]
+    pub media: RemoteMedia,
 }
 
 /// Validators the host already holds for one URL, sent as conditional request
@@ -6485,6 +6550,9 @@ pub fn write_catalog_hit(
         b.set_rank_hint(value);
     }
     b.set_explicitness(v.explicitness.into());
+    if let Some(value) = &v.sample_url {
+        b.set_sample_url(value);
+    }
     Ok(())
 }
 
@@ -6534,6 +6602,7 @@ pub fn read_catalog_hit(r: plugin_capnp::catalog_hit::Reader<'_>) -> capnp::Resu
         parent_product_id: opt_text(r.get_parent_product_id()?)?,
         rank_hint: opt_num(r.get_rank_hint()),
         explicitness: r.get_explicitness()?.into(),
+        sample_url: opt_text(r.get_sample_url()?)?,
     })
 }
 
@@ -8656,6 +8725,7 @@ pub fn write_cover_fetch_params(
             write_cover_condition(items.reborrow().get(list_len(i)?), item)?;
         }
     }
+    b.set_media(v.media.into());
     Ok(())
 }
 
@@ -8675,6 +8745,7 @@ pub fn read_cover_fetch_params(
             .iter()
             .map(|item| read_cover_condition(item))
             .collect::<capnp::Result<Vec<_>>>()?,
+        media: r.get_media()?.into(),
     })
 }
 

@@ -26,6 +26,18 @@ you move between screens. It has:
 Only one book plays at a time. Starting another book stops the first and
 keeps its place.
 
+## Hear a sample
+
+Open any book, in **Library**, **Discover** or **Wishlist**, and press
+**Sample** to hear a few minutes of it. A book the library holds plays 5
+minutes from near its start (after a short opening chapter, when it has
+one). Otherwise Bookclerk plays the public sample a store that sells the
+book offers; when no store has one, the button says **No sample**.
+
+A sample is only a preview. It does not move your place in the book,
+does not mark anything finished and does not change what Discover
+suggests. Starting one pauses a book that is playing.
+
 ## Continue listening
 
 Books you are part way through appear on the **Continue listening** shelf

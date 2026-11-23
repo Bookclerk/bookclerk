@@ -12,9 +12,9 @@ desktop/app--add-branch--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 desktop/app--add-branch--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
-desktop/app--book-details--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+desktop/app--book-details--dark.png b179a075afd9fec03ea4714797e0be8fa0796948
 
-desktop/app--book-details--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+desktop/app--book-details--light.png b179a075afd9fec03ea4714797e0be8fa0796948
 
 desktop/app--change-picture--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
@@ -32,9 +32,9 @@ desktop/app--discover--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 desktop/app--discover--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
-desktop/app--discover-details--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+desktop/app--discover-details--dark.png b179a075afd9fec03ea4714797e0be8fa0796948
 
-desktop/app--discover-details--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+desktop/app--discover-details--light.png b179a075afd9fec03ea4714797e0be8fa0796948
 
 desktop/app--discover-search--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
@@ -84,9 +84,9 @@ desktop/app--settings-account--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 desktop/app--settings-account--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
-desktop/app--settings-branches--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+desktop/app--settings-branches--dark.png b179a075afd9fec03ea4714797e0be8fa0796948
 
-desktop/app--settings-branches--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+desktop/app--settings-branches--light.png b179a075afd9fec03ea4714797e0be8fa0796948
 
 desktop/app--settings-library--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
@@ -130,7 +130,7 @@ desktop/app--settings-sign-in--light.png 8d05420908dfd07e138cb0fc8cc825be243b008
 
 desktop/app--settings-users--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
-desktop/app--settings-users--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+desktop/app--settings-users--light.png b179a075afd9fec03ea4714797e0be8fa0796948
 
 desktop/app--sign-in--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
@@ -156,7 +156,7 @@ desktop/app--welcome-join--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 desktop/app--welcome-join--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
-desktop/app--wishlist--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+desktop/app--wishlist--dark.png b179a075afd9fec03ea4714797e0be8fa0796948
 
 desktop/app--wishlist--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
@@ -500,9 +500,9 @@ phone/app--add-branch--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 phone/app--add-branch--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
-phone/app--book-details--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+phone/app--book-details--dark.png b179a075afd9fec03ea4714797e0be8fa0796948
 
-phone/app--book-details--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+phone/app--book-details--light.png b179a075afd9fec03ea4714797e0be8fa0796948
 
 phone/app--change-picture--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
@@ -520,9 +520,9 @@ phone/app--discover--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 phone/app--discover--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
-phone/app--discover-details--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+phone/app--discover-details--dark.png b179a075afd9fec03ea4714797e0be8fa0796948
 
-phone/app--discover-details--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+phone/app--discover-details--light.png b179a075afd9fec03ea4714797e0be8fa0796948
 
 phone/app--discover-search--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
@@ -644,7 +644,7 @@ phone/app--welcome-join--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 phone/app--welcome-join--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
-phone/app--wishlist--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+phone/app--wishlist--dark.png b179a075afd9fec03ea4714797e0be8fa0796948
 
 phone/app--wishlist--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 

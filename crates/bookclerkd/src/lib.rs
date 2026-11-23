@@ -75,6 +75,7 @@ mod registry;
 mod request_queue_job;
 mod requirements_sweep;
 mod restart;
+mod samples;
 mod scheduler;
 mod search_index;
 #[cfg(test)]
@@ -646,6 +647,7 @@ async fn assemble_host(
         in_window: std::sync::OnceLock::new(),
         library_swaps: tokio::sync::watch::Sender::new(0),
         covers: Arc::new(open_cover_service(&paths.cache_dir)),
+        samples: Arc::new(open_sample_service(&paths.cache_dir)),
     });
 
     // Only a listening daemon serves a public address: the ingress host is
@@ -842,6 +844,15 @@ fn open_cover_service(cache_dir: &std::path::Path) -> covers::CoverService {
             covers::CoverService::detached()
         },
     )
+}
+
+/// The sample service caching under `<cache>/samples`, or a detached one
+/// that keeps no samples (logged) when that directory cannot be prepared.
+fn open_sample_service(cache_dir: &std::path::Path) -> samples::SampleService {
+    samples::SampleService::open(cache_dir.join("samples")).unwrap_or_else(|err| {
+        tracing::error!(error = %err, "sample cache unavailable; samples will not be kept");
+        samples::SampleService::detached()
+    })
 }
 
 /// Completes when the process should exit or listeners must rebind after a config reload.

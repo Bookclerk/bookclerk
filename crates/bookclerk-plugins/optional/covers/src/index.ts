@@ -19,7 +19,10 @@ import type { Env } from "../bookclerk-configuration.js";
 import { CoverFailure, fetchCovers } from "./fetcher.ts";
 import { VERSION } from "./version.ts";
 
-/** `covers` entrypoint: downloads cover images into the host's sink. */
+/**
+ * `covers` entrypoint: downloads cover images, or a store's audio samples,
+ * into the host's sink.
+ */
 export class Covers extends CoverEntrypoint<Env> {
   /**
    * Reports ready without a request.
@@ -33,7 +36,7 @@ export class Covers extends CoverEntrypoint<Env> {
   /**
    * Fetches each URL and streams its body into `sink` under its index.
    *
-   * @param params - URLs and the per-image byte cap.
+   * @param params - URLs, the per-body byte cap, and what they name.
    * @param sink - The host's destination for the bodies.
    * @returns One answer per URL, in request order.
    * @throws {PluginError} `invalid_params` when the request is malformed.

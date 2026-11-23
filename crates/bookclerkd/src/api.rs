@@ -119,6 +119,10 @@ pub struct AppState {
     /// Signs cover URLs into same-origin paths and serves the processed
     /// images (`GET /api/covers/{token}/{size}`).
     pub covers: Arc<crate::covers::CoverService>,
+    /// Signs store sample URLs into same-origin paths and keeps encoded
+    /// book samples (`GET /api/samples/{token}`,
+    /// `GET /api/library/editions/{id}/sample`).
+    pub samples: Arc<crate::samples::SampleService>,
 }
 
 /// In-process tray Open Bookclerk ticket: hash of a one-time code plus expiry.
@@ -1559,6 +1563,9 @@ fn shared_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(crate::covers::get_image))
         .routes(routes!(crate::covers::get_gravatar))
         .routes(routes!(crate::covers::get_store_icon))
+        .routes(routes!(crate::samples::get_edition_sample))
+        .routes(routes!(crate::samples::get_store_sample))
+        .routes(routes!(crate::samples::post_title_sample))
         .routes(routes!(discover_status))
         .routes(routes!(discover_refresh))
         .routes(routes!(discover_recommendations))
@@ -2111,7 +2118,8 @@ fn api_timeout_for_path(path: &str) -> Duration {
         | "/api/discover/purchase-hints/batch"
         | "/api/discover/title-meta"
         | "/api/discover/title-meta/batch"
-        | "/api/discover/title-reviews" => Duration::from_secs(25),
+        | "/api/discover/title-reviews"
+        | "/api/discover/title-sample" => Duration::from_secs(25),
         // Parallel store searches (~7s each) + optional page enrich (~3.5s).
         "/api/discover/search" => Duration::from_secs(16),
         // Leave library waits for the library to hear `node.leaving`
@@ -2142,6 +2150,9 @@ fn api_timeout_for_path(path: &str) -> Duration {
         "/api/config/join/connections" | "/api/config/join/connections/disconnect" => {
             Duration::from_secs(30)
         }
+        // Cutting a sample the first time waits on a download and the
+        // media worker (`crate::samples::ROUTE_BUDGET`).
+        sample if crate::samples::is_sample_path(sample) => crate::samples::ROUTE_BUDGET,
         _ => Duration::from_secs(8),
     }
 }
@@ -6771,7 +6782,7 @@ async fn discover_title_meta_batch(
 /// Rejects a title-metadata query that has no title, ASIN, or ISBN, or that
 /// names more than [`bookclerk_discover::TITLE_META_MAX_STORE_EDITIONS`]
 /// store editions.
-fn validate_title_meta_query(
+pub(crate) fn validate_title_meta_query(
     body: &bookclerk_discover::TitleMetaQuery,
 ) -> Result<(), (StatusCode, String)> {
     bookclerk_discover::check_title_meta_query(body)
@@ -7839,6 +7850,23 @@ mod tests {
         assert!(super::WISH_ENRICH_BUDGET + std::time::Duration::from_secs(2) <= route);
     }
 
+    /// Sample routes outlast the media worker's own limit, and the
+    /// title-sample lookup outlasts its store calls.
+    #[test]
+    fn sample_routes_outlast_their_work() {
+        for path in ["/api/samples/abc.def", "/api/library/editions/e-1/sample"] {
+            assert!(super::api_timeout_for_path(path) > bookclerk_media::SAMPLE_TIMEOUT);
+        }
+        assert_eq!(
+            super::api_timeout_for_path("/api/library/editions/e-1/cover"),
+            std::time::Duration::from_secs(8)
+        );
+        assert!(
+            super::api_timeout_for_path("/api/discover/title-sample")
+                > std::time::Duration::from_secs(10)
+        );
+    }
+
     use super::{
         allowed_setting_key, apply_database_enable_updates, build_approved_grant,
         build_database_settings_group, current_settings_snapshot,
@@ -8634,6 +8662,7 @@ tcp = {tcp}
             in_window: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
             covers: Arc::new(crate::covers::CoverService::detached()),
+            samples: Arc::new(crate::samples::SampleService::detached()),
         })
     }
 
@@ -9261,6 +9290,7 @@ default_port = 5432
             in_window: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
             covers: Arc::new(crate::covers::CoverService::detached()),
+            samples: Arc::new(crate::samples::SampleService::detached()),
         });
 
         let app = Router::new()
@@ -9365,6 +9395,7 @@ default_port = 5432
             in_window: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
             covers: Arc::new(crate::covers::CoverService::detached()),
+            samples: Arc::new(crate::samples::SampleService::detached()),
         });
 
         let app = Router::new()
@@ -9527,6 +9558,7 @@ default_port = 5432
             in_window: std::sync::OnceLock::new(),
             library_swaps: tokio::sync::watch::Sender::new(0),
             covers: Arc::new(crate::covers::CoverService::detached()),
+            samples: Arc::new(crate::samples::SampleService::detached()),
         });
         let scan = || {
             Request::builder()

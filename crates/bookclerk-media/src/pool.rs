@@ -34,7 +34,7 @@ use tokio::sync::Semaphore;
 use crate::cover_worker::{CoverRunner, CoverWorker};
 use crate::error::{MediaError, Result};
 use crate::job::{MediaJob, MediaJobOutput, MediaJobReply};
-use crate::pcm_stream::{PcmRunner, PcmStream};
+use crate::pcm_stream::{EncodedSample, PcmRunner, PcmStream};
 use crate::tag_worker::{RangeSource, TagRunner, TagWorker};
 use crate::worker_pipe::ThreadPipe;
 
@@ -159,6 +159,10 @@ enum Runner {
 pub struct MediaPool {
     /// Concurrency limiter; one permit is held for the lifetime of each job.
     permits: Arc<Semaphore>,
+    /// Samples being cut at once, apart from the job slots: as many as
+    /// there are job slots, so presses of **Sample** cannot start a worker
+    /// each without bound.
+    samples: Arc<Semaphore>,
     /// Normalized settings this pool was built from, kept so a later config can
     /// be compared against what is actually running.
     config: MediaPoolConfig,
@@ -240,6 +244,7 @@ impl MediaPool {
         };
         Self {
             permits: Arc::new(Semaphore::new(config.workers)),
+            samples: Arc::new(Semaphore::new(config.workers)),
             covers: Box::new(CoverWorker::new(cover_runner, config.workers)),
             tags: Box::new(TagWorker::new(tag_runner)),
             pcm: Box::new(pcm),
@@ -402,6 +407,53 @@ impl MediaPool {
         source: S,
     ) -> Result<PcmStream> {
         self.pcm.open(size, start_ms, source).await
+    }
+
+    /// Cuts a short sample of one audio file, folded to mono and encoded
+    /// as MP3, for a book's details (`bookclerk-media-worker pcm`, opened
+    /// with `Sample`).
+    ///
+    /// Like [`Self::open_pcm`], each call starts its own worker, jailed to
+    /// no path and no network, which asks for the byte ranges it reads. It
+    /// does not take a job slot; samples have their own limit, as many at
+    /// once as there are job slots, and a call waits for one. The worker decodes only the sample's span,
+    /// and the bytes returned are its encoding, never the file's own. With
+    /// isolation off, samples are refused, never cut in this process.
+    ///
+    /// # Arguments
+    ///
+    /// * `size` - The file's size in bytes.
+    /// * `start_ms` - Where the sample starts, in milliseconds into the
+    ///   file.
+    /// * `length_ms` - How long it runs; at most
+    ///   [`crate::pcm_wire::MAX_SAMPLE_MS`], and less when the file ends
+    ///   first.
+    /// * `source` - Where the file's bytes come from.
+    ///
+    /// # Errors
+    ///
+    /// [`MediaError::NotIsolated`] when isolation is off or no worker was
+    /// found, [`MediaError::Native`] when the file cannot be decoded or
+    /// encoded, [`MediaError::Io`] when `source` fails, and
+    /// [`MediaError::Worker`] when the worker cannot be started, breaks the
+    /// protocol, sends more than [`crate::MAX_SAMPLE_BYTES`], or
+    /// takes longer than [`crate::SAMPLE_TIMEOUT`].
+    pub async fn cut_sample<S: RangeSource + 'static>(
+        &self,
+        size: u64,
+        start_ms: u64,
+        length_ms: u64,
+        source: S,
+    ) -> Result<EncodedSample> {
+        let _slot = self
+            .samples
+            .acquire()
+            .await
+            .map_err(|err| MediaError::Worker {
+                job: "sample",
+                detail: format!("pool closed: {err}"),
+            })?;
+        self.pcm.cut_sample(size, start_ms, length_ms, source).await
     }
 
     /// Run `job`, waiting for a free slot first.

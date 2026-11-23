@@ -56,6 +56,7 @@ pub fn region_tld(region: &str) -> &'static str {
         "it" => ".it",
         "in" => ".in",
         "es" => ".es",
+        "br" => ".com.br",
         _ => ".com",
     }
 }
@@ -74,7 +75,7 @@ pub fn normalize_region(region: &str) -> String {
     match region.trim().to_ascii_lowercase().as_str() {
         "gb" => "uk".into(),
         "" => "us".into(),
-        "us" | "ca" | "uk" | "au" | "fr" | "de" | "jp" | "it" | "in" | "es" => {
+        "us" | "ca" | "uk" | "au" | "fr" | "de" | "jp" | "it" | "in" | "es" | "br" => {
             region.trim().to_ascii_lowercase()
         }
         _ => "us".into(),
@@ -187,6 +188,10 @@ pub struct CatalogProduct {
     /// Audible's adult flag (`is_adult_product`, in `product_attrs`):
     /// `Some(true)` for explicit content, `None` when the reply omits it.
     pub is_explicit: Option<bool>,
+    /// Public `https` URL of the title's audio sample (`sample_url`, in the
+    /// `media` response group); `None` when the reply has none or it is not
+    /// an absolute `https` URL.
+    pub sample_url: Option<String>,
 }
 
 /// Search the public Audible catalog by title/author; returns ASINs (relevance order).
@@ -1280,7 +1285,19 @@ fn parse_catalog_product(p: &Value) -> Option<CatalogProduct> {
         rating_overall,
         rating_count,
         is_explicit: p.get("is_adult_product").and_then(Value::as_bool),
+        sample_url: product_sample_url(p),
     })
+}
+
+/// The product's `sample_url`, trimmed, when it looks like an absolute
+/// `https` URL with a host and no spaces or control characters. The host
+/// parses it again before it fetches anything.
+fn product_sample_url(p: &Value) -> Option<String> {
+    let raw = p.get("sample_url")?.as_str()?.trim();
+    let rest = raw.strip_prefix("https://")?;
+    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let clean = !raw.chars().any(|c| c.is_whitespace() || c.is_control());
+    (clean && !host.is_empty()).then(|| raw.to_owned())
 }
 
 /// The catalog's `isbn` attribute as compact ISBN text: hyphens and spaces
@@ -1922,6 +1939,48 @@ fn saturating_i64(n: f64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every marketplace a detail lookup tries reaches its own catalog, so
+    /// none silently falls back to the US one.
+    #[test]
+    fn each_marketplace_has_its_own_catalog_origin() {
+        let regions = [
+            "us", "uk", "ca", "au", "de", "fr", "it", "es", "in", "jp", "br",
+        ];
+        let origins: std::collections::BTreeSet<String> =
+            regions.iter().map(|r| catalog_origin(r)).collect();
+        assert_eq!(origins.len(), regions.len(), "{origins:?}");
+        assert_eq!(catalog_origin("br"), "https://api.audible.com.br");
+        assert_eq!(normalize_region(" BR "), "br");
+    }
+
+    #[test]
+    fn the_sample_url_is_kept_only_when_it_is_https() {
+        let sample = |value: serde_json::Value| {
+            parse_catalog_product(&serde_json::json!({
+                "asin": "B0BOOK0001",
+                "title": "Sampled",
+                "sample_url": value
+            }))
+            .unwrap()
+            .sample_url
+        };
+        assert_eq!(
+            sample(serde_json::json!(
+                " https://samples.audible.com/bk/adbl/000001/bk_adbl_000001_sample.mp3 "
+            ))
+            .as_deref(),
+            Some("https://samples.audible.com/bk/adbl/000001/bk_adbl_000001_sample.mp3")
+        );
+        assert_eq!(
+            sample(serde_json::json!("http://samples.example/a.mp3")),
+            None
+        );
+        assert_eq!(sample(serde_json::json!("https:///a.mp3")), None);
+        assert_eq!(sample(serde_json::json!("https://a b/c.mp3")), None);
+        assert_eq!(sample(serde_json::json!(7)), None);
+        assert_eq!(sample(serde_json::Value::Null), None);
+    }
 
     #[test]
     fn json_numbers_clamp_into_i64() {

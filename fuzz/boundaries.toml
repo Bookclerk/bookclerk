@@ -310,7 +310,7 @@ artifacts = ["bookclerk"]
 
 [targets.cover_token]
 crate = "bookclerk-cover"
-boundary = "Cover tokens in /api/covers and /api/images paths, and Gravatar hashes in /api/avatars paths (which remote URL a route may fetch)"
+boundary = "Cover tokens in /api/covers and /api/images paths, store-sample tokens in /api/samples paths, and Gravatar hashes in /api/avatars paths (which remote URL a route may fetch)"
 input_from = "signed-in user"
 side = "host"
 artifacts = ["bookclerk"]
@@ -324,7 +324,7 @@ artifacts = ["bookclerk"]
 
 [targets.media_decode]
 crate = "bookclerk-media"
-boundary = "Audio the media worker demuxes and decodes before encoding or repackaging it (store downloads, library copies, files on storage)"
+boundary = "Audio the media worker demuxes and decodes before encoding or repackaging it (store downloads and store samples, library copies, files on storage)"
 input_from = "store"
 side = "host"
 artifacts = ["bookclerk"]
@@ -338,7 +338,7 @@ artifacts = ["bookclerk"]
 
 [targets.media_pcm_wire]
 crate = "bookclerk-media"
-boundary = "PCM worker frames (requests the worker reads, replies and reply streams the host reads while a player plays)"
+boundary = "PCM worker frames (requests the worker reads, replies and reply streams the host reads while a player plays or a book sample is cut)"
 input_from = "media worker"
 side = "host"
 artifacts = ["bookclerk"]
@@ -485,7 +485,7 @@ artifacts = ["bookclerk"]
 
 [targets.copy_range]
 crate = "bookclerk-node-proto"
-boundary = "The Range header of a copy download, GET /api/copies/v1/{copy_id}/files/{n}, which decides which bytes of a library's file are sent"
+boundary = "The Range header of a copy download, GET /api/copies/v1/{copy_id}/files/{n}, and of the book-sample routes, which decides which bytes are sent"
 input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]
@@ -548,7 +548,7 @@ artifacts = ["bookclerk"]
 
 [targets.title_meta_fill]
 crate = "bookclerk-discover"
-boundary = "A user's title-meta query and the storefront lookups its store editions plan, from POST /api/discover/title-meta and its batch route"
+boundary = "A user's title-meta query and the storefront lookups its store editions plan, from POST /api/discover/title-meta, its batch route and POST /api/discover/title-sample"
 input_from = "signed-in user"
 side = "host"
 artifacts = ["bookclerk"]
