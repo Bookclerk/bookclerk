@@ -1319,7 +1319,8 @@ The tests live in `scripts/tests/`, and each corpus beside them.
 
 The upstream model files the builder reads are not a boundary of this
 kind: each is refused unless its size and SHA-256 match the pin in
-`scripts/model-packs/models.json` before anything parses it.
+`scripts/model-packs/models.json` before anything parses it. That holds
+for a copy restored from the workflow's cache as for a download.
 
 ### Tool versions bump (Python)
 
