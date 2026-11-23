@@ -6,7 +6,10 @@
  * stream 5 and then serves the streams ngrok opens: a proxied connection
  * carries one HTTP/1.1 request, which goes to the library; a heartbeat
  * stream is echoed; the server's restart, stop and update requests are
- * declined; a stop-tunnel notice ends the session's endpoint.
+ * declined; a stop-tunnel notice ends the session's endpoint. A WebSocket
+ * upgrade opens a socket to the library, and the stream then carries
+ * frames both ways ({@link Session.fromLibrary},
+ * {@link Session.libraryClosed}).
  *
  * Flow control follows muxado: each stream starts with a 256 KiB window
  * each way. The session widens ngrok's window as soon as it has taken the
@@ -16,7 +19,8 @@
 import { ChunkedDecoder, ChunkedError, errorResponse, parseRequestHead, } from "./http1.js";
 import { StreamType, authReply, authRequest, bindReply, bindRequest, clientIp, parseProxyHeader, parseRpcObject, readType, typePrefix, } from "./messages.js";
 import { ErrorCode, FLAG_FIN, FLAG_SYN, FrameReader, INITIAL_WINDOW, MuxError, concat, encodeData, encodeGoAway, encodeRst, encodeWndInc, } from "./mux.js";
-import { MAX_REQUEST_BODY, continueBody, serveRequest, } from "./serve.js";
+import { MAX_REQUEST_BODY, continueBody, serveRequest, serveUpgrade, } from "./serve.js";
+import { CloseCode, FrameDecoder, Opcode, WsError, encodeClose, encodeFrame, isSendableCloseCode, } from "./ws.js";
 /** Largest DATA frame body the session writes, in bytes. */
 export const MAX_WRITE_FRAME = 64 * 1024;
 /**
@@ -32,6 +36,16 @@ export const MAX_STREAMS = 256;
  * 128 MiB, and many slow streams must not exhaust it.
  */
 export const MAX_SESSION_BYTES = 64 * 1024 * 1024;
+/**
+ * Largest WebSocket message passed between a client and the library, in
+ * bytes; the host's socket frame limit (`MAX_SOCKET_FRAME_BYTES`).
+ */
+export const MAX_SOCKET_MESSAGE = 256 * 1024;
+/**
+ * Most bytes a WebSocket stream may hold waiting for ngrok's window. Past
+ * it the client is not reading, and the connection is closed.
+ */
+export const MAX_SOCKET_BACKLOG = 4 * 1024 * 1024;
 /** The bind id this agent uses for its one endpoint. */
 const BIND_ID = "bookclerk";
 /**
@@ -47,6 +61,18 @@ function append(a, b) {
     if (b.length === 0)
         return a;
     return concat(a, b);
+}
+/**
+ * Bytes a proxied stream has queued for ngrok's window.
+ *
+ * @param state - The stream's state.
+ * @returns The sum.
+ */
+function backlog(state) {
+    let total = 0;
+    for (const part of state.out.queue)
+        total += part.length;
+    return total;
 }
 /** One agent session. */
 export class Session {
@@ -220,11 +246,16 @@ export class Session {
                     ? `ngrok ended the session: ${frame.debug}`
                     : `ngrok ended the session (code ${frame.code})`;
                 return;
-            case "rst":
+            case "rst": {
+                const state = this.#streams.get(frame.stream);
                 this.#streams.delete(frame.stream);
                 if (frame.stream === this.#beatStream)
                     this.#beatStream = 0;
+                if (state?.kind === "proxy" && state.socket !== null) {
+                    await this.#closeLibrary(io, state, CloseCode.GoingAway, "the client went away");
+                }
                 return;
+            }
             case "wndinc": {
                 const state = this.#streams.get(frame.stream);
                 if (state?.kind !== "proxy")
@@ -355,6 +386,11 @@ export class Session {
                     chunked: null,
                     out: { window: INITIAL_WINDOW, queue: [], more: null, complete: false },
                     finSent: false,
+                    connecting: false,
+                    early: [],
+                    socket: null,
+                    frames: null,
+                    closeSent: false,
                 };
             case StreamType.Heartbeat:
                 return { kind: "echo", buf: new Uint8Array() };
@@ -447,6 +483,10 @@ export class Session {
      * @returns Resolves once handled.
      */
     async #proxy(io, id, state, data, fin) {
+        if (state.reading === "socket") {
+            await this.#socketBytes(io, id, state, data, fin);
+            return;
+        }
         // Bytes after the request (pipelining) are dropped: the answer closes the connection.
         if (state.reading === "done")
             return;
@@ -493,6 +533,10 @@ export class Session {
         const head = state.head;
         const pending = state.buf;
         state.buf = new Uint8Array();
+        if (head.upgrade) {
+            await this.#upgrade(io, id, state, head, pending, fin);
+            return;
+        }
         let done = false;
         switch (head.body.kind) {
             case "none":
@@ -546,8 +590,226 @@ export class Session {
         await this.#answer(io, id, state, answer.bytes, answer.more);
     }
     /**
-     * Bytes held for all proxied streams: bodies being read and queued
-     * response bytes.
+     * Serves an upgrade: on the library's accept, writes the `101` and
+     * switches the stream to WebSocket frames.
+     *
+     * @param io - The connection and the library.
+     * @param id - The stream.
+     * @param state - Its state.
+     * @param head - The upgrade's head.
+     * @param pending - Bytes after the head: the client's first frames.
+     * @param fin - Whether ngrok finished writing.
+     * @returns Resolves once answered.
+     */
+    async #upgrade(io, id, state, head, pending, fin) {
+        state.reading = "done";
+        if (fin) {
+            // The client finished sending before its socket opened.
+            this.#reset(id);
+            return;
+        }
+        state.connecting = true;
+        const header = state.header;
+        const answer = await serveUpgrade(io.library, this.options.domain, head, clientIp(header.clientAddr), id);
+        state.connecting = false;
+        if (answer.kind === "answer") {
+            state.early = [];
+            await this.#answer(io, id, state, answer.answer.bytes, answer.answer.more);
+            return;
+        }
+        if (this.#streams.get(id) !== state || this.phase === "closed") {
+            // ngrok reset the stream, or the session ended, while the library answered.
+            await io.library
+                .socket(answer.id)
+                ?.close(CloseCode.GoingAway, "the client went away")
+                .catch(() => { });
+            return;
+        }
+        state.reading = "socket";
+        state.socket = answer.id;
+        state.frames = new FrameDecoder(MAX_SOCKET_MESSAGE);
+        state.out.queue.push(answer.head, ...state.early);
+        state.early = [];
+        this.#send(id, state);
+        await this.#socketBytes(io, id, state, pending, false);
+    }
+    /**
+     * Reads a client's WebSocket frames and passes its messages to the
+     * library.
+     *
+     * @param io - The connection and the library.
+     * @param id - The stream.
+     * @param state - Its state.
+     * @param data - The bytes.
+     * @param fin - Whether ngrok finished writing (the client went away).
+     * @returns Resolves once the messages were passed on.
+     */
+    async #socketBytes(io, id, state, data, fin) {
+        let messages;
+        try {
+            messages = state.frames.push(data);
+        }
+        catch (err) {
+            if (!(err instanceof WsError))
+                throw err;
+            const close = { code: err.code, reason: err.message };
+            await this.#endSocket(io, id, state, close, close);
+            return;
+        }
+        for (const message of messages) {
+            switch (message.kind) {
+                case "text":
+                case "binary": {
+                    const socket = io.library.socket(state.socket);
+                    try {
+                        if (socket === null)
+                            throw new Error("gone");
+                        await socket.send(message.kind === "text" ? message.text : message.data);
+                    }
+                    catch {
+                        await this.#endSocket(io, id, state, { code: CloseCode.GoingAway, reason: "the library closed the connection" }, null);
+                        return;
+                    }
+                    break;
+                }
+                case "ping":
+                    state.out.queue.push(encodeFrame(Opcode.Pong, message.data));
+                    this.#send(id, state);
+                    break;
+                case "pong":
+                    break;
+                case "close":
+                    await this.#endSocket(io, id, state, { code: message.code, reason: message.reason }, { code: message.code ?? CloseCode.Normal, reason: message.reason });
+                    return;
+            }
+        }
+        if (fin) {
+            await this.#endSocket(io, id, state, null, {
+                code: CloseCode.GoingAway,
+                reason: "the client went away",
+            });
+            return;
+        }
+        if (backlog(state) > MAX_SOCKET_BACKLOG) {
+            // Pongs pile up when the client sends pings but doesn't read.
+            const close = { code: CloseCode.PolicyViolation, reason: "the client is not reading" };
+            await this.#endSocket(io, id, state, close, close);
+        }
+        else if (this.#held() > MAX_SESSION_BYTES) {
+            const close = { code: CloseCode.TryAgainLater, reason: "the ngrok tunnel is busy" };
+            await this.#endSocket(io, id, state, close, close);
+        }
+    }
+    /**
+     * Ends a stream's WebSocket: a close frame to the client, then FIN once
+     * the queue drains, and a close to the library.
+     *
+     * @param io - The connection and the library.
+     * @param id - The stream.
+     * @param state - Its state.
+     * @param client - The close frame for the client, or `null` for none.
+     * @param library - The close for the library's socket, or `null` when it
+     *   closed already.
+     * @returns Resolves once both were sent as far as the window allows.
+     */
+    async #endSocket(io, id, state, client, library) {
+        state.reading = "done";
+        state.frames = null;
+        if (client !== null && !state.closeSent) {
+            state.out.queue.push(encodeClose(client.code, client.reason));
+            state.closeSent = true;
+        }
+        state.out.complete = true;
+        if (library !== null) {
+            await this.#closeLibrary(io, state, library.code ?? CloseCode.Normal, library.reason);
+        }
+        state.socket = null;
+        await this.#drain(io, id, state);
+    }
+    /**
+     * Closes a stream's socket to the library, once.
+     *
+     * @param io - The library.
+     * @param state - The stream's state.
+     * @param code - Close code.
+     * @param reason - Close reason.
+     * @returns Resolves once the close was sent (or the socket was gone).
+     */
+    async #closeLibrary(io, state, code, reason) {
+        const id = state.socket;
+        state.socket = null;
+        if (id === null)
+            return;
+        await io.library
+            .socket(id)
+            ?.close(isSendableCloseCode(code) ? code : CloseCode.Normal, reason)
+            .catch(() => { });
+    }
+    /**
+     * Passes a message from the library's socket to the client.
+     *
+     * @param io - The connection.
+     * @param stream - The stream the socket belongs to.
+     * @param message - The message.
+     * @returns `false` when the stream no longer carries the WebSocket (the
+     *   caller closes the library's socket).
+     */
+    async fromLibrary(io, stream, message) {
+        const state = this.#streams.get(stream);
+        if (state?.kind !== "proxy")
+            return false;
+        const frame = typeof message === "string"
+            ? encodeFrame(Opcode.Text, new TextEncoder().encode(message))
+            : encodeFrame(Opcode.Binary, new Uint8Array(message));
+        if (state.connecting) {
+            // The library spoke before its accept reached this session.
+            let early = frame.length;
+            for (const part of state.early)
+                early += part.length;
+            if (early > MAX_SOCKET_BACKLOG)
+                return false;
+            state.early.push(frame);
+            return true;
+        }
+        if (state.reading !== "socket")
+            return false;
+        state.out.queue.push(frame);
+        if (backlog(state) > MAX_SOCKET_BACKLOG || this.#held() > MAX_SESSION_BYTES) {
+            const close = { code: CloseCode.PolicyViolation, reason: "the client is not reading" };
+            await this.#endSocket(io, stream, state, close, close);
+        }
+        else {
+            this.#send(stream, state);
+        }
+        await this.#flush(io);
+        return true;
+    }
+    /**
+     * Passes the library's close to the client.
+     *
+     * @param io - The connection.
+     * @param stream - The stream the socket belonged to.
+     * @param code - The library's close code (1005 when it sent none).
+     * @param reason - Its reason.
+     * @returns Resolves once the close frame went out as far as the window
+     *   allows.
+     */
+    async libraryClosed(io, stream, code, reason) {
+        const state = this.#streams.get(stream);
+        if (state?.kind !== "proxy" || state.reading !== "socket")
+            return;
+        state.socket = null;
+        const sent = isSendableCloseCode(code)
+            ? { code, reason }
+            : code === 1005
+                ? { code: null, reason: "" }
+                : { code: CloseCode.InternalError, reason: "the library connection failed" };
+        await this.#endSocket(io, stream, state, sent, null);
+        await this.#flush(io);
+    }
+    /**
+     * Bytes held for all proxied streams: bodies being read, partial
+     * WebSocket messages and queued response bytes.
      *
      * @returns The sum.
      */
@@ -558,7 +820,10 @@ export class Session {
                 continue;
             if (state.reading === "body")
                 total += state.bodyBytes;
+            total += state.frames?.buffered ?? 0;
             for (const part of state.out.queue)
+                total += part.length;
+            for (const part of state.early)
                 total += part.length;
         }
         return total;

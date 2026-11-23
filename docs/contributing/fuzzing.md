@@ -2098,9 +2098,10 @@ another run.
 The `ngrok` guest parses everything on its agent connection: muxado
 frames and RPC replies from ngrok's servers, and, inside each proxied
 stream, the proxy header and the HTTP/1.1 request any internet client
-sends. `crates/bookclerk-plugins/optional/ingress-ngrok/test/fuzz.test.ts`
-replays `fuzz/frame/`, `fuzz/chunked/`, `fuzz/proxy/` and `fuzz/rpc/` (hex
-bytes) and `fuzz/head/` (a JSON string per head), and runs seeded byte and
+sends, and the WebSocket frames that client sends after an upgrade.
+`crates/bookclerk-plugins/optional/ingress-ngrok/test/fuzz.test.ts`
+replays `fuzz/frame/`, `fuzz/chunked/`, `fuzz/proxy/`, `fuzz/rpc/` and
+`fuzz/wsframe/` (hex bytes) and `fuzz/head/` (a JSON string per head), and runs seeded byte and
 text mutations in `npm test` (the `workerd_guests` check); `FUZZ_SEED` and
 `FUZZ_ITERATIONS` pick another run.
 
@@ -2129,6 +2130,13 @@ text mutations in `npm test` (the `workerd_guests` check); `FUZZ_SEED` and
   `encodeProxyHeader` and a second parse.
 - **RPC replies** (`parseRpcObject`). Oracle: `JSON.parse` of the same
   UTF-8 text, with only JSON's own whitespace around it.
+- **WebSocket frames** (`FrameDecoder` in `src/ws.ts`). Oracle: an
+  independent decoder of RFC 6455 section 5 over the whole input (masked
+  client frames, no reserved bits, minimal lengths, final control frames
+  of at most 125 bytes, continuation only inside a message, UTF-8 text and
+  close reasons, close codes from the wire set, a message cap checked as
+  each header arrives). The decoder gives the same messages and the same
+  close code whatever the chunk boundaries.
 
 ### Webhook notifier guest
 

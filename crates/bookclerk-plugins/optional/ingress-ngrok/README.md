@@ -23,6 +23,12 @@ TLS connection the host holds.
   (`src/http1.ts`), hands it to the library through `env.ORIGIN` with the
   client's address and writes the answer back with `Connection: close`
   (`src/agent.ts`, `src/serve.ts`).
+- A WebSocket upgrade (a branch's socket, a clerk's live link) opens a
+  socket to the library through `env.ORIGIN.connect`. The plugin answers
+  the client's handshake with `101 Switching Protocols`, then reads the
+  client's frames from the stream and passes each message to that socket,
+  and writes the library's messages back as frames (`src/ws.ts`). Either
+  side's close reaches the other, and the stream ends with it.
 - ngrok heartbeats the connection about every 10 seconds; the plugin
   echoes each beat. `health` sends a beat of its own and reports the
   endpoint serving once ngrok echoes it. When the session ended, `health`
@@ -70,8 +76,11 @@ The plugin's only network grant is TCP to `connect.ngrok-agent.com:443`.
 - The session holds at most 64 MiB for all streams together (bodies being
   read and answers waiting for ngrok); past that, a request is answered
   `503`.
-- WebSocket upgrades are answered `501` for now, so a branch's socket and
-  a clerk's live link need another ingress.
+- A WebSocket message may be up to 256 KiB either way, and up to 256
+  WebSockets are open at once. No extension (such as compression) is
+  negotiated. A client that leaves more than 4 MiB of the library's
+  messages unread is closed with `1008`.
+- Upgrades other than WebSocket are answered `501`.
 - TLS passthrough endpoints, TCP endpoints and ngrok's traffic policies are
   not supported. ngrok's restart, stop and update requests are declined;
   stopping the endpoint from the dashboard takes it offline until the next

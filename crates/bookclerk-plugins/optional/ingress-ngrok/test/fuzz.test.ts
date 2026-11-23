@@ -7,7 +7,8 @@
  * a proxied stream, from any client on the internet. Each seed in
  * `fuzz/frame/` (hex muxado bytes), `fuzz/head/` (a JSON string holding a
  * request head), `fuzz/chunked/` (hex chunked bodies), `fuzz/proxy/` (hex
- * proxy headers) and `fuzz/rpc/` (hex RPC replies) is replayed, then seeded
+ * proxy headers), `fuzz/rpc/` (hex RPC replies) and `fuzz/wsframe/` (hex
+ * WebSocket frames a client sends) is replayed, then seeded
  * mutations are checked against oracles written from the protocols' rules
  * rather than from the parsers:
  *
@@ -20,7 +21,9 @@
  *   the chunk boundaries;
  * - proxy headers: an independent little-endian length reader and
  *   `JSON.parse`, plus a round trip through `encodeProxyHeader`;
- * - RPC replies: `JSON.parse` of the same text.
+ * - RPC replies: `JSON.parse` of the same text;
+ * - WebSocket frames: an independent RFC 6455 decoder over the whole
+ *   input, and the same answer whatever the chunk boundaries.
  *
  * `FUZZ_SEED` and `FUZZ_ITERATIONS` pick another run; a failure prints the
  * seed, iteration and input that reproduce it.
@@ -45,6 +48,7 @@ import {
   parseRpcObject,
 } from "../src/messages.ts";
 import { FrameReader, MAX_FRAME_BODY, MuxError, type Frame } from "../src/mux.ts";
+import { FrameDecoder, WsError, type Message } from "../src/ws.ts";
 
 /**
  * A whole-number setting from the environment.
@@ -626,6 +630,139 @@ test("fuzz: RPC replies are JSON objects of the same text", () => {
       assert.deepEqual(result, value);
     } else {
       assert.equal(typeof result, "string");
+    }
+  });
+});
+
+// ---------------------------------------------------------------- WebSocket frames
+
+/** Largest message the WebSocket fuzzing passes on, small so 1009 is reached. */
+const WS_MAX_MESSAGE = 64;
+
+/** What a WebSocket decode came to. */
+interface WsOutcome {
+  /** Messages, in order, up to a close or an error. */
+  messages: Message[];
+  /** The close code of the error that stopped it, or `null`. */
+  error: number | null;
+}
+
+/**
+ * RFC 6455 section 5 restated over the whole input, for client frames:
+ * masked, no extensions, minimal lengths, control frames final and at most
+ * 125 bytes, continuation only inside a message, text and close reasons
+ * UTF-8, close codes from the wire set, data messages at most
+ * {@link WS_MAX_MESSAGE} bytes (checked as each header arrives).
+ *
+ * @param input - Bytes.
+ * @returns The messages and the error, if any.
+ */
+function oracleWs(input: Uint8Array): WsOutcome {
+  const messages: Message[] = [];
+  const decode = (b: Uint8Array): string | null => {
+    try {
+      return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(b);
+    } catch {
+      return null;
+    }
+  };
+  let i = 0;
+  let open: { text: boolean; parts: number[] } | null = null;
+  const fail = (code: number): WsOutcome => ({ messages, error: code });
+  while (i + 2 <= input.length) {
+    const b0 = input[i]!;
+    const b1 = input[i + 1]!;
+    if (b0 & 0x40 || b0 & 0x20 || b0 & 0x10) return fail(1002);
+    const op = b0 & 0xf;
+    if (![0, 1, 2, 8, 9, 10].includes(op)) return fail(1002);
+    if (!(b1 & 0x80)) return fail(1002);
+    let n = BigInt(b1 & 0x7f);
+    let p = i + 2;
+    const ext = n === 126n ? 2 : n === 127n ? 8 : 0;
+    if (p + ext + 4 > input.length) break;
+    if (ext > 0) {
+      n = 0n;
+      for (let k = 0; k < ext; k++) n = (n << 8n) | BigInt(input[p + k]!);
+      if (ext === 2 && n < 126n) return fail(1002);
+      if (ext === 8 && n >= 1n << 63n) return fail(1002);
+      if (ext === 8 && n < 65536n) return fail(1002);
+    }
+    p += ext;
+    const fin = (b0 & 0x80) !== 0;
+    if (op >= 8 && (!fin || n > 125n)) return fail(1002);
+    if (op === 0 && open === null) return fail(1002);
+    if ((op === 1 || op === 2) && open !== null) return fail(1002);
+    if (op < 8 && BigInt(open?.parts.length ?? 0) + n > BigInt(WS_MAX_MESSAGE)) return fail(1009);
+    const key = input.subarray(p, p + 4);
+    p += 4;
+    const len = Number(n);
+    if (p + len > input.length) break;
+    const payload = Array.from(input.subarray(p, p + len), (b, k) => b ^ key[k % 4]!);
+    i = p + len;
+    if (op === 9) messages.push({ kind: "ping", data: Uint8Array.from(payload) });
+    else if (op === 10) messages.push({ kind: "pong", data: Uint8Array.from(payload) });
+    else if (op === 8) {
+      if (payload.length === 0) {
+        messages.push({ kind: "close", code: null, reason: "" });
+        return { messages, error: null };
+      }
+      if (payload.length === 1) return fail(1002);
+      const code = payload[0]! * 256 + payload[1]!;
+      const allowed =
+        (code >= 1000 && code <= 1003) ||
+        (code >= 1007 && code <= 1014) ||
+        (code >= 3000 && code <= 4999);
+      if (!allowed) return fail(1002);
+      const reason = decode(Uint8Array.from(payload.slice(2)));
+      if (reason === null) return fail(1007);
+      messages.push({ kind: "close", code, reason });
+      return { messages, error: null };
+    } else {
+      open ??= { text: op === 1, parts: [] };
+      open.parts.push(...payload);
+      if (fin) {
+        const data = Uint8Array.from(open.parts);
+        const isText = open.text;
+        open = null;
+        if (isText) {
+          const text = decode(data);
+          if (text === null) return fail(1007);
+          messages.push({ kind: "text", text });
+        } else {
+          messages.push({ kind: "binary", data });
+        }
+      }
+    }
+  }
+  return { messages, error: null };
+}
+
+/**
+ * Runs the decoder over chunks.
+ *
+ * @param chunks - The input, in pieces.
+ * @returns The messages from every call that returned, and the error code.
+ */
+function decoderWs(chunks: Uint8Array[]): WsOutcome {
+  const decoder = new FrameDecoder(WS_MAX_MESSAGE);
+  const messages: Message[] = [];
+  try {
+    for (const chunk of chunks) messages.push(...decoder.push(chunk));
+  } catch (err) {
+    if (err instanceof WsError) return { messages, error: err.code };
+    throw err;
+  }
+  return { messages, error: null };
+}
+
+test("fuzz: WebSocket frames match an independent decoder, whatever the chunking", () => {
+  fuzz("wsframe", fromHex, (input, rand) => {
+    const expected = oracleWs(input);
+    for (const actual of [decoderWs([input]), decoderWs(split(input, rand))]) {
+      assert.equal(actual.error, expected.error);
+      // A call that throws loses the messages it read; the rest must match.
+      assert.deepEqual(actual.messages, expected.messages.slice(0, actual.messages.length));
+      if (actual.error === null) assert.deepEqual(actual.messages, expected.messages);
     }
   });
 });

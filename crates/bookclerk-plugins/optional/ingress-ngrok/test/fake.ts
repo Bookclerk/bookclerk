@@ -3,6 +3,8 @@
  * fake library that serves one resource with byte ranges.
  */
 
+import assert from "node:assert/strict";
+
 import { StreamType, encodeProxyHeader, readType, typePrefix } from "../src/messages.ts";
 import {
   FLAG_FIN,
@@ -14,7 +16,7 @@ import {
   type Frame,
 } from "../src/mux.ts";
 import type { SessionIo } from "../src/agent.ts";
-import type { Library } from "../src/serve.ts";
+import type { Library, LibrarySocket, LibraryUpgrade } from "../src/serve.ts";
 
 /** One request the fake library saw. */
 export interface Seen {
@@ -50,12 +52,77 @@ export function bytes(value: string): Uint8Array {
   return new TextEncoder().encode(value);
 }
 
+/** A socket to the library the fake hands out, recording what it got. */
+export class FakeSocket implements LibrarySocket {
+  /** Its id. */
+  readonly id: string;
+  /** The subprotocol it chose. */
+  readonly protocol: string;
+  /** The stream it was opened for. */
+  readonly stream: number;
+  /** Messages sent to it, in order. */
+  readonly sent: Array<string | Uint8Array> = [];
+  /** Its close, once closed. */
+  closed: { code: number; reason: string } | null = null;
+  /** Whether `send` fails. */
+  failing = false;
+
+  /**
+   * Creates a socket.
+   *
+   * @param id - Its id.
+   * @param protocol - The subprotocol it chose.
+   * @param stream - The stream it was opened for.
+   */
+  constructor(id: string, protocol: string, stream: number) {
+    this.id = id;
+    this.protocol = protocol;
+    this.stream = stream;
+  }
+
+  /**
+   * Records a message.
+   *
+   * @param message - The message.
+   * @returns Resolves, or rejects when closed or failing.
+   */
+  send(message: string | Uint8Array): Promise<void> {
+    if (this.closed !== null || this.failing) return Promise.reject(new Error("closed"));
+    this.sent.push(typeof message === "string" ? message : message.slice());
+    return Promise.resolve();
+  }
+
+  /**
+   * Records the close.
+   *
+   * @param code - Close code.
+   * @param reason - Close reason.
+   * @returns Resolves.
+   */
+  close(code: number, reason: string): Promise<void> {
+    this.closed ??= { code, reason };
+    return Promise.resolve();
+  }
+}
+
+/** How the fake library answers an upgrade. */
+export type UpgradeHandler = (
+  request: Request,
+  stream: number,
+) => { protocol: string } | Response | Promise<{ protocol: string } | Response>;
+
 /** A library made of a handler, recording each request. */
 export class FakeLibrary implements Library {
   /** Requests seen, in order. */
   readonly seen: Seen[] = [];
   /** Answers each request. */
   handler: (request: Request) => Response | Promise<Response>;
+  /** Answers each upgrade: a subprotocol to accept with, or a refusal. */
+  upgrades: UpgradeHandler = () => ({ protocol: "" });
+  /** Sockets handed out, by id. */
+  readonly sockets = new Map<string, FakeSocket>();
+  /** Upgrade requests seen, in order. */
+  readonly upgraded: Seen[] = [];
 
   /**
    * Creates a library.
@@ -83,6 +150,115 @@ export class FakeLibrary implements Library {
     });
     return this.handler(request);
   }
+
+  /**
+   * Records an upgrade and accepts or refuses it.
+   *
+   * @param request - The client's `GET`.
+   * @param clientAddress - The client's IP.
+   * @param stream - The stream it rides on.
+   * @returns The socket, or the refusal.
+   */
+  async connect(
+    request: Request,
+    clientAddress: string | undefined,
+    stream: number,
+  ): Promise<LibraryUpgrade> {
+    this.upgraded.push({
+      method: request.method,
+      url: request.url,
+      headers: request.headers,
+      body: "",
+      clientAddress,
+    });
+    const answer = await this.upgrades(request, stream);
+    if (answer instanceof Response) return { response: answer };
+    const socket = new FakeSocket(`live${this.sockets.size}`, answer.protocol, stream);
+    this.sockets.set(socket.id, socket);
+    return { socket };
+  }
+
+  /**
+   * A socket by id.
+   *
+   * @param id - Its id.
+   * @returns It, or `null` once closed or unknown.
+   */
+  socket(id: string): LibrarySocket | null {
+    const socket = this.sockets.get(id);
+    return socket && socket.closed === null ? socket : null;
+  }
+}
+
+/**
+ * A masked client frame.
+ *
+ * @param opcode - Opcode.
+ * @param payload - Payload.
+ * @param fin - Whether it ends its message.
+ * @param mask - Masking key.
+ * @returns The frame.
+ */
+export function clientFrame(
+  opcode: number,
+  payload: Uint8Array | string,
+  fin = true,
+  mask = new Uint8Array([0x37, 0xfa, 0x21, 0x3d]),
+): Uint8Array {
+  const data = typeof payload === "string" ? bytes(payload) : payload;
+  const extra = data.length < 126 ? 0 : data.length < 65536 ? 2 : 8;
+  const out = new Uint8Array(2 + extra + 4 + data.length);
+  out[0] = (fin ? 0x80 : 0) | opcode;
+  const view = new DataView(out.buffer);
+  if (extra === 0) out[1] = 0x80 | data.length;
+  else if (extra === 2) {
+    out[1] = 0x80 | 126;
+    view.setUint16(2, data.length);
+  } else {
+    out[1] = 0x80 | 127;
+    view.setUint32(6, data.length);
+  }
+  out.set(mask, 2 + extra);
+  for (let i = 0; i < data.length; i++) {
+    out[6 + extra + i] = (data[i] as number) ^ (mask[i % 4] as number);
+  }
+  return out;
+}
+
+/** A server frame, decoded. */
+export interface ServerFrame {
+  /** Opcode. */
+  opcode: number;
+  /** Payload. */
+  payload: Uint8Array;
+}
+
+/**
+ * Decodes unmasked server frames, whole.
+ *
+ * @param data - Frame bytes.
+ * @returns The frames.
+ */
+export function serverFrames(data: Uint8Array): ServerFrame[] {
+  const out: ServerFrame[] = [];
+  let at = 0;
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  while (at < data.length) {
+    const opcode = (data[at] as number) & 0x0f;
+    assert(((data[at + 1] as number) & 0x80) === 0, "server frames are not masked");
+    let length = (data[at + 1] as number) & 0x7f;
+    at += 2;
+    if (length === 126) {
+      length = view.getUint16(at);
+      at += 2;
+    } else if (length === 127) {
+      length = view.getUint32(at + 4);
+      at += 8;
+    }
+    out.push({ opcode, payload: data.slice(at, at + length) });
+    at += length;
+  }
+  return out;
 }
 
 /**
