@@ -1668,7 +1668,6 @@ fn shared_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(crate::library_works::list_works))
         .routes(routes!(crate::library_meaning::get_meaning_status))
         .routes(routes!(crate::library_meaning::list_similar_works))
-        .routes(routes!(crate::taste_radar::taste_radar))
         .routes(routes!(crate::library_works::get_work))
         .routes(routes!(crate::library_works::put_work_state))
         .routes(routes!(crate::library_works::list_facet_values))

@@ -93,14 +93,14 @@ pub(crate) struct SimilarQuery {
 }
 
 /// What this node can do by meaning right now.
-pub(crate) struct Standing {
+struct Standing {
     /// This node's embedding model, when a plugin serves one here.
-    pub(crate) model: Option<ModelEmbedder>,
+    model: Option<ModelEmbedder>,
     /// The space that serves the library's rankings.
-    pub(crate) serving: VectorSpace,
+    serving: VectorSpace,
     /// The space these routes read: `serving`, or a model's space that
     /// misses only the newest works while the stand-in serves.
-    pub(crate) reading: VectorSpace,
+    reading: VectorSpace,
 }
 
 /// The model space to read while the stand-in serves: one that holds a
@@ -147,7 +147,7 @@ impl Standing {
     /// # Errors
     ///
     /// A 500 when the library cannot be read.
-    pub(crate) async fn read(
+    async fn read(
         state: &AppState,
         library: &bookclerk_library::LibraryStore,
         route: &str,
@@ -185,7 +185,7 @@ impl Standing {
     }
 
     /// Whether a search by meaning answers here.
-    pub(crate) fn search(&self) -> MeaningState {
+    fn search(&self) -> MeaningState {
         match &self.model {
             None => MeaningState::NoModel,
             Some(model) if model.vector_space().same_as(&self.reading) => MeaningState::Ready,
@@ -194,7 +194,7 @@ impl Standing {
     }
 
     /// Whether similar works can be listed.
-    pub(crate) fn similar(&self) -> MeaningState {
+    fn similar(&self) -> MeaningState {
         if !bookclerk_discover::is_stand_in(&self.reading) {
             MeaningState::Ready
         } else if self.model.is_some() {
@@ -206,7 +206,7 @@ impl Standing {
 }
 
 /// A 503 answer with `message`.
-pub(crate) fn unavailable(message: &str) -> WorksError {
+fn unavailable(message: &str) -> WorksError {
     (
         StatusCode::SERVICE_UNAVAILABLE,
         Json(ErrorMessage::new(message)),
@@ -218,7 +218,7 @@ pub(crate) fn unavailable(message: &str) -> WorksError {
 /// # Errors
 ///
 /// A 500 when the vectors cannot be read.
-pub(crate) async fn matrix(
+async fn matrix(
     state: &AppState,
     library: &bookclerk_library::LibraryStore,
     serving: &VectorSpace,
@@ -297,54 +297,6 @@ pub(crate) async fn matches(
         .collect())
 }
 
-/// Refuses a work the caller cannot see: one outside the scope of
-/// `filters` answers as one that does not exist, as the work's own route
-/// does.
-///
-/// # Errors
-///
-/// A 404 for a work that does not exist or is outside the scope; a 500
-/// when the library cannot be read.
-pub(crate) async fn require_visible_work(
-    library: &bookclerk_library::LibraryStore,
-    filters: &WorkPageQuery,
-    id: &str,
-    route: &str,
-) -> Result<(), WorksError> {
-    if !library
-        .library_works_by_ids(&[id.to_string()], filters)
-        .await
-        .map_err(|err| read_failed(route, &err))?
-        .is_empty()
-    {
-        return Ok(());
-    }
-    // Held by nobody (no row in the page index) or outside the scope.
-    require_in_scope(
-        library,
-        filters.scope.as_ref(),
-        id,
-        bookclerk_library::EntityKind::Work,
-        id,
-        route,
-    )
-    .await?;
-    if library
-        .library_work_detail(id)
-        .await
-        .map_err(|err| read_failed(route, &err))?
-        .is_none()
-    {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ErrorMessage::new(
-                bookclerk_library::LibraryError::not_found(bookclerk_library::EntityKind::Work, id),
-            )),
-        ));
-    }
-    Ok(())
-}
-
 /// Says whether search by meaning and similar works are ready.
 ///
 /// A client asks before it offers either. `search` is about the node
@@ -396,12 +348,49 @@ pub(crate) async fn list_similar_works(
     const ROUTE: &str = "GET /api/library/works/{id}/similar";
     let library = state.library_snapshot().await;
     let scope = caller_scope(&state, &library, &headers, ROUTE).await?;
+    let not_found = || {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorMessage::new(
+                bookclerk_library::LibraryError::not_found(
+                    bookclerk_library::EntityKind::Work,
+                    &id,
+                ),
+            )),
+        )
+    };
+    // A work outside the caller's scope answers as one that does not
+    // exist, as the work's own route does.
     let filters = WorkPageQuery {
         scope,
         limit: 1,
         ..WorkPageQuery::default()
     };
-    require_visible_work(&library, &filters, &id, ROUTE).await?;
+    if library
+        .library_works_by_ids(std::slice::from_ref(&id), &filters)
+        .await
+        .map_err(|err| read_failed(ROUTE, &err))?
+        .is_empty()
+    {
+        // Held by nobody (no row in the page index) or outside the scope.
+        require_in_scope(
+            &library,
+            filters.scope.as_ref(),
+            &id,
+            bookclerk_library::EntityKind::Work,
+            &id,
+            ROUTE,
+        )
+        .await?;
+        if library
+            .library_work_detail(&id)
+            .await
+            .map_err(|err| read_failed(ROUTE, &err))?
+            .is_none()
+        {
+            return Err(not_found());
+        }
+    }
     let standing = Standing::read(&state, &library, ROUTE).await?;
     let similar = standing.similar();
     if similar != MeaningState::Ready {

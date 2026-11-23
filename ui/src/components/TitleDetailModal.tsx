@@ -35,7 +35,6 @@ import {
 import { titleDetailFromCatalog, titleDetailFromWork, type TitleDetail } from "@/lib/titleDetail";
 import { formatDate, formatDuration } from "@/lib/libraryFilters";
 import { StoreLogo } from "@/components/StoreLogo";
-import { TasteRadar } from "@/components/TasteRadar";
 import { WisherAvatars } from "@/components/WisherAvatars";
 import { WorkStateEditor } from "@/components/WorkStateEditor";
 import { decodeHtmlEntities, parseGuidedReviewBody, prepareDescriptionHtml } from "@/lib/safeHtml";
@@ -987,14 +986,6 @@ export function TitleDetailModal({
                 <MetaRow label="Added" value={formatDate(detail.created_at ?? null)} />
                 <MetaRow label="Updated" value={formatDate(detail.updated_at ?? null)} />
               </dl>
-              <TasteRadar
-                workId={detail.work_id}
-                title={detail.title}
-                authors={detail.authors}
-                series={detail.series}
-                genres={detail.categories}
-                description={detail.description}
-              />
               {extra}
               <BranchRequestButtons through={detail.available_through} />
               {(() => {

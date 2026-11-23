@@ -28,7 +28,6 @@ mod metadata_enrich;
 mod pool;
 mod precompute;
 mod purchase;
-mod radar;
 mod recommend;
 mod request_queue;
 mod scope_filter;
@@ -82,10 +81,6 @@ pub use purchase::{
     resolve_purchase_hints_batch, retain_card_recording, retain_card_recordings,
     seed_purchase_hint, PurchaseHint, PurchaseHintsQuery, PurchaseHintsResponse, BATCH_DEADLINE,
     BREAKER_OPEN_FOR, BREAKER_TRIP_TIMEOUTS, RATE_LIMIT_FIRST_PAUSE, RATE_LIMIT_MAX_PAUSE,
-};
-pub use radar::{
-    stored_taste_seeds, taste_axes, RadarSeed, StoredSeeds, TasteAxis, RADAR_AXIS_MIN_WORKS,
-    RADAR_MAX_AXES, RADAR_MIN_AXES,
 };
 pub use recommend::{
     combine_wishlist_score, listening_engagement, rank_request_queue_taste, recommend,

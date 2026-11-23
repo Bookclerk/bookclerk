@@ -57,7 +57,7 @@ fn hit_text(hit: &CatalogSearchHit) -> String {
 
 /// The cosine of the angle between two vectors; 0 when either has no
 /// direction or they differ in length.
-pub(crate) fn cosine(a: &[f32], b: &[f32]) -> f32 {
+fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() {
         return 0.0;
     }
