@@ -662,11 +662,13 @@ scripts:
 | `uv` | Every `astral-sh/setup-uv` step (`version-file`); the Dev Container's `ghcr.io/astral-sh/uv` image | `tool-versions-bump.yml` |
 | `cargo-nextest` | The `unit + integration tests` job (through `scripts/tool_versions.py github-output`); `scripts/dev-env/provision.sh` | `tool-versions-bump.yml` |
 | `rust` | `rust-toolchain.toml` (`channel`, which repeats the pin because rustup can't read `.tool-versions`); every `dtolnay/rust-toolchain` step (through a `Read tool pins` step before it, installing the toolchain file's rustfmt and clippy so rustup doesn't add them mid-job); `scripts/dev-env/provision.sh` | `tool-versions-bump.yml` |
+| `playwright` | `@playwright/test` and the `playwright-core` override in `ui/package.json` (and `ui/package-lock.json`); the `mcr.microsoft.com/playwright:v<version>-noble` image of the UI visual jobs in `ci.yml` and `visual-recheck.yml` | `tool-versions-bump.yml` |
 
 `scripts/tests/test_dev_env.py` (in the `plan` job) fails when a workflow
 sets one of these versions itself, when a Dockerfile's `node` or uv image
-disagrees with the file, or when `rust-toolchain.toml` names another Rust
-release. A change to `.tool-versions` runs the full suite and
+or a workflow's Playwright image disagrees with the file, when
+`ui/package.json` or its lockfile pins another Playwright, or when
+`rust-toolchain.toml` names another Rust release. A change to `.tool-versions` runs the full suite and
 rebuilds the Dev Container image.
 
 `scripts/tool_versions.py` parses the file strictly: exactly the pins above,
@@ -675,14 +677,20 @@ in that order, one `<tool> <version>` per line, no comments.
 `nodejs` stays first.
 
 The daily `tool-versions-bump.yml` workflow takes the newest release of uv,
-cargo-nextest and Rust (the `rust-lang/rust` GitHub releases) that is at
-least 7 days old (the same cooldown as Dependabot and the workerd pin). For
-uv it also resolves the image digest and rewrites every Dockerfile that
-builds from the image. For Rust it also rewrites `rust-toolchain.toml`. It
+cargo-nextest, Rust (the `rust-lang/rust` GitHub releases) and Playwright
+that is at least 7 days old (the same cooldown as Dependabot and the workerd
+pin). For uv and Playwright it also resolves the image digest and rewrites
+every Dockerfile that builds from the image and every workflow job that runs
+in it. For Playwright it also rewrites the two pins in `ui/package.json` and
+regenerates `ui/package-lock.json` (`npm install --package-lock-only
+--ignore-scripts`): the image only ships its own release's browsers, so all
+three move in one pull request. A new Chromium can render some screenshots
+differently; approve them in the visual comment, and the pull request lands.
+For Rust it also rewrites `rust-toolchain.toml`. It
 opens one pull request for every tool due that day, on the
 `deps/tool-versions` branch, with the
-[automation App](automation.md#automation-app), and turns on auto-merge. Dependabot ignores the uv image and Node.js majors, so
-the two never race. Its ignore names the uv image `astral-sh/uv`, without the
+[automation App](automation.md#automation-app), and turns on auto-merge. Dependabot ignores the uv image, Node.js majors, and
+`@playwright/test` and `playwright-core` in `ui/`, so the two never race. Its ignore names the uv image `astral-sh/uv`, without the
 `ghcr.io` host, because that is the name Dependabot matches ignores against.
 
 A new Rust release can bring new Clippy lints and Cargo behavior, so it

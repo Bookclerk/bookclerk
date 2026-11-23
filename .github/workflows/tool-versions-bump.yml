@@ -4,9 +4,11 @@
 # - Only consider releases published ≥ 7 days ago (supply-chain cooldown, as
 #   for Dependabot and the workerd pin).
 # - scripts/tool_versions.py reads the releases listing and the image digest
-#   (both untrusted) and rewrites .tool-versions and, for a tool with an
-#   image, every Dockerfile FROM line that builds from it; for Rust, also the
-#   channel in rust-toolchain.toml.
+#   (both untrusted) and rewrites .tool-versions; for a tool with an image,
+#   every Dockerfile FROM line that builds from it and every workflow job
+#   `image:` that runs in it; for a tool with npm packages (Playwright), their
+#   exact pins in that directory's package.json, whose lockfile is then
+#   regenerated here; and for Rust, the channel in rust-toolchain.toml.
 # - Open one PR for every tool due that day (one branch, so two bumps never
 #   conflict on .tool-versions) with the automation App token and turn on
 #   auto-merge, so the merge queue lands it once the PR's required checks pass.
@@ -45,9 +47,15 @@ jobs:
         with:
           persist-credentials: false
 
+      # npm regenerates the lockfile of a tool with npm packages.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .tool-versions
+
       # For each tool the script bumps: read its releases, pick the newest
       # past the cooldown and, for a tool with an image, resolve the new
-      # tag's digest; then rewrite the pins.
+      # tag's digest; then rewrite the pins and, for a tool with npm
+      # packages, regenerate that directory's lockfile (no install scripts).
       - name: Select and apply eligible releases
         id: bump
         env:
@@ -70,12 +78,16 @@ jobs:
             elif [[ "$code" -ne 0 ]]; then
               exit "$code"
             fi
-            image="$(python3 scripts/tool_versions.py image "$tool")"
+            image="$(python3 scripts/tool_versions.py image-ref "$tool" "$version")"
             if [[ -n "$image" ]]; then
-              digest="$(docker buildx imagetools inspect "${image}:${version}" --format '{{.Manifest.Digest}}')"
+              digest="$(docker buildx imagetools inspect "$image" --format '{{.Manifest.Digest}}')"
               python3 scripts/tool_versions.py apply "$tool" "$version" --digest "$digest"
             else
               python3 scripts/tool_versions.py apply "$tool" "$version"
+            fi
+            npm_dir="$(python3 scripts/tool_versions.py npm-dir "$tool")"
+            if [[ -n "$npm_dir" ]]; then
+              npm install --package-lock-only --ignore-scripts --no-audit --no-fund --prefix "$npm_dir"
             fi
             summary="${summary:+$summary, }${tool} ${version}"
           done
@@ -106,6 +118,9 @@ jobs:
           private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
           permission-contents: write
           permission-pull-requests: write
+          # A Playwright bump moves the image in `.github/workflows/`; GitHub
+          # refuses that push, and auto-merge for it, without this.
+          permission-workflows: write
 
       - name: Create or update pull request
         if: steps.bump.outputs.bump == 'true'
@@ -124,12 +139,15 @@ jobs:
           title: "build(deps): bump ${{ steps.bump.outputs.summary }}"
           body: |
             ## Summary
-            - Bump `.tool-versions` to ${{ steps.bump.outputs.summary }} (and a tool's image in every Dockerfile that builds from it, and `rust-toolchain.toml` for Rust)
+            - Bump `.tool-versions` to ${{ steps.bump.outputs.summary }} (and a tool's image in every Dockerfile and workflow that uses it, Playwright's npm pins and lockfile in `ui/`, and `rust-toolchain.toml` for Rust)
             - Cooldown: releases must be published ≥ **${{ env.TOOL_VERSIONS_COOLDOWN_DAYS }} days** ago
 
             ## Test plan
             - [x] `scripts/tool_versions.py` (cooldown filter, version and digest checks)
-            - [x] `scripts/tests/test_dev_env.py` (workflows, Dockerfiles and `provision.sh` agree with `.tool-versions`)
+            - [x] `scripts/tests/test_dev_env.py` (workflows, Dockerfiles, `ui/package.json` and `provision.sh` agree with `.tool-versions`)
+
+            A Playwright bump brings a new Chromium, which can render some
+            screenshots differently: approve them in the visual comment.
 
             Auto-merge is on: the merge queue lands this PR once its required
             checks pass.
@@ -140,6 +158,9 @@ jobs:
             .tool-versions
             rust-toolchain.toml
             *Dockerfile
+            .github/workflows/*.yml
+            ui/package.json
+            ui/package-lock.json
 
       # Runs even when the branch was already up to date, so a run whose
       # earlier `gh pr merge --auto` failed gets another try.

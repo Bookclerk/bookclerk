@@ -147,6 +147,13 @@ updates:
     open-pull-requests-limit: 5
     cooldown:
       default-days: 7
+    # Playwright is pinned in .tool-versions (docs/contributing/ci.md#tool-versions):
+    # tool-versions-bump.yml moves @playwright/test, the playwright-core
+    # override and the UI visual jobs' Playwright image together, because the
+    # image only ships its own release's browsers.
+    ignore:
+      - dependency-name: "@playwright/test"
+      - dependency-name: "playwright-core"
     groups:
       # Vite / ESLint / TypeScript tooling releases often; one PR a week.
       ui-minor-patch:

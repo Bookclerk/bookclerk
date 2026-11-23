@@ -18,9 +18,16 @@ Usage:
     Prints ``<tool>=<version>`` for each pin, for ``$GITHUB_OUTPUT``.
 ``tool_versions.py bumpable``
     Prints, one per line, each tool the bump workflow moves.
-``tool_versions.py repo <tool>`` / ``tool_versions.py image <tool>``
-    Prints the tool's release repository, or its image (empty when it has
-    none). ``repo`` exits 1 for a tool that is bumped by hand.
+``tool_versions.py repo <tool>``
+    Prints the tool's release repository. Exits 1 for a tool that is bumped
+    by hand.
+``tool_versions.py image-ref <tool> <version>``
+    Prints ``<image>:<tag>`` for that version of the tool's image, or nothing
+    when the tool has none.
+``tool_versions.py npm-dir <tool>``
+    Prints the directory whose ``package.json`` pins the tool's npm packages,
+    or nothing when it has none. The bump workflow regenerates that
+    directory's lockfile after ``apply``.
 ``tool_versions.py select <tool> --releases FILE [--cooldown-days N]``
     Prints the newest release older than the cooldown that is newer than the
     pin. Exits 2 when there is none.
@@ -30,9 +37,11 @@ Usage:
     toolchains, and the Rust cache key hashes every installed one, so an
     image that ships a different set would otherwise change the key.
 ``tool_versions.py apply <tool> <version> [--digest sha256:<hex>]``
-    Writes the new pin, the tool's image reference in every Dockerfile that
-    builds from it (``--digest`` is then required) and, for ``rust``, the
-    ``channel`` in ``rust-toolchain.toml``.
+    Writes the new pin; the tool's image reference in every Dockerfile that
+    builds from it and every workflow ``image:`` that runs in it
+    (``--digest`` is then required); its exact npm pins in its
+    ``package.json``; and, for ``rust``, the ``channel`` in
+    ``rust-toolchain.toml``.
 
 Exit codes: 0 success, 1 error, 2 nothing to bump.
 """
@@ -84,7 +93,13 @@ class Tool:
         repo: GitHub ``owner/name`` whose releases the bump workflow reads, or
             ``None`` when the pin is bumped by hand.
         tag_prefix: Text before the version in the repository's release tags.
-        image: Registry image whose tag is the pinned version, or ``None``.
+        image: Registry image tagged with the pinned version, or ``None``.
+        image_tag: The image's tag for a version, with ``{version}`` standing
+            for the pin.
+        npm_dir: Directory, relative to the repository root, whose
+            ``package.json`` pins ``npm_packages``, or ``None``.
+        npm_packages: npm packages pinned to exactly the tool's version in
+            ``npm_dir``'s ``package.json`` (as dependencies or overrides).
     """
 
     name: str
@@ -92,16 +107,45 @@ class Tool:
     repo: str | None
     tag_prefix: str
     image: str | None
+    image_tag: str = "{version}"
+    npm_dir: str | None = None
+    npm_packages: tuple[str, ...] = ()
+
+    def image_ref(self, version: str) -> str | None:
+        """Names the tool's image at ``version``.
+
+        Args:
+            version: An exact version of the tool.
+
+        Returns:
+            ``<image>:<tag>``, or ``None`` when the tool has no image.
+        """
+        if self.image is None:
+            return None
+        return f"{self.image}:{self.image_tag.format(version=version)}"
 
 
 #: Every pin ``.tool-versions`` may hold, in the order the file lists them.
 #: ``nodejs`` stays first: ``actions/setup-node`` reads the first line that
 #: looks like a version. Node.js majors are a decision, so they move by hand.
+#: Playwright's image only ships its own release's browsers, so the image the
+#: UI visual jobs run in, ``@playwright/test`` and the ``playwright-core``
+#: override in ``ui/`` move together.
 TOOLS = (
     Tool("nodejs", MAJOR_VERSION, None, "", None),
     Tool("uv", EXACT_VERSION, "astral-sh/uv", "", "ghcr.io/astral-sh/uv"),
     Tool("cargo-nextest", EXACT_VERSION, "nextest-rs/nextest", "cargo-nextest-", None),
     Tool("rust", EXACT_VERSION, "rust-lang/rust", "", None),
+    Tool(
+        "playwright",
+        EXACT_VERSION,
+        "microsoft/playwright",
+        "v",
+        "mcr.microsoft.com/playwright",
+        image_tag="v{version}-noble",
+        npm_dir="ui",
+        npm_packages=("@playwright/test", "playwright-core"),
+    ),
 )
 
 TOOLS_BY_NAME = {tool.name: tool for tool in TOOLS}
@@ -252,20 +296,61 @@ def parse_digest(raw: bytes) -> str:
     return text
 
 
-def rewrite_image(text: str, image: str, version: str, digest: str) -> str:
+def rewrite_image(text: str, image: str, tag: str, digest: str) -> str:
     """Points every ``FROM <image>:<tag>@<digest>`` line at a new tag and digest.
 
     Args:
         text: A Dockerfile's contents.
         image: The image name, e.g. ``ghcr.io/astral-sh/uv``.
-        version: The new tag.
+        tag: The new tag.
         digest: The new ``sha256:<hex>`` digest.
 
     Returns:
         The rewritten contents; unchanged when no line builds from ``image``.
     """
     pattern = re.compile(rf"^(FROM\s+(?:--\S+\s+)*){re.escape(image)}:[^\s@]+@sha256:[0-9a-f]{{64}}(?=\s|$)", re.MULTILINE)
-    return pattern.sub(lambda m: f"{m.group(1)}{image}:{version}@{digest}", text)
+    return pattern.sub(lambda m: f"{m.group(1)}{image}:{tag}@{digest}", text)
+
+
+def rewrite_workflow_image(text: str, image: str, tag: str, digest: str) -> str:
+    """Points every workflow ``image: <image>:<tag>@<digest>`` line at a new tag and digest.
+
+    Args:
+        text: A workflow's contents.
+        image: The image name, e.g. ``mcr.microsoft.com/playwright``.
+        tag: The new tag.
+        digest: The new ``sha256:<hex>`` digest.
+
+    Returns:
+        The rewritten contents; unchanged when no job runs in ``image``.
+    """
+    pattern = re.compile(rf"^(\s*image:\s+){re.escape(image)}:[^\s@]+@sha256:[0-9a-f]{{64}}(?=\s|$)", re.MULTILINE)
+    return pattern.sub(lambda m: f"{m.group(1)}{image}:{tag}@{digest}", text)
+
+
+def rewrite_npm_pins(text: str, packages: tuple[str, ...], version: str) -> str:
+    """Points every exact ``"<package>": "<version>"`` entry of a ``package.json`` at a new version.
+
+    Dependencies and ``overrides`` entries are rewritten alike; ranges such
+    as ``^1.2.3`` are not pins, so they don't count.
+
+    Args:
+        text: The ``package.json`` contents.
+        packages: The npm package names to move.
+        version: The new exact version.
+
+    Returns:
+        The rewritten contents.
+
+    Raises:
+        ToolVersionsError: A package has no exact pin in the file.
+    """
+    for package in packages:
+        pattern = re.compile(rf'(?P<key>"{re.escape(package)}":\s*")(?:{EXACT_VERSION.pattern})(?=")')
+        text, count = pattern.subn(lambda m: f"{m.group('key')}{version}", text)
+        if count == 0:
+            raise ToolVersionsError(f"package.json has no exact {package} pin")
+    return text
 
 
 #: The ``channel = "..."`` line of ``rust-toolchain.toml``'s ``[toolchain]`` table.
@@ -334,12 +419,22 @@ def extra_toolchains(listing: str, pin: str) -> list[str]:
     return [name for name in names if name not in pinned]
 
 
-def _tracked_dockerfiles() -> list[Path]:
-    """Lists the Dockerfiles git tracks (``*Dockerfile``, as the bump workflow commits)."""
+def _tracked(*pathspecs: str) -> list[Path]:
+    """Lists the files git tracks that match ``pathspecs``."""
     out = subprocess.run(
-        ["git", "ls-files", "-z", "--", "*Dockerfile"], cwd=ROOT, capture_output=True, check=True
+        ["git", "ls-files", "-z", "--", *pathspecs], cwd=ROOT, capture_output=True, check=True
     ).stdout.decode("utf-8")
     return [ROOT / name for name in out.split("\0") if name]
+
+
+def _tracked_dockerfiles() -> list[Path]:
+    """Lists the Dockerfiles git tracks (``*Dockerfile``, as the bump workflow commits)."""
+    return _tracked("*Dockerfile")
+
+
+def _tracked_workflows() -> list[Path]:
+    """Lists the workflows git tracks (``.github/workflows/*.yml``, as the bump workflow commits)."""
+    return _tracked(".github/workflows/*.yml")
 
 
 def _cooldown(text: str) -> int:
@@ -370,9 +465,12 @@ def main(argv: list[str]) -> int:
     commands.add_parser("github-output", help="print <tool>=<version> lines")
     commands.add_parser("bumpable", help="list the tools the bump workflow moves")
     commands.add_parser("prune-rust", help="uninstall every toolchain but the pinned rust")
-    for name in ("repo", "image"):
+    for name in ("repo", "npm-dir"):
         command = commands.add_parser(name, help=f"print a tool's {name}")
         command.add_argument("tool", type=_tool)
+    image_ref = commands.add_parser("image-ref", help="print <image>:<tag> for a version of a tool's image")
+    image_ref.add_argument("tool", type=_tool)
+    image_ref.add_argument("version")
     select = commands.add_parser("select", help="pick an eligible release")
     select.add_argument("tool", type=_tool)
     select.add_argument("--releases", type=Path, required=True, help="GitHub releases listing (JSON)")
@@ -413,8 +511,13 @@ def main(argv: list[str]) -> int:
         if args.command == "repo":
             print(tool.repo)
             return 0
-        if args.command == "image":
-            print(tool.image or "")
+        if args.command == "npm-dir":
+            print(tool.npm_dir or "")
+            return 0
+        if args.command == "image-ref":
+            if tool.version.fullmatch(args.version) is None:
+                raise ToolVersionsError(f"bad {tool.name} version {args.version!r}")
+            print(tool.image_ref(args.version) or "")
             return 0
         if args.command == "select":
             with args.releases.open("rb") as handle:
@@ -437,11 +540,16 @@ def main(argv: list[str]) -> int:
         writes = {TOOL_VERSIONS: render_pins(pins)}
         if tool.image is not None:
             digest = parse_digest(args.digest.encode("utf-8"))
-            for dockerfile in _tracked_dockerfiles():
-                text = dockerfile.read_text(encoding="utf-8")
-                updated = rewrite_image(text, tool.image, args.version, digest)
-                if updated != text:
-                    writes[dockerfile] = updated
+            tag = tool.image_tag.format(version=args.version)
+            for paths, rewrite in ((_tracked_dockerfiles(), rewrite_image), (_tracked_workflows(), rewrite_workflow_image)):
+                for path in paths:
+                    text = path.read_text(encoding="utf-8")
+                    updated = rewrite(text, tool.image, tag, digest)
+                    if updated != text:
+                        writes[path] = updated
+        if tool.npm_dir is not None:
+            manifest = ROOT / tool.npm_dir / "package.json"
+            writes[manifest] = rewrite_npm_pins(manifest.read_text(encoding="utf-8"), tool.npm_packages, args.version)
         if tool.name == "rust":
             text = RUST_TOOLCHAIN.read_text(encoding="utf-8")
             writes[RUST_TOOLCHAIN] = rewrite_toolchain_channel(text, args.version)
