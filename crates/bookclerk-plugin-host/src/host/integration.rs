@@ -210,8 +210,16 @@ impl ExternalIntegration {
     ///
     /// # Errors
     ///
-    /// Returns an error when an entrypoint's health reports not ok.
+    /// Returns an error when an entrypoint's health reports not ok, or a
+    /// `deadline_exceeded` error when the guest does not answer within
+    /// 30 seconds.
     pub async fn check_health(&self) -> Result<()> {
+        super::bounded_health(super::HEALTH_PROBE_DEADLINE, self.probe_health()).await
+    }
+
+    /// Probes every health-bearing entrypoint the guest exports, unbounded;
+    /// [`Self::check_health`] puts the deadline on it.
+    async fn probe_health(&self) -> Result<()> {
         if self
             .session
             .has_entrypoint(crate::Entrypoint::RemoteLibrary)
