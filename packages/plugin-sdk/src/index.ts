@@ -171,6 +171,8 @@ export type {
   EventSuspendOptions,
   GrantedContext,
   GrantedDatabaseTransport,
+  GrantedReply,
+  SettledTransport,
   NamedDatabase,
   GrantedFetcher,
   GrantedJobCapabilities,

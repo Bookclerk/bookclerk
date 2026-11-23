@@ -552,7 +552,9 @@ Another user sees only the ones they own.
 A shared branch that isn't running can be removed there
 (`DELETE /api/config/nodes/{node_id}`) by the operator, or by an Owner after
 elevating, since removing one deletes its records. Stop Bookclerk on it
-first.
+first: a branch that heartbeats while it's being removed either keeps its
+place (the removal is refused as running) or is removed and then has its
+heartbeats refused until it restarts and joins again.
 
 > [!WARNING]
 > Removing a shared branch doesn't take back the database credentials or key it
@@ -625,7 +627,11 @@ The HTTP routes behind it are operator-only:
 - **Platform plugins** are approved automatically
   (`approved_by = "platform"`) only when this host's own install of the
   same platform key is bundled with the same payload digest as the
-  owner's artifact, and the request stays inside the platform envelope.
+  owner's artifact, the request stays inside the platform envelope, and
+  it asks for no larger budget (memory, disk, CPU, processes, workerd
+  CPU time or subrequests) than this host gives its own install of the
+  plugin. A request with a larger budget waits for this host's operator
+  like any other.
 - **Revoke stops work.** A revoke (CLI or UI) is seen within 5 seconds.
   The plugin's held jobs are cancelled and handed back to the owner
   unspent, and none of its jobs is claimed again until approved.
@@ -703,6 +709,12 @@ deployed destinations. A title acquired for another member is copied
 there only when **Keep copies of other members' books** is on (see
 [Work settings on the branch](#work-settings-on-the-branch)). The owner
 says which titles are whose with each job.
+
+The host never replaces another book's file to keep its copy. Before it
+writes anything, it checks each file name against its own library: when
+another edition there already holds one of the names, the host keeps no
+copy of the title at all (and so doesn't add it to its own library). The
+title is still uploaded to the owner.
 
 Once the owner has committed one of the owner's own titles, the host also
 adds it to its own library: the title, acquired, with its copy's files,
@@ -915,7 +927,10 @@ library it joined, in turn, for the copy of that listing.
   the store is not asked. The files then go through the branch's own
   acquire like a store download: converted to the branch's output
   format, named by its templates, tagged, probed and recorded. Chapters
-  are read from the downloaded file in the confined media worker.
+  are read from the downloaded file in the confined media worker. A
+  branch whose output re-encodes or repackages the audio checks the
+  encoding first, as for a copy from another store: one the media worker
+  can't decode is removed, and the branch fetches from its store.
 - **Several audio files: the store.** A book the library holds as parts
   or as one file per chapter is fetched from the branch's store. The
   grant lists those files by name, which need not be playing order.

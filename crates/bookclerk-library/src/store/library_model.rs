@@ -23,8 +23,8 @@ use super::listing_reads::{
 use super::{now_str, parse_dt, LibraryStore, NewBook};
 use crate::atomic_ops::{atomic_status, DbAtomicParams};
 use crate::entities::{
-    credits, edition_identifiers, editions, embeddings, expressions, series_entries,
-    store_listings, work_identifiers, works,
+    credits, edition_identifiers, editions, expressions, series_entries, store_listings,
+    work_identifiers, works,
 };
 use crate::error::{LibraryError, Result};
 use crate::library_link::{
@@ -116,15 +116,23 @@ const PAGED_LOOKUP_PAGE: u64 = 500;
 /// several rows per id (credits or series entries of a work, identifiers or
 /// files of an edition, listings of an edition, holdings of a listing).
 ///
-/// Ids are chunked as [`find_chunked`] chunks them, so each statement fits
-/// the backend's bind and size caps, and each chunk's rows are then read in
-/// pages of at most the backend's `maxResultRows` with `LIMIT` / `OFFSET`;
-/// a page refused as over a negotiated limit is read again at half the
-/// size. One id with more rows than one result holds is therefore still
-/// read whole, where [`find_chunked`] would fail.
+/// Ids are chunked as [`find_chunked`] chunks them, so each statement
+/// (with its keyset condition) fits the backend's bind and size caps, and
+/// each chunk's rows are then read in keyset pages ordered by `key`
+/// ([`super::keyset::read_keyset_pages`]) of at most the backend's
+/// `maxResultRows`; a page refused as over a negotiated limit is read
+/// again at half the size. One id with more rows than one result holds is
+/// therefore still read whole, where [`find_chunked`] would fail, and a row
+/// deleted between two page reads never makes the next page skip one.
 ///
-/// `query` must order its rows by a unique key, so consecutive pages
-/// neither skip nor repeat a row.
+/// # Arguments
+///
+/// * `store` - The store to read.
+/// * `ids` - The ids the lookup is for.
+/// * `key` - Columns unique together among the rows `query` selects and
+///   all `NOT NULL`, most significant first; the rows come back in this
+///   order within each chunk of ids.
+/// * `query` - The unordered select for one chunk of ids.
 ///
 /// # Errors
 ///
@@ -133,14 +141,22 @@ const PAGED_LOOKUP_PAGE: u64 = 500;
 pub(crate) async fn find_chunked_paged<E, F>(
     store: &LibraryStore,
     ids: &[String],
+    key: &[E::Column],
     query: F,
 ) -> Result<Vec<E::Model>>
 where
     E: EntityTrait,
     F: Fn(&[String]) -> sea_orm::Select<E>,
 {
+    // A later page also binds its keyset condition: leave room for it,
+    // valued as long text so a long key still fits.
+    let probe_after: Vec<sea_orm::Value> = key
+        .iter()
+        .map(|_| sea_orm::Value::from(KEYSET_PROBE_VALUE))
+        .collect();
     let fits = |part: &[String]| {
-        crate::control_plane::sea_exec(&query(part))
+        let probe = query(part).filter(super::keyset::after_key(key, &probe_after));
+        crate::control_plane::sea_exec(&probe)
             .map(|stmt| store.admits_read(&stmt))
             .unwrap_or(true)
     };
@@ -159,31 +175,17 @@ where
             n /= 2;
         }
         let (part, tail) = rest.split_at(n);
-        let mut offset: u64 = 0;
-        loop {
-            match query(part).limit(page).offset(offset).all(&store.db).await {
-                Ok(rows) => {
-                    let len = u64::try_from(rows.len()).unwrap_or(u64::MAX);
-                    out.extend(rows);
-                    if len < page {
-                        break;
-                    }
-                    offset = offset.saturating_add(len);
-                }
-                Err(err)
-                    if page > 1
-                        && bookclerk_plugin_abi::LimitExceeded::from_message(&err.to_string())
-                            .is_some() =>
-                {
-                    page /= 2;
-                }
-                Err(err) => return Err(LibraryError::Orm(err)),
-            }
-        }
+        out.extend(super::keyset::read_keyset_pages(store, query(part), key, &mut page).await?);
         rest = tail;
     }
     Ok(out)
 }
+
+/// The value [`find_chunked_paged`] sizes a keyset condition with: as long
+/// as a UUID-keyed id plus room, so the probe is no smaller than a real
+/// page's condition for the keys these lookups use.
+const KEYSET_PROBE_VALUE: &str =
+    "00000000-0000-0000-0000-000000000000:00000000-0000-0000-0000-000000000000";
 
 /// Reads `keys` in chunks of at most `width`, halving a chunk until `fits`
 /// accepts it and again when its read is refused as over a negotiated limit
@@ -1946,74 +1948,6 @@ impl LibraryStore {
         Ok(works)
     }
 
-    /// Stored text hashes of the `model` embeddings of `target_kind` targets
-    /// among `target_ids`, keyed by target id. Targets with no embedding are
-    /// absent.
-    ///
-    /// Reads in chunks sized from the adapter's bind limit, so one call
-    /// replaces a lookup per target.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LibraryError::Orm`] when a read fails.
-    pub async fn embedding_text_hashes(
-        &self,
-        target_kind: &str,
-        model: &str,
-        target_ids: &[String],
-    ) -> Result<std::collections::HashMap<String, String>> {
-        /// One stored hash, decoded by column name: the host database proxy
-        /// does not keep the select order, so a positional tuple read could
-        /// swap the columns.
-        #[derive(Debug, sea_orm::FromQueryResult)]
-        struct StoredHash {
-            /// `embeddings.target_id`.
-            target_id: String,
-            /// `embeddings.text_hash`.
-            text_hash: String,
-        }
-        let mut hashes = std::collections::HashMap::with_capacity(target_ids.len());
-        for chunk in target_ids.chunks(self.lookup_chunk()) {
-            let rows = embeddings::Entity::find()
-                .select_only()
-                .column(embeddings::Column::TargetId)
-                .column(embeddings::Column::TextHash)
-                .filter(embeddings::Column::TargetKind.eq(target_kind))
-                .filter(embeddings::Column::Model.eq(model))
-                .filter(embeddings::Column::TargetId.is_in(chunk.iter().cloned()))
-                .into_model::<StoredHash>()
-                .all(&self.db)
-                .await
-                .map_err(LibraryError::Orm)?;
-            hashes.extend(rows.into_iter().map(|row| (row.target_id, row.text_hash)));
-        }
-        Ok(hashes)
-    }
-
-    /// Deletes work embeddings (every model) whose work no longer exists,
-    /// and answers how many it removed.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LibraryError::Orm`] when the delete fails.
-    pub async fn prune_orphan_work_embeddings(&self) -> Result<u64> {
-        use sea_orm::sea_query::Query;
-        Ok(embeddings::Entity::delete_many()
-            .filter(embeddings::Column::TargetKind.eq("work"))
-            .filter(
-                embeddings::Column::TargetId.not_in_subquery(
-                    Query::select()
-                        .column(works::Column::Id)
-                        .from(works::Entity)
-                        .to_owned(),
-                ),
-            )
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .rows_affected)
-    }
-
     /// Lists every work by title, with its work-level credits and series.
     ///
     /// # Errors
@@ -2045,43 +1979,61 @@ impl LibraryStore {
         // series per work, several expressions per work), so each is read
         // in pages that fit the backend's result cap. Ordering ends with
         // the primary key so pages neither skip nor repeat a row.
-        let work_credits = find_chunked_paged(self, &ids, |part| {
-            credits::Entity::find()
-                .filter(credits::Column::TargetKind.eq(resolve::Level::Work.as_str()))
-                .filter(credits::Column::TargetId.is_in(part.iter().cloned()))
-                .order_by_asc(credits::Column::TargetId)
-                .order_by_asc(credits::Column::Position)
-                .order_by_asc(credits::Column::ContributorId)
-                .order_by_asc(credits::Column::Role)
-        })
+        let work_credits = find_chunked_paged(
+            self,
+            &ids,
+            &[
+                credits::Column::TargetId,
+                credits::Column::Position,
+                credits::Column::ContributorId,
+                credits::Column::Role,
+            ],
+            |part| {
+                credits::Entity::find()
+                    .filter(credits::Column::TargetKind.eq(resolve::Level::Work.as_str()))
+                    .filter(credits::Column::TargetId.is_in(part.iter().cloned()))
+            },
+        )
         .await?;
-        let entries = find_chunked_paged(self, &ids, |part| {
-            series_entries::Entity::find()
-                .filter(series_entries::Column::WorkId.is_in(part.iter().cloned()))
-                .order_by_asc(series_entries::Column::WorkId)
-                .order_by_asc(series_entries::Column::SeriesId)
-        })
+        let entries = find_chunked_paged(
+            self,
+            &ids,
+            &[
+                series_entries::Column::WorkId,
+                series_entries::Column::SeriesId,
+            ],
+            |part| {
+                series_entries::Entity::find()
+                    .filter(series_entries::Column::WorkId.is_in(part.iter().cloned()))
+            },
+        )
         .await?;
         // Narrators are credited on expressions, not on the work.
-        let expression_work: BTreeMap<String, String> = find_chunked_paged(self, &ids, |part| {
-            expressions::Entity::find()
-                .filter(expressions::Column::WorkId.is_in(part.iter().cloned()))
-                .order_by_asc(expressions::Column::Id)
-        })
-        .await?
-        .into_iter()
-        .map(|x| (x.id, x.work_id))
-        .collect();
+        let expression_work: BTreeMap<String, String> =
+            find_chunked_paged(self, &ids, &[expressions::Column::Id], |part| {
+                expressions::Entity::find()
+                    .filter(expressions::Column::WorkId.is_in(part.iter().cloned()))
+            })
+            .await?
+            .into_iter()
+            .map(|x| (x.id, x.work_id))
+            .collect();
         let expression_ids: Vec<String> = expression_work.keys().cloned().collect();
-        let narrator_credits = find_chunked_paged(self, &expression_ids, |part| {
-            credits::Entity::find()
-                .filter(credits::Column::TargetKind.eq(resolve::Level::Expression.as_str()))
-                .filter(credits::Column::TargetId.is_in(part.iter().cloned()))
-                .filter(credits::Column::Role.eq(resolve::CreditRole::Narrator.as_str()))
-                .order_by_asc(credits::Column::TargetId)
-                .order_by_asc(credits::Column::Position)
-                .order_by_asc(credits::Column::ContributorId)
-        })
+        let narrator_credits = find_chunked_paged(
+            self,
+            &expression_ids,
+            &[
+                credits::Column::TargetId,
+                credits::Column::Position,
+                credits::Column::ContributorId,
+            ],
+            |part| {
+                credits::Entity::find()
+                    .filter(credits::Column::TargetKind.eq(resolve::Level::Expression.as_str()))
+                    .filter(credits::Column::TargetId.is_in(part.iter().cloned()))
+                    .filter(credits::Column::Role.eq(resolve::CreditRole::Narrator.as_str()))
+            },
+        )
         .await?;
         let contributor_ids: Vec<String> = work_credits
             .iter()

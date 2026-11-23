@@ -124,6 +124,43 @@ lists its limits.
 > Cloudflare ends TLS at its edge and can read the traffic it carries:
 > sign-ins, cookies and audio.
 
+## ngrok
+
+The first-party `ngrok` plugin connects to ngrok as an agent and serves
+the library on a domain in your ngrok account: the free static domain
+every account gets (such as `example.ngrok-free.app`) or a domain you
+reserved. It needs the domain and your authtoken from the ngrok
+dashboard. No ngrok program runs on your computer: the plugin speaks the
+agent protocol itself over one TLS connection the host holds.
+
+1. Install and approve `ngrok`, then set its domain and authtoken:
+
+   ```sh
+   bookclerk plugins config set ngrok domain example.ngrok-free.app
+   bookclerk plugins config set ngrok authtoken --secret
+   ```
+
+2. Deploy it on this computer and activate it:
+
+   ```sh
+   bookclerk plugins deploy ngrok
+   bookclerk ingress activate ngrok
+   ```
+
+The library answers at `https://<domain>`. Requests are served one at a
+time. A request body may be up to 32 MiB. A response over 4 MiB is sent
+in pieces, so it must allow byte ranges and give its length, as audio
+and downloads do. Live connections (a branch's socket, a clerk's live
+link) pass through too: each one holds a WebSocket to the library while
+it lasts, up to 256 at once, and a message may be up to 256 KiB. The
+plugin's
+[README](../../crates/bookclerk-plugins/optional/ingress-ngrok/README.md)
+lists its limits.
+
+> [!WARNING]
+> ngrok ends TLS at its edge and can read the traffic it carries:
+> sign-ins, cookies and audio.
+
 ## The library's name
 
 `integrations.public_origin` in `config.toml` still wins when it is set.
@@ -155,7 +192,7 @@ Invite links name the public origin, from the daemon and from
 
 ## Not built yet
 
-- The Cloudflare relay is the only first-party ingress plugin. ngrok,
+- The Cloudflare relay and ngrok are the first-party ingress plugins.
   Cloudflare Tunnel and dynamic DNS come next, and the relay can't use a
   custom domain yet.
 - There is no web app screen yet; use the CLI or the web API.

@@ -102,6 +102,10 @@ defaults to `[database].plugin = "sqlite"` until stamped to a PluginKey.
 - The host grants `library.db` (and its journal sidecars) in the jail
   allowlist, and passes the path as `BOOKCLERK_SQLITE_PATH` and context
   `sqlitePath`.
+- The guest may write those files but not delete anything in the files
+  directory, so it uses a `TRUNCATE` rollback journal that is emptied, never
+  removed. After a crash or power cut in the middle of a write, the next start
+  rolls the leftover journal back the same way, without deleting it.
 - The guest runs with `[sandbox].network = none`.
 
 ### D1 and PostgreSQL
@@ -798,7 +802,7 @@ Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `operator_sessions`, `account_links`, `patron_controls`, `admin_controls`, `patron_scopes`,
 `patron_scope_keys`, `account_shares`, `account_credential_revisions`, `listening_progress`, `title_requests`, `title_request_sources`,
 `embeddings`, `discover_candidates`, `discover_store_calls`,
-`discover_store_call_hits`, `discover_feeds`, `discover_tastes`, `discover_fetches`,
+`discover_store_call_hits`, `discover_feeds`, `discover_feed_parts`, `discover_tastes`, `discover_fetches`,
 `discover_request_queue`,
 `playback_progress`, `playback_sessions`, `bookmarks`,
 `player_passwords`, `player_cards`, `player_card_tokens`,
@@ -908,7 +912,12 @@ library holds as works, expressions and editions:
   as `m4b` or `mp3`, and `copy_quality`, such as `original` or
   `64k-mono`; see [Keeping several
   copies](output.md#keeping-several-copies)); both are empty for
-  sidecars, the PDF and uploads.
+  sidecars, the PDF and uploads. `writer` is the host upload that
+  claimed the key last, or the acquire run that wrote it
+  (`acquire:<32 hex>`, one id per run; `acquire` for a title a branch
+  imports from a library it joined). An acquire records each key just
+  before writing it, and when the write fails it removes a record it
+  had just made, so a later upload of the same title may claim the key.
 - `edition_copies`: each edition's copy on each destination: `stored`
   with the edition's primary audio key there, `pending` with the last
   error and when the next background attempt is due, `failed` after 8

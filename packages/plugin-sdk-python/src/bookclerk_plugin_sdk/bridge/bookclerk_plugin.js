@@ -12938,6 +12938,31 @@ var AdapterDatabaseSession = class extends RpcTarget {
     return Promise.reject(unsupported("assertRestoreConstraints"));
   }
 };
+var EVENTS_METHODS = ["publish", "read"];
+var NOTIFY_METHODS = ["raise"];
+var AI_METHODS = ["run"];
+var QUEUE_METHODS = ["send", "sendBatch"];
+var KV_METHODS = ["get", "getWithMetadata", "put", "delete", "list"];
+function unwrapGrantedReply(reply) {
+  if (reply && typeof reply === "object") {
+    if ("err" in reply && reply.err && typeof reply.err === "object") {
+      return throwGranted(reply.err);
+    }
+    if ("ok" in reply)
+      return reply.ok;
+  }
+  throw PluginError.fromWire("internal", "granted binding reply has neither ok nor err");
+}
+function throwGranted(err) {
+  throw PluginError.fromWire(typeof err.code === "string" && err.code ? err.code : "internal", typeof err.message === "string" ? err.message : "", typeof err.details === "string" ? err.details : "");
+}
+function settledBinding(transport, methods) {
+  const binding = {};
+  for (const method of methods) {
+    binding[method] = async (...args) => unwrapGrantedReply(await transport.settle(method, args));
+  }
+  return Object.freeze(binding);
+}
 function decodeExtensibleConfig(cfg) {
   if (cfg == null)
     return {};
@@ -12992,12 +13017,14 @@ function invocationEnv(rawEnv, context) {
       merged.SECRETS = decodeExtensibleConfig(context.secrets);
     if (context.storage)
       merged.WORK_FS = context.storage;
-    if (context.events)
-      merged.EVENTS = context.events;
-    if (context.notify)
-      merged.NOTIFY = context.notify;
+    if (context.events) {
+      merged.EVENTS = settledBinding(context.events, EVENTS_METHODS);
+    }
+    if (context.notify) {
+      merged.NOTIFY = settledBinding(context.notify, NOTIFY_METHODS);
+    }
     if (context.ai)
-      merged.AI = context.ai;
+      merged.AI = settledBinding(context.ai, AI_METHODS);
     if (Array.isArray(context.databases)) {
       for (const entry of context.databases) {
         if (!entry || typeof entry.name !== "string" || !entry.name)
@@ -13013,14 +13040,14 @@ function invocationEnv(rawEnv, context) {
       for (const entry of context.queues) {
         if (!entry || typeof entry.name !== "string" || !entry.name || !entry.queue)
           continue;
-        merged[entry.name] = entry.queue;
+        merged[entry.name] = settledBinding(entry.queue, QUEUE_METHODS);
       }
     }
     if (Array.isArray(context.kv)) {
       for (const entry of context.kv) {
         if (!entry || typeof entry.name !== "string" || !entry.name || !entry.kv)
           continue;
-        merged[entry.name] = entry.kv;
+        merged[entry.name] = settledBinding(entry.kv, KV_METHODS);
       }
     }
     const sockets = socketsTransportOf(context);
@@ -14734,7 +14761,52 @@ function unpackEmbeddingVectors(bytes, dimensions) {
   }
   return out;
 }
-var GrantedAi = class extends RpcTarget {
+function grantedError(error) {
+  return PluginError.fromWire(error.code || "internal", error.message || "", typeof error.details === "string" ? error.details : "");
+}
+var SettledTarget = class extends RpcTarget {
+  /** Binding the methods run on. */
+  #inner;
+  /** Method names `settle` may run. */
+  #methods;
+  /**
+   * @param inner - Granted binding implementation.
+   * @param methods - Method names the author may call.
+   */
+  constructor(inner, methods) {
+    super();
+    this.#inner = inner;
+    this.#methods = new Set(methods);
+  }
+  /**
+   * Run one binding method.
+   *
+   * @param method - Allow-listed method name.
+   * @param args - Its arguments.
+   * @returns `{ ok }` with the value, or `{ err }`; never throws.
+   */
+  async settle(method, args) {
+    if (typeof method !== "string" || !this.#methods.has(method)) {
+      return {
+        err: { code: "unsupported", message: `binding has no method \`${String(method)}\`` }
+      };
+    }
+    try {
+      const fn = this.#inner[method];
+      const value = await fn.apply(this.#inner, Array.isArray(args) ? args : []);
+      return { ok: value };
+    } catch (err) {
+      if (err instanceof PluginError) {
+        const details = err.detailsText;
+        return {
+          err: { code: err.wireCode, message: err.message, ...details ? { details } : {} }
+        };
+      }
+      return { err: { code: "internal", message: errorMessage(err) } };
+    }
+  }
+};
+var GrantedAi = class {
   #granted;
   #auth;
   /**
@@ -14742,7 +14814,6 @@ var GrantedAi = class extends RpcTarget {
    * @param auth - Bearer header for the ai grant.
    */
   constructor(granted, auth) {
-    super();
     this.#granted = granted;
     this.#auth = auth;
   }
@@ -14774,7 +14845,7 @@ var GrantedAi = class extends RpcTarget {
     });
     const value = await resp.json().catch(() => ({}));
     if (value && value.error) {
-      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+      throw grantedError(value.error);
     }
     if (!resp.ok) {
       throw PluginError.fromWire("internal", `ai run HTTP ${resp.status}`);
@@ -14803,7 +14874,7 @@ function notifyFields(fields) {
   }
   return Object.entries(fields).map(([name, value]) => ({ name, value: String(value) }));
 }
-var GrantedNotify = class extends RpcTarget {
+var GrantedNotify = class {
   #granted;
   #auth;
   /**
@@ -14811,7 +14882,6 @@ var GrantedNotify = class extends RpcTarget {
    * @param auth - Bearer header for the notify grant.
    */
   constructor(granted, auth) {
-    super();
     this.#granted = granted;
     this.#auth = auth;
   }
@@ -14841,7 +14911,7 @@ var GrantedNotify = class extends RpcTarget {
     });
     const value = await resp.json().catch(() => ({}));
     if (value && value.error) {
-      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+      throw grantedError(value.error);
     }
     if (!resp.ok) {
       throw PluginError.fromWire("internal", `notify raise HTTP ${resp.status}`);
@@ -14849,7 +14919,7 @@ var GrantedNotify = class extends RpcTarget {
     return { notificationId: String(value.notificationId ?? "") };
   }
 };
-var GrantedEvents = class extends RpcTarget {
+var GrantedEvents = class {
   #granted;
   #auth;
   /**
@@ -14857,7 +14927,6 @@ var GrantedEvents = class extends RpcTarget {
    * @param auth - Bearer header for the events grant.
    */
   constructor(granted, auth) {
-    super();
     this.#granted = granted;
     this.#auth = auth;
   }
@@ -14891,7 +14960,7 @@ var GrantedEvents = class extends RpcTarget {
     });
     const value = await resp.json().catch(() => ({}));
     if (value && value.error) {
-      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+      throw grantedError(value.error);
     }
     if (!resp.ok) {
       throw PluginError.fromWire("internal", `events publish HTTP ${resp.status}`);
@@ -14930,7 +14999,7 @@ var GrantedEvents = class extends RpcTarget {
       return {};
     });
     if (value && value.error) {
-      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+      throw grantedError(value.error);
     }
     if (!resp.ok) {
       throw PluginError.fromWire("internal", `events read HTTP ${resp.status}`);
@@ -14965,7 +15034,7 @@ function queueBodyBytes(body, contentType) {
   }
   return { body: new TextEncoder().encode(JSON.stringify(body ?? null)), contentType: kind };
 }
-var GrantedQueue = class extends RpcTarget {
+var GrantedQueue = class {
   #granted;
   #auth;
   /**
@@ -14973,7 +15042,6 @@ var GrantedQueue = class extends RpcTarget {
    * @param auth - Bearer header for the queue grant.
    */
   constructor(granted, auth) {
-    super();
     this.#granted = granted;
     this.#auth = auth;
   }
@@ -15023,7 +15091,7 @@ var GrantedQueue = class extends RpcTarget {
     });
     const value = await resp.json().catch(() => ({}));
     if (value && value.error) {
-      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+      throw grantedError(value.error);
     }
     if (!resp.ok) {
       throw PluginError.fromWire("internal", `queue send HTTP ${resp.status}`);
@@ -15061,7 +15129,7 @@ function decodeKvValue(bytes, type) {
     return JSON.parse(text);
   return text;
 }
-var GrantedKv = class extends RpcTarget {
+var GrantedKv = class {
   #granted;
   #auth;
   /**
@@ -15069,7 +15137,6 @@ var GrantedKv = class extends RpcTarget {
    * @param auth - Bearer header for the kv grant.
    */
   constructor(granted, auth) {
-    super();
     this.#granted = granted;
     this.#auth = auth;
   }
@@ -15081,7 +15148,7 @@ var GrantedKv = class extends RpcTarget {
     });
     const value = await resp.json().catch(() => ({}));
     if (value && value.error) {
-      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+      throw grantedError(value.error);
     }
     if (!resp.ok) {
       throw PluginError.fromWire("internal", `kv ${op} HTTP ${resp.status}`);
@@ -15643,19 +15710,13 @@ function createInvocationAdapter() {
       const bound = rest;
       const granted = this.env.GRANTED;
       if (typeof eventsToken === "string" && eventsToken && granted) {
-        bound.events = new GrantedEvents(granted, {
-          Authorization: `Bearer ${eventsToken}`
-        });
+        bound.events = new SettledTarget(new GrantedEvents(granted, { Authorization: `Bearer ${eventsToken}` }), EVENTS_METHODS);
       }
       if (typeof notifyToken === "string" && notifyToken && granted) {
-        bound.notify = new GrantedNotify(granted, {
-          Authorization: `Bearer ${notifyToken}`
-        });
+        bound.notify = new SettledTarget(new GrantedNotify(granted, { Authorization: `Bearer ${notifyToken}` }), NOTIFY_METHODS);
       }
       if (typeof aiToken === "string" && aiToken && granted) {
-        bound.ai = new GrantedAi(granted, {
-          Authorization: `Bearer ${aiToken}`
-        });
+        bound.ai = new SettledTarget(new GrantedAi(granted, { Authorization: `Bearer ${aiToken}` }), AI_METHODS);
       }
       if (databases && typeof databases === "object" && !Array.isArray(databases) && granted) {
         const named2 = [];
@@ -15677,7 +15738,7 @@ function createInvocationAdapter() {
             continue;
           named2.push({
             name,
-            queue: new GrantedQueue(granted, { Authorization: `Bearer ${token}` })
+            queue: new SettledTarget(new GrantedQueue(granted, { Authorization: `Bearer ${token}` }), QUEUE_METHODS)
           });
         }
         if (named2.length > 0)
@@ -15688,7 +15749,10 @@ function createInvocationAdapter() {
         for (const [name, token] of Object.entries(kv)) {
           if (!name || typeof token !== "string" || !token)
             continue;
-          named2.push({ name, kv: new GrantedKv(granted, { Authorization: `Bearer ${token}` }) });
+          named2.push({
+            name,
+            kv: new SettledTarget(new GrantedKv(granted, { Authorization: `Bearer ${token}` }), KV_METHODS)
+          });
         }
         if (named2.length > 0)
           bound.kv = named2;

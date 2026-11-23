@@ -11,6 +11,15 @@
 # `model.json` and of its OCI manifest are in models.json, so what a node
 # downloads is what this workflow built from the reviewed sources.
 #
+# The upstream files are cached under a key made of their pins, and a pack
+# main already built and checked is reused while the pins and the build
+# recipe are unchanged, skipping the converter and the build; a restored
+# file is measured against the pins before use either way. A download that
+# fails with a server error or a broken connection is tried again. The
+# check against the published model, the pin comparison and (on main) the
+# publish and attest jobs always run; publishing a pack that is already in
+# the registry uploads nothing. See the steps.
+#
 # When it runs: on a pull request that touches the builder, the pack layout,
 # the tokenizer or the plugin (build and check only, `contents: read`); on
 # main for the same paths, and by hand from main, which also publish. A
@@ -71,10 +80,47 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
+  # A visual approval commit (only ui/visual/baselines.lock changed since a
+  # parent whose run of this workflow succeeded) carries that run over
+  # instead of running again (docs/contributing/ci.md#visual-approval-commits).
+  carry:
+    name: Look for a visual approval commit
+    if: github.event_name == 'pull_request' && !github.event.pull_request.draft && github.event.pull_request.head.repo.full_name != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      run-id: ${{ steps.carry.outputs.run-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+
+      - name: Look for a visual approval commit
+        id: carry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: >-
+          python3 scripts/ci_carry.py find --repo "$REPO" --workflow model-packs.yml
+          --head "$HEAD_SHA" --head-repo "$HEAD_REPO" --head-branch "$HEAD_BRANCH"
+          --kind run --dest "$RUNNER_TEMP/ci-carry"
+
   build:
     name: build ${{ matrix.model }}
     # Deferred on a draft pull request until it is ready for review.
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    # Skipped as well for a visual approval commit carried over.
+    needs: carry
+    if: >-
+      !cancelled() &&
+      (github.event_name != 'pull_request' || !github.event.pull_request.draft) &&
+      needs.carry.outputs.run-id == ''
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -127,17 +173,40 @@ jobs:
           cache-on-failure: true
           save-if: ${{ github.event_name != 'pull_request' && matrix.model == 'bekko-a8m' }}
 
+      # A pack is a function of the pins and the build recipe. When main
+      # has already built this exact recipe, checked it and found it to be
+      # the pinned build, that pack is restored instead of compiling the
+      # converter and building it again. The key hashes every file that can
+      # change the pack's bytes: models.json (upstream pins and the pack
+      # digests), the builder, its Python lock, the converter's build script
+      # and the SentencePiece revision it is built from. Changing any of
+      # them misses, so a pull request that changes the recipe always gets
+      # a real build. Only main saves this cache, after `check` and `pin`
+      # pass; a restored pack is still measured by `pin` against the
+      # reviewed digests and run through `check`, so a cache entry can skip
+      # work but cannot change what is checked or published.
+      #
       # After the cargo cache on purpose: on a partial match that action
-      # cleans `target/`, which would delete a converter restored before it.
+      # cleans `target/`, which would delete anything restored before it.
+      - name: Restore a pack main already built from this recipe
+        id: pack
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            target/model-packs/out/${{ matrix.model }}/
+            target/model-packs/out/${{ matrix.model }}.oci-manifest.json
+          key: model-pack-v1-${{ matrix.model }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/model-packs/models.json', 'scripts/model_packs.py', 'scripts/model-packs/requirements.txt', 'scripts/model-packs/build-spm-to-fb.sh', 'scripts/vendor-sentencepiece-lite.sh', 'third_party/sentencepiece-lite/**') }}
+
       - name: Cache the tokenizer converter
+        if: steps.pack.outputs.cache-hit != 'true'
         id: converter
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target/model-packs/tools
           key: spm-to-fb-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/model-packs/build-spm-to-fb.sh', 'scripts/vendor-sentencepiece-lite.sh') }}
 
       - name: Build the tokenizer converter
-        if: steps.converter.outputs.cache-hit != 'true'
+        if: steps.pack.outputs.cache-hit != 'true' && steps.converter.outputs.cache-hit != 'true'
         run: scripts/model-packs/build-spm-to-fb.sh target/model-packs/tools
 
       - name: Build the plugin's examples and fetch ONNX Runtime
@@ -146,13 +215,48 @@ jobs:
           cargo build --release --locked -p bookclerk-plugin-ai-embedder --example embed --example tokens
           cargo ensure-onnxruntime
 
+      # The upstream files are pinned by revision, size and SHA-256, so they
+      # are cached under a key made of those pins and are downloaded only
+      # when a pin changes or the cache has been evicted. A restored copy is
+      # not trusted: `fetch` measures every file and downloads any that is
+      # not the pinned one, and `build` measures them again. Restored after
+      # the cargo cache on purpose (see the pack above).
+      - name: Key the upstream files
+        id: upstream
+        env:
+          MODEL: ${{ matrix.model }}
+        run: |
+          set -euo pipefail
+          python3 scripts/model_packs.py sources-digest --model "$MODEL" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Restore the pinned upstream files
+        id: upstream-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: target/model-packs/work/${{ matrix.model }}
+          key: model-upstream-${{ matrix.model }}-${{ steps.upstream.outputs.sources_digest }}
+
+      # Retries a failed download that may pass (a 5xx answer, a reset or
+      # timed-out connection) after 5, 20 and 60 seconds.
       - name: Fetch the pinned upstream files
         env:
           MODEL: ${{ matrix.model }}
         run: |
           "$RUNNER_TEMP/venv/bin/python" scripts/model_packs.py fetch --model "$MODEL"
 
+      # Saved as soon as the files are fetched and verified, whatever the
+      # rest of the job does. Main's copy is the one pull requests restore;
+      # a pull request saves only when nothing restorable matched (its pins
+      # changed, or main's copy was evicted), into its own scope.
+      - name: Save the pinned upstream files
+        if: steps.upstream-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: target/model-packs/work/${{ matrix.model }}
+          key: ${{ steps.upstream-cache.outputs.cache-primary-key }}
+
       - name: Build the pack
+        if: steps.pack.outputs.cache-hit != 'true'
         env:
           MODEL: ${{ matrix.model }}
         run: |
@@ -174,6 +278,17 @@ jobs:
           MODEL: ${{ matrix.model }}
         run: |
           "$RUNNER_TEMP/venv/bin/python" scripts/model_packs.py pin --model "$MODEL"
+
+      - name: Save the checked pack for later runs of this recipe
+        if: >-
+          github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+          && steps.pack.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            target/model-packs/out/${{ matrix.model }}/
+            target/model-packs/out/${{ matrix.model }}.oci-manifest.json
+          key: ${{ steps.pack.outputs.cache-primary-key }}
 
       - name: Keep the pack for the publish job
         if: github.event_name != 'pull_request'

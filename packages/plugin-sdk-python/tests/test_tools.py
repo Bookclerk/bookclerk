@@ -456,6 +456,12 @@ def test_format_omits_module_path_when_absent():
     assert "path =" not in rendered
 
 
+def test_check_outbound_needs_domains_or_tcp():
+    with pytest.raises(ValueError, match="domains or tcp is required"):
+        check_plugin(FIXTURES / "invalid-outbound-no-domains")
+    check_plugin(FIXTURES / "valid-outbound-tcp-only")
+
+
 def test_check_rejects_native_with_domains():
     with pytest.raises(ValueError, match="only valid for runtime"):
         check_plugin(FIXTURES / "invalid-native-with-domains")

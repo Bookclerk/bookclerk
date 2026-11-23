@@ -1,0 +1,1 @@
+"GET / HTTP/1.1\r\nUpgrade: websocket\r\nX:  \r\n\r\n"

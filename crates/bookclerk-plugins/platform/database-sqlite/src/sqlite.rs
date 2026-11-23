@@ -554,12 +554,30 @@ pub async fn open(path: &Path) -> std::result::Result<DatabaseConnection, DbErr>
         std::fs::create_dir_all(parent).map_err(|e| DbErr::Custom(e.to_string()))?;
     }
     let conn = rusqlite::Connection::open(&path).map_err(rusqlite_db_err)?;
+    // The recovery read below takes file locks; wait out a peer's commit the
+    // same way later statements do instead of failing the open at once.
+    conn.busy_timeout(BEGIN_BUSY_SLICE)
+        .map_err(rusqlite_db_err)?;
     // TRUNCATE keeps a durable rollback journal without unlinking it on commit.
-    // The jailed sqlite guest only has file-level Landlock grants for the DB and
+    // The jailed sqlite guest only has file-level grants for the DB and
     // sidecars (not the files-dir parent), so DELETE journal mode fails with
     // SQLITE_IOERR_DELETE when it tries to remove `*-journal`.
-    conn.execute_batch("PRAGMA journal_mode = TRUNCATE;")
-        .map_err(rusqlite_db_err)?;
+    //
+    // `PRAGMA journal_mode` reads the schema before it switches modes. After a
+    // crash mid-write that read rolls back the hot journal while the
+    // connection is still in the default DELETE mode, and DELETE mode unlinks
+    // the journal once the rollback finishes (issue #1349). In EXCLUSIVE
+    // locking mode SQLite zeroes the journal header instead, so the rollback
+    // runs under EXCLUSIVE and the connection returns to NORMAL locking
+    // afterwards. `PRAGMA schema_version` touches the file once more so the
+    // pager drops the exclusive lock now rather than on the next query.
+    conn.execute_batch(
+        "PRAGMA locking_mode = EXCLUSIVE;
+         PRAGMA journal_mode = TRUNCATE;
+         PRAGMA locking_mode = NORMAL;
+         PRAGMA schema_version;",
+    )
+    .map_err(rusqlite_db_err)?;
     let db = Database::connect_proxy(
         DbBackend::Sqlite,
         Arc::new(Box::new(SqliteProxy::new(conn).map_err(rusqlite_db_err)?)),
@@ -1669,6 +1687,116 @@ mod tests {
         db.execute_unprepared("INSERT INTO seen (id) VALUES (3)")
             .await
             .expect("write after release");
+    }
+
+    /// Leaves `crashed.db` and `crashed.db-journal` in `dir` exactly as a
+    /// process killed in the middle of a write would: the database file holds
+    /// some uncommitted pages and the journal holds the originals.
+    ///
+    /// # Returns
+    ///
+    /// The path of the crashed database and the committed rows it must roll
+    /// back to.
+    fn plant_hot_journal(dir: &std::path::Path) -> (std::path::PathBuf, Vec<(i64, String)>) {
+        let live = dir.join("live.db");
+        let conn = rusqlite::Connection::open(&live).expect("live db");
+        conn.execute_batch(
+            "PRAGMA journal_mode = TRUNCATE;
+             CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT NOT NULL);",
+        )
+        .expect("schema");
+        let committed: Vec<(i64, String)> = (0..200)
+            .map(|id| (id, format!("committed-{id}-{}", "x".repeat(400))))
+            .collect();
+        for (id, v) in &committed {
+            conn.execute("INSERT INTO t (id, v) VALUES (?1, ?2)", (id, v))
+                .expect("committed row");
+        }
+        // A tiny page cache makes SQLite spill dirty pages into the database
+        // file before COMMIT, which is what makes the journal hot.
+        conn.execute_batch(
+            "PRAGMA cache_size = 2;
+             BEGIN IMMEDIATE;
+             UPDATE t SET v = 'torn-' || id || '-' || substr(v, 1, 300);
+             DELETE FROM t WHERE id % 3 = 0;",
+        )
+        .expect("uncommitted write");
+        let crashed = dir.join("crashed.db");
+        std::fs::copy(&live, &crashed).expect("copy db mid-write");
+        std::fs::copy(dir.join("live.db-journal"), dir.join("crashed.db-journal"))
+            .expect("copy journal mid-write");
+        drop(conn);
+        let journal = std::fs::read(dir.join("crashed.db-journal")).expect("journal bytes");
+        assert!(
+            journal.first().is_some_and(|byte| *byte != 0),
+            "the planted journal must be hot"
+        );
+        (crashed, committed)
+    }
+
+    /// Reopening after a kill mid-write rolls the hot journal back without
+    /// unlinking it. The jailed guest has no delete right in the files
+    /// directory, so an unlink there fails the open with
+    /// `SQLITE_IOERR_DELETE` (issue #1349).
+    #[tokio::test]
+    async fn open_rolls_back_a_hot_journal_without_unlinking_it() {
+        use sea_orm::ConnectionTrait;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (crashed, committed) = plant_hot_journal(dir.path());
+        let db = super::open(&crashed).await.expect("reopen after crash");
+        let journal = dir.path().join("crashed.db-journal");
+        assert!(
+            journal.exists(),
+            "opening must truncate the rolled-back journal, never unlink it"
+        );
+        let rows = db
+            .query_all_raw(sea_orm::Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                "SELECT id, v FROM t ORDER BY id",
+            ))
+            .await
+            .expect("read after rollback");
+        let rows: Vec<(i64, String)> = rows
+            .iter()
+            .map(|row| {
+                (
+                    row.try_get::<i64>("", "id").expect("id"),
+                    row.try_get::<String>("", "v").expect("v"),
+                )
+            })
+            .collect();
+        assert_eq!(rows, committed, "rollback must restore the committed rows");
+        let check = db
+            .query_one_raw(sea_orm::Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                "PRAGMA integrity_check",
+            ))
+            .await
+            .expect("integrity check")
+            .expect("integrity row");
+        assert_eq!(
+            check
+                .try_get::<String>("", "integrity_check")
+                .expect("result"),
+            "ok"
+        );
+        // The connection is back in TRUNCATE mode for the commits that follow.
+        let mode = db
+            .query_one_raw(sea_orm::Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                "PRAGMA journal_mode",
+            ))
+            .await
+            .expect("journal mode")
+            .expect("journal mode row");
+        assert_eq!(
+            mode.try_get::<String>("", "journal_mode").expect("mode"),
+            "truncate"
+        );
+        db.execute_unprepared("INSERT INTO t (id, v) VALUES (1000, 'after')")
+            .await
+            .expect("write after recovery");
+        assert!(journal.exists(), "commit must truncate, not unlink");
     }
 
     #[test]

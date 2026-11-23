@@ -747,3 +747,11 @@ boundary = "What the host parses while it downloads an embedding model: the regi
 input_from = "store"
 side = "host"
 artifacts = ["bookclerk"]
+
+[targets.smtp_session]
+crate = "bookclerk-plugin-notifier-email"
+boundary = "A mail server's SMTP replies to the email notifier, and a patron's email address document"
+input_from = "the operator's mail server; any signed-in patron (address)"
+# Only the email guest reads them.
+side = "guest"
+artifacts = ["bookclerk"]

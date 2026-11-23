@@ -1057,7 +1057,7 @@ class UploadWorkflowTest(unittest.TestCase):
         self.assertEqual(triggers, {"workflow_run": {"workflows": ["CI"], "types": ["completed"]}})
         self.assertEqual(self.workflow["permissions"], {})
         job = self.workflow["jobs"]["upload"]
-        self.assertEqual(job["permissions"], {"actions": "read", "id-token": "write"})
+        self.assertEqual(job["permissions"], {"actions": "read", "contents": "read", "id-token": "write"})
         checkout = job["steps"][0]
         self.assertTrue(checkout["uses"].startswith("actions/checkout@"))
         # The default branch only, without a token left in .git/config.

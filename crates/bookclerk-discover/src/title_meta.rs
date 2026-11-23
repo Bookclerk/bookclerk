@@ -17,9 +17,9 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use bookclerk_enrich::{
-    enrichment_for_asin, fetch_audible_catalog_rating, fetch_audible_catalog_reviews_page,
-    lookup_by_metadata, public_http_client, CatalogReview, CatalogReviewsSort, Enrichment,
-    MatchQuery, MetadataProviders, DEFAULT_ENRICH_MIN_CONFIDENCE,
+    enrichment_for_asin_checked, fetch_audible_catalog_rating, fetch_audible_catalog_reviews_page,
+    lookup_by_metadata_checked, public_http_client, CatalogReview, CatalogReviewsSort, Enrichment,
+    MatchQuery, MetadataProviders, ProviderCoverage, DEFAULT_ENRICH_MIN_CONFIDENCE,
 };
 use bookclerk_source::{CatalogHit, ContentSource, SourceRegistry};
 
@@ -27,11 +27,80 @@ use crate::error::Result;
 use crate::identity::StoreEdition;
 use crate::ttl_cache::{cache_key, TtlCache};
 
-/// Process-wide TTL cache of resolved title-meta payloads (6 hours, 512 entries).
+/// Process-wide TTL cache of settled title-meta answers (6 hours, 512
+/// entries): every provider and planned store answered, so asking again
+/// would find the same.
 fn title_meta_cache() -> &'static TtlCache<Option<TitleMeta>> {
     static CACHE: OnceLock<TtlCache<Option<TitleMeta>>> = OnceLock::new();
     // Bump key prefix below when the payload shape changes.
     CACHE.get_or_init(|| TtlCache::new(Duration::from_secs(6 * 60 * 60), 512))
+}
+
+/// How long an unsettled title-meta answer is remembered before the
+/// providers and stores are asked again.
+///
+/// Short, so a failed or slow store or provider is retried within a minute,
+/// yet long enough that a title asked about repeatedly (each card of a
+/// shelf, the dialog, a batch's late query) costs a failing store at most
+/// one call a minute.
+pub const TITLE_META_RETRY_TTL: Duration = Duration::from_secs(60);
+
+/// Process-wide TTL cache of unsettled title-meta answers
+/// ([`TITLE_META_RETRY_TTL`], 512 entries): a provider or store failed, or
+/// the store fill timed out, so the answer may be missing a record.
+fn title_meta_retry_cache() -> &'static TtlCache<Option<TitleMeta>> {
+    static CACHE: OnceLock<TtlCache<Option<TitleMeta>>> = OnceLock::new();
+    CACHE.get_or_init(|| TtlCache::new(TITLE_META_RETRY_TTL, 512))
+}
+
+/// Whether a title-meta answer is final or may change when asked again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Settlement {
+    /// Every metadata provider and every planned store answered (or the
+    /// first store in order had a record), so a miss or a sparse record is
+    /// the real answer; cached for six hours.
+    Settled,
+    /// A provider or store call failed, the store fill ran out of time, or
+    /// the rating fetch failed; the answer may be missing a record, so it
+    /// is remembered only for [`TITLE_META_RETRY_TTL`].
+    Unsettled,
+}
+
+impl Settlement {
+    /// Both steps together: settled only when both are.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - The other step's settlement.
+    ///
+    /// # Returns
+    ///
+    /// [`Settlement::Settled`] when both are settled.
+    #[must_use]
+    pub fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Settled, Self::Settled) => Self::Settled,
+            (Self::Unsettled, _) | (_, Self::Unsettled) => Self::Unsettled,
+        }
+    }
+}
+
+impl From<ProviderCoverage> for Settlement {
+    fn from(coverage: ProviderCoverage) -> Self {
+        match coverage {
+            ProviderCoverage::Complete => Self::Settled,
+            ProviderCoverage::Partial => Self::Unsettled,
+        }
+    }
+}
+
+/// A title-meta answer and whether it is final.
+#[derive(Debug, Clone)]
+pub struct TitleMetaAnswer {
+    /// The metadata, or `None` when nothing matched.
+    pub meta: Option<TitleMeta>,
+    /// Whether asking again could find more (see [`Settlement`]).
+    pub settlement: Settlement,
 }
 
 /// Process-wide TTL cache of paginated Audible review pages (30 minutes, 256 entries).
@@ -642,11 +711,20 @@ fn store_fill_plan(
 /// order [`store_fill_plan`] gives; the first record found wins, a store
 /// that fails is skipped, and the lookups together stop after
 /// [`STORE_FILL_TIMEOUT`].
+///
+/// # Returns
+///
+/// The record found, and [`Settlement::Unsettled`] when a store failed
+/// before the record (or before the plan ran out) or the fill timed out:
+/// the failed store, asked first, might have had the record.
 async fn fill_from_source_catalog(
     query: &TitleMetaQuery,
     sources: Option<&SourceRegistry>,
-) -> Option<TitleMeta> {
-    let plan = store_fill_plan(query, sources?);
+) -> (Option<TitleMeta>, Settlement) {
+    let Some(sources) = sources else {
+        return (None, Settlement::Settled);
+    };
+    let plan = store_fill_plan(query, sources);
     let planned: Vec<String> = plan
         .iter()
         .map(|(store, lookup)| format!("{}:{}", store.id(), lookup.kind()))
@@ -664,16 +742,19 @@ async fn fill_from_source_catalog(
                 plan = %planned.join(","),
                 "title-meta store fill timed out"
             );
-            None
+            (None, Settlement::Unsettled)
         }
     }
 }
 
-/// Runs a fill plan in order and returns the first record found.
+/// Runs a fill plan in order and returns the first record found, settled
+/// only when no store before it (or, with no record, no store at all)
+/// failed.
 async fn fill_in_order(
     plan: Vec<(Arc<dyn ContentSource>, FillLookup)>,
     step: &std::sync::atomic::AtomicUsize,
-) -> Option<TitleMeta> {
+) -> (Option<TitleMeta>, Settlement) {
+    let mut settlement = Settlement::Settled;
     for (index, (store, lookup)) in plan.into_iter().enumerate() {
         step.store(index, std::sync::atomic::Ordering::Relaxed);
         let (result, key) = match &lookup {
@@ -683,9 +764,10 @@ async fn fill_in_order(
             FillLookup::Isbn(isbn) => (store.catalog_detail_by_isbn(isbn).await, isbn.as_str()),
         };
         match result {
-            Ok(Some(hit)) => return Some(TitleMeta::from_catalog_hit(hit)),
+            Ok(Some(hit)) => return (Some(TitleMeta::from_catalog_hit(hit)), settlement),
             Ok(None) => {}
             Err(err) => {
+                settlement = Settlement::Unsettled;
                 tracing::debug!(
                     source = %store.id(),
                     key,
@@ -695,7 +777,7 @@ async fn fill_in_order(
             }
         }
     }
-    None
+    (None, settlement)
 }
 
 /// Process-wide TTL cache of title-sample answers (6 hours, 512 entries):
@@ -862,7 +944,8 @@ async fn sample_in_order(
 ///
 /// # Returns
 ///
-/// On success, the inner `Option<TitleMeta>` value.
+/// On success, the inner `Option<TitleMeta>` value (see
+/// [`resolve_title_meta_answer`] for how long it is cached).
 ///
 /// # Errors
 ///
@@ -872,48 +955,110 @@ pub async fn resolve_title_meta(
     providers: Arc<dyn MetadataProviders>,
     sources: Option<&SourceRegistry>,
 ) -> Result<Option<TitleMeta>> {
+    Ok(resolve_title_meta_answer(query, providers, sources)
+        .await
+        .meta)
+}
+
+/// Resolve public metadata for a title, saying whether the answer is final.
+///
+/// A settled answer (every provider and planned store answered) is cached
+/// for six hours, a miss included. An unsettled one (a provider or store
+/// failed, the store fill timed out, the rating fetch failed, or the
+/// resolve errored) is still returned but cached only for
+/// [`TITLE_META_RETRY_TTL`], so a transient failure is retried soon
+/// instead of hiding the title's details for hours.
+///
+/// # Arguments
+///
+/// * `query` - The title to describe.
+/// * `providers` - Deployed metadata providers asked for records.
+/// * `sources` - The deployed storefronts, for gap-filling from their
+///   catalogs.
+///
+/// # Returns
+///
+/// The metadata (or `None`) and its [`Settlement`]; a failed resolve is an
+/// unsettled `None`.
+pub async fn resolve_title_meta_answer(
+    query: &TitleMetaQuery,
+    providers: Arc<dyn MetadataProviders>,
+    sources: Option<&SourceRegistry>,
+) -> TitleMetaAnswer {
+    let region = title_meta_region(query);
+    let key = title_meta_key(query);
+    if let Some(meta) = title_meta_cache().get(&key) {
+        return TitleMetaAnswer {
+            meta,
+            settlement: Settlement::Settled,
+        };
+    }
+    if let Some(meta) = title_meta_retry_cache().get(&key) {
+        return TitleMetaAnswer {
+            meta,
+            settlement: Settlement::Unsettled,
+        };
+    }
+
+    let answer = match resolve_title_meta_uncached(query, providers.as_ref(), region, sources).await
+    {
+        Ok(answer) => answer,
+        Err(err) => {
+            // An upstream provider / catalog error is an unsettled miss, so
+            // batch callers still get partial results instead of a hard
+            // failure, and the title is asked about again soon.
+            tracing::debug!(error = %err, title = %query.title, "title-meta resolve failed");
+            TitleMetaAnswer {
+                meta: None,
+                settlement: Settlement::Unsettled,
+            }
+        }
+    };
+    match answer.settlement {
+        Settlement::Settled => title_meta_cache().insert(key, answer.meta.clone()),
+        Settlement::Unsettled => title_meta_retry_cache().insert(key, answer.meta.clone()),
+    }
+    answer
+}
+
+/// The marketplace a title-meta query asks in (`us` when it names none).
+fn title_meta_region(query: &TitleMetaQuery) -> &str {
     let region = query.region.trim();
-    let region = if region.is_empty() { "us" } else { region };
+    if region.is_empty() {
+        "us"
+    } else {
+        region
+    }
+}
+
+/// The title-meta caches' key for `query`.
+fn title_meta_key(query: &TitleMetaQuery) -> String {
     let editions: Vec<String> = query
         .store_editions
         .iter()
         .map(|ed| format!("{}:{}", ed.source.trim(), ed.product_id.trim()))
         .collect();
     let editions = editions.join(",");
-    let key = cache_key(&[
+    cache_key(&[
         "title-meta-v10",
-        region,
+        title_meta_region(query),
         query.asin.as_deref().unwrap_or(""),
         query.isbn.as_deref().unwrap_or(""),
         query.title.as_str(),
         query.authors.as_deref().unwrap_or(""),
         editions.as_str(),
-    ]);
-    if let Some(cached) = title_meta_cache().get(&key) {
-        return Ok(cached);
-    }
-
-    let resolved =
-        match resolve_title_meta_uncached(query, providers.as_ref(), region, sources).await {
-            Ok(meta) => meta,
-            Err(err) => {
-                // Treat upstream provider / catalog errors as a miss so batch callers
-                // still get partial results instead of a hard failure.
-                tracing::debug!(error = %err, title = %query.title, "title-meta resolve failed");
-                None
-            }
-        };
-    title_meta_cache().insert(key, resolved.clone());
-    Ok(resolved)
+    ])
 }
 
-/// Resolves title metadata without the TTL cache (provider record by ASIN, then storefront fill).
+/// Resolves title metadata without the TTL cache (provider record by ASIN,
+/// then storefront fill), noting every failed step in the settlement.
 async fn resolve_title_meta_uncached(
     query: &TitleMetaQuery,
     providers: &dyn MetadataProviders,
     region: &str,
     sources: Option<&SourceRegistry>,
-) -> Result<Option<TitleMeta>> {
+) -> Result<TitleMetaAnswer> {
+    let mut settlement = Settlement::Settled;
     // Prefer a single provider lookup by ASIN. Title/author catalog matching is
     // multiple public HTTP round-trips and is easy to stack under the API budget
     // when many detail modals open — only fall back when no ASIN is known.
@@ -924,9 +1069,9 @@ async fn resolve_title_meta_uncached(
         .filter(|s| !s.is_empty())
         .filter(|s| !isbn_like(s))
     {
-        enrichment_for_asin(providers, asin, region)
-            .await
-            .map(TitleMeta::from_enrichment)
+        let (found, coverage) = enrichment_for_asin_checked(providers, asin, region).await;
+        settlement = settlement.and(coverage.into());
+        found.map(TitleMeta::from_enrichment)
     } else {
         None
     };
@@ -969,21 +1114,26 @@ async fn resolve_title_meta_uncached(
                 duration_minutes: query.length_minutes.map(|n| n as f64),
             };
             let min = f64::from(DEFAULT_ENRICH_MIN_CONFIDENCE) / 100.0;
-            meta = match lookup_by_metadata(providers, &mq, region, min).await? {
-                Some(scored) => Some(TitleMeta::from_enrichment(scored.enrichment)),
-                None => None,
-            };
+            let (scored, coverage) =
+                lookup_by_metadata_checked(providers, &mq, region, min).await?;
+            settlement = settlement.and(coverage.into());
+            meta = scored.map(|scored| TitleMeta::from_enrichment(scored.enrichment));
         }
     }
 
     if title_meta_needs_store_fill(meta.as_ref()) {
-        if let Some(fill) = fill_from_source_catalog(query, sources).await {
+        let (fill, filled) = fill_from_source_catalog(query, sources).await;
+        settlement = settlement.and(filled);
+        if let Some(fill) = fill {
             meta = Some(merge_title_meta(meta, fill));
         }
     }
 
     let Some(mut meta) = meta else {
-        return Ok(None);
+        return Ok(TitleMetaAnswer {
+            meta: None,
+            settlement,
+        });
     };
 
     if let Some(asin) = meta
@@ -999,18 +1149,25 @@ async fn resolve_title_meta_uncached(
                 Ok(Some(rating)) => meta = meta.with_ratings(rating),
                 Ok(None) => {}
                 Err(err) => {
+                    settlement = Settlement::Unsettled;
                     tracing::debug!(
                         asin = %asin,
                         error = %err,
                         "title-meta rating fetch failed"
-                    )
+                    );
                 }
             },
-            Err(err) => tracing::debug!(error = %err, "title-meta rating client failed"),
+            Err(err) => {
+                settlement = Settlement::Unsettled;
+                tracing::debug!(error = %err, "title-meta rating client failed");
+            }
         }
     }
 
-    Ok(Some(meta))
+    Ok(TitleMetaAnswer {
+        meta: Some(meta),
+        settlement,
+    })
 }
 
 /// Resolve one page of Audible customer reviews for infinite scroll.
@@ -1096,7 +1253,8 @@ pub async fn resolve_title_reviews(query: &TitleReviewsQuery) -> Result<TitleRev
 ///
 /// A query still working then answers as failed (the route shows no
 /// metadata for it, and the browser asks again later), and keeps running in
-/// the background so its answer is cached for that next ask.
+/// the background so its answer is cached for that next ask (briefly, when
+/// it ends unsettled; see [`Settlement`]).
 pub const TITLE_META_BATCH_DEADLINE: Duration = Duration::from_secs(6);
 
 /// Resolve many title-meta queries with bounded concurrency (order preserved).
@@ -1115,14 +1273,15 @@ pub const TITLE_META_BATCH_DEADLINE: Duration = Duration::from_secs(6);
 ///
 /// # Returns
 ///
-/// One result per query, in order. A query that failed, was cancelled or
-/// did not finish by the deadline is an error.
+/// One answer per query, in order, each with its [`Settlement`]. A query
+/// that failed, was cancelled or did not finish by the deadline is an
+/// error.
 pub async fn resolve_title_meta_batch(
     queries: &[TitleMetaQuery],
     max_concurrent: usize,
     providers: Arc<dyn MetadataProviders>,
     sources: Option<&SourceRegistry>,
-) -> Vec<Result<Option<TitleMeta>>> {
+) -> Vec<Result<TitleMetaAnswer>> {
     let deadline = tokio::time::Instant::now() + TITLE_META_BATCH_DEADLINE;
     let slots = Arc::new(tokio::sync::Semaphore::new(max_concurrent.clamp(1, 8)));
     let sources = sources.cloned();
@@ -1137,12 +1296,11 @@ pub async fn resolve_title_meta_batch(
             let _slot = slots.acquire_owned().await.ok();
             (
                 index,
-                resolve_title_meta(&q, providers, sources.as_ref()).await,
+                Ok(resolve_title_meta_answer(&q, providers, sources.as_ref()).await),
             )
         });
     }
-    let mut slot: Vec<Option<Result<Option<TitleMeta>>>> =
-        (0..queries.len()).map(|_| None).collect();
+    let mut slot: Vec<Option<Result<TitleMetaAnswer>>> = (0..queries.len()).map(|_| None).collect();
     let collect = async {
         while let Some(joined) = set.join_next().await {
             match joined {
@@ -1251,7 +1409,13 @@ mod tests {
         assert!(started.elapsed() <= TITLE_META_BATCH_DEADLINE + Duration::from_millis(50));
         assert!(results[0].is_err(), "the slow query timed out");
         assert!(
-            matches!(results[1], Ok(None)),
+            matches!(
+                results[1],
+                Ok(TitleMetaAnswer {
+                    meta: None,
+                    settlement: Settlement::Settled
+                })
+            ),
             "the quick query answered: {:?}",
             results[1]
         );
@@ -1289,6 +1453,7 @@ mod tests {
             Some(&registry),
         )
         .await
+        .0
         .expect("filled");
         assert_eq!(meta.description.as_deref(), Some("From GA."));
         assert_eq!(*listing_calls.lock().unwrap(), vec!["product:1716"]);
@@ -1310,17 +1475,17 @@ mod tests {
             Some(&registry),
         )
         .await
+        .0
         .expect("filled");
         assert_eq!(meta.description.as_deref(), Some("From Libro."));
         assert!(chirp_calls.lock().unwrap().is_empty());
         assert_eq!(*isbn_calls.lock().unwrap(), vec!["isbn:9780000000001"]);
 
         // Without an ISBN or a declared listing store nothing is asked.
-        assert!(
-            fill_from_source_catalog(&query(&[("chirp", "c-1")], None), Some(&registry))
-                .await
-                .is_none()
-        );
+        assert!(matches!(
+            fill_from_source_catalog(&query(&[("chirp", "c-1")], None), Some(&registry)).await,
+            (None, Settlement::Settled)
+        ));
         assert_eq!(isbn_calls.lock().unwrap().len(), 1);
     }
 
@@ -1511,6 +1676,164 @@ mod tests {
     }
 
     /// A rule that accepts no sample URL.
+    /// A detail store whose every lookup fails, with its call log.
+    fn failing_store(
+        id: &'static str,
+        by_isbn: bool,
+        by_product_id: bool,
+    ) -> (Arc<dyn ContentSource>, Arc<std::sync::Mutex<Vec<String>>>) {
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let store = DetailStore {
+            id,
+            by_isbn,
+            by_product_id,
+            answer: None,
+            fails: true,
+            calls: calls.clone(),
+            listed: Vec::new(),
+        };
+        (Arc::new(store), calls)
+    }
+
+    /// A fill is settled only when no store before the record (or, with
+    /// no record, no store at all) failed: a failed first store might have
+    /// had the record a later store stood in for.
+    #[tokio::test]
+    async fn a_fill_past_a_failed_store_is_unsettled() {
+        let isbn = Some("9780000000002");
+        let editions = [("graphicaudio", "1716")];
+
+        let (down, _) = failing_store("graphicaudio", false, true);
+        let (libro, _) = store("libro", true, false, "From Libro.");
+        let mut registry = SourceRegistry::new();
+        registry.register(down);
+        registry.register(libro);
+        let (meta, settlement) =
+            fill_from_source_catalog(&query(&editions, isbn), Some(&registry)).await;
+        assert_eq!(
+            meta.and_then(|m| m.description).as_deref(),
+            Some("From Libro.")
+        );
+        assert_eq!(settlement, Settlement::Unsettled);
+
+        let (ga, _) = store("graphicaudio", false, true, "From GA.");
+        let (down, _) = failing_store("libro", true, false);
+        let mut registry = SourceRegistry::new();
+        registry.register(ga);
+        registry.register(down);
+        let (meta, settlement) =
+            fill_from_source_catalog(&query(&editions, isbn), Some(&registry)).await;
+        assert!(meta.is_some(), "the first store answered");
+        assert_eq!(
+            settlement,
+            Settlement::Settled,
+            "the later store was never asked"
+        );
+
+        let (down, _) = failing_store("libro", true, false);
+        let mut registry = SourceRegistry::new();
+        registry.register(down);
+        let (meta, settlement) = fill_from_source_catalog(&query(&[], isbn), Some(&registry)).await;
+        assert!(meta.is_none());
+        assert_eq!(settlement, Settlement::Unsettled);
+
+        // No sources at all: nothing to ask, nothing to retry.
+        assert!(matches!(
+            fill_from_source_catalog(&query(&[], isbn), None).await,
+            (None, Settlement::Settled)
+        ));
+    }
+
+    /// A query whose ASIN-shaped title is looked up at the providers
+    /// directly (no catalog search over the network), filled by ISBN.
+    fn offline_query(title: &str, isbn: &str) -> TitleMetaQuery {
+        let mut asked = query(&[], Some(isbn));
+        asked.title = title.into();
+        asked
+    }
+
+    /// A miss after a failed store is answered unsettled and kept only in
+    /// the short retry cache, so the six-hour cache never holds it; a miss
+    /// every store answered is settled and cached for six hours.
+    #[tokio::test]
+    async fn a_failed_store_fill_is_retried_not_remembered() {
+        let providers: Arc<dyn MetadataProviders> = Arc::new(bookclerk_enrich::NoMetadataProviders);
+        let (down, down_calls) = failing_store("libro", true, false);
+        let mut failing = SourceRegistry::new();
+        failing.register(down);
+        let asked = offline_query("B0RETRY001", "9780000000019");
+
+        let answer =
+            resolve_title_meta_answer(&asked, Arc::clone(&providers), Some(&failing)).await;
+        assert!(answer.meta.is_none());
+        assert_eq!(answer.settlement, Settlement::Unsettled);
+        assert_eq!(down_calls.lock().unwrap().len(), 1);
+        let key = title_meta_key(&asked);
+        assert!(
+            title_meta_cache().get(&key).is_none(),
+            "not cached for hours"
+        );
+        assert!(title_meta_retry_cache().get(&key).is_some(), "held briefly");
+
+        // Within the retry window the store is not asked again, and the
+        // answer still says it is unsettled.
+        let again = resolve_title_meta_answer(&asked, Arc::clone(&providers), Some(&failing)).await;
+        assert_eq!(again.settlement, Settlement::Unsettled);
+        assert_eq!(down_calls.lock().unwrap().len(), 1);
+
+        // A store that answers "not found" settles the miss.
+        let (empty, empty_calls) = {
+            let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let store: Arc<dyn ContentSource> = Arc::new(DetailStore {
+                id: "libro",
+                by_isbn: true,
+                by_product_id: false,
+                answer: None,
+                fails: false,
+                calls: calls.clone(),
+                listed: Vec::new(),
+            });
+            (store, calls)
+        };
+        let mut answering = SourceRegistry::new();
+        answering.register(empty);
+        let settled = offline_query("B0RETRY002", "9780000000026");
+        let answer =
+            resolve_title_meta_answer(&settled, Arc::clone(&providers), Some(&answering)).await;
+        assert!(answer.meta.is_none());
+        assert_eq!(answer.settlement, Settlement::Settled);
+        assert!(title_meta_cache().get(&title_meta_key(&settled)).is_some());
+        let again = resolve_title_meta_answer(&settled, providers, Some(&answering)).await;
+        assert_eq!(again.settlement, Settlement::Settled);
+        assert_eq!(
+            empty_calls.lock().unwrap().len(),
+            1,
+            "answered from the cache"
+        );
+    }
+
+    /// A batch flags an unsettled answer so the client does not keep it.
+    #[tokio::test]
+    async fn a_batch_carries_each_answers_settlement() {
+        let (down, _) = failing_store("libro", true, false);
+        let mut failing = SourceRegistry::new();
+        failing.register(down);
+        let results = resolve_title_meta_batch(
+            &[offline_query("B0RETRY003", "9780000000033")],
+            4,
+            Arc::new(bookclerk_enrich::NoMetadataProviders),
+            Some(&failing),
+        )
+        .await;
+        assert!(matches!(
+            results[0],
+            Ok(TitleMetaAnswer {
+                meta: None,
+                settlement: Settlement::Unsettled
+            })
+        ));
+    }
+
     fn never(_url: &str) -> bool {
         false
     }

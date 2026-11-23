@@ -1431,9 +1431,10 @@ def validate_manifest(m: dict[str, Any]) -> None:
             list(w.get("compatibility_flags") or []),
             declares_python(m),
         )
-        if net.get("mode") == "outbound" and not net.get("domains"):
+        # `fetch` needs `domains`; a host-held `tls://` stream needs `tcp`.
+        if net.get("mode") == "outbound" and not net.get("domains") and not net.get("tcp"):
             raise ValueError(
-                'plugin.toml: capabilities.network.domains is required when runtime = "workerd" '
+                'plugin.toml: capabilities.network.domains or tcp is required when runtime = "workerd" '
                 'and mode = "outbound"'
             )
     else:

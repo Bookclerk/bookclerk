@@ -6855,9 +6855,11 @@ struct TitleMetaBatchBody {
 struct TitleMetaBatchResponse {
     /// One optional metadata payload per query; enrichment errors become `None`.
     results: Vec<Option<bookclerk_discover::TitleMeta>>,
-    /// Per query, in order: `true` when its `null` is a failure or a query
-    /// that ran past the batch deadline, not an answer, so the client should
-    /// not keep it and may ask again later.
+    /// Per query, in order: `true` when its result is not a final answer
+    /// (the query failed or ran past the batch deadline, so its `null` is
+    /// no answer, or a metadata provider or store failed or timed out while
+    /// it resolved, so it may be missing details), so the client shows it
+    /// but does not keep it and may ask again later.
     #[schema(example = json!([false, true]))]
     incomplete: Vec<bool>,
 }
@@ -6899,9 +6901,12 @@ async fn discover_title_meta_batch(
     let mut incomplete: Vec<bool> = Vec::with_capacity(resolved.len());
     for (index, item) in resolved.into_iter().enumerate() {
         match item {
-            Ok(meta) => {
-                results.push(meta);
-                incomplete.push(false);
+            Ok(answer) => {
+                results.push(answer.meta);
+                incomplete.push(match answer.settlement {
+                    bookclerk_discover::Settlement::Settled => false,
+                    bookclerk_discover::Settlement::Unsettled => true,
+                });
             }
             Err(err) => {
                 tracing::debug!(query = index, error = %err, "title-meta batch item failed");

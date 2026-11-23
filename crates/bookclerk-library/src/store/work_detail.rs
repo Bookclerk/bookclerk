@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use bookclerk_resolve::{Abridgement, Entitlement, ExpressionKind, MediaKind, WorkKind};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 use super::library_model::{find_chunked, find_chunked_paged};
 use super::LibraryStore;
@@ -222,12 +222,12 @@ impl LibraryStore {
             return Ok(None);
         };
         let mut work_ids = vec![work.id.clone()];
-        let episodes = find_chunked_paged::<works::Entity, _>(self, &work_ids, |part| {
-            works::Entity::find()
-                .filter(works::Column::ParentWorkId.is_in(part.iter().cloned()))
-                .order_by_asc(works::Column::Id)
-        })
-        .await?;
+        let episodes =
+            find_chunked_paged::<works::Entity, _>(self, &work_ids, &[works::Column::Id], |part| {
+                works::Entity::find()
+                    .filter(works::Column::ParentWorkId.is_in(part.iter().cloned()))
+            })
+            .await?;
         // An episode's own cover comes before its show's.
         let episode_covers: HashMap<String, String> = episodes
             .iter()
@@ -237,38 +237,52 @@ impl LibraryStore {
             .collect();
         work_ids.extend(episodes.into_iter().map(|w| w.id));
         let expressions: HashMap<String, expressions::Model> =
-            find_chunked_paged::<expressions::Entity, _>(self, &work_ids, |part| {
-                expressions::Entity::find()
-                    .filter(expressions::Column::WorkId.is_in(part.iter().cloned()))
-                    .order_by_asc(expressions::Column::Id)
-            })
+            find_chunked_paged::<expressions::Entity, _>(
+                self,
+                &work_ids,
+                &[expressions::Column::Id],
+                |part| {
+                    expressions::Entity::find()
+                        .filter(expressions::Column::WorkId.is_in(part.iter().cloned()))
+                },
+            )
             .await?
             .into_iter()
             .map(|x| (x.id.clone(), x))
             .collect();
         let expression_ids: Vec<String> = expressions.keys().cloned().collect();
-        let edition_rows =
-            find_chunked_paged::<editions::Entity, _>(self, &expression_ids, |part| {
+        let edition_rows = find_chunked_paged::<editions::Entity, _>(
+            self,
+            &expression_ids,
+            &[editions::Column::Id],
+            |part| {
                 editions::Entity::find()
                     .filter(editions::Column::ExpressionId.is_in(part.iter().cloned()))
-                    .order_by_asc(editions::Column::Id)
-            })
-            .await?;
+            },
+        )
+        .await?;
         let edition_ids: Vec<String> = edition_rows.iter().map(|e| e.id.clone()).collect();
-        let listings =
-            find_chunked_paged::<store_listings::Entity, _>(self, &edition_ids, |part| {
+        let listings = find_chunked_paged::<store_listings::Entity, _>(
+            self,
+            &edition_ids,
+            &[store_listings::Column::Id],
+            |part| {
                 store_listings::Entity::find()
                     .filter(store_listings::Column::EditionId.is_in(part.iter().cloned()))
-                    .order_by_asc(store_listings::Column::Id)
-            })
-            .await?;
+            },
+        )
+        .await?;
         let listing_ids: Vec<String> = listings.iter().map(|l| l.id.clone()).collect();
         let mut holdings_by_listing: HashMap<String, Vec<ListingHolding>> = HashMap::new();
-        for holding in find_chunked_paged::<holdings::Entity, _>(self, &listing_ids, |part| {
-            holdings::Entity::find()
-                .filter(holdings::Column::ListingId.is_in(part.iter().cloned()))
-                .order_by_asc(holdings::Column::Id)
-        })
+        for holding in find_chunked_paged::<holdings::Entity, _>(
+            self,
+            &listing_ids,
+            &[holdings::Column::Id],
+            |part| {
+                holdings::Entity::find()
+                    .filter(holdings::Column::ListingId.is_in(part.iter().cloned()))
+            },
+        )
         .await?
         {
             let listing_id = holding.listing_id.clone();
@@ -389,11 +403,15 @@ impl LibraryStore {
             .filter(|e| !covers.contains_key(&e.id))
             .map(|e| e.id.clone())
             .collect();
-        for listing in find_chunked_paged::<store_listings::Entity, _>(self, &uncovered, |part| {
-            store_listings::Entity::find()
-                .filter(store_listings::Column::EditionId.is_in(part.iter().cloned()))
-                .order_by_asc(store_listings::Column::Id)
-        })
+        for listing in find_chunked_paged::<store_listings::Entity, _>(
+            self,
+            &uncovered,
+            &[store_listings::Column::Id],
+            |part| {
+                store_listings::Entity::find()
+                    .filter(store_listings::Column::EditionId.is_in(part.iter().cloned()))
+            },
+        )
         .await?
         {
             if let Some(cover) = edition_cover([listing.cover_url.as_deref()]) {

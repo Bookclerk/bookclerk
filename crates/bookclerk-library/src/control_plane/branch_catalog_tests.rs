@@ -997,6 +997,88 @@ async fn a_catalog_upload_never_overwrites_another_titles_files() {
     ));
 }
 
+/// Two branches that pass the once-per-edition check for one edition at
+/// the same moment, under different keys, cannot both be granted: the
+/// grant checks again once its own keys are claimed, so the one that
+/// finds the other's claims gives its own back and is refused.
+#[tokio::test]
+async fn overlapping_grants_of_one_edition_grant_one() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, member) = world(dir.path()).await;
+    add_node(&store, "branch-c", "branch", Some(member)).await;
+    let keyed = |key: &str| CatalogTitle {
+        primary_key: key.into(),
+        files: vec![CatalogFile {
+            key: key.into(),
+            size: 1,
+            content_type: None,
+        }],
+        ..title("free", 1)
+    };
+    let fence_b = open_branch(&store, BRANCH, &[keyed("Author/free/free.m4b")]).await;
+    let fence_c = open_branch(&store, "branch-c", &[keyed("Author/free2/free.m4b")]).await;
+    // Branch C's grant read the edition before branch B claimed it: its
+    // preflight passed, and it goes on to open its upload.
+    let (row_c, edition, shared_c) = shared_holding(&store, "branch-c", "audible", "free")
+        .await
+        .unwrap()
+        .expect("branch C shares the title");
+    assert!(
+        !edition_has_other_audio(&store, "branch-c", &edition, &row_c.id)
+            .await
+            .unwrap()
+    );
+    let UploadGrant::Granted { upload_id: b, .. } =
+        grant_branch_local(&store, BRANCH, fence_b, "free", &["Author/free/free.m4b"]).await
+    else {
+        panic!("branch B is granted first");
+    };
+    let files = local_files(&["Author/free2/free.m4b"]);
+    let destinations = [UploadDestination {
+        id: "local".into(),
+        title_folders: vec!["Author/free2".into()],
+        title_names: None,
+    }];
+    let request = UploadGrantRequest {
+        holding_id: &row_c.id,
+        primary_key: &shared_c.primary_key,
+        pdf_key: None,
+        files: &files,
+        destinations: &destinations,
+    };
+    let digest = row_c.share_digest.clone().unwrap_or_default();
+    let late = super::super::uploads::open_upload_session(
+        &store,
+        "branch-c",
+        bookclerk_node_proto::CATALOG_ITEM,
+        fence_c,
+        "shared-node",
+        &request,
+        Some(&digest),
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(late, UploadGrant::Refused("edition_has_files")),
+        "{late:?}"
+    );
+    assert!(
+        store
+            .edition_file("local", "Author/free2/free.m4b")
+            .await
+            .unwrap()
+            .is_none(),
+        "the refused grant gave its key back"
+    );
+    let held = store
+        .edition_file("local", "Author/free/free.m4b")
+        .await
+        .unwrap()
+        .expect("branch B keeps its claim");
+    assert_eq!(held.writer, b);
+}
+
 /// Adds a book of `product` to the library under `account`, acquired with
 /// its audio at `key`; answers its uuid.
 async fn acquired_book(store: &LibraryStore, account: &str, product: &str, key: &str) -> String {
@@ -2274,4 +2356,92 @@ async fn a_replaced_holding_stops_being_shared_in_the_replacing_batch() {
         .unwrap();
     assert_eq!(shared, 1, "only the replacing holding is shared");
     assert_eq!(list_branch_titles(&store, None, 10).await.unwrap().len(), 1);
+}
+
+/// A full batch from a branch (one statement per title, more than the
+/// host minimum's 40) is recorded whole under every database profile:
+/// every batch the library sends fits the profile's `maxStatements`, and
+/// the cursor moves only with the last one.
+#[tokio::test]
+async fn a_full_catalog_batch_fits_every_profiles_statement_limit() {
+    let _lock = master_key_test_lock_async().await;
+    for profile in crate::test_support::Profile::ALL {
+        let name = profile.name();
+        let dir = tempfile::tempdir().unwrap();
+        crate::configure_master_key(dir.path()).expect("master key");
+        let kit = crate::test_support::sqlite::memory(profile).await;
+        let store = kit.store();
+        let member = store
+            .create_user(UserRole::Member, Some("Riley"), None)
+            .await
+            .unwrap();
+        add_node(store, BRANCH, "branch", Some(member.id)).await;
+        let session = open(store, true, true).await;
+        let titles: Vec<CatalogTitle> = (0..MAX_CATALOG_BATCH_TITLES)
+            .map(|n| title(&format!("p{n:03}"), 1))
+            .collect();
+        let before = kit.batch_sizes().len();
+        let (upserted, skipped, _) = accepted(store, session.fence, "c1", false, &titles).await;
+        assert_eq!(
+            (upserted, skipped),
+            (u64::try_from(MAX_CATALOG_BATCH_TITLES).unwrap(), 0),
+            "{name}"
+        );
+        let max = usize::try_from(kit.capabilities().max_statements).unwrap();
+        let sizes = kit.batch_sizes();
+        assert!(
+            sizes[before..].iter().all(|size| *size <= max),
+            "{name}: batches {:?} over {max}",
+            &sizes[before..]
+        );
+        let shared = holdings::Entity::find()
+            .filter(holdings::Column::NodeId.eq(BRANCH))
+            .filter(holdings::Column::ShareDigest.is_not_null())
+            .count(store.db())
+            .await
+            .unwrap();
+        assert_eq!(
+            shared,
+            u64::try_from(MAX_CATALOG_BATCH_TITLES).unwrap(),
+            "{name}"
+        );
+        assert_eq!(open(store, true, true).await.cursor, "c1", "{name}");
+    }
+}
+
+/// A batch written in parts whose gate fails before the last part moves
+/// no cursor: the parts already written stand, the batch is lost, and the
+/// branch sends those titles again.
+#[tokio::test]
+async fn a_split_catalog_batch_moves_no_cursor_when_its_gate_fails() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    crate::configure_master_key(dir.path()).expect("master key");
+    let kit = crate::test_support::sqlite::memory(crate::test_support::Profile::Minimum).await;
+    let store = kit.store();
+    let member = store
+        .create_user(UserRole::Member, Some("Riley"), None)
+        .await
+        .unwrap();
+    add_node(store, BRANCH, "branch", Some(member.id)).await;
+    let session = open(store, true, true).await;
+    let titles: Vec<CatalogTitle> = (0..MAX_CATALOG_BATCH_TITLES)
+        .map(|n| title(&format!("p{n:03}"), 1))
+        .collect();
+    let prepared = match prepare_catalog_batch(store, BRANCH, session.fence, "c1", false, &titles)
+        .await
+        .unwrap()
+    {
+        Ok(prepared) => prepared,
+        Err(other) => panic!("expected a prepared batch: {other:?}"),
+    };
+    // A newer connection raises the fence before the batch is written.
+    open(store, true, true).await;
+    assert_eq!(
+        apply_catalog_batch(store, BRANCH, session.fence, prepared)
+            .await
+            .unwrap(),
+        CatalogAccept::Lost
+    );
+    assert_eq!(open(store, true, true).await.cursor, "");
 }

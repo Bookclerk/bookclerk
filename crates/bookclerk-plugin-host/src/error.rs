@@ -58,6 +58,10 @@ pub enum PluginError {
         code: String,
         /// Operator-facing explanation.
         message: String,
+        /// The guest's structured detail object (`PluginError.details`), kept
+        /// so a binding guest receives what the adapter produced; `None`
+        /// when the error carried none.
+        details: Option<serde_json::Map<String, serde_json::Value>>,
     },
 }
 
@@ -110,8 +114,31 @@ impl PluginError {
             Some(code) => Self::Abi {
                 code: code.to_string(),
                 message,
+                details: None,
             },
             None => Self::message(message),
+        }
+    }
+
+    /// Maps a guest ABI error like [`Self::from_abi`], keeping its `details`.
+    ///
+    /// # Arguments
+    ///
+    /// * `err` - The guest's error.
+    ///
+    /// # Returns
+    ///
+    /// [`Self::Unavailable`] for `unavailable` (which carries no details),
+    /// otherwise [`Self::Abi`] with the wire code, message and details.
+    #[must_use]
+    pub fn from_abi_error(err: bookclerk_plugin_abi::PluginError) -> Self {
+        if err.code == bookclerk_plugin_abi::PluginErrorCode::Unavailable {
+            return Self::unavailable(err.message);
+        }
+        Self::Abi {
+            code: err.wire_str().to_string(),
+            message: err.message,
+            details: err.details,
         }
     }
 

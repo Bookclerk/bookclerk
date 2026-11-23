@@ -2992,13 +2992,16 @@ impl PluginManifest {
                  (native guests use capabilities.network.tcp for mediated connect(); omit domains)",
             ));
         }
+        // A workerd guest reaches the network through `fetch` (`domains`) or
+        // a host-held `tls://` stream (`tcp`); outbound needs one of them.
         if self.runtime == PluginRuntimeKind::Workerd
             && self.capabilities.network.mode == NetworkMode::Outbound
             && self.capabilities.network.domains.is_empty()
+            && self.capabilities.network.tcp.is_empty()
         {
             return Err(Error::message(
-                "plugin.toml: capabilities.network.domains is required when runtime = \"workerd\" \
-                 and mode = \"outbound\"",
+                "plugin.toml: capabilities.network.domains or tcp is required when \
+                 runtime = \"workerd\" and mode = \"outbound\"",
             ));
         }
         for domain in &self.capabilities.network.domains {
@@ -4266,8 +4269,31 @@ main_module = "index.js"
 mode = "outbound"
 "#,
         )
-        .expect_err("domains required for workerd outbound");
-        assert!(err.to_string().contains("domains"), "{err}");
+        .expect_err("domains or tcp required for workerd outbound");
+        assert!(err.to_string().contains("domains or tcp"), "{err}");
+    }
+
+    #[test]
+    fn workerd_outbound_with_only_tcp_ok() {
+        // A guest that only holds a `tls://` stream needs no fetch grant.
+        let manifest = PluginManifest::parse(
+            r#"
+api_version = 3
+id = "xx"
+runtime = "workerd"
+entrypoints = ["storefront"]
+media = { works = ["book"], lists = ["audio"], fetches = ["audio"] }
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+[capabilities.network]
+mode = "outbound"
+tcp = [{ host = "connect.example.com", ports = [443] }]
+"#,
+        )
+        .expect("tcp alone grants a workerd guest network");
+        assert!(manifest.capabilities.network.domains.is_empty());
+        assert_eq!(manifest.capabilities.network.tcp.len(), 1);
     }
 
     #[test]

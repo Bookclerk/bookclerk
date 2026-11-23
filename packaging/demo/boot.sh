@@ -48,9 +48,22 @@ use_template() {
 	return "$ok"
 }
 
+# Copies the embedding model the image ships into the embedder's models
+# dir, which the template holds empty (bake-seed.sh). The library's vectors
+# were made with this model, so without it Discover could not rank new
+# candidates by similarity; a failed copy is logged and the demo runs on.
+place_models() {
+	for models in "$dir"/plugin-state/*/data/models; do
+		[ -d "$models" ] && [ -d /opt/bookclerk/models ] || continue
+		cp -a /opt/bookclerk/models/. "$models/" ||
+			echo 'demo: copying the embedding model failed' >&2
+	done
+}
+
 if [ ! -e "$marker" ] && [ ! -e "$dir/library.db" ] && [ -f "$template/library.db" ]; then
 	if use_template; then
 		touch "$marker"
+		place_models
 		echo "demo: starting from the baked library" >&2
 	else
 		echo "demo: copying the baked library failed; seeding live" >&2
@@ -68,8 +81,9 @@ fi
 # The demo's own config.toml, unless one is mounted (which then wins whole).
 #
 # No model downloads: a visitor's container lives for minutes, so it never
-# fetches the embedding model (docs/internals/model-packs.md) and Discover
-# keeps its stand-in ranking.
+# fetches the embedding model (docs/internals/model-packs.md). The image
+# ships the default model and the template the library's vectors
+# (bake-seed.sh), so Discover ranks with the model from the first page.
 #
 # Problem reports: the demo Worker passes the collector's address when the
 # deploy has one, and the copy then shares redacted reports so the project

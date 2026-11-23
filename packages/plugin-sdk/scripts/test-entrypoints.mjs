@@ -163,7 +163,18 @@ function wireEvent(overrides = {}) {
       }
     }
   }
-  const events = { publish: async () => {} };
+  // `EVENTS` arrives as the adapter's settled transport: failures come back
+  // as values and the author side rebuilds the typed error.
+  const settled = [];
+  const events = {
+    settle: async (method, args) => {
+      settled.push([method, args]);
+      if (args[0]?.eventType === "denied") {
+        return { err: { code: "forbidden", message: "not granted", details: '{"type":"denied"}' } };
+      }
+      return { ok: { eventId: "evt-1", duplicate: false } };
+    },
+  };
   const db = { execute: async () => {} };
   const plugin = new Plugin({}, { FIXED: 1 });
   const context = {
@@ -186,7 +197,24 @@ function wireEvent(overrides = {}) {
     { kind: "ack" },
     { kind: "retry", retryAtUnixMs: 0, reason: "again" },
   ]);
-  assert.deepEqual(seen, ["hi", "s3cr3t", events, db]);
+  assert.deepEqual(seen.slice(0, 2), ["hi", "s3cr3t"]);
+  assert.equal(seen[3], db);
+  const EVENTS = seen[2];
+  assert.deepEqual(Object.keys(EVENTS).sort(), ["publish", "read"]);
+  assert.deepEqual(await EVENTS.publish({ eventType: "ok" }), {
+    eventId: "evt-1",
+    duplicate: false,
+  });
+  await assert.rejects(
+    () => EVENTS.publish({ eventType: "denied" }),
+    (err) =>
+      err instanceof PluginError &&
+      err.wireCode === "forbidden" &&
+      err.message === "not granted" &&
+      err.details?.type === "denied",
+    "an err reply becomes a typed PluginError with its code and details",
+  );
+  assert.deepEqual(settled[0], ["publish", [{ eventType: "ok" }]]);
   assert.equal(plugin.env.FIXED, 1, "static env survives the merge");
 
   const noHandler = new BookclerkEntrypoint({}, {});
@@ -283,10 +311,7 @@ function wireQueueMessage(overrides = {}) {
       }
     }
   }
-  const notify = {
-    send: async () => ({ messageIds: [] }),
-    sendBatch: async () => ({ messageIds: [] }),
-  };
+  const notify = { settle: async () => ({ ok: { messageIds: ["m-1"] } }) };
   const plugin = new Plugin({}, { FIXED: 1 });
   const context = {
     invocation: {
@@ -303,7 +328,8 @@ function wireQueueMessage(overrides = {}) {
     messages: [wireQueueMessage(), wireQueueMessage({ id: "msg-2" })],
   });
   assert.deepEqual(results, [{ kind: "ack" }, { kind: "retry", delaySeconds: 5, reason: "again" }]);
-  assert.deepEqual(seen, ["jobs", "inv-q", notify]);
+  assert.deepEqual(seen.slice(0, 2), ["jobs", "inv-q"]);
+  assert.deepEqual(await seen[2].send({ n: 1 }), { messageIds: ["m-1"] });
   assert.equal(plugin.env.FIXED, 1, "static env survives the merge");
 
   await assert.rejects(

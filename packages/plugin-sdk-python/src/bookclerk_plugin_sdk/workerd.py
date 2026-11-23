@@ -144,6 +144,7 @@ __all__ = [
     "CliEntrypoint",
     "DatabaseAdapterEntrypoint",
     "EventBatch",
+    "EventsBinding",
     "EventMessage",
     "GuestDatabase",
     "HostWebSocket",
@@ -188,6 +189,7 @@ __all__ = [
     "queue_batch_results",
     "socket_message_data",
     "transport_database",
+    "transport_events",
     "transport_kv",
     "transport_queue",
     "transport_sockets",
@@ -580,7 +582,7 @@ def _invocation_env(raw_env: Any, context: Any) -> _EnvView:
         granted["WORK_FS"] = storage
     events = _get(ctx, "events")
     if events is not None:
-        granted["EVENTS"] = events
+        granted["EVENTS"] = transport_events(events)
     notify = _get(ctx, "notify")
     if notify is not None:
         granted["NOTIFY"] = transport_notify(notify)
@@ -981,6 +983,139 @@ def queue_batch_results(batch: QueueBatch, failed: BaseException | None) -> list
     return out
 
 
+async def _settle(stub: Any, method: str, *args: Any) -> Any:
+    """Run one method of a granted binding through the adapter's settled transport.
+
+    The adapter answers ``settle(method, args)`` with ``{"ok": value}`` or
+    ``{"err": {"code", "message", "details"}}`` instead of throwing, because a
+    thrown error loses its code on the Workers RPC hop.
+
+    Args:
+        stub: ``SettledTransport`` JS stub from the granted context.
+        method: Binding method name (``publish``, ``sendBatch``, ...).
+        *args: That method's arguments as plain Python values.
+
+    Returns:
+        The method's value as plain Python.
+
+    Raises:
+        PluginError: The adapter's failure with its code and details;
+            ``internal`` for a reply that is neither arm.
+    """
+    reply = py(await stub.settle(method, js(list(args)))) or {}
+    err = _get(reply, "err")
+    if err is not None:
+        raise PluginError.from_wire(
+            str(_get(err, "code", "") or "internal"),
+            str(_get(err, "message", "") or ""),
+            str(_get(err, "details", "") or ""),
+        )
+    if not isinstance(reply, dict):
+        raise PluginError.from_wire("internal", f"{method}: reply is not an object")
+    # A method with no value (`put`, `delete`) settles as `{ok: undefined}`,
+    # which may arrive without the key.
+    return reply.get("ok")
+
+
+def _err_arm(err: PluginError) -> dict[str, Any]:
+    """The ``err`` arm of an ABI reply union for ``err``.
+
+    Args:
+        err: Failure to report.
+
+    Returns:
+        ``{"err": {"code", "message", "details"}}``.
+    """
+    return {"err": {"code": err.wire_code, "message": str(err), "details": err.details_text}}
+
+
+class EventsBinding:
+    """``EVENTS`` binding, present when ``plugin.toml`` declares ``[[events.producers]]``.
+
+    Implements the generated :class:`~bookclerk_plugin_sdk.abi.EventPublisher`
+    protocol: each method takes the ABI request dict and returns the ABI
+    reply union, ``{"ok": ...}`` or ``{"err": {"code", "message",
+    "details"}}``, rather than raising. The adapter isolate owns the events
+    grant; this wrapper converts Python values into the JS values it expects.
+    """
+
+    def __init__(self, stub: Any) -> None:
+        self._stub = stub
+
+    async def publish(self, event: abi.PluginEvent) -> abi.PublishReply:
+        """Append one event to the outbox (``env.EVENTS.publish``).
+
+        Args:
+            event: ``eventType`` (a ``[[events.producers]]`` type),
+                ``schemaVersion``, ``deduplicationKey``, ``payload`` (``bytes``,
+                or a JSON value the adapter encodes), ``occurredAtUnixMs``,
+                ``correlationId`` and ``causationId``.
+
+        Returns:
+            ``{"ok": {"eventId", "duplicate"}}``, or ``{"err": ...}`` with
+            ``forbidden`` for an ungranted type, ``payload_too_large`` past
+            ``MAX_EVENT_PAYLOAD_BYTES``, or ``invalid_params``.
+        """
+        try:
+            ok = await _settle(self._stub, "publish", dict(event or {}))
+        except PluginError as err:
+            return _err_arm(err)  # type: ignore[return-value]
+        return {
+            "ok": {
+                "eventId": str(_get(ok, "eventId", "")),
+                "duplicate": bool(_get(ok, "duplicate", False)),
+            }
+        }
+
+    async def read(self, request: abi.EventReadRequest | None = None) -> abi.EventReadReply:
+        """Read one page of past events this instance subscribes to (``env.EVENTS.read``).
+
+        Args:
+            request: ``after`` (cursor), ``sinceUnixMs``, ``types`` and ``limit``;
+                omitted fields take their zero values.
+
+        Returns:
+            ``{"ok": {"events", "cursor", "more", "expiredEventIds",
+            "truncated"}}``, or ``{"err": ...}`` with ``forbidden`` for an
+            unconsented type, ``invalid_cursor`` for a stale cursor, or
+            ``invalid_params``.
+        """
+        req = request or {}
+        options: dict[str, Any] = {
+            "after": str(_get(req, "after", "") or ""),
+            "types": [str(t) for t in (_get(req, "types") or [])],
+            "limit": int(_get(req, "limit", 0) or 0),
+        }
+        since = int(_get(req, "sinceUnixMs", 0) or 0)
+        if since:
+            options["sinceUnixMs"] = since
+        try:
+            page = await _settle(self._stub, "read", options)
+        except PluginError as err:
+            return _err_arm(err)  # type: ignore[return-value]
+        return {
+            "ok": {
+                "events": list(_get(page, "events") or []),
+                "cursor": str(_get(page, "cursor", "")),
+                "more": bool(_get(page, "more", False)),
+                "expiredEventIds": [str(i) for i in (_get(page, "expiredEventIds") or [])],
+                "truncated": bool(_get(page, "truncated", False)),
+            }
+        }
+
+
+def transport_events(stub: Any) -> EventsBinding:
+    """Wrap the adapter's granted events stub as an :class:`EventsBinding`.
+
+    Args:
+        stub: ``SettledTransport`` JS stub from the granted context.
+
+    Returns:
+        The author-facing binding.
+    """
+    return EventsBinding(stub)
+
+
 class QueueBinding:
     """``[[queues.producers]]`` binding (``env.<BINDING>``): Workers ``Queue``-shaped producer.
 
@@ -1038,10 +1173,12 @@ class QueueBinding:
                     ),
                 }
             )
-        reply = await self._stub.sendBatch(
-            js(entries), js({"delaySeconds": int(delay_seconds or 0)})
+        out = (
+            await _settle(
+                self._stub, "sendBatch", entries, {"delaySeconds": int(delay_seconds or 0)}
+            )
+            or {}
         )
-        out = py(reply) or {}
         return {"messageIds": [str(i) for i in (_get(out, "messageIds") or [])]}
 
 
@@ -1049,7 +1186,7 @@ def transport_queue(stub: Any) -> QueueBinding:
     """Wrap the adapter's granted queue stub as a :class:`QueueBinding`.
 
     Args:
-        stub: ``QueueBinding``-shaped JS stub from the granted context.
+        stub: ``SettledTransport`` JS stub from the granted context.
 
     Returns:
         The author-facing binding.
@@ -1143,7 +1280,7 @@ class AiBinding:
         texts = [text] if isinstance(text, str) else text
         if not isinstance(texts, list) or any(not isinstance(t, str) for t in texts):
             raise PluginError("invalid_params", "run requires text as a string or strings")
-        reply = py(await self._stub.run(model, js({"text": texts, "role": role}))) or {}
+        reply = await _settle(self._stub, "run", model, {"text": texts, "role": role}) or {}
         shape = [int(n) for n in (_get(reply, "shape") or [0, 0])]
         return {
             "shape": shape,
@@ -1158,7 +1295,7 @@ def transport_ai(stub: Any) -> AiBinding:
     """Wrap the adapter's granted ai stub as an :class:`AiBinding`.
 
     Args:
-        stub: ``AiBinding``-shaped JS stub from the granted context.
+        stub: ``SettledTransport`` JS stub from the granted context.
 
     Returns:
         The author-facing binding.
@@ -1236,7 +1373,7 @@ class NotifyBinding:
             raise_params["groupKey"] = group_key
         if alert_key:
             raise_params["alertKey"] = alert_key
-        reply = py(await getattr(self._stub, "raise")(js(raise_params))) or {}
+        reply = await _settle(self._stub, "raise", raise_params) or {}
         return {"notificationId": str(_get(reply, "notificationId", ""))}
 
 
@@ -1244,7 +1381,7 @@ def transport_notify(stub: Any) -> NotifyBinding:
     """Wrap the adapter's granted notify stub as a :class:`NotifyBinding`.
 
     Args:
-        stub: ``NotifyBinding``-shaped JS stub from the granted context.
+        stub: ``SettledTransport`` JS stub from the granted context.
 
     Returns:
         The author-facing binding.
@@ -1290,7 +1427,7 @@ class KvNamespace:
         js_type = "arrayBuffer" if type == "bytes" else type
         if js_type not in ("text", "json", "arrayBuffer"):
             raise ValueError(f"unknown kv value type `{type}`")
-        reply = py(await self._stub.getWithMetadata(key, js_type)) or {}
+        reply = await _settle(self._stub, "getWithMetadata", key, js_type) or {}
         value = _get(reply, "value")
         if js_type == "arrayBuffer" and value is not None and not isinstance(value, bytes):
             value = bytes(py(value) or b"")
@@ -1321,11 +1458,11 @@ class KvNamespace:
             options["expirationTtl"] = int(expiration_ttl)
         if metadata is not None:
             options["metadata"] = metadata
-        await self._stub.put(key, js(value), js(options))
+        await _settle(self._stub, "put", key, value, options)
 
     async def delete(self, key: str) -> None:
         """Delete one key; a missing key is not an error."""
-        await self._stub.delete(key)
+        await _settle(self._stub, "delete", key)
 
     async def list(self, *, prefix: str = "", cursor: str = "", limit: int = 0) -> dict[str, Any]:
         """List keys in lexical order, one page at a time.
@@ -1345,7 +1482,7 @@ class KvNamespace:
             options["cursor"] = cursor
         if limit:
             options["limit"] = int(limit)
-        reply = py(await self._stub.list(js(options))) or {}
+        reply = await _settle(self._stub, "list", options) or {}
         return dict(reply) if isinstance(reply, dict) else {"keys": [], "list_complete": True}
 
 
@@ -1353,7 +1490,7 @@ def transport_kv(stub: Any) -> KvNamespace:
     """Wrap the adapter's granted KV stub as a :class:`KvNamespace`.
 
     Args:
-        stub: ``KvNamespaceBinding``-shaped JS stub from the granted context.
+        stub: ``SettledTransport`` JS stub from the granted context.
 
     Returns:
         The author-facing binding.

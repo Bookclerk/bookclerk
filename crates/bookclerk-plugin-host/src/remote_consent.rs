@@ -19,8 +19,9 @@
 //!   the manifest never brings them back.
 //! - [`remote_platform_auto_approval`]: a Bookclerk platform plugin is
 //!   approved without asking only when this host's own provenance check
-//!   says the owner's artifact is the bundled one and the request stays
-//!   inside the platform envelope.
+//!   says the owner's artifact is the bundled one, the request stays
+//!   inside the platform envelope, and it asks for no larger budget than
+//!   this host gives its own install of the plugin.
 //!
 //! Every comparison is strict: an unparsable grant, an unknown network
 //! mode, or a missing field reads as wider, never narrower.
@@ -588,24 +589,42 @@ pub fn remote_consent_view(
     })
 }
 
+/// This host's own platform-bundled install of a plugin, as its provenance
+/// check found it: what an owner's request for the same plugin is compared
+/// with before it is approved without asking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalPlatformInstall {
+    /// Payload-root digest of the bundled tree (from the provenance check).
+    pub payload_root_sha256: String,
+    /// The grant this host gives its own install without asking
+    /// ([`crate::consent::consent_request`] of the bundled manifest): its
+    /// budgets are this host's defaults for the plugin.
+    pub request: PluginGrant,
+}
+
 /// True when a platform plugin's request may be approved without asking:
 /// the key is a Bookclerk platform key, this host's own install of that key
-/// is platform-bundled with the same payload digest as the owner's
-/// artifact (`local_bundled_payload`, from this host's provenance check),
-/// and the request stays inside the platform envelope (deny network, only
-/// `config` / `work_fs`).
+/// (`local`, from this host's provenance check) is platform-bundled with
+/// the same payload digest as the owner's artifact, the request stays
+/// inside the platform envelope (deny network, only `config` / `work_fs`),
+/// and it asks for no larger budget (memory, disk, CPU, processes, workerd
+/// CPU time and subrequests) than this host gives its own install. A
+/// request with a larger budget waits for this host's operator.
 #[must_use]
 pub fn remote_platform_auto_approval(
     requested: &PluginGrant,
     owner_payload_root_sha256: &str,
-    local_bundled_payload: Option<&str>,
+    local: Option<&LocalPlatformInstall>,
 ) -> bool {
     let Ok(key) = bookclerk_plugin_catalog::PluginKey::parse(&requested.plugin_key) else {
         return false;
     };
     bookclerk_plugin_catalog::is_platform_plugin_key(&key)
-        && local_bundled_payload.is_some_and(|local| {
-            !owner_payload_root_sha256.is_empty() && local == owner_payload_root_sha256
+        && local.is_some_and(|local| {
+            !owner_payload_root_sha256.is_empty()
+                && local.payload_root_sha256 == owner_payload_root_sha256
+                && local.request.plugin_key == requested.plugin_key
+                && !budget_wider(&local.request, requested)
         })
         && crate::consent::is_platform_envelope(requested)
 }
@@ -1407,23 +1426,87 @@ mod tests {
         };
         let key = bookclerk_plugin_catalog::PluginKey::parse(&platform.plugin_key).unwrap();
         assert!(bookclerk_plugin_catalog::is_platform_plugin_key(&key));
-        assert!(remote_platform_auto_approval(&platform, "abc", Some("abc")));
+        let local = |payload: &str| LocalPlatformInstall {
+            payload_root_sha256: payload.into(),
+            request: platform.clone(),
+        };
+        assert!(remote_platform_auto_approval(
+            &platform,
+            "abc",
+            Some(&local("abc"))
+        ));
         assert!(!remote_platform_auto_approval(
             &platform,
             "abc",
-            Some("def")
+            Some(&local("def"))
         ));
         assert!(!remote_platform_auto_approval(&platform, "abc", None));
-        assert!(!remote_platform_auto_approval(&platform, "", Some("")));
+        assert!(!remote_platform_auto_approval(
+            &platform,
+            "",
+            Some(&local(""))
+        ));
         let mut networked = platform.clone();
         networked.network_mode = "outbound".into();
         networked.domains.insert("x.example".into());
         assert!(!remote_platform_auto_approval(
             &networked,
             "abc",
-            Some("abc")
+            Some(&local("abc"))
         ));
         let store = requested();
-        assert!(!remote_platform_auto_approval(&store, "abc", Some("abc")));
+        assert!(!remote_platform_auto_approval(
+            &store,
+            "abc",
+            Some(&local("abc"))
+        ));
+        // Another plugin's install here does not vouch for this one.
+        let mut other = local("abc");
+        other.request.plugin_key = "platform:bookclerk/bookclerk-plugin-local".into();
+        assert!(!remote_platform_auto_approval(
+            &platform,
+            "abc",
+            Some(&other)
+        ));
+    }
+
+    #[test]
+    fn platform_plugins_auto_approve_only_within_this_hosts_budgets() {
+        let own = PluginGrant {
+            plugin_key: "platform:bookclerk/bookclerk-plugin-database-sqlite".into(),
+            plugin_id: "sqlite".into(),
+            bindings: ["config".to_string()].into(),
+            memory_mib: Some(256),
+            disk_mib: Some(64),
+            cpu_ms: Some(30_000),
+            subrequests: Some(50),
+            ..PluginGrant::empty()
+        };
+        let local = LocalPlatformInstall {
+            payload_root_sha256: "abc".into(),
+            request: own.clone(),
+        };
+        let approves =
+            |requested: &PluginGrant| remote_platform_auto_approval(requested, "abc", Some(&local));
+        assert!(approves(&own), "the same budgets");
+        let mut smaller = own.clone();
+        smaller.memory_mib = Some(128);
+        assert!(approves(&smaller), "a smaller budget");
+        let wider: [fn(&mut PluginGrant); 6] = [
+            |g| g.memory_mib = Some(4096),
+            |g| g.disk_mib = Some(1024),
+            |g| g.cpu_rate_percent = Some(400),
+            |g| g.extra_processes = Some(64),
+            |g| g.cpu_ms = Some(120_000),
+            |g| g.subrequests = None,
+        ];
+        for widen in wider {
+            let mut requested = own.clone();
+            widen(&mut requested);
+            assert!(
+                !approves(&requested),
+                "a larger budget waits for the operator: {requested:?}"
+            );
+        }
     }
 }

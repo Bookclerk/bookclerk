@@ -87,7 +87,6 @@ pub use admin_controls::{
     AdminSwitchChoice, AssignedAdminControls, DefaultSwitchChanges, OverrideSwitchChanges,
     ADMIN_CONTROLS_NAMESPACE,
 };
-#[cfg(test)]
 pub(crate) use artifacts::chunk_bytes;
 pub use artifacts::{load_artifact_blob, put_artifact_blob, MAX_ARTIFACT_BLOB_BYTES};
 pub use branch_catalog::{
@@ -379,6 +378,7 @@ pub use webhooks::{
     WebhookStoreOutcome, WebhookTarget, WebhookUrlToken, MAX_WAITING_WEBHOOK_DELIVERIES,
     MAX_WEBHOOK_PULL_PAGE_BYTES,
 };
+pub(crate) use window_books::cut as cut_text;
 pub use window_books::{
     clear_window_books, discard_window_read, finish_window_read, person_books_page,
     record_window_page, window_books_page, window_read_stamp, window_view, WindowEntry,

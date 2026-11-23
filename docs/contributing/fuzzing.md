@@ -92,6 +92,7 @@ boundary extends it.
 | `download_resume` | A store CDN's `Content-Range` and status when a guest resumes an interrupted download, which decide whether the body is appended to the bytes already on disk | `bookclerk-plugin-sdk::resume` (`parse_content_range`, `next_step`) |
 | `throttle_reason` | A store's refusal text, which the `audible` guest reads from a refused license request to tell throttling (which pauses the whole account) from a plain refusal | `bookclerk-storefront::is_throttle_reason` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
+| `smtp_session` | What the `email` guest reads from the operator's mail server (replies, multiline replies, EHLO capabilities, the STARTTLS answer) and the address documents and `to` setting it sends to | `bookclerk-plugin-notifier-email::smtp` (`read_reply`, `Session`, `parse_address`, `parse_recipients`) |
 | `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their branch), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
 | `clerk_authorization` | A clerk's library card, the `Authorization: Bookclerk-Clerk <token>` header value that signs a request in as a person | `bookclerk-node-proto::parse_clerk_authorization` |
 | `clerk_authorize` | A clerk's authorization request, the `/oidc/authorize` query that decides whether the library shows its library card consent page and where it sends the code | `bookclerk-node-proto::parse_clerk_query`, `clerk_request_problem` |
@@ -793,7 +794,10 @@ only that. The others check:
   a copy (where one is stated) with a lowercase media type, a
   bitrate of 1 to 20000 kbit/s, a short lowercase source store and a
   plain version, and a plain next cursor (up to 64 letters, digits and `-`)
-  sorting past the one asked with. A `scan.removed` or
+  sorting past the one asked with. A `deployments` page that passes its
+  validator lists deployment ids in strictly rising byte order, each past
+  the cursor asked with, and a next cursor past that cursor and not before
+  the last entry. A `scan.removed` or
   `scan.pass_end` that passes its validator names an account and carries
   at most 500 product ids, each non-blank, at most 512 bytes and free of
   control characters, or a sync token of at most 4096 bytes with no
@@ -809,8 +813,10 @@ only that. The others check:
   character or drive prefix), each at most 1 TiB, exactly one of them the
   primary audio. The `copy_*` seeds' names say whether the receiver takes
   the frame, and the replay test checks each against its name. Seeds cover `accounts.update`, `accounts.updated`,
-  `scan.removed`, `scan.pass_end`, a `work` frame with scan tokens, and
-  `acquire.targets` with a destination subset, an empty list and a list
+  `scan.removed`, `scan.pass_end`, a `work` frame with scan tokens,
+  `deployments.list` and `acquire.plan` with and without a cursor, paged
+  and out-of-order `deployments`, `release` with the old `resumed` flag
+  (ignored), and `acquire.targets` with a destination subset, an empty list and a list
   that does not fit its plan. The shared oracle is `fuzz/oracles/node_frame.rs`,
   replayed from `bookclerk-node-proto`.
 - **`node_account_bundle`**: an accepted bundle is within the size limit,
@@ -1182,6 +1188,20 @@ only that. The others check:
   Seeds named after a step (`append-*`, `replace-*`, `complete-*`,
   `startover-*`, `retry-*`, `fail-*`) must take it. The shared oracle is
   `fuzz/oracles/download_resume.rs`, replayed from `bookclerk-plugin-sdk`.
+- **`smtp_session`**: byte 0 picks the case. A server's byte stream is
+  read reply by reply against the oracle's own line splitter, which must
+  agree on every prefix (incomplete, refused, or the same code, lines and
+  length), and each reply drives a session in one of the three security
+  modes. Every write is ASCII ending in CRLF with no bare CR or LF in a
+  command; only `EHLO` and `STARTTLS` go out before TLS when the mode
+  needs it; `AUTH` and the password go out only over TLS; `MAIL`, `RCPT`
+  and `DATA` keep the protocol's order; the payload is the dot-stuffed
+  message; and the session ends at most once. An address document is
+  accepted exactly when the oracle's own address rules accept its one
+  `email` field, and the saved document parses back unchanged; the `to`
+  setting yields at most 10 valid addresses without repeats. The shared
+  oracle is `fuzz/oracles/smtp_session.rs`, replayed from
+  `bookclerk-plugin-notifier-email`.
 - **`throttle_reason`**: restates the throttle words byte by byte. Refusal
   text is a throttle exactly when it contains `throttl`, `rate limit`,
   `rate-limit`, `ratelimit`, `too many requests` or `429`, ignoring ASCII
@@ -1344,7 +1364,8 @@ The tests live in `scripts/tests/`, and each corpus beside them.
 
 The upstream model files the builder reads are not a boundary of this
 kind: each is refused unless its size and SHA-256 match the pin in
-`scripts/model-packs/models.json` before anything parses it.
+`scripts/model-packs/models.json` before anything parses it. That holds
+for a copy restored from the workflow's cache as for a download.
 
 ### Tool versions bump (Python)
 
@@ -1406,7 +1427,7 @@ kind: each is refused unless its size and SHA-256 match the pin in
   - Oracle: Rust is analyzed exactly when some NUL-separated name is not
     UTF-8, ends in `.rs`, `.capnp`, `.proto`, `.cc` or `.h`, is named `Cargo.toml`, `Cargo.lock`
     or `rust-toolchain.toml`, sits under a `.cargo/` directory, or is the
-    workflow or one of the two scripts, checked with string operations
+    workflow or one of the three scripts that choose and reuse, checked with string operations
     rather than glob patterns.
 
 - **Rust result reuse** (`candidate_runs`, `rust_job_succeeded` and
@@ -1424,6 +1445,31 @@ kind: each is refused unless its size and SHA-256 match the pin in
     reused only when it has exactly one successful `Analyze (rust)` job.
     A SARIF file is accepted only when it is version 2.1.0, every run is
     from CodeQL, and every run carries the id `/language:rust`.
+
+- **Visual approval carry-over** (`lock_only_parent`, `newest_run` and
+  `ci_verdict_problem` in `scripts/ci_carry.py`). It reads GitHub API
+  responses and the plan and `CI Gate` verdict that the same pull
+  request's previous run kept. Those come from the pull request's own
+  workflow, which its author controls on any push anyway, so it isn't an
+  untrusted boundary. Its output decides whether a pull request's head
+  re-reports its parent's results instead of running (see
+  [Visual approval commits](ci.md#visual-approval-commits)), though, so it
+  is fuzzed the same way.
+  - Test and corpus: `scripts/tests/test_ci_carry.py`,
+    `scripts/tests/ci_carry_corpus/` (files named `commit__<case>`,
+    `runs__<case>` or `verdict__<case>`), replayed and mutated both as
+    bytes and as JSON values.
+  - Oracle: explicit walks with exact type checks. A commit qualifies only
+    when it has exactly one parent with a 40-hex id and exactly one file,
+    `ui/visual/baselines.lock`, `modified` with no `previous_filename`. The
+    parent run is the `pull_request` run for the parent commit from the
+    same head repository and branch with the largest `created_at` and id,
+    among runs with positive integer `id` and `run_attempt` and a string
+    `status`. A verdict passes only when its run id and attempt are that
+    run's, both step outcomes are `success`, every stranded job is an OS
+    leg job, the jobs are exactly the plan's plus `plan`, each with a
+    string result, `plan` succeeded, and every job but `ui-visual` succeeded
+    when the plan expects it and was skipped otherwise.
 
 - **Missing-runner recovery** (`queued_pr`, `pr_run_attempt`,
   `run_lineage`, `newer_run`, `stranded_jobs`, `not_acquired`, `pr_head`,
@@ -2092,6 +2138,81 @@ another run.
   those RFC 6455 lets an endpoint send (1000 to 1003, 1007 to 1014, 3000
   to 4999) with at most 123 bytes of reason. An accepted frame encodes
   back to the same bytes.
+
+### ngrok guest
+
+The `ngrok` guest parses everything on its agent connection: muxado
+frames and RPC replies from ngrok's servers, and, inside each proxied
+stream, the proxy header and the HTTP/1.1 request any internet client
+sends, and the WebSocket frames that client sends after an upgrade.
+`crates/bookclerk-plugins/optional/ingress-ngrok/test/fuzz.test.ts`
+replays `fuzz/frame/`, `fuzz/chunked/`, `fuzz/proxy/`, `fuzz/rpc/` and
+`fuzz/wsframe/` (hex bytes) and `fuzz/head/` (a JSON string per head), and runs seeded byte and
+text mutations in `npm test` (the `workerd_guests` check); `FUZZ_SEED` and
+`FUZZ_ITERATIONS` pick another run.
+
+- **Frames** (`FrameReader` in `src/mux.ts`). Oracle: an independent
+  decoder of muxado's framing (a 24-bit length up to the 256 KiB window, a
+  type and flag nibble, a 31-bit stream id; RST and WNDINC carry one
+  32-bit word, GOAWAY at least two; no DATA on stream 0; unknown types
+  skipped). The reader gives the same frames and leftover bytes whatever
+  the chunk boundaries.
+- **Request heads** (`parseRequestHead` in `src/http1.ts`). Oracle, written
+  from RFC 9110 and RFC 9112: an accepted head has a token method other
+  than `CONNECT`, an origin-form target, `HTTP/1.1` or `HTTP/1.0`, at most
+  128 lowercase token field names and values without CR, LF, NUL or
+  surrounding spaces; its body framing matches an independent restatement
+  of section 6 (Transfer-Encoding with Content-Length refused, only a lone
+  `chunked` coding, one decimal Content-Length); bytes after the head
+  change nothing.
+- **Chunked bodies** (`ChunkedDecoder`). Oracle: an independent decoder of
+  section 7.1 (hex sizes of at most 8 digits with extensions, CRLF after
+  each chunk, trailers to an empty line). The decoder gives the same body
+  and trailing bytes whatever the chunk boundaries, and never accepts what
+  the oracle refuses.
+- **Proxy headers** (`parseProxyHeader` in `src/messages.ts`). Oracle: an
+  independent little-endian length read (at most 16 KiB, high word zero)
+  and `JSON.parse` of an object; an accepted header survives
+  `encodeProxyHeader` and a second parse.
+- **RPC replies** (`parseRpcObject`). Oracle: `JSON.parse` of the same
+  UTF-8 text, with only JSON's own whitespace around it.
+- **WebSocket frames** (`FrameDecoder` in `src/ws.ts`). Oracle: an
+  independent decoder of RFC 6455 section 5 over the whole input (masked
+  client frames, no reserved bits, minimal lengths, final control frames
+  of at most 125 bytes, continuation only inside a message, UTF-8 text and
+  close reasons, close codes from the wire set, a message cap checked as
+  each header arrives). The decoder gives the same messages and the same
+  close code whatever the chunk boundaries.
+
+### Webhook notifier guest
+
+The `webhook` notifier reads a patron's address document, which the host
+passes through from what the patron typed, and the receiver's
+`Retry-After`, in
+`crates/bookclerk-plugins/optional/notifier-webhook/src/webhook.ts`. Its
+`test/fuzz.test.ts` replays `fuzz/address/` and `fuzz/retry_after/` and
+runs seeded text mutations in `npm test` (the `workerd_guests` check);
+`FUZZ_SEED` and `FUZZ_ITERATIONS` pick another run.
+
+Seeds that need an acceptable secret use `whsec_/wAQ/wAQ…`, a 32-byte key
+whose base64 has a `/` every four characters. A secret written as one long
+run of letters and digits after `whsec_` looks like a live signing secret
+to GitHub secret scanning and raises an alert, so fixtures here and in the
+tests avoid that shape (the tests build their keys at run time, and the
+Standard Webhooks reference secret is joined from two parts).
+
+- **Address documents** (`parseAddress`). Oracle: accepted exactly when
+  the text is at most 4 KiB, a JSON object with only `url` and `secret`,
+  both strings; the URL, trimmed, is at most 2048 characters, has no `#`,
+  and parses as `http:` or `https:` with a host and no credentials; and
+  the secret is `whsec_` and the canonical base64 (by Node's decoder) of
+  24 to 64 bytes. An accepted address re-parses to the trimmed values, its
+  label is the URL's host, its key is the decoded secret, and normalising
+  it again changes nothing.
+- **`Retry-After`** (`parseRetryAfter`). Oracle: up to ten digits are
+  seconds; a date counts exactly when `toUTCString` prints it back
+  unchanged (IMF-fixdate with the right weekday). The wait is capped at
+  one hour and never negative.
 
 ### Metadata file dialect guests
 

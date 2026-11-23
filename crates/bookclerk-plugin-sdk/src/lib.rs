@@ -168,6 +168,9 @@ pub use bookclerk_plugin_abi::{
     MAX_PROVISION_SUMMARY_LINE_BYTES, MAX_PROVISION_TOKEN_BYTES,
 };
 pub use bookclerk_plugin_abi::{
+    NetworkGrant, SettingGrantState, SettingNetwork, SettingNetworkGrant, MAX_NETWORK_GRANT_ENTRIES,
+};
+pub use bookclerk_plugin_abi::{
     WebhookAckRequest, WebhookDelivered, WebhookDelivery, WebhookHandler, WebhookHeader,
     WebhookPullPage, WebhookPullRequest, Webhooks, MAX_WEBHOOK_PULL_BATCH,
     MAX_WEBHOOK_VISIBILITY_MS,
