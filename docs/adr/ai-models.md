@@ -125,10 +125,11 @@ it.
 - A vector is computed once per model and input, and shared by everyone
   who needs it.
 - Each node keeps the vectors it searches in a flat in-memory index,
-  rebuilt from the table and kept current from events. No engine
-  specific vector type or vector database is used. (The index arrives
-  with semantic search; Discover reads the vectors of one ranking from
-  the table.)
+  rebuilt from the table when the table changed. No engine specific
+  vector type or vector database is used. Search by meaning and "more
+  like this" read the index (see
+  [Searching by meaning](../internals/discovery.md#searching-by-meaning));
+  Discover reads the vectors of one ranking from the table.
 - Vectors from different model revisions are never compared. Changing
   the model re-embeds in a background job while the old vectors keep
   serving (see

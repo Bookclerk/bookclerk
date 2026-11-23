@@ -48,6 +48,10 @@ const MAX_SIMILAR: usize = 40;
 /// lists, since the caller's scope and unheld works drop some.
 const SIMILAR_WINDOW: usize = 200;
 
+/// The share of the library's works (numerator, denominator) a model's
+/// space must hold for these routes to read it before it serves.
+const NEARLY_ALL: (u64, u64) = (9, 10);
+
 /// Whether a way of reading the library by meaning can be used now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -92,12 +96,53 @@ pub(crate) struct SimilarQuery {
 struct Standing {
     /// This node's embedding model, when a plugin serves one here.
     model: Option<ModelEmbedder>,
-    /// The space that serves the library.
+    /// The space that serves the library's rankings.
     serving: VectorSpace,
+    /// The space these routes read: `serving`, or a model's space that
+    /// misses only the newest works while the stand-in serves.
+    reading: VectorSpace,
+}
+
+/// The model space to read while the stand-in serves: one that holds a
+/// vector for at least [`NEARLY_ALL`] of the works. A ranking wants every
+/// work embedded; a search that misses the books scanned a minute ago is
+/// better than no search until their embedding ends.
+///
+/// # Arguments
+///
+/// * `library` - The library store.
+/// * `current` - The space of this node's model, preferred when it
+///   qualifies; otherwise the space written most recently.
+///
+/// # Errors
+///
+/// Returns the library read error.
+async fn nearly_covering(
+    library: &bookclerk_library::LibraryStore,
+    current: &VectorSpace,
+) -> bookclerk_library::Result<Option<VectorSpace>> {
+    let works = library.count_works().await?;
+    let mut spaces: Vec<_> = library
+        .work_vector_spaces()
+        .await?
+        .into_iter()
+        .filter(|coverage| {
+            !bookclerk_discover::is_stand_in(&coverage.space)
+                && coverage.works > 0
+                && coverage.works.saturating_mul(NEARLY_ALL.1) >= works.saturating_mul(NEARLY_ALL.0)
+        })
+        .collect();
+    spaces.sort_by_key(|coverage| {
+        (
+            !coverage.space.same_as(current),
+            std::cmp::Reverse(coverage.newest),
+        )
+    });
+    Ok(spaces.into_iter().next().map(|coverage| coverage.space))
 }
 
 impl Standing {
-    /// Reads the node's model and the serving space.
+    /// Reads the node's model and the spaces.
     ///
     /// # Errors
     ///
@@ -107,6 +152,13 @@ impl Standing {
         library: &bookclerk_library::LibraryStore,
         route: &str,
     ) -> Result<Self, WorksError> {
+        let failed = |err: &dyn std::fmt::Display| {
+            tracing::error!(error = %err, route, "could not read the vector spaces");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage::new("the library could not be read")),
+            )
+        };
         let router = Arc::clone(&state.deployment_runtime().ai);
         let model = ModelEmbedder::current(&router).await;
         let current = model
@@ -116,28 +168,34 @@ impl Standing {
             });
         let serving = bookclerk_discover::serving_space(library, &current)
             .await
-            .map_err(|err| {
-                tracing::error!(error = %err, route, "could not read the serving vector space");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorMessage::new("the library could not be read")),
-                )
-            })?;
-        Ok(Self { model, serving })
+            .map_err(|err| failed(&err))?;
+        let reading = if bookclerk_discover::is_stand_in(&serving) {
+            nearly_covering(library, &current)
+                .await
+                .map_err(|err| failed(&err))?
+                .unwrap_or_else(|| serving.clone())
+        } else {
+            serving.clone()
+        };
+        Ok(Self {
+            model,
+            serving,
+            reading,
+        })
     }
 
     /// Whether a search by meaning answers here.
     fn search(&self) -> MeaningState {
         match &self.model {
             None => MeaningState::NoModel,
-            Some(model) if model.vector_space().same_as(&self.serving) => MeaningState::Ready,
+            Some(model) if model.vector_space().same_as(&self.reading) => MeaningState::Ready,
             Some(_) => MeaningState::Embedding,
         }
     }
 
     /// Whether similar works can be listed.
     fn similar(&self) -> MeaningState {
-        if !bookclerk_discover::is_stand_in(&self.serving) {
+        if !bookclerk_discover::is_stand_in(&self.reading) {
             MeaningState::Ready
         } else if self.model.is_some() {
             MeaningState::Embedding
@@ -198,11 +256,14 @@ pub(crate) async fn matches(
         ));
     }
     let standing = Standing::read(state, library, ROUTE).await?;
+    if let Some(model) = &standing.model {
+        // Works without a vector in the model's space are embedded in a
+        // job; make sure one is queued.
+        crate::embedding::embed_if_needed(state, model.vector_space(), &standing.serving).await;
+    }
     let model = match (standing.search(), standing.model) {
         (MeaningState::Ready, Some(model)) => model,
-        (MeaningState::Embedding, Some(model)) => {
-            // The library is embedded in a job; make sure one is queued.
-            crate::embedding::embed_if_needed(state, model.vector_space(), &standing.serving).await;
+        (MeaningState::Embedding, Some(_)) => {
             return Err(unavailable(
                 "the library is still being prepared for search by meaning; try again later",
             ));
@@ -338,7 +399,7 @@ pub(crate) async fn list_similar_works(
             works: Vec::new(),
         }));
     }
-    let matrix = matrix(&state, &library, &standing.serving, ROUTE).await?;
+    let matrix = matrix(&state, &library, &standing.reading, ROUTE).await?;
     let nearest: Vec<String> = match matrix.vector_of(&id) {
         Some(vector) => matrix
             .ranked(vector, Some(&id))
@@ -368,8 +429,8 @@ mod tests {
     use crate::library_works::{list_works, SearchModeParam, WorksPage, WorksQuery};
 
     /// Titles of the test library: two about dragons, as the fake model
-    /// reads them, and six about something else.
-    const TITLES: [&str; 8] = [
+    /// reads them, and ten about something else.
+    const TITLES: [&str; 12] = [
         "A Dragon Tale",
         "The Dragon Returns",
         "Bread at Home",
@@ -378,6 +439,10 @@ mod tests {
         "Gardening in Shade",
         "The Night Train",
         "Letters from Oslo",
+        "Maps of the Tide",
+        "The Clockmaker",
+        "Winter Beekeeping",
+        "A Year of Soup",
     ];
 
     /// A daemon over [`TITLES`], every work in the page index.
@@ -557,6 +622,60 @@ mod tests {
         .unwrap_err();
         assert_eq!(code, StatusCode::BAD_REQUEST);
         assert!(message.contains("at most"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn a_book_scanned_since_the_embedding_does_not_turn_the_search_off() {
+        let files = tempfile::tempdir().unwrap();
+        let model = FakeModel::new();
+        let (state, library) = library(&files, Some(&model)).await;
+        crate::embedding::run_discover_embed(&state, &payload(&state).await, None)
+            .await
+            .unwrap();
+        let before = list(&state, by_meaning("Dragon stories", None, None))
+            .await
+            .unwrap();
+        assert_eq!(before.works.len(), 2);
+
+        // A scan adds a book: the model's space no longer covers the
+        // library, so rankings fall back, but the search keeps answering
+        // from the vectors it has and asks for the new book's.
+        let mut book =
+            bookclerk_library::NewBook::minimal("B999999", "acct", "us", "The Dragon Sleeps");
+        book.source = "libro".into();
+        book.plugin_key = "libro".into();
+        let saved = library.upsert_book(&book).await.unwrap();
+        let work = library
+            .work_of_holding(&saved.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
+        library.refresh_library_works(&[work]).await.unwrap();
+        assert_eq!(
+            status(&state).await,
+            (MeaningState::Ready, MeaningState::Ready)
+        );
+        let page = list(&state, by_meaning("Dragon stories", None, None))
+            .await
+            .unwrap();
+        assert_eq!(page.works.len(), 2, "the new book has no vector yet");
+        let queued = library
+            .list_jobs(100)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|job| job.kind == JobKind::DiscoverEmbed && job.state == JobState::Pending)
+            .count();
+        assert_eq!(queued, 1, "the search asked for the embedding");
+
+        // Once it is embedded, this node's index picks it up at once.
+        crate::embedding::run_discover_embed(&state, &payload(&state).await, None)
+            .await
+            .unwrap();
+        let page = list(&state, by_meaning("Dragon stories", None, None))
+            .await
+            .unwrap();
+        assert_eq!(page.works.len(), 3);
     }
 
     #[tokio::test]
