@@ -278,8 +278,16 @@ impl std::fmt::Debug for VerifyEmailToken {
     }
 }
 
-/// The JSON shape of `PUT /api/config/notifications/account-mail`, read
-/// from an object only.
+/// The body of `PUT /api/notifications/account-mail`, read from a JSON
+/// object only, before [`AccountMailSettingsRequest::validate`] checks it.
+///
+/// The route reads it with the web framework's JSON extractor and
+/// [`parse_account_mail_settings`] reads it from bytes; both go through
+/// this type's reader and the same validation.
+#[derive(Debug)]
+pub struct AccountMailSettingsRequest(SettingsBody);
+
+/// The fields of [`AccountMailSettingsRequest`].
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SettingsBody {
@@ -289,37 +297,109 @@ struct SettingsBody {
     plugin_instance_id: Option<Option<String>>,
 }
 
+impl<'de> Deserialize<'de> for AccountMailSettingsRequest {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        crate::control_plane::from_object(d, "a JSON object").map(Self)
+    }
+}
+
+impl AccountMailSettingsRequest {
+    /// Checks the instance id.
+    ///
+    /// # Returns
+    ///
+    /// The instance id: 1 to [`MAX_INSTANCE_ID_BYTES`] printable ASCII
+    /// bytes with no space, or `None` for `null`.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::LibraryError::Invalid`] when the id breaks those rules.
+    pub fn validate(self) -> crate::Result<Option<String>> {
+        let Some(id) = self.0.plugin_instance_id.flatten() else {
+            return Ok(None);
+        };
+        if id.is_empty()
+            || id.len() > MAX_INSTANCE_ID_BYTES
+            || !id.bytes().all(|b| b.is_ascii_graphic())
+        {
+            return Err(crate::LibraryError::Invalid(format!(
+                "account-mail settings: plugin_instance_id must be 1 to \
+                 {MAX_INSTANCE_ID_BYTES} printable characters with no space"
+            )));
+        }
+        Ok(Some(id))
+    }
+}
+
 /// Reads a present value, `null` included, as `Some`.
 fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<String>>, D::Error> {
     Option::<String>::deserialize(d).map(Some)
 }
 
-/// The JSON shape of `POST /api/auth/verify-email`, read from an object
-/// only.
-#[derive(Debug, Deserialize)]
+/// The body of `POST /api/auth/verify-email`, read from a JSON object
+/// only, before [`VerifyEmailRequest::validate`] checks it.
+///
+/// The route reads it with the web framework's JSON extractor and
+/// [`parse_verify_email_request`] reads it from bytes; both go through
+/// this type's reader and the same validation.
+pub struct VerifyEmailRequest(VerifyBody);
+
+impl<'de> Deserialize<'de> for VerifyEmailRequest {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        crate::control_plane::from_object(d, "a JSON object").map(Self)
+    }
+}
+
+impl std::fmt::Debug for VerifyEmailRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("VerifyEmailRequest(<redacted>)")
+    }
+}
+
+/// The fields of [`VerifyEmailRequest`].
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct VerifyBody {
     /// The token from the link.
     token: String,
 }
 
-/// Reads a body as `T` from a JSON object only: serde's derived struct
-/// reader would also take a positional array.
-fn object_body<'de, T: Deserialize<'de>>(body: &'de [u8], what: &str) -> crate::Result<T> {
-    /// Wraps `T` so it is read through the object-only helper.
-    struct Object<T>(T);
-    impl<'de, T: Deserialize<'de>> Deserialize<'de> for Object<T> {
-        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-            crate::control_plane::from_object(d, "a JSON object").map(Self)
+impl VerifyEmailRequest {
+    /// Checks the token.
+    ///
+    /// # Returns
+    ///
+    /// The token: exactly [`VERIFY_TOKEN_CHARS`] lowercase hex characters.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::LibraryError::Invalid`] when the token breaks that rule.
+    pub fn validate(self) -> crate::Result<VerifyEmailToken> {
+        let token = self.0.token;
+        if token.len() != VERIFY_TOKEN_CHARS
+            || !token
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(crate::LibraryError::Invalid(format!(
+                "verify-email body: token must be {VERIFY_TOKEN_CHARS} lowercase hex characters"
+            )));
         }
+        Ok(VerifyEmailToken(token))
     }
-    serde_json::from_slice::<Object<T>>(body)
-        .map(|Object(t)| t)
+}
+
+/// Reads a body as `T` from bytes, for the fuzz target and tests (the
+/// routes use the web framework's JSON extractor on the same types).
+fn read_body<'de, T: Deserialize<'de>>(body: &'de [u8], what: &str) -> crate::Result<T> {
+    serde_json::from_slice::<T>(body)
         .map_err(|err| crate::LibraryError::Invalid(format!("{what}: {err}")))
 }
 
-/// Parses the body of `PUT /api/config/notifications/account-mail`
-/// (sans-IO, so the fuzz target and the route run the same code).
+/// Parses the body of `PUT /api/notifications/account-mail`
+/// from bytes (sans-IO), for the fuzz target and tests. The route reads
+/// the same [`AccountMailSettingsRequest`] with the JSON extractor and
+/// calls the same validation.
 ///
 /// The body is one JSON object whose only key is `plugin_instance_id`: a
 /// string of 1 to [`MAX_INSTANCE_ID_BYTES`] printable ASCII bytes with no
@@ -334,24 +414,13 @@ fn object_body<'de, T: Deserialize<'de>>(body: &'de [u8], what: &str) -> crate::
 ///
 /// [`crate::LibraryError::Invalid`] naming the first rule the body breaks.
 pub fn parse_account_mail_settings(body: &[u8]) -> crate::Result<Option<String>> {
-    let raw: SettingsBody = object_body(body, "account-mail settings")?;
-    let Some(id) = raw.plugin_instance_id.flatten() else {
-        return Ok(None);
-    };
-    if id.is_empty()
-        || id.len() > MAX_INSTANCE_ID_BYTES
-        || !id.bytes().all(|b| b.is_ascii_graphic())
-    {
-        return Err(crate::LibraryError::Invalid(format!(
-            "account-mail settings: plugin_instance_id must be 1 to \
-             {MAX_INSTANCE_ID_BYTES} printable characters with no space"
-        )));
-    }
-    Ok(Some(id))
+    read_body::<AccountMailSettingsRequest>(body, "account-mail settings")?.validate()
 }
 
-/// Parses the body of `POST /api/auth/verify-email` (sans-IO, so the fuzz
-/// target and the route run the same code).
+/// Parses the body of `POST /api/auth/verify-email` from bytes (sans-IO),
+/// for the fuzz target and tests. The route reads the same
+/// [`VerifyEmailRequest`] with the JSON extractor and calls the same
+/// validation.
 ///
 /// The body is one JSON object whose only key is `token`: exactly
 /// [`VERIFY_TOKEN_CHARS`] lowercase hex characters. The key is required
@@ -361,18 +430,7 @@ pub fn parse_account_mail_settings(body: &[u8]) -> crate::Result<Option<String>>
 ///
 /// [`crate::LibraryError::Invalid`] naming the first rule the body breaks.
 pub fn parse_verify_email_request(body: &[u8]) -> crate::Result<VerifyEmailToken> {
-    let raw: VerifyBody = object_body(body, "verify-email body")?;
-    if raw.token.len() != VERIFY_TOKEN_CHARS
-        || !raw
-            .token
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
-        return Err(crate::LibraryError::Invalid(format!(
-            "verify-email body: token must be {VERIFY_TOKEN_CHARS} lowercase hex characters"
-        )));
-    }
-    Ok(VerifyEmailToken(raw.token))
+    read_body::<VerifyEmailRequest>(body, "verify-email body")?.validate()
 }
 
 /// Every audience, in the order of the `audience` column's CHECK list.

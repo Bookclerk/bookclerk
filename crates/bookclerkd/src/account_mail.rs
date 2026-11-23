@@ -22,13 +22,14 @@
 
 use std::sync::Arc;
 
+use axum::extract::rejection::JsonRejection;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use bookclerk_library::notifications::{
-    link_for, parse_account_mail_settings, parse_verify_email_request, AccountMail,
-    AccountMailKind, DeliveryState, FailedAttempt, MAX_SEND_ATTEMPTS,
+    link_for, AccountMail, AccountMailKind, AccountMailSettingsRequest, DeliveryState,
+    FailedAttempt, VerifyEmailRequest, MAX_SEND_ATTEMPTS,
 };
 use bookclerk_library::{JobPayload, LibraryError, LibraryStore, UserStatus};
 use bookclerk_plugin_abi::notifications::{check_send_params, classify_send_reply, SendOutcome};
@@ -108,6 +109,22 @@ pub(crate) struct EmailVerified {
 /// A `400` with `message`.
 fn bad(message: impl std::fmt::Display) -> ApiError {
     (StatusCode::BAD_REQUEST, Json(ErrorMessage::new(message))).into()
+}
+
+/// The answer to a body the JSON extractor refused: `415` without the JSON
+/// content type, otherwise a `400` with `message` (or the extractor's own
+/// reason when `message` is `None`).
+fn refused_body(rejection: JsonRejection, message: Option<&str>) -> ApiError {
+    match rejection {
+        JsonRejection::MissingJsonContentType(_) => (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            Json(ErrorMessage::new(
+                "send the body with Content-Type: application/json",
+            )),
+        )
+            .into(),
+        other => bad(message.map_or_else(|| other.body_text(), str::to_owned)),
+    }
 }
 
 /// A `409` with `message`.
@@ -369,17 +386,20 @@ pub(crate) struct AccountMailSettingsBody {
         (status = 400, description = "The body is malformed, or the instance does not send account mail.", body = ErrorMessage, example = json!({"error": "that notifier does not send account mail"})),
         (status = 401, description = "No one is signed in.", body = ErrorMessage, example = json!({"error": "sign in first"})),
         (status = 403, description = "The caller is not an Administrator.", body = ErrorMessage, example = json!({"error": "only an Administrator can manage account mail"})),
+        (status = 415, description = "The body is not sent as `application/json`.", body = ErrorMessage, example = json!({"error": "send the body with Content-Type: application/json"})),
         (status = 500, description = "The library could not be changed.", body = ErrorMessage, example = json!({"error": "the library could not be read or changed"})),
     ),
 )]
 pub(crate) async fn put_account_mail(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    body: axum::body::Bytes,
+    body: Result<Json<AccountMailSettingsRequest>, JsonRejection>,
 ) -> Result<Json<AccountMailStatus>, ApiError> {
     administrator(&state, &headers).await?;
-    let instance =
-        parse_account_mail_settings(&body).map_err(|err| store_error("put_account_mail", err))?;
+    let Json(body) = body.map_err(|rejection| refused_body(rejection, None))?;
+    let instance = body
+        .validate()
+        .map_err(|err| store_error("put_account_mail", err))?;
     let library = state.library_snapshot().await;
     if let Some(id) = instance.as_deref() {
         if !crate::notifications_api::is_account_mail_notifier(&state, &library, id).await? {
@@ -542,15 +562,17 @@ pub(crate) struct VerifyEmailBody {
     responses(
         (status = 200, description = "The address is verified.", body = EmailVerified),
         (status = 400, description = "The body is malformed, or the link is unknown, used, expired or for an address the patron no longer has.", body = ErrorMessage, example = json!({"error": "this link is invalid or has expired"})),
+        (status = 415, description = "The body is not sent as `application/json`.", body = ErrorMessage, example = json!({"error": "send the body with Content-Type: application/json"})),
         (status = 500, description = "The library could not be read or changed.", body = ErrorMessage, example = json!({"error": "the library could not be read or changed"})),
     ),
 )]
 pub(crate) async fn post_verify_email(
     State(state): State<Arc<AppState>>,
-    body: axum::body::Bytes,
+    body: Result<Json<VerifyEmailRequest>, JsonRejection>,
 ) -> Result<Json<EmailVerified>, ApiError> {
-    let token = parse_verify_email_request(&body)
-        .map_err(|_| bad("this link is invalid or has expired"))?;
+    const INVALID: &str = "this link is invalid or has expired";
+    let Json(body) = body.map_err(|rejection| refused_body(rejection, Some(INVALID)))?;
+    let token = body.validate().map_err(|_| bad(INVALID))?;
     let library = state.library_snapshot().await;
     match library
         .use_email_verification(&token, Utc::now())

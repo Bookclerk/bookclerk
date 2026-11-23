@@ -1394,8 +1394,16 @@
             }
           },
           "415": {
-            "description": "The request did not declare a JSON body.",
+            "description": "The body is not sent as `application/json`. As `text/plain`, when the request did not declare a JSON body.",
             "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "send the body with Content-Type: application/json"
+                }
+              },
               "text/plain": {
                 "schema": {
                   "type": "string"
@@ -18056,8 +18064,16 @@
             }
           },
           "415": {
-            "description": "The request did not declare a JSON body.",
+            "description": "The body is not sent as `application/json`. As `text/plain`, when the request did not declare a JSON body.",
             "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "send the body with Content-Type: application/json"
+                }
+              },
               "text/plain": {
                 "schema": {
                   "type": "string"

@@ -184,6 +184,10 @@ async fn an_administrator_chooses_a_notifier_that_sends_account_mail() {
     // A malformed body and an instance that sends no account mail.
     let (status, _, _) = call(&app, None, "PUT", uri, Some(r#"{"other":1}"#)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _, _) = call(&app, None, "PUT", uri, Some(r#"["slack-1"]"#)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _, _) = call(&app, None, "PUT", uri, Some("{}")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _, json) = call(
         &app,
         None,
@@ -373,6 +377,24 @@ async fn a_verification_link_works_without_signing_in() {
     );
     let unknown = format!(r#"{{"token":"{}"}}"#, "a".repeat(64));
     assert_eq!(public(unknown).await, StatusCode::BAD_REQUEST);
+    // The extractor still reads an object only, with no other keys.
+    let positional = format!(r#"["{}"]"#, "a".repeat(64));
+    assert_eq!(public(positional).await, StatusCode::BAD_REQUEST);
+    let extra = format!(r#"{{"token":"{}","next":"/"}}"#, "a".repeat(64));
+    assert_eq!(public(extra).await, StatusCode::BAD_REQUEST);
+    {
+        use tower::ServiceExt;
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(uri)
+            .body(axum::body::Body::from(format!(
+                r#"{{"token":"{}"}}"#,
+                "a".repeat(64)
+            )))
+            .expect("request");
+        let response = app.clone().oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
 
     let token = library
         .mint_email_verification(member_id, "member@example.com", None)
