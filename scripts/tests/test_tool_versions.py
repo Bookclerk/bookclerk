@@ -41,7 +41,7 @@ tv = _load("tool_versions", ROOT / "scripts" / "tool_versions.py")
 
 #: Fixed clock, pins and cooldown for replay.
 NOW = datetime(2026, 10, 30, tzinfo=timezone.utc)
-CURRENT = {"uv": "0.13.6", "cargo-nextest": "0.9.146", "rust": "1.99.0"}
+CURRENT = {"uv": "0.13.6", "cargo-nextest": "0.9.146", "rust": "1.99.0", "playwright": "1.65.1"}
 COOLDOWN_DAYS = 7
 
 #: Fragments mutations splice in: JSON, version and date syntax.
@@ -162,6 +162,8 @@ class CorpusTests(unittest.TestCase):
             "cargo-nextest__prefix_only": None,
             # 1.100.0 is inside the cooldown, so the newest eligible is 1.99.1.
             "rust__typical": "1.99.1",
+            # v1.66.0 is inside the cooldown; the unprefixed 1.65.3 tag and the beta don't count.
+            "playwright__typical": "1.65.2",
         }
         for name, tool, raw in corpus():
             if name in outcomes:
@@ -206,7 +208,8 @@ class MutationFuzzTests(unittest.TestCase):
 
     def test_generated_listings_match_oracle(self) -> None:
         rng = random.Random(1030)
-        tags = ["0.13.7", "0.13.6", "1.0.0", "01.0.0", "0.13", "v0.13.7", "cargo-nextest-0.9.150", "", None, 7]
+        tags = ["0.13.7", "0.13.6", "1.0.0", "01.0.0", "0.13", "v0.13.7", "cargo-nextest-0.9.150", "v1.66.0", "v", "",
+                None, 7]
         dates = ["2026-10-01T00:00:00Z", "2026-10-29T00:00:00Z", "2026-13-01T00:00:00Z", "2026-02-29T00:00:00Z",
                  "2024-02-29T00:00:00Z", "", None, 0]
         flags = [False, True, None, 0, "false"]
@@ -219,7 +222,7 @@ class MutationFuzzTests(unittest.TestCase):
                     if rng.random() < 0.9:
                         release[key] = rng.choice(values)
                 listing.append(release)
-            tool = rng.choice(["uv", "cargo-nextest", "rust"])
+            tool = rng.choice(["uv", "cargo-nextest", "rust", "playwright"])
             raw = json.dumps(listing).encode()
             self.assertEqual(run(tool, raw), expected(tool, raw), f"generated {n}: {raw!r}")
 
@@ -292,6 +295,16 @@ class CommandTests(unittest.TestCase):
     def test_apply_refuses_hand_bumped_tools(self) -> None:
         self.assertEqual(tv.main(["apply", "nodejs", "27"]), 1)
 
+    def test_image_ref_refuses_bad_versions(self) -> None:
+        for version in ("1.65", "1.65.1-noble", "1.65.1@sha256:x", "../1.65.1"):
+            with self.subTest(version=version):
+                self.assertEqual(tv.main(["image-ref", "playwright", version]), 1)
+
+    def test_image_refs(self) -> None:
+        self.assertEqual(tv.TOOLS_BY_NAME["playwright"].image_ref("1.66.0"), "mcr.microsoft.com/playwright:v1.66.0-noble")
+        self.assertEqual(tv.TOOLS_BY_NAME["uv"].image_ref("0.13.7"), "ghcr.io/astral-sh/uv:0.13.7")
+        self.assertIsNone(tv.TOOLS_BY_NAME["rust"].image_ref("1.100.0"))
+
 
 class PruneRustTests(unittest.TestCase):
     """``prune-rust`` keeps only the pinned toolchain, whatever the image preinstalled."""
@@ -328,22 +341,24 @@ class PinFileTests(unittest.TestCase):
     """``.tool-versions`` parsing, rendering and Dockerfile rewrites."""
 
     def test_round_trip(self) -> None:
-        text = "nodejs 26\nuv 0.13.6\ncargo-nextest 0.9.146\nrust 1.100.0\n"
+        text = "nodejs 26\nuv 0.13.6\ncargo-nextest 0.9.146\nrust 1.100.0\nplaywright 1.65.1\n"
         self.assertEqual(tv.render_pins(tv.parse_pins(text)), text)
 
     def test_refusals(self) -> None:
         for text in (
-            "uv 0.13.6\nnodejs 26\ncargo-nextest 0.9.146\nrust 1.100.0\n",  # nodejs must come first
-            "# pins\nnodejs 26\nuv 0.13.6\ncargo-nextest 0.9.146\nrust 1.100.0\n",
+            "uv 0.13.6\nnodejs 26\ncargo-nextest 0.9.146\nrust 1.100.0\nplaywright 1.65.1\n",  # nodejs must come first
+            "# pins\nnodejs 26\nuv 0.13.6\ncargo-nextest 0.9.146\nrust 1.100.0\nplaywright 1.65.1\n",
             "nodejs 26\nuv 0.13.6\n",
             "nodejs 26\nuv 0.13.6\ncargo-nextest 0.9.146\n",  # rust missing
-            "nodejs 26\nuv 0.13.6\ncargo-nextest 0.9.146\nrust stable\n",
-            "nodejs 26\nuv 0.13.6\ncargo-nextest 0.9.146\nrust 1.100\n",
+            "nodejs 26\nuv 0.13.6\ncargo-nextest 0.9.146\nrust stable\nplaywright 1.65.1\n",
+            "nodejs 26\nuv 0.13.6\ncargo-nextest 0.9.146\nrust 1.100\nplaywright 1.65.1\n",
             "nodejs 26\nuv 0.13.6\ncargo-nextest 0.9.146\nrust 1.100.0\npython 3.12\n",
-            "nodejs 26\nuv  0.13.6\ncargo-nextest 0.9.146\nrust 1.100.0\n",
-            "nodejs 26\nuv 0.13\ncargo-nextest 0.9.146\nrust 1.100.0\n",
-            "nodejs 26.1\nuv 0.13.6\ncargo-nextest 0.9.146\nrust 1.100.0\n",
-            "nodejs 26\nuv 0.13.6\nuv 0.13.6\ncargo-nextest 0.9.146\nrust 1.100.0\n",
+            "nodejs 26\nuv  0.13.6\ncargo-nextest 0.9.146\nrust 1.100.0\nplaywright 1.65.1\n",
+            "nodejs 26\nuv 0.13\ncargo-nextest 0.9.146\nrust 1.100.0\nplaywright 1.65.1\n",
+            "nodejs 26.1\nuv 0.13.6\ncargo-nextest 0.9.146\nrust 1.100.0\nplaywright 1.65.1\n",
+            "nodejs 26\nuv 0.13.6\ncargo-nextest 0.9.146\nrust 1.100.0\n",  # playwright missing
+            "nodejs 26\nuv 0.13.6\ncargo-nextest 0.9.146\nrust 1.100.0\nplaywright v1.65.1\n",
+            "nodejs 26\nuv 0.13.6\nuv 0.13.6\ncargo-nextest 0.9.146\nrust 1.100.0\nplaywright 1.65.1\n",
         ):
             with self.subTest(text=text), self.assertRaises(tv.ToolVersionsError):
                 tv.parse_pins(text)
@@ -364,6 +379,43 @@ class PinFileTests(unittest.TestCase):
             f"FROM ghcr.io/astral-sh/uvx:0.13.6@{old}\n"
             "# FROM ghcr.io/astral-sh/uv:0.13.6\n",
         )
+
+    def test_rewrite_workflow_image(self) -> None:
+        old = "sha256:" + "a" * 64
+        new = "sha256:" + "b" * 64
+        text = (
+            "    container:\n"
+            f"      image: mcr.microsoft.com/playwright:v1.65.1-noble@{old}\n"
+            f"      image: mcr.microsoft.com/playwright-dotnet:v1.65.1-noble@{old}\n"
+            "      image: mcr.microsoft.com/playwright:v1.65.1-noble\n"
+            f"      # image: mcr.microsoft.com/playwright:v1.65.1-noble@{old}\n"
+        )
+        self.assertEqual(
+            tv.rewrite_workflow_image(text, "mcr.microsoft.com/playwright", "v1.66.0-noble", new),
+            "    container:\n"
+            f"      image: mcr.microsoft.com/playwright:v1.66.0-noble@{new}\n"
+            f"      image: mcr.microsoft.com/playwright-dotnet:v1.65.1-noble@{old}\n"
+            "      image: mcr.microsoft.com/playwright:v1.65.1-noble\n"
+            f"      # image: mcr.microsoft.com/playwright:v1.65.1-noble@{old}\n",
+        )
+
+    def test_rewrite_npm_pins(self) -> None:
+        packages = ("@playwright/test", "playwright-core")
+        text = (
+            '{\n  "devDependencies": {\n    "@axe-core/playwright": "4.14.0",\n    "@playwright/test": "1.65.1"\n  },\n'
+            '  "overrides": {\n    "playwright-core": "1.65.1",\n    "my-playwright-core": "1.65.1"\n  }\n}\n'
+        )
+        self.assertEqual(
+            tv.rewrite_npm_pins(text, packages, "1.66.0"),
+            '{\n  "devDependencies": {\n    "@axe-core/playwright": "4.14.0",\n    "@playwright/test": "1.66.0"\n  },\n'
+            '  "overrides": {\n    "playwright-core": "1.66.0",\n    "my-playwright-core": "1.65.1"\n  }\n}\n',
+        )
+        for bad in (
+            '{"devDependencies": {"@playwright/test": "^1.65.1"}, "overrides": {"playwright-core": "1.65.1"}}',
+            '{"devDependencies": {"@playwright/test": "1.65.1"}}',
+        ):
+            with self.subTest(text=bad), self.assertRaises(tv.ToolVersionsError):
+                tv.rewrite_npm_pins(bad, packages, "1.66.0")
 
     def test_rewrite_toolchain_channel(self) -> None:
         text = '# pinned\n[toolchain]\nchannel = "1.99.1"\ncomponents = ["rustfmt", "clippy"]\n'

@@ -52,9 +52,9 @@ cover every lockfile of a shipped artifact or its build:
 
 Tool versions that several workflows, images and scripts share live in
 [`.tool-versions`](ci.md#tool-versions) instead. Dependabot leaves the uv
-image and Node.js majors alone; the
-[tool versions bump](ci.md#tool-versions) moves uv, cargo-nextest and Rust, and a
-Node.js major moves by hand. Dependabot still updates the `node` image's
+image, Node.js majors, and `@playwright/test` and `playwright-core` in `ui/`
+alone; the [tool versions bump](ci.md#tool-versions) moves uv, cargo-nextest,
+Rust and Playwright, and a Node.js major moves by hand. Dependabot still updates the `node` image's
 digest within the pinned major.
 
 Packages that must share one version are grouped so they move in one pull
@@ -197,11 +197,12 @@ signed and attributed to the App.
    - **Contents: read and write**, to push branches.
    - **Pull requests: read and write**, to open, update and auto-merge
      pull requests.
-   - **Workflows: read and write**, only for
-     `dependabot-auto-merge.yml`. GitHub refuses to let an App turn on
-     auto-merge for a pull request that edits `.github/workflows/`, and
-     Dependabot's GitHub Actions updates bump the action pins there. No
-     other workflow requests it.
+   - **Workflows: read and write**, only for `dependabot-auto-merge.yml`,
+     `merge-queue-requeue.yml` and `tool-versions-bump.yml`. GitHub refuses
+     to let an App push to `.github/workflows/`, or turn on auto-merge for
+     a pull request that edits it. Dependabot's GitHub Actions updates bump
+     the action pins there, and a Playwright bump moves the UI visual jobs'
+     image there.
    - **Checks: read and write**, for the `Bookclerk CLA` check run
      (`cla.yml`), which GitHub lists under the App's name and the logo
      set in the App's **Display information**.

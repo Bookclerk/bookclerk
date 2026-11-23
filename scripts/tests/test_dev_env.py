@@ -271,6 +271,80 @@ class ProvisionScriptTests(unittest.TestCase):
         self.assertEqual(None, ignored.get("astral-sh/uv", "missing"))
         self.assertEqual(["version-update:semver-major"], ignored.get("node"))
 
+    def test_npm_pins_match_tool_versions(self) -> None:
+        """A tool's npm packages are pinned to exactly its ``.tool-versions`` version, lockfile included.
+
+        Playwright's image only ships its own release's browsers, so
+        ``@playwright/test`` or the ``playwright-core`` override on another
+        version fails the UI visual jobs.
+        """
+        pins = _tool_versions()
+        checked = 0
+        for tool in (t for t in tool_versions.TOOLS if t.npm_dir is not None):
+            manifest = json.loads((ROOT / tool.npm_dir / "package.json").read_text(encoding="utf-8"))
+            lock = json.loads((ROOT / tool.npm_dir / "package-lock.json").read_text(encoding="utf-8"))
+            declared = {
+                **manifest.get("dependencies", {}),
+                **manifest.get("devDependencies", {}),
+            }
+            for package in tool.npm_packages:
+                checked += 1
+                with self.subTest(tool=tool.name, package=package):
+                    pinned = [v for v in (declared.get(package), manifest.get("overrides", {}).get(package)) if v]
+                    self.assertTrue(pinned, f"{tool.npm_dir}/package.json does not pin {package}")
+                    self.assertEqual({pins[tool.name]}, set(pinned))
+                    self.assertEqual(pins[tool.name], lock["packages"][f"node_modules/{package}"]["version"])
+        self.assertGreater(checked, 0, "no tool pins npm packages")
+
+    def test_workflow_images_match_tool_versions(self) -> None:
+        """Every workflow job running in a tool's image uses the pinned tag, all on one digest."""
+        pins = _tool_versions()
+        checked = 0
+        for tool in (t for t in tool_versions.TOOLS if t.image is not None):
+            digests: set[str] = set()
+            for workflow in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+                for line in workflow.read_text(encoding="utf-8").splitlines():
+                    found = re.fullmatch(rf"\s*image:\s+{re.escape(tool.image)}:(\S+)", line)
+                    if found is None:
+                        continue
+                    checked += 1
+                    with self.subTest(workflow=workflow.name, image=tool.image):
+                        tag, _, digest = found.group(1).partition("@")
+                        self.assertEqual(tool.image_tag.format(version=pins[tool.name]), tag)
+                        self.assertRegex(digest, r"\Asha256:[0-9a-f]{64}\Z")
+                        digests.add(digest)
+            with self.subTest(image=tool.image):
+                self.assertLessEqual(len(digests), 1, f"{tool.image} is pinned to more than one digest")
+        self.assertGreater(checked, 0, "no workflow runs in a pinned tool image")
+
+    def test_bump_workflow_commits_what_apply_writes(self) -> None:
+        """tool-versions-bump.yml commits the files ``apply`` and the lockfile step change, with a token allowed to push workflows."""
+        workflow = yaml.safe_load(
+            (ROOT / ".github" / "workflows" / "tool-versions-bump.yml").read_text(encoding="utf-8")
+        )
+        steps = workflow["jobs"]["bump"]["steps"]
+        create = next(s for s in steps if str(s.get("uses", "")).startswith("peter-evans/create-pull-request@"))
+        paths = set(create["with"]["add-paths"].split())
+        self.assertLessEqual({".tool-versions", "rust-toolchain.toml", "*Dockerfile", ".github/workflows/*.yml"}, paths)
+        for tool in (t for t in tool_versions.TOOLS if t.npm_dir is not None):
+            with self.subTest(tool=tool.name):
+                self.assertLessEqual({f"{tool.npm_dir}/package.json", f"{tool.npm_dir}/package-lock.json"}, paths)
+        app = next(s for s in steps if s.get("id") == "app")
+        self.assertEqual("write", app["with"].get("permission-workflows"))
+
+    def test_dependabot_leaves_npm_tool_pins_alone(self) -> None:
+        """Dependabot skips the npm packages ``.tool-versions`` owns, in their directory."""
+        config = yaml.safe_load(DEPENDABOT.read_text(encoding="utf-8"))
+        for tool in (t for t in tool_versions.TOOLS if t.npm_dir is not None):
+            for update in (u for u in config["updates"] if u["package-ecosystem"] == "npm"):
+                directories = update.get("directories") or [update["directory"]]
+                if f"/{tool.npm_dir}" not in directories:
+                    continue
+                ignored = {i["dependency-name"]: i for i in update.get("ignore", [])}
+                for package in tool.npm_packages:
+                    with self.subTest(tool=tool.name, package=package):
+                        self.assertEqual({"dependency-name": package}, ignored.get(package))
+
     def test_dependabot_bumps_vitest_with_its_plugins(self) -> None:
         """vitest and @vitest/* move in one pull request in every npm directory using both.
 
