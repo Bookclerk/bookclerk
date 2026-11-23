@@ -2156,6 +2156,43 @@ text mutations in `npm test` (the `workerd_guests` check); `FUZZ_SEED` and
   each header arrives). The decoder gives the same messages and the same
   close code whatever the chunk boundaries.
 
+### Cloudflare Tunnel guest
+
+The `cloudflare_tunnel` guest parses everything on its edge connection:
+HTTP/2 frames and HPACK header blocks, the Cap'n Proto RPC messages on
+the control stream, the request fields any internet client sends, and the
+WebSocket frames that client sends after an upgrade.
+`crates/bookclerk-plugins/optional/ingress-cloudflare-tunnel/test/fuzz.test.ts`
+replays `fuzz/h2/`, `fuzz/hpack/`, `fuzz/capnp/` and `fuzz/wsframe/` (hex
+bytes) and `fuzz/head/` (a JSON field list), and runs seeded byte and text
+mutations in `npm test` (the `workerd_guests` check); `FUZZ_SEED` and
+`FUZZ_ITERATIONS` pick another run.
+
+- **HTTP/2 frames** (`FrameReader` in `src/h2.ts`). Oracle: RFC 9113's
+  framing rules restated over the whole input (the preface, then
+  SETTINGS; frames up to 16 KiB; each type's stream and size rules;
+  padding and priority; header blocks joined across CONTINUATION up to
+  256 KiB; setting values; no PUSH_PROMISE; unknown types skipped). The
+  reader gives the same frames and error code whatever the chunk
+  boundaries.
+- **Header blocks** (`HpackDecoder` in `src/hpack.ts`). Oracle: an
+  independent RFC 7541 decoder (its own integer, string and table code,
+  Huffman strings decoded by prefix lookup). A separate property encodes
+  random octets with an encoder written from the code table and checks
+  they decode back.
+- **RPC messages** (`MessageFramer`, `readIncoming` in `src/capnp.ts` and
+  `src/rpc.ts`). The framer and reader give the same answer whatever the
+  chunk boundaries, fail only with `CapnpError`, and the message kind
+  matches its union tag read straight from the bytes. The connector's own
+  messages and the edge's answers are checked byte for byte against the
+  reference encoder in the unit tests.
+- **Request fields** (`requestHead` in `src/agent.ts`). Oracle: RFC 9113
+  section 8.3 restated (pseudo-fields first, `:method` and `:path` once,
+  a token method, an origin-form path, lowercase names, no CR, LF or NUL
+  in values).
+- **WebSocket frames** (`FrameDecoder` in `src/ws.ts`). As in the ngrok
+  guest.
+
 ### Webhook notifier guest
 
 The `webhook` notifier reads a patron's address document, which the host
