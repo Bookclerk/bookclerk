@@ -23,16 +23,16 @@
 //! library administration. Instead each beat logs an error saying the node
 //! was removed, and the node writes no status and queues none of the
 //! node-pinned work a beat queues, until it is stopped, or restarted, which
-//! registers it again. A removal that lands between the beat's check and
-//! its write is caught after the write, which takes the row back. The
-//! image caches are still kept within their limits.
+//! registers it again. The status write itself also refuses while the row
+//! is gone, so a removal that lands between the beat's check and its write
+//! leaves nothing behind either. The image caches are still kept within
+//! their limits.
 
 use std::sync::Arc;
 
 use bookclerk_library::control_plane::{
     load_cache_settings, load_node, load_node_runtime, load_or_create_node_identity,
-    record_node_heartbeat, withdraw_removed_node_status, NodeRuntimeSettingsV1, NodeSampler,
-    NodeStatus, NODE_HEARTBEAT_INTERVAL,
+    record_node_heartbeat, NodeRuntimeSettingsV1, NodeSampler, NodeStatus, NODE_HEARTBEAT_INTERVAL,
 };
 use bookclerk_library::{LibraryError, LibraryStore};
 use tracing::warn;
@@ -145,9 +145,9 @@ async fn refuse_removed_node(library: &LibraryStore, node_id: &str) -> anyhow::R
     }
 }
 
-/// Records the beat, then takes it back when the node's `nodes` row went
-/// away meanwhile: a removal that ran between [`refuse_removed_node`] and
-/// the write would otherwise leave a status row with no node behind it.
+/// Records the beat. The write itself refuses while the node's `nodes` row
+/// is gone, so a removal that ran between [`refuse_removed_node`] and the
+/// write leaves no status row either; that refusal is logged the same way.
 ///
 /// # Errors
 ///
@@ -158,14 +158,16 @@ async fn record_removable_heartbeat(
     node_id: &str,
     heartbeat: &bookclerk_library::control_plane::NodeHeartbeat,
 ) -> anyhow::Result<NodeStatus> {
-    let recorded = record_node_heartbeat(library, node_id, heartbeat).await?;
-    if withdraw_removed_node_status(library, node_id, recorded.heartbeat_ms).await? {
-        refuse_removed_node(library, node_id).await?;
-        return Err(anyhow::anyhow!(
-            "node {node_id} was removed from the library"
-        ));
+    match record_node_heartbeat(library, node_id, heartbeat).await {
+        Ok(recorded) => Ok(recorded),
+        Err(LibraryError::NotFound(_)) => {
+            refuse_removed_node(library, node_id).await?;
+            Err(anyhow::anyhow!(
+                "node {node_id} was removed from the library"
+            ))
+        }
+        Err(err) => Err(err.into()),
     }
-    Ok(recorded)
 }
 
 /// The image caches' retention limits on `node_id`: the library's
@@ -235,22 +237,28 @@ mod tests {
             .exec(store.db())
             .await
             .expect("remove");
+        // A removal takes the status row with the node.
+        bookclerk_library::entities::node_status::Entity::delete_many()
+            .filter(bookclerk_library::entities::node_status::Column::NodeId.eq(node_id.clone()))
+            .exec(store.db())
+            .await
+            .expect("remove status");
         let err = refuse_removed_node(&store, &node_id)
             .await
             .expect_err("a removed node is refused");
         assert!(err.to_string().contains("removed"), "{err}");
-        // A removal that lands between the check and the write: the beat it
-        // wrote is taken back.
+        // A removal that lands between the check and the write: the write
+        // refuses, and writes no status row back.
         let err = record_removable_heartbeat(&store, &node_id, &heartbeat)
             .await
-            .expect_err("a removed node's beat is taken back");
+            .expect_err("a removed node's beat is refused");
         assert!(err.to_string().contains("removed"), "{err}");
         assert!(
             bookclerk_library::control_plane::load_node_status(&store, &node_id)
                 .await
                 .expect("status")
                 .is_none(),
-            "no status row is left behind"
+            "no status row is written back"
         );
     }
 

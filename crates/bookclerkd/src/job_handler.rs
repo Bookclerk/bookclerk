@@ -212,6 +212,9 @@ impl JobTransport for InProcessJobTransport {
             JobKind::DiscoverRequestQueue => {
                 crate::request_queue_job::run_discover_request_queue(&self.state, Some(&ctx)).await
             }
+            JobKind::DiscoverEmbed => {
+                crate::embedding::run_discover_embed(&self.state, &cmd.payload, Some(&ctx)).await
+            }
             JobKind::CacheSweep => {
                 crate::cache_jobs::run_cache_sweep(&self.state, &cmd.payload, Some(&ctx)).await
             }

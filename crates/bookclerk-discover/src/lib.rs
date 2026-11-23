@@ -54,9 +54,12 @@ pub use catalog_search::{
     CatalogSearchHit, CatalogSearchPage, CatalogSearchPageOpts,
 };
 pub use embed::{
-    embed_dirty_works, open_embedder, text_for_work, CosineHit, Embedder, HashEmbedder,
-    EMBED_PAGE_WORKS, LOCAL_HASH_DIMENSIONS, MODEL_LOCAL_HASH_V1,
+    embed_dirty_works, embed_text, is_stand_in, open_embedder, prune_vectors, serving_space,
+    stand_in_space, text_for_work, text_vectors, EmbedFields, EmbedPass, Embedder, HashEmbedder,
+    SharedEmbedder, VectorSource, EMBED_PAGE_WORKS, LOCAL_HASH_DIMENSIONS, MODEL_LOCAL_HASH_V1,
+    OLD_SPACE_MAX_AGE, TEXT_VECTOR_MAX_AGE,
 };
+pub use error::DiscoverError;
 pub use identity::{
     candidate_map_key, hard_work_key, identities_match, merge_candidate_metadata,
     merge_recommendation, parse_series_index, push_edition, push_shelf_category,
@@ -89,10 +92,11 @@ pub use shelves::{
     DiscoverShelf, FeedState, ShelfKindInfo, ShelfTaste, SERIES_CAP,
 };
 pub use title_meta::{
-    check_title_meta_query, plan_title_meta_fill, resolve_title_meta, resolve_title_meta_batch,
-    resolve_title_reviews, resolve_title_sample, FillLookup, FillStoreLookups, TitleMeta,
-    TitleMetaQuery, TitleMetaQueryProblem, TitleReview, TitleReviewsPage, TitleReviewsQuery,
-    TITLE_META_BATCH_DEADLINE, TITLE_META_MAX_STORE_EDITIONS,
+    check_title_meta_query, plan_title_meta_fill, resolve_title_meta, resolve_title_meta_answer,
+    resolve_title_meta_batch, resolve_title_reviews, resolve_title_sample, FillLookup,
+    FillStoreLookups, Settlement, TitleMeta, TitleMetaAnswer, TitleMetaQuery,
+    TitleMetaQueryProblem, TitleReview, TitleReviewsPage, TitleReviewsQuery,
+    TITLE_META_BATCH_DEADLINE, TITLE_META_MAX_STORE_EDITIONS, TITLE_META_RETRY_TTL,
 };
 pub use wish_pool::{
     pool_wish_editions, record_wish_member_offers, PooledEdition, MAX_WISH_EDITIONS,

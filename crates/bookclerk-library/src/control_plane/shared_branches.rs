@@ -135,11 +135,12 @@ pub async fn shared_nodes_visible_to(
 /// running may go, and never `this_node`. The liveness check and the
 /// removal are one step: the node's status row is deleted only if it still
 /// holds the stale heartbeat that was checked, so a heartbeat that lands
-/// in between refuses the removal. A node that was only cut off from the
-/// database for longer than its liveness window can still be removed while
-/// it runs; when it reconnects, the daemon's heartbeat finds its node row
-/// gone and writes no status row (it logs that the node was removed and
-/// queues no node-pinned work). Removing a node does not take back the
+/// in between refuses the removal, and the removal and a heartbeat take the
+/// node's `nodes` row lock first, so a node's first heartbeat cannot slip
+/// past it either. A node that was only cut off from the database for
+/// longer than its liveness window can still be removed while it runs; its
+/// heartbeats then write nothing and fail until it restarts and registers
+/// again. Removing a node does not take back the
 /// database credentials or DEK it held; rotate those when it is not
 /// trusted any more.
 ///
@@ -214,18 +215,29 @@ pub async fn remove_shared_node(
     // committed writes one at a time under READ COMMITTED) cannot leave a
     // partial cleanup behind:
     //
-    // 1. Compare and delete the status row while it still holds the
+    // 1. Take the `nodes` row lock (a no-op update). A heartbeat takes the
+    //    same lock before it writes its status row
+    //    (`node_status::upsert_node_status`), so a node's first heartbeat,
+    //    which inserts a status row the guard of step 3 could not see while
+    //    it was uncommitted, either commits before the next statement here
+    //    starts (and step 3 sees it) or waits until this batch has
+    //    committed (and then finds no `nodes` row, so writes nothing).
+    // 2. Compare and delete the status row while it still holds the
     //    heartbeat checked above. The delete takes the row, so a heartbeat
     //    racing it waits and then finds no row to update.
-    // 2. Delete the `nodes` row only while no status row exists, which in
-    //    this transaction means step 1 succeeded (or none had appeared).
-    // 3. Delete the dependent rows only while the `nodes` row is gone. Only
-    //    this batch deletes `nodes` rows, so the guard is decided by step 2
+    // 3. Delete the `nodes` row only while no status row exists, which in
+    //    this transaction means step 2 succeeded (or none had appeared).
+    // 4. Delete the dependent rows only while the `nodes` row is gone. Only
+    //    this batch deletes `nodes` rows, so the guard is decided by step 3
     //    alone, whatever a heartbeat does meanwhile.
     //
-    // A node that beat before step 1 keeps its status row, so steps 2 and 3
-    // delete nothing and the node stays.
-    let mut statements = Vec::with_capacity(7);
+    // A node that beat before step 1 or 2 keeps its status row, so steps 3
+    // and 4 delete nothing and the node stays.
+    let mut statements = Vec::with_capacity(8);
+    statements.push(batch::exec(
+        "UPDATE nodes SET heartbeat_at = heartbeat_at WHERE node_id = ?",
+        vec![batch::text(node_id)],
+    ));
     if let Some(status) = &checked {
         statements.push(batch::exec(
             "DELETE FROM node_status WHERE node_id = ? AND heartbeat_ms = ?",

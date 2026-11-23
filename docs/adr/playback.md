@@ -65,7 +65,11 @@ different timelines, so a position in one means nothing in the other.
 Finishing is a fact about the work: when a listener reaches the end of an
 edition (the last 1 percent, or the last 30 seconds of a recording longer
 than a minute), the same batch sets `user_title_state.is_finished` for the
-edition's work. Opening a finished edition again starts it over and clears
+edition's work. The batch decides it from the progress row as it finds it,
+in SQL: the runtime is the report's, or the row's when the report has
+none, so two overlapping reports can't both miss the end or both finish
+it, and the work is marked only when that batch finished the edition.
+Opening a finished edition again starts it over and clears
 the edition's flag; the work stays finished.
 
 `listening_progress` is unchanged. It holds what other servers report,

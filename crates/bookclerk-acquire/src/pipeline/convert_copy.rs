@@ -170,6 +170,7 @@ pub async fn convert_copy(
         &req.source,
         req.library_copies.stored_from(),
         copy,
+        &crate::record::AcquireRun::new(),
     );
     req.options = recorded.primary_destination().options.clone();
     req.destination_keys =

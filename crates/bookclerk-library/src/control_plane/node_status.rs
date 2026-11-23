@@ -25,14 +25,13 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use sea_orm::sea_query::OnConflict;
-use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 
 use super::deployments::{
     list_deployments_for_instance, list_deployments_for_node, DeploymentStatus,
 };
 use super::instances::PluginInstanceId;
-use crate::control_plane::{Bump, LiveTopic};
+use crate::control_plane::LiveTopic;
 use crate::entities::{node_status, plugin_deployment_observations};
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
@@ -449,109 +448,93 @@ pub async fn record_node_heartbeat(
     Ok(status)
 }
 
-/// Takes back the status row a heartbeat just wrote for `node_id` when the
-/// node's `nodes` row is gone: it was removed from the library between the
-/// beat's check that it exists and its write.
+/// Writes `status` as the node's row (insert or replace), while the node is
+/// registered in this library.
 ///
-/// Deletes the row only while it still holds that beat (`heartbeat_ms`) and
-/// no `nodes` row exists, in one statement, so a node registered again
-/// meanwhile keeps its row.
-///
-/// # Arguments
-///
-/// * `store` - the library.
-/// * `node_id` - the node the beat was for.
-/// * `heartbeat_ms` - the recorded beat's [`NodeStatus::heartbeat_ms`].
-///
-/// # Returns
-///
-/// `true` when the row was taken back (the node is removed).
+/// One atomic batch: it first takes the node's `nodes` row lock (a no-op
+/// update), then upserts the status row only while that `nodes` row
+/// exists. Removing a shared node ([`super::remove_shared_node`]) takes the
+/// same row lock before it decides, so on every engine (`READ COMMITTED`
+/// PostgreSQL included) a removal and a node's first heartbeat run one
+/// after the other: either the heartbeat lands first and the removal sees
+/// a live node, or the removal lands first and the heartbeat writes
+/// nothing.
 ///
 /// # Errors
 ///
-/// A database write failure.
-pub async fn withdraw_removed_node_status(
-    store: &LibraryStore,
-    node_id: &str,
-    heartbeat_ms: i64,
-) -> Result<bool> {
+/// Returns [`LibraryError::NotFound`] when the node has no `nodes` row
+/// (it was removed, or never registered), or the write error.
+pub(crate) async fn upsert_node_status(store: &LibraryStore, status: &NodeStatus) -> Result<()> {
+    use super::batch::{exec, int, int_opt, request, text, text_opt};
+    let columns: [(&str, bookclerk_plugin_abi::DbValue); 23] = [
+        ("node_id", text(&status.node_id)),
+        ("incarnation", text(&status.incarnation)),
+        ("started_at", text(&status.started_at)),
+        ("heartbeat_at", text(&status.heartbeat_at)),
+        ("heartbeat_ms", int(status.heartbeat_ms)),
+        ("interval_ms", int(status.interval_ms)),
+        ("cpu_millicores", int(status.cpu_millicores)),
+        ("memory_bytes", int_opt(status.memory_bytes)),
+        ("cpu_budget_millicores", int(status.cpu_budget_millicores)),
+        ("memory_budget_bytes", int_opt(status.memory_budget_bytes)),
+        ("schedulable", int(i64::from(status.schedulable))),
+        ("cpu_used_millicores", int_opt(status.cpu_used_millicores)),
+        (
+            "memory_available_bytes",
+            int_opt(status.memory_available_bytes),
+        ),
+        ("files_dir_free_bytes", int_opt(status.files_dir_free_bytes)),
+        (
+            "reserved_cpu_millicores",
+            int(status.reserved.cpu_millicores),
+        ),
+        ("reserved_memory_bytes", int(status.reserved.memory_bytes)),
+        ("running_guests", int(status.running_guests)),
+        ("availability_ppm", int(status.availability_ppm)),
+        ("online_since_ms", int(status.online_since_ms)),
+        ("cache_bytes", int_opt(status.cache_bytes)),
+        ("cache_budget_bytes", int_opt(status.cache_budget_bytes)),
+        ("cache_swept_ms", int_opt(status.cache_swept_ms)),
+        ("public_origin", text_opt(status.public_origin.as_deref())),
+    ];
+    let names: Vec<&str> = columns.iter().map(|(name, _)| *name).collect();
+    let placeholders = vec!["?"; names.len()].join(", ");
+    let updates = names
+        .iter()
+        .skip(1)
+        .map(|name| format!("{name} = excluded.{name}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut binds: Vec<_> = columns.into_iter().map(|(_, value)| value).collect();
+    binds.push(text(&status.node_id));
     let statements = vec![
-        super::batch::exec(
-            "DELETE FROM node_status WHERE node_id = ? AND heartbeat_ms = ? \
-             AND NOT EXISTS (SELECT 1 FROM nodes WHERE node_id = ?)",
-            vec![
-                super::batch::text(node_id),
-                super::batch::int(heartbeat_ms),
-                super::batch::text(node_id),
-            ],
+        // The lock a removal takes too, so the two order themselves on
+        // the node's row instead of deciding on two snapshots.
+        exec(
+            "UPDATE nodes SET heartbeat_at = heartbeat_at WHERE node_id = ?",
+            vec![text(&status.node_id)],
+        ),
+        exec(
+            &format!(
+                "INSERT INTO node_status ({}) SELECT {placeholders} \
+                 WHERE EXISTS (SELECT 1 FROM nodes WHERE node_id = ?) \
+                 ON CONFLICT (node_id) DO UPDATE SET {updates}",
+                names.join(", ")
+            ),
+            binds,
         ),
         super::bump(LiveTopic::Nodes),
     ];
-    let operation_id = format!("node-status-withdraw-{}", uuid::Uuid::new_v4());
+    let operation_id = format!("node-status-{}", uuid::Uuid::new_v4());
     let reply = store
-        .execute_host_batch(super::batch::request(&operation_id, statements))
+        .execute_host_batch(request(&operation_id, statements))
         .await?;
-    Ok(super::batch::rows_affected(&reply, 0) == 1)
-}
-
-/// Writes `status` as the node's row (insert or replace).
-pub(crate) async fn upsert_node_status(store: &LibraryStore, status: &NodeStatus) -> Result<()> {
-    let model = node_status::ActiveModel {
-        node_id: Set(status.node_id.clone()),
-        incarnation: Set(status.incarnation.clone()),
-        started_at: Set(status.started_at.clone()),
-        heartbeat_at: Set(status.heartbeat_at.clone()),
-        heartbeat_ms: Set(status.heartbeat_ms),
-        interval_ms: Set(status.interval_ms),
-        cpu_millicores: Set(status.cpu_millicores),
-        memory_bytes: Set(status.memory_bytes),
-        cpu_budget_millicores: Set(status.cpu_budget_millicores),
-        memory_budget_bytes: Set(status.memory_budget_bytes),
-        schedulable: Set(i64::from(status.schedulable)),
-        cpu_used_millicores: Set(status.cpu_used_millicores),
-        memory_available_bytes: Set(status.memory_available_bytes),
-        files_dir_free_bytes: Set(status.files_dir_free_bytes),
-        reserved_cpu_millicores: Set(status.reserved.cpu_millicores),
-        reserved_memory_bytes: Set(status.reserved.memory_bytes),
-        running_guests: Set(status.running_guests),
-        availability_ppm: Set(status.availability_ppm),
-        online_since_ms: Set(status.online_since_ms),
-        cache_bytes: Set(status.cache_bytes),
-        cache_budget_bytes: Set(status.cache_budget_bytes),
-        cache_swept_ms: Set(status.cache_swept_ms),
-        public_origin: Set(status.public_origin.clone()),
-    };
-    let upsert = node_status::Entity::insert(model).on_conflict(
-        OnConflict::column(node_status::Column::NodeId)
-            .update_columns([
-                node_status::Column::Incarnation,
-                node_status::Column::StartedAt,
-                node_status::Column::HeartbeatAt,
-                node_status::Column::HeartbeatMs,
-                node_status::Column::IntervalMs,
-                node_status::Column::CpuMillicores,
-                node_status::Column::MemoryBytes,
-                node_status::Column::CpuBudgetMillicores,
-                node_status::Column::MemoryBudgetBytes,
-                node_status::Column::Schedulable,
-                node_status::Column::CpuUsedMillicores,
-                node_status::Column::MemoryAvailableBytes,
-                node_status::Column::FilesDirFreeBytes,
-                node_status::Column::ReservedCpuMillicores,
-                node_status::Column::ReservedMemoryBytes,
-                node_status::Column::RunningGuests,
-                node_status::Column::AvailabilityPpm,
-                node_status::Column::OnlineSinceMs,
-                node_status::Column::CacheBytes,
-                node_status::Column::CacheBudgetBytes,
-                node_status::Column::CacheSweptMs,
-                node_status::Column::PublicOrigin,
-            ])
-            .to_owned(),
-    );
-    store
-        .exec_bumped(upsert, LiveTopic::Nodes, Bump::Always)
-        .await?;
+    if super::batch::rows_affected(&reply, 1) == 0 {
+        return Err(LibraryError::not_found(
+            crate::EntityKind::Node,
+            status.node_id.as_str(),
+        ));
+    }
     Ok(())
 }
 

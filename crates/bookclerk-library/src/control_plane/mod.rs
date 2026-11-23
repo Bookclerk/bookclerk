@@ -279,10 +279,10 @@ pub use node_queue::{
 };
 pub use node_status::{
     instance_demand, list_node_statuses, load_node_status, next_availability, node_reservations,
-    record_deployment_reservation, record_node_heartbeat, withdraw_removed_node_status, CacheUsage,
-    GuestReservation, NodeHeartbeat, NodeSampler, NodeStatus, AVAILABILITY_FULL_PPM,
-    AVAILABILITY_TAU, DEFAULT_GUEST_CPU_MILLICORES, DEFAULT_GUEST_MEMORY_BYTES,
-    NODE_HEARTBEAT_INTERVAL, NODE_LIVE_INTERVALS,
+    record_deployment_reservation, record_node_heartbeat, CacheUsage, GuestReservation,
+    NodeHeartbeat, NodeSampler, NodeStatus, AVAILABILITY_FULL_PPM, AVAILABILITY_TAU,
+    DEFAULT_GUEST_CPU_MILLICORES, DEFAULT_GUEST_MEMORY_BYTES, NODE_HEARTBEAT_INTERVAL,
+    NODE_LIVE_INTERVALS,
 };
 pub use output::{
     import_output_if_absent, is_output_setting_key, load_output, overlay_output,

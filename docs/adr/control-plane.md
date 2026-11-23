@@ -1114,8 +1114,10 @@ Built 2026-10-15 (H-4 step 5), on the routed claim above.
   (demoted, disabled, unlinked, revoked), or its own lease expired,
   `release_job_claim` returns the row to `pending` under the
   claim's fence without spending an attempt (a resumed claim gets its
-  one-shot resume flag back), the permits are released, and nothing is
-  handed over. The lease generation stays bumped, so the refused fence
+  one-shot resume flag back; the claim records its own generation as
+  `resumed_generation` on the job, so a release reads whether it was a
+  resume from the row, never from the claimant), the permits are
+  released, and nothing is handed over. The lease generation stays bumped, so the refused fence
   can never write again. The daemon's own worker claims as
   `Claimant::Local` and needs no handoff; the node API's work frames
   (step 6) claim as `Claimant::Remote` and hand off through it.
@@ -1211,12 +1213,12 @@ Built 2026-10-17 (H-4 step 6), over the node socket and the claim above.
   job row, then an update of the existing secret row guarded on the
   fence, the handoff row and the credential, so a reclaim, a claim by
   another node, or a revocation that lands after the checks leaves the
-  token untouched. The trust predicate itself (the owner's role and
-  status, and the account links) is checked just before the batch, not
-  inside it, so a demotion, a disabled owner or an unlinked account that
-  lands between the check and the batch can still let one update of a
-  secret already handed under that fence through. Moving the whole trust
-  predicate into the batch guard is follow-up work (issue #306).
+  token untouched. The batch also guards on the trust predicate for the
+  secret's account: the node's owner is active, and is an Owner or
+  Administrator or has that account linked to one of their identities.
+  A demotion, a disabled owner or an unlinked account that commits
+  between the checks and the batch therefore leaves the token untouched
+  too, on every backend.
   Rejected: plaintext values inside TLS. tungstenite traces every
   received message at TRACE, and the daemon bridges `log` into tracing
   with the diagnostics ring at TRACE, so a plaintext value would land in
@@ -1325,10 +1327,12 @@ join`) and `bookclerkd/src/library_link.rs`.
   each `renewed`, counted from when the request was sent) by the time it
   runs out, connected or not, marks the job lost and cancels it, so it
   never runs on a lease the owner may have handed elsewhere. A `work`
-  that answers a claim which already timed out is failed at once as
-  `claim_abandoned` under its fence (this retries the job like any
-  failure; `release` is kept for a job this host will not run) rather
-  than left to expire.
+  that answers a claim which already timed out is given back at once
+  with `release` (reason `claim_abandoned`) under its fence rather than
+  left to expire: the job never ran, so it spends no attempt and a
+  resumed job keeps its resume. `release` carries no `resumed` flag;
+  the owner reads whether the claim was a resume from the job row, so a
+  host cannot keep a job by claiming and releasing it as resumed.
   Client shutdown cancels every held job as lost, as revocation does.
   A lost fence's result is discarded. Write-back
   (`HostJobCtx::write_back`) accepts only a ref handed with the job,
@@ -1912,7 +1916,11 @@ shared node and branch node.
   (`GET /api/config/shared-branches`: all of them for the operator or an Owner,
   the owned ones for another user, by the same rule as removal);
   `DELETE /api/config/nodes/{node_id}` removes one that is not running
-  (operator or Owner; never this node or a branch node). Removal does not
+  (operator or Owner; never this node or a branch node). The removal and
+  every heartbeat take the node's `nodes` row lock before they decide, so a
+  node's first heartbeat and its removal run one after the other on every
+  engine (`READ COMMITTED` PostgreSQL included): a heartbeat writes its
+  status row only while the node's `nodes` row exists. Removal does not
   take back the database credentials or DEK it held: rotate them when it
   is no longer trusted.
 - **Audit.** `shared_branch_authorize`, `shared_branch_authorize_refused`,
@@ -2035,7 +2043,11 @@ it: a tree, A ← B ← C.
   are the holding's edition's (`edition_files`), so an edition already in A's
   outputs from another writer (an acquire, another branch) is not asked
   for and its upload is refused (`edition_has_files`): the library
-  delivers each edition once. Files keep the branch's own keys on every
+  delivers each edition once. Two branches can ask for one edition at the
+  same moment under different keys, where no key claim conflicts, so a
+  grant checks the edition again once its own keys are claimed: of two
+  overlapping grants at most one goes on (on an exact tie both are
+  refused, and each branch offers the title again). Files keep the branch's own keys on every
   destination (A's naming templates are not applied again), so a grant is
   refused (`key_in_use`) when a key is one of A's own books' (its audio,
   PDF, or a file beside the audio with the same stem) or another

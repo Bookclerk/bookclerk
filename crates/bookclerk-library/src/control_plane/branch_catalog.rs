@@ -938,7 +938,7 @@ async fn apply_catalog_batch(
 /// title, removed when the branch stopped sharing and held again since
 /// under a new id). A key claimed by an upload that was aborted, or left
 /// open past its token's life, holds no audio and does not count either.
-async fn edition_has_other_audio(
+pub(super) async fn edition_has_other_audio(
     store: &LibraryStore,
     node_id: &str,
     edition_id: &str,

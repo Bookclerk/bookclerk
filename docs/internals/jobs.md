@@ -208,6 +208,7 @@ stateDiagram-v2
 | `plugin_scheduled` | `plugin_scheduled:instance={id}:cron={schedule}` | `network` | `scheduled(controller)` on the instance (`run_plugin_scheduled`) |
 | `discover_candidates` | `discover_candidates:subject={key}` | `network` | `run_discover_candidates`, then admits the subject's `discover_feed` |
 | `discover_feed` | `discover_feed:subject={key}` | `network` | `run_discover_feed` (no network; ranks stored candidates) |
+| `discover_embed` | `discover_embed:node={id}` | `network` | `run_discover_embed` on the node whose plugin serves the text embedding model (pinned by `payload.node_id`); embeds works whose vector is missing or stale, then admits every stored feed's `discover_feed` (see [Embedding the library](discovery.md#embedding-the-library)) |
 | `discover_request_queue` | `discover_request_queue` | `network` | `run_discover_request_queue` (no network; ranks the shared request queue) |
 | `cache_sweep` | `cache_sweep:node={id}` | `network` | `run_cache_sweep` (no network; one node's image caches and job scratch) |
 | `search_index_rebuild` | `search_index_rebuild:node={id}` | `network` | `run_search_index_rebuild` (no network; rebuilds one node's search index) |
@@ -553,7 +554,17 @@ libraries scan` ([Libraries and branch nodes](../server/branches.md)).
   discovered during audio acquire) are bounded by the remaining quota: sources
   can call `FetchOptions::enforce_cache_budget`, the pipeline watchdog cancels
   a stage that crosses the budget, and PDF bodies are streamed with an
-  explicit remaining-byte cap.
+  explicit remaining-byte cap. An external guest downloads into its own
+  jail-granted scratch (`plugin-state/<PluginKey fs-id>/tmp/fetch`), not
+  the acquire's scratch dir, so the host measures that directory while the
+  guest's `fetchTitle` runs: what it gains during the call counts against
+  the remaining quota (files an earlier fetch left there do not).
+- Cancelling an acquire job, or losing its fence, stops the store fetch in
+  flight, not only the work between titles. The job's cancel flag reaches
+  the guest's `fetchTitle` call, which the host drops on the plugin's own
+  thread, as it drops a call over the scratch quota; the job then fails or
+  is cancelled as usual. A branch running a library's acquire passes the
+  job's cancel flag the same way.
 
 Scan, listen-sync, and integration-scan retries are idempotent (upserts /
 remote rescan). Acquire retries skip titles already `acquired`, except when
