@@ -129,6 +129,7 @@ updates:
       - "/crates/bookclerk-plugins/optional/metadata-audnexus"
       - "/crates/bookclerk-plugins/optional/metadata-files"
       - "/crates/bookclerk-plugins/optional/metadata-openlibrary"
+      - "/crates/bookclerk-plugins/optional/notifier-webhook"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

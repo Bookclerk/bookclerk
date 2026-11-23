@@ -1292,7 +1292,8 @@ fn is_platform_local_storage(plugin: &DiscoveredPlugin) -> bool {
 /// The library connection uses `PRAGMA journal_mode=TRUNCATE` so commits
 /// truncate `*-journal` instead of unlinking it (Landlock would deny
 /// `RemoveFile` on the files-dir parent; AppContainer ACLs apply the same
-/// constraint on Windows). `-wal`/`-shm` are included for completeness if a
+/// constraint on Windows). The guest also rolls back a journal left by a
+/// crash without unlinking it, so recovery needs no delete grant either. `-wal`/`-shm` are included for completeness if a
 /// connection ever switches to WAL.
 fn sqlite_library_paths(config: &Config) -> Vec<PathBuf> {
     let db = config.database.sqlite_path(&config.paths().files_dir);

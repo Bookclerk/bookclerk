@@ -82,6 +82,7 @@ exclude = [
     "crates/bookclerk-plugins/optional/metadata-audnexus",
     "crates/bookclerk-plugins/optional/metadata-files",
     "crates/bookclerk-plugins/optional/metadata-openlibrary",
+    "crates/bookclerk-plugins/optional/notifier-webhook",
 ]
 
 [workspace.package]

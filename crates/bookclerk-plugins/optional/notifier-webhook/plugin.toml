@@ -1,0 +1,77 @@
+api_version = 3
+id = "webhook"
+name = "Webhook"
+version = "0.1.0"
+runtime = "workerd"
+entrypoints = ["notifier"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+compatibility_flags = []
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[workerd.limits]
+cpu_ms = 5000
+# One POST per send; validating an address makes no request.
+subrequests = 2
+
+# Emitted from `src/` by `npm run build`; CI fails when they drift.
+[[modules]]
+name = "index.js"
+path = "index.js"
+type = "js"
+
+[[modules]]
+name = "webhook.js"
+path = "webhook.js"
+type = "js"
+
+[[modules]]
+name = "version.js"
+path = "version.js"
+type = "js"
+
+[notifier]
+destinations = ["channel", "personal"]
+formats = ["text", "markdown", "html"]
+
+# A patron's own endpoint. Both fields are sealed: an endpoint URL often
+# carries a token of its own.
+[[notifier.address_fields]]
+key = "url"
+label = "Webhook URL"
+required = true
+secret = true
+
+[[notifier.address_fields]]
+key = "secret"
+label = "Signing secret (whsec_…)"
+required = true
+secret = true
+
+[capabilities.network]
+mode = "outbound"
+# A webhook can point anywhere, so the plugin asks for any public website
+# (`*`); it only ever posts to the instance's `url` setting and to the URLs
+# patrons save. An endpoint on a private or loopback address also needs that
+# address's CIDR in the grant. The operator may deny `*` and approve the
+# endpoints' hosts instead.
+domains = ["*"]
+
+[vars]
+
+[secrets]
+
+[[settings]]
+key = "url"
+label = "Webhook URL"
+type = "string"
+description = "Where channel notifications are posted (https://, or http:// on a network you trust). Leave it empty when only patrons' own endpoints are used. Put no token in the URL: receivers check the signature instead."
+
+[[settings]]
+key = "signing_secret"
+label = "Signing secret"
+type = "secret"
+description = "A Standard Webhooks secret, whsec_ followed by 24 to 64 random bytes in base64 (for example whsec_ and the output of openssl rand -base64 32). The receiver checks each request's webhook-signature with it."

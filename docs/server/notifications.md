@@ -7,8 +7,9 @@ The design is in the [notifications ADR](../adr/notifications.md).
 
 > [!NOTE]
 > Routing, the delivery log, the inbox, the web app's bell with browser
-> and desktop notifications, and the web API are built. No notifier
-> plugin ships yet, and account mail (invites and password resets) comes
+> and desktop notifications, the web API and the
+> [webhook notifier](#the-webhook-notifier) are built. The chat, paging
+> and push notifiers, and account mail (invites and password resets), come
 > later.
 
 ## How a notification travels
@@ -129,6 +130,53 @@ again, and several open tabs show one alert per entry, not one each.
 A plugin can only raise a patron notification for a patron who holds the
 store account the plugin is working for, so a store plugin cannot message
 people outside its own account.
+
+## The webhook notifier
+
+The first-party `webhook` plugin posts each notification as JSON to a URL,
+signed per the [Standard Webhooks](https://www.standardwebhooks.com)
+scheme, so any service that can check a signature can receive it.
+
+To set up a channel:
+
+1. Make a signing secret: `whsec_` followed by 24 to 64 random bytes in
+   base64, for example `whsec_$(openssl rand -base64 32)`. Give the same
+   secret to the receiver.
+2. Install the plugin and approve its network grant. It asks for any
+   public website (`*`); deny that and approve the receivers' hosts
+   instead if you prefer. A receiver on a private or loopback address
+   also needs that address's CIDR in the grant.
+3. Set the instance's `url` setting to the receiver's URL (`https://`, or
+   `http://` on a network you trust) and its `signing_secret` secret to
+   the secret.
+4. Add the instance as a channel and send it the `test` notification.
+
+Patrons can use the same plugin for their own endpoints once an
+administrator offers it: a personal address holds a `url` and a `secret`,
+both sealed, and the patron sees only the URL's host.
+
+Each delivery is one `POST` with these headers:
+
+| Header | Value |
+| --- | --- |
+| `webhook-id` | `msg_<notification id>_<destination id>`: the same on every retry to one destination, so a receiver can drop duplicates |
+| `webhook-timestamp` | When it was sent, in Unix seconds |
+| `webhook-signature` | `v1,` and the base64 HMAC-SHA256 of `<id>.<timestamp>.<body>` under the secret's key |
+
+The body is `{ "type", "timestamp", "data" }`. `type` is the notification
+type and `data` carries the message: `id`, `type`, `severity`, `title`,
+`text`, `fields`, `alertAction`, and, when present, `markdown`, `html`,
+`link`, `groupKey` and `alertKey`.
+
+The receiver's answer decides what happens next:
+
+- `2xx`: delivered.
+- `429`: retried, after its `Retry-After` when it sent one.
+- `408`, `425`, `5xx`, a timeout after 20 seconds, or no connection:
+  retried on the job's backoff.
+- A redirect: failed. The plugin never follows one, so a signed body only
+  reaches the URL you set; set the receiver's final URL.
+- Any other status: failed for this message.
 
 ## Retries, pausing and the delivery log
 

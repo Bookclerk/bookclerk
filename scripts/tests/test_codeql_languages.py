@@ -51,7 +51,12 @@ def _load_reuse() -> ModuleType:
 # The oracle's own reading of a Rust input, written without fnmatch.
 ORACLE_NAMES = {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml"}
 ORACLE_SUFFIXES = (".rs", ".capnp", ".proto", ".c", ".cc", ".h")
-ORACLE_EXACT = {".github/workflows/codeql.yml", "scripts/codeql_languages.py", "scripts/codeql_reuse.py"}
+ORACLE_EXACT = {
+    ".github/workflows/codeql.yml",
+    "scripts/codeql_languages.py",
+    "scripts/codeql_reuse.py",
+    "scripts/ci_carry.py",
+}
 
 
 def oracle_needs_rust(raw: bytes) -> bool:
@@ -427,14 +432,25 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("${{", find["run"])
         upload = next(s for s in steps if str(s.get("uses", "")).startswith("github/codeql-action/upload-sarif@"))
         self.assertEqual(upload["if"], "steps.reuse.outputs.sarif != ''")
-        self.assertEqual(upload["with"]["category"], "/language:rust")
+        # The category is the job's own language, whichever results it reuses.
+        self.assertEqual(upload["with"]["category"], "/language:${{ matrix.language }}")
+        # A visual approval commit reuses its parent run's results first.
+        self.assertIn("needs.languages.outputs.carry-run != ''", find["if"])
+        self.assertIn("scripts/ci_carry.py sarif", find["run"])
+        self.assertLess(find["run"].index("ci_carry.py"), find["run"].index("codeql_reuse.py"))
+        self.assertEqual(self.wf["jobs"]["languages"]["outputs"]["carry-run"], "${{ steps.carry.outputs.run-id }}")
         self.assertEqual(upload["with"]["sarif_file"], "${{ steps.reuse.outputs.sarif }}")
         init = next(s for s in steps if str(s.get("uses", "")).startswith("github/codeql-action/init@"))
         self.assertEqual(init["uses"].split("@")[1], upload["uses"].split("@")[1])
         # Reuse comes first, and every analysis step stands down for it.
         self.assertLess(steps.index(upload), steps.index(init))
         for step in steps[steps.index(upload) + 1 :]:
-            if step.get("name") in ("Keep the Rust results for pull requests", "Save the Rust extractor's cargo output"):
+            if step.get("name") in (
+                "Keep the results for a visual approval commit",
+                "Upload the kept results",
+                "Keep the Rust results for pull requests",
+                "Save the Rust extractor's cargo output",
+            ):
                 continue
             with self.subTest(step=step.get("name")):
                 self.assertIn("steps.reuse.outputs.sarif == ''", step.get("if", ""))
