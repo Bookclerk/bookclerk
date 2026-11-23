@@ -215,7 +215,7 @@ fn names_library(sender: &str) -> bool {
 }
 
 /// The label of the link button: short, naming the library it opens
-/// (`Open Fritz Family Library`), or `Open your library` when the From name
+/// (`Open Riverside Library`), or `Open your library` when the From name
 /// is just the product's. The plain-text part keeps the full URL beside it.
 ///
 /// # Arguments
