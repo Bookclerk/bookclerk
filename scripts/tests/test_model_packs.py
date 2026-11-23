@@ -20,7 +20,9 @@ accept them. ``UPDATE_MODEL_PACK_FIXTURES=1`` rewrites them.
 
 from __future__ import annotations
 
+import email.message
 import hashlib
+import http.client
 import importlib.util
 import io
 import json
@@ -30,6 +32,7 @@ import struct
 import sys
 import tempfile
 import unittest
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -147,6 +150,25 @@ class PinsTest(unittest.TestCase):
         with self.assertRaises(mp.PackError):
             mp.rewrite_pack_pins(text, "other", HEX_B, HEX_A)
 
+    def test_the_sources_digest_follows_the_upstream_pins_only(self) -> None:
+        base = pins_document()
+        digest = mp.parse_pins(json.dumps(base)).models["tiny"].sources_digest()
+        self.assertRegex(digest, r"\A[0-9a-f]{64}\Z")
+
+        def changed(change: Any) -> str:
+            document = pins_document()
+            change(document["models"]["tiny"])
+            return mp.parse_pins(json.dumps(document)).models["tiny"].sources_digest()
+
+        # The pack's own digests and the model's settings leave it alone...
+        self.assertEqual(changed(lambda m: m["pack"].update(manifest_sha256=HEX_B)), digest)
+        self.assertEqual(changed(lambda m: m.update(dimensions=m["dimensions"] + 1)), digest)
+        # ...while anything fetch downloads moves it.
+        for field, value in (("revision", "b" * 40), ("path", "onnx/other.onnx"), ("bytes", 7), ("sha256", HEX_B)):
+            with self.subTest(field=field):
+                self.assertNotEqual(changed(lambda m, field=field, value=value: m["graph"].update({field: value})), digest)
+        self.assertNotEqual(changed(lambda m: m["tokenizer"].update(sha256=HEX_B)), digest)
+
     def test_malformed_pins_are_refused(self) -> None:
         def broken(change: Any) -> str:
             document = pins_document()
@@ -239,6 +261,72 @@ class FetchTest(unittest.TestCase):
         (self.dir / "a file.onnx").write_bytes(b"old")
         self.assertEqual(mp.fetch(self.pin, self.dir, lambda _url: io.BytesIO(self.body)).read_bytes(), self.body)
 
+
+    def test_a_transient_failure_is_tried_again_after_a_wait(self) -> None:
+        failures: list[BaseException] = [
+            urllib.error.HTTPError("https://x", 502, "Bad Gateway", email.message.Message(), None),
+            ConnectionResetError("reset"),
+            http.client.IncompleteRead(b"he"),
+        ]
+        waits: list[float] = []
+
+        def opener(_url: str) -> io.BytesIO:
+            if failures:
+                raise failures.pop(0)
+            return io.BytesIO(self.body)
+
+        path = mp.fetch(self.pin, self.dir, opener, backoff=(1, 2, 3), sleep=waits.append)
+        self.assertEqual(path.read_bytes(), self.body)
+        self.assertEqual(waits, [1, 2, 3])
+        self.assertEqual([p.name for p in self.dir.iterdir()], ["a file.onnx"])
+
+    def test_the_last_transient_failure_is_raised_once_the_waits_run_out(self) -> None:
+        waits: list[float] = []
+
+        def opener(_url: str) -> io.BytesIO:
+            raise urllib.error.HTTPError("https://x", 503, "Unavailable", email.message.Message(), None)
+
+        with self.assertRaises(urllib.error.HTTPError):
+            mp.fetch(self.pin, self.dir, opener, backoff=(1, 2), sleep=waits.append)
+        self.assertEqual(waits, [1, 2])
+        self.assertEqual(list(self.dir.iterdir()), [])
+
+    def test_an_answer_a_retry_would_not_change_is_not_retried(self) -> None:
+        for error in (
+            urllib.error.HTTPError("https://x", 404, "Not Found", email.message.Message(), None),
+            OSError("disk full"),
+        ):
+            waits: list[float] = []
+            with self.subTest(error=error), self.assertRaises(OSError):
+                mp.fetch(self.pin, self.dir, lambda _url, error=error: (_ for _ in ()).throw(error), backoff=(1,), sleep=waits.append)
+            self.assertEqual(waits, [])
+
+    def test_a_mismatch_is_never_retried(self) -> None:
+        waits: list[float] = []
+        with self.assertRaises(mp.PackError):
+            mp.fetch(self.pin, self.dir, lambda _url: io.BytesIO(b"hellp"), backoff=(1, 2), sleep=waits.append)
+        self.assertEqual(waits, [])
+
+    def test_a_restored_copy_that_matches_is_used_without_a_download(self) -> None:
+        # What the workflow's cache of upstream files relies on: a copy put
+        # there by anyone is measured, and kept only when it is the pinned one.
+        (self.dir / "a file.onnx").write_bytes(self.body)
+
+        def opener(_url: str) -> io.BytesIO:
+            raise AssertionError("must not download")
+
+        self.assertEqual(mp.fetch(self.pin, self.dir, opener).read_bytes(), self.body)
+
+    def test_only_transport_failures_count_as_transient(self) -> None:
+        message = email.message.Message()
+        for code in (408, 429, 500, 502, 503, 504):
+            self.assertTrue(mp.is_transient(urllib.error.HTTPError("https://x", code, "", message, None)), code)
+        for code in (400, 401, 403, 404, 410):
+            self.assertFalse(mp.is_transient(urllib.error.HTTPError("https://x", code, "", message, None)), code)
+        self.assertTrue(mp.is_transient(urllib.error.URLError("no route")))
+        self.assertTrue(mp.is_transient(TimeoutError()))
+        self.assertFalse(mp.is_transient(OSError("disk full")))
+        self.assertFalse(mp.is_transient(mp.PackError("mismatch")))
 
 class LayoutTest(unittest.TestCase):
     def test_a_row_pack_is_magic_count_width_ids_rows(self) -> None:
@@ -741,6 +829,10 @@ class CommandLineTest(unittest.TestCase):
                 status, output = self.run_main(*args)
                 self.assertEqual(status, 1)
                 self.assertIn("error:", output)
+
+    def test_sources_digest_prints_a_workflow_output(self) -> None:
+        expected = mp.parse_pins(self.models.read_text(encoding="utf-8")).models["tiny"].sources_digest()
+        self.assertEqual(self.run_main("sources-digest", "--model", "tiny"), (0, f"sources_digest={expected}\n"))
 
     def test_pin_fails_on_a_difference_and_write_records_it(self) -> None:
         status, output = self.run_main("pin", "--model", "tiny")

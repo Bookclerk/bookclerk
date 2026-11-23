@@ -163,7 +163,11 @@ repository and commit, and the size and SHA-256 of each file.
 A build has four steps:
 
 1. **`fetch`** downloads the pinned files and refuses any whose size or
-   digest differs.
+   digest differs. A file already in the work directory is kept only when
+   it matches its pin. A download that fails in a way that may pass (HTTP
+   408, 429 or 5xx, a refused, reset or timed-out connection, a reply cut
+   short) is tried again after 5, 20 and 60 seconds; one that arrives but
+   does not match is never retried.
 2. **`build`** cuts the graph, writes every token's row to `base.rows`,
    converts `tokenizer.json` to a SentencePiece model and then, with
    upstream's `spm_to_fb`, to the Lite file, and writes `model.json` and
@@ -225,7 +229,23 @@ vocabulary as a SentencePiece model:
 
 [`.github/workflows/model-packs.yml`](../../.github/workflows/model-packs.yml)
 runs the four steps for each model on every pull request that touches the
-builder, the layout, the tokenizer or the plugin. On `main` it also
+builder, the layout, the tokenizer or the plugin. It caches the upstream
+files under `model-upstream-<model id>-<sources digest>`, where the digest
+(`model_packs.py sources-digest`) covers each file's repository, revision,
+path, size and SHA-256 and nothing else, so an unchanged model is not
+downloaded again and a changed pin misses the cache. `fetch` measures a
+restored file like any other, so a cache entry cannot change what is
+built.
+
+The built pack is cached too, by `main` only and only after `check` and
+`pin` pass, under a key that hashes every file that can change its bytes:
+`models.json`, `scripts/model_packs.py`, the builder's
+`requirements.txt`, `build-spm-to-fb.sh`, `vendor-sentencepiece-lite.sh`
+and `third_party/sentencepiece-lite/`. While none of them changes, a run
+restores that pack and skips building the converter and the pack; `check`
+and `pin` run on it as on a fresh build. A change to any of those files
+misses the cache, so it is always built and compared with the pins before
+it can merge. On `main` it also
 publishes each pack to the GitHub Container Registry as an OCI artifact:
 
 ```text

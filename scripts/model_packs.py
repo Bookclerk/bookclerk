@@ -34,6 +34,7 @@ import argparse
 import base64
 import dataclasses
 import hashlib
+import http.client
 import json
 import math
 import os
@@ -42,6 +43,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -79,6 +81,15 @@ OCI_EMPTY_BLOB = b"{}"
 VECTOR_TOLERANCE = 1e-5
 #: Bytes read at a time when hashing or copying a file.
 CHUNK = 1 << 20
+
+#: Seconds to wait before each new attempt at a download that failed in a
+#: way that may pass (a server error, a reset connection, a time-out). Its
+#: length plus one is the number of attempts.
+FETCH_BACKOFF = (5.0, 20.0, 60.0)
+
+#: HTTP statuses worth asking again for: rate limiting and server errors.
+#: Anything else (404, 403) is an answer that a retry would not change.
+RETRY_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
 
 
 class PackError(Exception):
@@ -172,6 +183,16 @@ class ModelSpec:
     def sources(self) -> list[SourcePin]:
         """Every upstream file the build reads."""
         return [pin for pin in (self.graph, self.graph_data, self.tokenizer) if pin is not None]
+
+    def sources_digest(self) -> str:
+        """A SHA-256 over every upstream file's address and pin.
+
+        It changes exactly when what `fetch` downloads changes (a repository,
+        revision, path, size or digest), and not when anything else in
+        `models.json` does, so CI keys its cache of upstream files on it.
+        """
+        listed = [[pin.repository, pin.revision, pin.path, pin.pin.bytes, pin.pin.sha256] for pin in self.sources()]
+        return hashlib.sha256(json.dumps(listed, separators=(",", ":")).encode()).hexdigest()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -356,34 +377,40 @@ def sha256_bytes(data: bytes) -> FilePin:
     return FilePin(len(data), hashlib.sha256(data).hexdigest())
 
 
-def fetch(pin: SourcePin, directory: Path, opener: Callable[[str], BinaryIO] | None = None) -> Path:
-    """Downloads one pinned upstream file, or keeps the copy already there.
+def is_transient(error: BaseException) -> bool:
+    """Tells whether a failed download may succeed if it is tried again.
 
-    The file is written under a temporary name and renamed only once its
-    size and digest match the pin, so a partial or altered download is never
-    left where the build would read it. Each call writes under a name of
-    its own.
+    Args:
+        error: What the download raised.
+
+    Returns:
+        True for a retryable HTTP status, a connection that failed or broke
+        off (a body cut short included), and a time-out; False for every other HTTP status and for
+        anything that is not a transport error (a digest mismatch included).
+    """
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code in RETRY_STATUSES
+    return isinstance(error, (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException))
+
+
+def _download(pin: SourcePin, target: Path, open_url: Callable[[str], BinaryIO]) -> None:
+    """Makes one attempt at downloading a pinned file into place.
+
+    The file is written under a temporary name of this call's own and
+    renamed only once its size and digest match the pin, so a partial or
+    altered download is never left where the build would read it, and two
+    attempts cannot write through each other.
 
     Args:
         pin: The file and what it must hash to.
-        directory: The work directory.
-        opener: Opens an address for reading; `urllib` when omitted.
-
-    Returns:
-        The file's path in the work directory.
+        target: Where the file goes once it matches.
+        open_url: Opens an address for reading.
 
     Raises:
         PackError: The download does not match the pin.
     """
-    target = directory / pin.local_name
-    if target.is_file() and sha256_file(target) == pin.pin:
-        return target
-    directory.mkdir(parents=True, exist_ok=True)
-    open_url = opener or (lambda url: urllib.request.urlopen(url, timeout=120))  # noqa: S310 - https only, pinned digest
     digest, size = hashlib.sha256(), 0
-    # A name of this call's own, so two fetches of one file cannot write
-    # through each other.
-    descriptor, name = tempfile.mkstemp(prefix=target.name + ".", suffix=".part", dir=directory)
+    descriptor, name = tempfile.mkstemp(prefix=target.name + ".", suffix=".part", dir=target.parent)
     partial = Path(name)
     try:
         with open_url(pin.url) as response, os.fdopen(descriptor, "wb") as handle:
@@ -398,7 +425,56 @@ def fetch(pin: SourcePin, directory: Path, opener: Callable[[str], BinaryIO] | N
         partial.replace(target)
     finally:
         partial.unlink(missing_ok=True)
-    return target
+
+
+def fetch(
+    pin: SourcePin,
+    directory: Path,
+    opener: Callable[[str], BinaryIO] | None = None,
+    backoff: Sequence[float] = FETCH_BACKOFF,
+    sleep: Callable[[float], None] = time.sleep,
+) -> Path:
+    """Downloads one pinned upstream file, or keeps the copy already there.
+
+    A copy already in the work directory (from an earlier fetch, or restored
+    from a CI cache) is kept only when its size and digest match the pin;
+    otherwise the file is downloaded again. A download that fails in a way
+    that may pass (see `is_transient`) is tried again after each wait in
+    `backoff`. A download that arrives but does not match the pin is never
+    retried: the upstream file is not the reviewed one.
+
+    Args:
+        pin: The file and what it must hash to.
+        directory: The work directory.
+        opener: Opens an address for reading; `urllib` when omitted.
+        backoff: Seconds to wait before each further attempt.
+        sleep: Waits that many seconds; `time.sleep` when omitted.
+
+    Returns:
+        The file's path in the work directory.
+
+    Raises:
+        PackError: The download does not match the pin.
+        OSError: Every attempt failed, or one failed in a way a retry would
+            not change; that failure is raised.
+        http.client.HTTPException: The same, for a reply cut short.
+    """
+    target = directory / pin.local_name
+    if target.is_file() and sha256_file(target) == pin.pin:
+        return target
+    directory.mkdir(parents=True, exist_ok=True)
+    open_url = opener or (lambda url: urllib.request.urlopen(url, timeout=120))  # noqa: S310 - https only, pinned digest
+    waits = list(backoff)
+    while True:
+        try:
+            _download(pin, target, open_url)
+            return target
+        except (OSError, http.client.HTTPException) as error:
+            if not waits or not is_transient(error):
+                raise
+            wait = waits.pop(0)
+            print(f"{pin.url}: {error}; trying again in {wait:g} s", file=sys.stderr)
+            sleep(wait)
 
 
 # ---------------------------------------------------------------------------
@@ -1313,7 +1389,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         The process exit status.
     """
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    parser.add_argument("command", choices=["fetch", "build", "check", "pin", "publish", "list"])
+    parser.add_argument("command", choices=["fetch", "sources-digest", "build", "check", "pin", "publish", "list"])
     parser.add_argument("--model", help="model id from models.json")
     parser.add_argument("--work", type=Path, default=Path("target/model-packs/work"), help="directory for upstream files")
     parser.add_argument("--out", type=Path, default=Path("target/model-packs/out"), help="directory for built packs")
@@ -1335,6 +1411,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "fetch":
             for pin in spec.sources():
                 print(f"fetched {fetch(pin, work)}")
+        elif args.command == "sources-digest":
+            _write_output({"sources_digest": spec.sources_digest()})
         elif args.command == "build":
             if args.spm_to_fb is None:
                 raise PackError("build needs --spm-to-fb")
