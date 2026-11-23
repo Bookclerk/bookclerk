@@ -17,6 +17,10 @@
 //!   a declared type id, labelled fields, an optional patron and a path
 //!   inside the library.
 //!
+//! - **A notifier's deliverability report** ([`check_deliverability_report`]):
+//!   the checks and advice shown to the operator, bounded and cut to
+//!   single lines, with report links kept only when they are `https`.
+//!
 //! The host also checks every message it renders ([`check_message`])
 //! before a notifier sees it, so a bug in a renderer cannot hand a plugin
 //! an oversized body or a link to somewhere other than the library.
@@ -26,8 +30,10 @@ use std::time::Duration;
 
 use crate::{
     NotificationAlertAction, NotificationField, NotificationMessage, NotificationSeverity,
-    NotifyDestinationKind, NotifyRaiseParams, NotifySendParams, NotifySent, NotifyValidated,
-    PluginError, PluginErrorCode, MAX_NOTIFICATION_FIELDS, MAX_NOTIFICATION_FIELD_BYTES,
+    NotifyCheckOutcome, NotifyDeliverabilityAdvice, NotifyDeliverabilityCheck,
+    NotifyDeliverabilityReport, NotifyDestinationKind, NotifyRaiseParams, NotifySendParams,
+    NotifySent, NotifyValidated, PluginError, PluginErrorCode, MAX_DELIVERABILITY_ADVICE,
+    MAX_DELIVERABILITY_CHECKS, MAX_NOTIFICATION_FIELDS, MAX_NOTIFICATION_FIELD_BYTES,
     MAX_NOTIFICATION_HTML_BYTES, MAX_NOTIFICATION_TEXT_BYTES, MAX_NOTIFICATION_TITLE_BYTES,
     MAX_NOTIFIER_ADDRESS_BYTES,
 };
@@ -123,6 +129,10 @@ pub enum NotificationError {
     UnknownAddressField(String),
     /// A channel destination carried an address, or a personal one none.
     AddressKindMismatch,
+    /// A deliverability report lists more than
+    /// [`MAX_DELIVERABILITY_CHECKS`] checks or
+    /// [`MAX_DELIVERABILITY_ADVICE`] pieces of advice.
+    TooManyDeliverabilityEntries,
 }
 
 impl std::fmt::Display for NotificationError {
@@ -150,6 +160,11 @@ impl std::fmt::Display for NotificationError {
             Self::AddressKindMismatch => {
                 f.write_str("a channel destination takes no address and a personal one needs one")
             }
+            Self::TooManyDeliverabilityEntries => write!(
+                f,
+                "deliverability report lists more than {MAX_DELIVERABILITY_CHECKS} checks or \
+                 {MAX_DELIVERABILITY_ADVICE} pieces of advice"
+            ),
         }
     }
 }
@@ -471,8 +486,8 @@ pub fn check_link_path(path: &str) -> Result<(), NotificationError> {
 /// # Errors
 ///
 /// The first [`NotificationError`] the message breaks: a bad id or type,
-/// a blank or oversized title, an oversized body, a link outside the
-/// rules, too many fields, or a mismatched alert.
+/// a blank or oversized title, an oversized body, a link or library origin
+/// outside the rules, too many fields, or a mismatched alert.
 pub fn check_message(message: &NotificationMessage) -> Result<(), NotificationError> {
     if !is_notify_id(&message.notification_id) {
         return Err(NotificationError::BadId("notificationId"));
@@ -508,6 +523,9 @@ pub fn check_message(message: &NotificationMessage) -> Result<(), NotificationEr
     }
     if let Some(link) = message.link.as_deref().filter(|l| !l.is_empty()) {
         check_link(link)?;
+    }
+    if let Some(origin) = message.library_origin.as_deref().filter(|l| !l.is_empty()) {
+        check_link(origin)?;
     }
     check_fields(&message.fields)?;
     check_group_key(message.group_key.as_deref())?;
@@ -928,6 +946,121 @@ pub fn sanitize_reason(reason: &str) -> String {
     out
 }
 
+/// Cuts text to one line of at most `cap` bytes: control, line-separator
+/// and bidi characters become spaces, and the text ends before the first
+/// character that would pass the cap. The same rule as [`sanitize_reason`],
+/// at another cap.
+///
+/// # Arguments
+///
+/// * `text` - Text from a plugin.
+/// * `cap` - Most bytes kept.
+///
+/// # Returns
+///
+/// The cut text.
+#[must_use]
+pub fn cut_line(text: &str, cap: usize) -> String {
+    let mut out = String::with_capacity(text.len().min(cap));
+    for c in text.chars() {
+        let c = if c.is_control() || is_layout_char(c) {
+            ' '
+        } else {
+            c
+        };
+        if out.len() + c.len_utf8() > cap {
+            break;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Whether a report link may be shown to the operator as a link: an
+/// absolute `https` URL with a host, no credentials, no space or control
+/// character, at most [`MAX_NOTIFICATION_FIELD_BYTES`].
+///
+/// # Arguments
+///
+/// * `url` - The link a plugin gave.
+#[must_use]
+pub fn is_report_url(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    url.len() <= cap(MAX_NOTIFICATION_FIELD_BYTES)
+        && !authority.is_empty()
+        && !authority.contains('@')
+        && !url
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || is_layout_char(c) || c == '\\')
+}
+
+/// Checks a notifier's deliverability report before the operator sees it:
+/// at most [`MAX_DELIVERABILITY_CHECKS`] checks and
+/// [`MAX_DELIVERABILITY_ADVICE`] pieces of advice; every text cut to one
+/// line at its cap ([`cut_line`]); a report link kept only when
+/// [`is_report_url`] accepts it; advice marked `skipped` shown as a
+/// `warning`; and at most [`MAX_DELIVERABILITY_CHECKS`] sources per piece
+/// of advice.
+///
+/// # Arguments
+///
+/// * `report` - The plugin's report.
+///
+/// # Returns
+///
+/// The report as the operator sees it.
+///
+/// # Errors
+///
+/// [`NotificationError::TooManyDeliverabilityEntries`] when a list is over
+/// its cap.
+pub fn check_deliverability_report(
+    report: NotifyDeliverabilityReport,
+) -> Result<NotifyDeliverabilityReport, NotificationError> {
+    if report.checks.len() > cap(MAX_DELIVERABILITY_CHECKS)
+        || report.advice.len() > cap(MAX_DELIVERABILITY_ADVICE)
+    {
+        return Err(NotificationError::TooManyDeliverabilityEntries);
+    }
+    let title = cap(MAX_NOTIFICATION_TITLE_BYTES);
+    let field = cap(MAX_NOTIFICATION_FIELD_BYTES);
+    Ok(NotifyDeliverabilityReport {
+        checks: report
+            .checks
+            .into_iter()
+            .map(|check| NotifyDeliverabilityCheck {
+                service: cut_line(&check.service, title),
+                outcome: check.outcome,
+                summary: cut_line(&check.summary, field),
+                report_url: check.report_url.filter(|url| is_report_url(url)),
+            })
+            .collect(),
+        advice: report
+            .advice
+            .into_iter()
+            .map(|advice| NotifyDeliverabilityAdvice {
+                outcome: match advice.outcome {
+                    NotifyCheckOutcome::Skipped => NotifyCheckOutcome::Warning,
+                    other @ (NotifyCheckOutcome::Passed
+                    | NotifyCheckOutcome::Warning
+                    | NotifyCheckOutcome::Failed) => other,
+                },
+                title: cut_line(&advice.title, title),
+                detail: cut_line(&advice.detail, field),
+                sources: advice
+                    .sources
+                    .iter()
+                    .take(cap(MAX_DELIVERABILITY_CHECKS))
+                    .map(|source| cut_line(source, title))
+                    .collect(),
+            })
+            .collect(),
+    })
+}
+
 /// Rank of a severity for comparing against a rule's minimum: info 0,
 /// warning 1, critical 2.
 ///
@@ -1007,6 +1140,54 @@ pub fn encode_notify_send_reply_bytes(
     let mut message = capnp::message::Builder::new_default();
     crate::write_notify_send_reply(
         message.init_root::<crate::plugin_capnp::notify_send_reply::Builder<'_>>(),
+        reply,
+    )?;
+    Ok(capnp::serialize::write_message_to_words(&message))
+}
+
+/// Decodes a `NotifyDeliverabilityReply` from an unpacked Cap'n Proto
+/// message, the form a notifier's report crosses the plugin boundary in.
+///
+/// # Arguments
+///
+/// * `bytes` - The message bytes.
+///
+/// # Returns
+///
+/// The report, or the notifier's typed error.
+///
+/// # Errors
+///
+/// Returns the Cap'n Proto error the reader reports.
+pub fn decode_notify_deliverability_reply_bytes(
+    bytes: &[u8],
+) -> capnp::Result<Result<NotifyDeliverabilityReport, PluginError>> {
+    let reader = read_message(bytes)?;
+    crate::read_notify_deliverability_reply(
+        reader.get_root::<crate::plugin_capnp::notify_deliverability_reply::Reader<'_>>()?,
+    )
+}
+
+/// Encodes a `NotifyDeliverabilityReply`, the inverse of
+/// [`decode_notify_deliverability_reply_bytes`].
+///
+/// # Arguments
+///
+/// * `reply` - The reply to encode.
+///
+/// # Returns
+///
+/// The message bytes.
+///
+/// # Errors
+///
+/// Returns the Cap'n Proto error the builder reports.
+pub fn encode_notify_deliverability_reply_bytes(
+    reply: &Result<NotifyDeliverabilityReport, PluginError>,
+) -> capnp::Result<Vec<u8>> {
+    let mut message = capnp::message::Builder::new_default();
+    crate::write_notify_deliverability_reply(
+        message.init_root::<crate::plugin_capnp::notify_deliverability_reply::Builder<'_>>(),
         reply,
     )?;
     Ok(capnp::serialize::write_message_to_words(&message))

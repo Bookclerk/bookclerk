@@ -146,6 +146,8 @@ import type {
   NotifySent,
   NotifyValidateParams,
   NotifyValidated,
+  NotifyDeliverabilityParams,
+  NotifyDeliverabilityReport,
   OidcClientTemplate,
   OriginRequest,
   IngressHealth,
@@ -261,6 +263,8 @@ export type {
   NotifySent,
   NotifyValidateParams,
   NotifyValidated,
+  NotifyDeliverabilityParams,
+  NotifyDeliverabilityReport,
   OidcClientTemplate,
   PluginCapabilities,
   PluginMigration,
@@ -3367,7 +3371,12 @@ export function provisioned(answer: {
 export class NotifierEntrypoint<
   Env extends BookclerkEnv = BookclerkEnv,
 > extends NamedEntrypoint<Env> {
-  static override bookclerkMethods = Object.freeze(["health", "send", "validateDestination"]);
+  static override bookclerkMethods = Object.freeze([
+    "health",
+    "send",
+    "validateDestination",
+    "checkDeliverability",
+  ]);
 
   /**
    * Reports whether the service can be reached with the current settings.
@@ -3399,6 +3408,19 @@ export class NotifierEntrypoint<
    */
   validateDestination(params: NotifyValidateParams): Promise<NotifyValidated> {
     return Promise.resolve({ addressJson: params.addressJson });
+  }
+  /**
+   * Runs the operator's deliverability check: sends `params.message` the
+   * way real messages go, asks checker services how it scores and merges
+   * their findings into advice, most urgent first. Only plugins that declare
+   * `[notifier] deliverability_check = true` implement it; the default
+   * throws `unsupported`.
+   *
+   * @param _params - The host's rendered `test` notification.
+   * @returns One entry per checker and the merged advice.
+   */
+  checkDeliverability(_params: NotifyDeliverabilityParams): Promise<NotifyDeliverabilityReport> {
+    return Promise.reject(unsupported("checkDeliverability"));
   }
 }
 

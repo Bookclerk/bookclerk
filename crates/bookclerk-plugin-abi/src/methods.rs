@@ -55,6 +55,7 @@ pub const METHOD_NAMES: &[&str] = &[
     parse::NAME,
     render::NAME,
     validate_destination::NAME,
+    check_deliverability::NAME,
     raise::NAME,
     models::NAME,
     run::NAME,
@@ -257,6 +258,16 @@ pub mod render {
 pub mod validate_destination {
     /// Wire method name `"validateDestination"`.
     pub const NAME: &str = "validateDestination";
+}
+
+/// Run the operator's deliverability check on a notifier (Cap'n Proto
+/// `Notifier.checkDeliverability`).
+///
+/// Params: [`crate::NotifyDeliverabilityParams`]. Result:
+/// [`crate::NotifyDeliverabilityReport`].
+pub mod check_deliverability {
+    /// Wire method name `"checkDeliverability"`.
+    pub const NAME: &str = "checkDeliverability";
 }
 
 /// Raise a notification type the plugin declared (Cap'n Proto

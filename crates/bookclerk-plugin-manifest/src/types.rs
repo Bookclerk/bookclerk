@@ -505,6 +505,10 @@ pub struct NotifierManifest {
     /// `email` address field.
     #[serde(default)]
     pub account_mail: bool,
+    /// Whether the plugin implements `Notifier.checkDeliverability`, so the
+    /// instance's settings offer the operator a deliverability check.
+    #[serde(default)]
+    pub deliverability_check: bool,
     /// Body formats the plugin renders; must include `text`.
     #[serde(default = "default_notifier_formats")]
     pub formats: Vec<NotifierFormat>,

@@ -70,6 +70,7 @@ var METADATA_FIELDS = ["title", "subtitle", "description", "publisher", "publish
 var NOTIFICATION_SEVERITYS = ["info", "warning", "critical"];
 var NOTIFICATION_ALERT_ACTIONS = ["none", "trigger", "resolve"];
 var NOTIFY_DESTINATION_KINDS = ["channel", "personal"];
+var NOTIFY_CHECK_OUTCOMES = ["passed", "warning", "failed", "skipped"];
 var AI_TASKS = ["textEmbeddings"];
 var AI_TEXT_ROLES = ["document", "query"];
 var PROVISION_GRANT_KINDS = ["none", "apiToken", "oauthAccessToken"];
@@ -5765,6 +5766,125 @@ var NotifyValidateReplyCodec = {
     }
   }
 };
+var NotifyDeliverabilityParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.message != null) {
+      NotificationMessageCodec.write(s.initStruct(0, 1, 10), v.message, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      message: NotificationMessageCodec.read(s.getStruct(0, 1, 10), caps)
+    };
+  }
+};
+var NotifyDeliverabilityCheckCodec = {
+  dataWords: 1,
+  pointerCount: 3,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.service ?? "");
+    s.setUint16(0, ord(NOTIFY_CHECK_OUTCOMES, v.outcome ?? NOTIFY_CHECK_OUTCOMES[0], "NotifyCheckOutcome"));
+    s.setText(1, v.summary ?? "");
+    if (v.reportUrl !== void 0) {
+      s.setText(2, v.reportUrl ?? "");
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const out = {
+      service: s.getText(0),
+      outcome: fromOrd(NOTIFY_CHECK_OUTCOMES, s.getUint16(0), "NotifyCheckOutcome"),
+      summary: s.getText(1)
+    };
+    const reportUrlValue = s.getText(2);
+    if (!(reportUrlValue === "")) {
+      out.reportUrl = reportUrlValue;
+    }
+    return out;
+  }
+};
+var NotifyDeliverabilityAdviceCodec = {
+  dataWords: 1,
+  pointerCount: 3,
+  write(s, v, caps) {
+    void caps;
+    s.setUint16(0, ord(NOTIFY_CHECK_OUTCOMES, v.outcome ?? NOTIFY_CHECK_OUTCOMES[0], "NotifyCheckOutcome"));
+    s.setText(0, v.title ?? "");
+    s.setText(1, v.detail ?? "");
+    s.setTextList(2, v.sources ?? []);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      outcome: fromOrd(NOTIFY_CHECK_OUTCOMES, s.getUint16(0), "NotifyCheckOutcome"),
+      title: s.getText(0),
+      detail: s.getText(1),
+      sources: s.getTextList(2)
+    };
+  }
+};
+var NotifyDeliverabilityReportCodec = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    {
+      const list = v.checks ?? [];
+      const items = s.initStructList(0, list.length, 1, 3);
+      for (let i = 0; i < items.length; i++) {
+        NotifyDeliverabilityCheckCodec.write(items[i], list[i], caps);
+      }
+    }
+    {
+      const list = v.advice ?? [];
+      const items = s.initStructList(1, list.length, 1, 3);
+      for (let i = 0; i < items.length; i++) {
+        NotifyDeliverabilityAdviceCodec.write(items[i], list[i], caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      checks: s.getStructList(0, 1, 3).map((item) => NotifyDeliverabilityCheckCodec.read(item, caps)),
+      advice: s.getStructList(1, 1, 3).map((item) => NotifyDeliverabilityAdviceCodec.read(item, caps))
+    };
+  }
+};
+var NotifyDeliverabilityReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          NotifyDeliverabilityReportCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("NotifyDeliverabilityReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: NotifyDeliverabilityReportCodec.read(s.getStruct(0, 0, 2), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("NotifyDeliverabilityReply", disc);
+    }
+  }
+};
 var AiModelCodec = {
   dataWords: 2,
   pointerCount: 3,
@@ -9263,6 +9383,34 @@ var NotifierValidateDestinationResultsCodec = {
     };
   }
 };
+var NotifierCheckDeliverabilityParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      NotifyDeliverabilityParamsCodec.write(s.initStruct(0, 0, 1), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: NotifyDeliverabilityParamsCodec.read(s.getStruct(0, 0, 1), caps)
+    };
+  }
+};
+var NotifierCheckDeliverabilityResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      NotifyDeliverabilityReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: NotifyDeliverabilityReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
 var AiModelsHealthParamsCodec = {
   dataWords: 0,
   pointerCount: 0,
@@ -11430,6 +11578,13 @@ var okNotifyValidated = (value) => {
   const label = typeof v.label === "string" ? v.label : "";
   return okValue(label ? { addressJson: v.addressJson, label } : { addressJson: v.addressJson });
 };
+var okNotifyDeliverabilityReport = (value) => {
+  const v = value ?? {};
+  return okValue({
+    checks: asList(v.checks),
+    advice: asList(v.advice)
+  });
+};
 var okLines = (value) => okValue({ lines: asList(value).map((l) => String(l)) });
 var okHealth = (value) => {
   const v = value ?? {};
@@ -11882,7 +12037,8 @@ var METHODS = {
   Notifier: {
     health: withoutParams("notifier", "health", NotifierHealthParamsCodec, NotifierHealthResultsCodec, okHealth),
     send: withParams("notifier", "send", NotifierSendParamsCodec, NotifierSendResultsCodec, okNotifySent),
-    validateDestination: withParams("notifier", "validateDestination", NotifierValidateDestinationParamsCodec, NotifierValidateDestinationResultsCodec, okNotifyValidated)
+    validateDestination: withParams("notifier", "validateDestination", NotifierValidateDestinationParamsCodec, NotifierValidateDestinationResultsCodec, okNotifyValidated),
+    checkDeliverability: withParams("notifier", "checkDeliverability", NotifierCheckDeliverabilityParamsCodec, NotifierCheckDeliverabilityResultsCodec, okNotifyDeliverabilityReport)
   },
   MetadataFiles: {
     health: withoutParams("metadataFiles", "health", MetadataFilesHealthParamsCodec, MetadataFilesHealthResultsCodec, okHealth),
@@ -14518,7 +14674,12 @@ function provisioned(answer) {
   };
 }
 var NotifierEntrypoint = class extends NamedEntrypoint {
-  static bookclerkMethods = Object.freeze(["health", "send", "validateDestination"]);
+  static bookclerkMethods = Object.freeze([
+    "health",
+    "send",
+    "validateDestination",
+    "checkDeliverability"
+  ]);
   /**
    * Reports whether the service can be reached with the current settings.
    *
@@ -14549,6 +14710,19 @@ var NotifierEntrypoint = class extends NamedEntrypoint {
    */
   validateDestination(params) {
     return Promise.resolve({ addressJson: params.addressJson });
+  }
+  /**
+   * Runs the operator's deliverability check: sends `params.message` the
+   * way real messages go, asks checker services how it scores and merges
+   * their findings into advice, most urgent first. Only plugins that declare
+   * `[notifier] deliverability_check = true` implement it; the default
+   * throws `unsupported`.
+   *
+   * @param _params - The host's rendered `test` notification.
+   * @returns One entry per checker and the merged advice.
+   */
+  checkDeliverability(_params) {
+    return Promise.reject(unsupported("checkDeliverability"));
   }
 };
 var IngressEntrypoint = class extends NamedEntrypoint {

@@ -5341,6 +5341,9 @@ def _write_notification_message(s: _CapnpStruct, v: Any, caps: _CapTable) -> Non
     if v.get("alertKey") is not None:
         s.set_text(9, v["alertKey"])
     s.set_bool(32, v["sensitive"])
+    if v.get("libraryOrigin") is not None:
+        s.set_text(10, v["libraryOrigin"])
+    s.set_bool(33, v["introduceBookclerk"])
 
 
 def _read_notification_message(s: _StructReader, caps: _CapTable) -> Any:
@@ -5353,6 +5356,7 @@ def _read_notification_message(s: _StructReader, caps: _CapTable) -> Any:
         "fields": [_notification_field_codec.read(item, caps) for item in s.get_struct_list(7, 0, 2)],
         "alertAction": _from_ord(A.NOTIFICATION_ALERT_ACTIONS, s.get_u16(1), "NotificationAlertAction"),
         "sensitive": s.get_bool(32),
+        "introduceBookclerk": s.get_bool(33),
     }
     markdown = s.get_text(4)
     if not (markdown == ""):
@@ -5369,11 +5373,14 @@ def _read_notification_message(s: _StructReader, caps: _CapTable) -> Any:
     alert_key = s.get_text(9)
     if not (alert_key == ""):
         out["alertKey"] = alert_key
+    library_origin = s.get_text(10)
+    if not (library_origin == ""):
+        out["libraryOrigin"] = library_origin
     return out
 
 
-_notification_message_codec = _Codec(1, 10, _write_notification_message, _read_notification_message)
-"""Wire codec for ``NotificationMessage`` (1 data words, 10 pointers)."""
+_notification_message_codec = _Codec(1, 11, _write_notification_message, _read_notification_message)
+"""Wire codec for ``NotificationMessage`` (1 data words, 11 pointers)."""
 
 
 def _write_notify_destination(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -5396,14 +5403,14 @@ _notify_destination_codec = _Codec(1, 2, _write_notify_destination, _read_notify
 
 def _write_notify_send_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("message") is not None:
-        _notification_message_codec.write(s.init_struct(0, 1, 10), v["message"], caps)
+        _notification_message_codec.write(s.init_struct(0, 1, 11), v["message"], caps)
     if v.get("destination") is not None:
         _notify_destination_codec.write(s.init_struct(1, 1, 2), v["destination"], caps)
 
 
 def _read_notify_send_params(s: _StructReader, caps: _CapTable) -> Any:
     return {
-        "message": _notification_message_codec.read(s.get_struct(0, 1, 10), caps),
+        "message": _notification_message_codec.read(s.get_struct(0, 1, 11), caps),
         "destination": _notify_destination_codec.read(s.get_struct(1, 1, 2), caps),
     }
 
@@ -5512,6 +5519,110 @@ def _read_notify_validate_reply(s: _StructReader, caps: _CapTable) -> Any:
 
 _notify_validate_reply_codec = _Codec(1, 1, _write_notify_validate_reply, _read_notify_validate_reply)
 """Wire codec for ``NotifyValidateReply`` (1 data words, 1 pointers)."""
+
+
+def _write_notify_deliverability_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("message") is not None:
+        _notification_message_codec.write(s.init_struct(0, 1, 11), v["message"], caps)
+
+
+def _read_notify_deliverability_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "message": _notification_message_codec.read(s.get_struct(0, 1, 11), caps),
+    }
+
+
+_notify_deliverability_params_codec = _Codec(0, 1, _write_notify_deliverability_params, _read_notify_deliverability_params)
+"""Wire codec for ``NotifyDeliverabilityParams`` (0 data words, 1 pointers)."""
+
+
+def _write_notify_deliverability_check(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["service"])
+    s.set_u16(0, _ord(A.NOTIFY_CHECK_OUTCOMES, v["outcome"], "NotifyCheckOutcome"))
+    s.set_text(1, v["summary"])
+    if v.get("reportUrl") is not None:
+        s.set_text(2, v["reportUrl"])
+
+
+def _read_notify_deliverability_check(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "service": s.get_text(0),
+        "outcome": _from_ord(A.NOTIFY_CHECK_OUTCOMES, s.get_u16(0), "NotifyCheckOutcome"),
+        "summary": s.get_text(1),
+    }
+    report_url = s.get_text(2)
+    if not (report_url == ""):
+        out["reportUrl"] = report_url
+    return out
+
+
+_notify_deliverability_check_codec = _Codec(1, 3, _write_notify_deliverability_check, _read_notify_deliverability_check)
+"""Wire codec for ``NotifyDeliverabilityCheck`` (1 data words, 3 pointers)."""
+
+
+def _write_notify_deliverability_advice(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_u16(0, _ord(A.NOTIFY_CHECK_OUTCOMES, v["outcome"], "NotifyCheckOutcome"))
+    s.set_text(0, v["title"])
+    s.set_text(1, v["detail"])
+    s.set_text_list(2, v["sources"])
+
+
+def _read_notify_deliverability_advice(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "outcome": _from_ord(A.NOTIFY_CHECK_OUTCOMES, s.get_u16(0), "NotifyCheckOutcome"),
+        "title": s.get_text(0),
+        "detail": s.get_text(1),
+        "sources": s.get_text_list(2),
+    }
+
+
+_notify_deliverability_advice_codec = _Codec(1, 3, _write_notify_deliverability_advice, _read_notify_deliverability_advice)
+"""Wire codec for ``NotifyDeliverabilityAdvice`` (1 data words, 3 pointers)."""
+
+
+def _write_notify_deliverability_report(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["checks"]), 1, 3)
+    for item, elem in zip(items, v["checks"], strict=True):
+        _notify_deliverability_check_codec.write(item, elem, caps)
+    items = s.init_struct_list(1, len(v["advice"]), 1, 3)
+    for item, elem in zip(items, v["advice"], strict=True):
+        _notify_deliverability_advice_codec.write(item, elem, caps)
+
+
+def _read_notify_deliverability_report(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "checks": [_notify_deliverability_check_codec.read(item, caps) for item in s.get_struct_list(0, 1, 3)],
+        "advice": [_notify_deliverability_advice_codec.read(item, caps) for item in s.get_struct_list(1, 1, 3)],
+    }
+
+
+_notify_deliverability_report_codec = _Codec(0, 2, _write_notify_deliverability_report, _read_notify_deliverability_report)
+"""Wire codec for ``NotifyDeliverabilityReport`` (0 data words, 2 pointers)."""
+
+
+def _write_notify_deliverability_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _notify_deliverability_report_codec.write(s.init_struct(0, 0, 2), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown NotifyDeliverabilityReply union member: {kind}")
+
+
+def _read_notify_deliverability_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _notify_deliverability_report_codec.read(s.get_struct(0, 0, 2), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown NotifyDeliverabilityReply union member: {disc}")
+
+
+_notify_deliverability_reply_codec = _Codec(1, 1, _write_notify_deliverability_reply, _read_notify_deliverability_reply)
+"""Wire codec for ``NotifyDeliverabilityReply`` (1 data words, 1 pointers)."""
 
 
 def _write_notify_raise_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -10139,6 +10250,36 @@ def _read_notifier_validate_destination_results(s: _StructReader, caps: _CapTabl
 
 _notifier_validate_destination_results_codec = _Codec(0, 1, _write_notifier_validate_destination_results, _read_notifier_validate_destination_results)
 """Wire codec for ``NotifierValidateDestinationResults`` (0 data words, 1 pointers)."""
+
+
+def _write_notifier_check_deliverability_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("params") is not None:
+        _notify_deliverability_params_codec.write(s.init_struct(0, 0, 1), v["params"], caps)
+
+
+def _read_notifier_check_deliverability_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "params": _notify_deliverability_params_codec.read(s.get_struct(0, 0, 1), caps),
+    }
+
+
+_notifier_check_deliverability_params_codec = _Codec(0, 1, _write_notifier_check_deliverability_params, _read_notifier_check_deliverability_params)
+"""Wire codec for ``NotifierCheckDeliverabilityParams`` (0 data words, 1 pointers)."""
+
+
+def _write_notifier_check_deliverability_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("result") is not None:
+        _notify_deliverability_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_notifier_check_deliverability_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _notify_deliverability_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_notifier_check_deliverability_results_codec = _Codec(0, 1, _write_notifier_check_deliverability_results, _read_notifier_check_deliverability_results)
+"""Wire codec for ``NotifierCheckDeliverabilityResults`` (0 data words, 1 pointers)."""
 
 
 def _write_notification_raiser_raise_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:

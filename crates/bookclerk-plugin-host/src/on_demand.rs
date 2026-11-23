@@ -620,6 +620,16 @@ impl Integration for OnDemandIntegration {
         guest.notify_validate_destination(params).await
     }
 
+    async fn notify_check_deliverability(
+        &self,
+        params: bookclerk_plugin_abi::NotifyDeliverabilityParams,
+    ) -> bookclerk_integrations::Result<
+        Result<bookclerk_plugin_abi::NotifyDeliverabilityReport, bookclerk_plugin_abi::PluginError>,
+    > {
+        let (guest, _busy) = self.awake().await?;
+        guest.notify_check_deliverability(params).await
+    }
+
     async fn diagnose(&self) -> bookclerk_integrations::Result<Vec<String>> {
         let (guest, _busy) = self.awake().await?;
         guest.diagnose().await

@@ -179,6 +179,16 @@ pub const MAX_NOTIFICATION_FIELD_BYTES: u32 = crate::plugin_capnp::MAX_NOTIFICAT
 /// Longest notifier destination address document, in UTF-8 bytes.
 pub const MAX_NOTIFIER_ADDRESS_BYTES: u32 = crate::plugin_capnp::MAX_NOTIFIER_ADDRESS_BYTES;
 
+/// Most checks one notifier deliverability report lists.
+pub const MAX_DELIVERABILITY_CHECKS: u32 = crate::plugin_capnp::MAX_DELIVERABILITY_CHECKS;
+
+/// Most pieces of advice one notifier deliverability report lists.
+pub const MAX_DELIVERABILITY_ADVICE: u32 = crate::plugin_capnp::MAX_DELIVERABILITY_ADVICE;
+
+/// Longest a notifier's deliverability check may run, in milliseconds.
+pub const DELIVERABILITY_CHECK_DEADLINE_MS: u32 =
+    crate::plugin_capnp::DELIVERABILITY_CHECK_DEADLINE_MS;
+
 /// Longest model name on the `AI` binding (`@<plugin id>/<model id>`), in
 /// UTF-8 bytes.
 pub const MAX_AI_MODEL_NAME_BYTES: u32 = crate::plugin_capnp::MAX_AI_MODEL_NAME_BYTES;

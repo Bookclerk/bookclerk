@@ -53,41 +53,93 @@ pub fn plain_body(message: &NotificationMessage) -> String {
             parts.push(format!("{}: {link}", link_label(link)));
         }
     }
+    if message.introduce_bookclerk {
+        parts.push(format!(
+            "{INTRO_TITLE}\n{INTRO_TEXT}\nLearn more at bookclerk.app: {BOOKCLERK_SITE}"
+        ));
+    }
     parts.retain(|part| !part.is_empty());
-    format!("{}\n\n-- \n{FOOTER}\n", parts.join("\n\n"))
+    format!("{}\n\n-- \n{}\n", parts.join("\n\n"), plain_footer(message))
 }
 
-/// The Bookclerk mark the branded HTML shows beside the sender's name: a
+/// The Bookclerk mark the branded HTML shows in the header: a
 /// 64-pixel PNG drawn at 32, so it stays sharp on dense screens.
 pub const LOGO_PNG: &[u8] = include_bytes!("../assets/mark-64.png");
 
 /// The `Content-ID` the HTML names the logo by (`cid:` URL).
 pub const LOGO_CONTENT_ID: &str = "mark@bookclerk";
 
-/// Brand colours, from the web app's palette (`ui/src/index.css`): paper
-/// background, ink text, teal button with white text (4.9:1).
+/// Brand colours, from the website's and web app's palette
+/// (`tools/site/src/site.css`, `ui/src/index.css`): a library index card on
+/// paper, ink text, a brick rule across the card's top, and the site's ink
+/// primary button.
 mod palette {
-    /// Page background (`--color-paper`).
+    /// Page background (`--paper`).
     pub const PAPER: &str = "#fbf7ee";
-    /// Card background.
-    pub const CARD: &str = "#ffffff";
-    /// Body text (`--color-ink`).
+    /// Card background (`--index-card`).
+    pub const CARD: &str = "#fffdf7";
+    /// Introduction panel (`--parchment`).
+    pub const PARCHMENT: &str = "#f3e5c6";
+    /// Body text and the button's fill (`--ink`); paper on ink is 13:1.
     pub const INK: &str = "#0b3553";
     /// Secondary text on paper, 7:1.
     pub const MUTED: &str = "#4a5d6b";
-    /// Button fill (`--color-teal-text`), white text at 6:1.
-    pub const TEAL: &str = "#2f6b66";
-    /// Hairlines (`--color-fold`).
+    /// The card's top rule (`--brick`).
+    pub const BRICK: &str = "#c84a34";
+    /// Hairlines (`--fold`).
     pub const LINE: &str = "#e7d3ac";
 }
 
-/// The footer under every message, in both parts (so the two carry the
-/// same words, which spam filters compare).
-pub const FOOTER: &str = "Sent by your library's Bookclerk server. This is an automatic message.";
+/// The serif the website sets headings in (Literata), then serifs every
+/// mail client has; nothing is fetched.
+const SERIF_STACK: &str = "Literata, Georgia, 'Times New Roman', serif";
 
-/// A font stack every mail client has, so nothing is fetched to show it.
+/// The introduction's heading, for recipients who may not know Bookclerk.
+pub const INTRO_TITLE: &str = "New to Bookclerk?";
+
+/// The introduction, in both parts.
+pub const INTRO_TEXT: &str = "Bookclerk is a home for audiobooks. It gathers the books a household has bought from stores like Audible, Libro.fm, Chirp and GraphicAudio into one library that runs on its owner's own computer. With your sign-in you can browse the shelves, listen in your browser and keep your own wishlist. It's free and open source.";
+
+/// Bookclerk's own site, linked from every footer.
+pub const BOOKCLERK_SITE: &str = "https://bookclerk.app";
+
+/// The footer's closing sentence, in both parts.
+const FOOTER_NOTE: &str = "This is an automatic message.";
+
+/// The footer under every message as plain text: who sent it (the library's
+/// home page when the host gave one) and Bookclerk's site. The HTML footer
+/// says the same words, which spam filters compare.
+///
+/// # Arguments
+///
+/// * `message` - The rendered message.
+#[must_use]
+pub fn plain_footer(message: &NotificationMessage) -> String {
+    match library_home(message) {
+        Some(home) => format!(
+            "Sent by your library at {home} with Bookclerk ({BOOKCLERK_SITE}). {FOOTER_NOTE}"
+        ),
+        None => format!("Sent by your library with Bookclerk ({BOOKCLERK_SITE}). {FOOTER_NOTE}"),
+    }
+}
+
+/// The library's home page, when the host gave one.
+///
+/// # Arguments
+///
+/// * `message` - The rendered message.
+fn library_home(message: &NotificationMessage) -> Option<&str> {
+    message
+        .library_origin
+        .as_deref()
+        .map(str::trim)
+        .filter(|origin| link_host(origin).is_some())
+}
+
+/// The website's body face (Source Sans 3), then sans-serifs every mail
+/// client has; nothing is fetched.
 const FONT_STACK: &str =
-    "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
+    "'Source Sans 3', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
 
 /// Most characters of the inbox preview line taken from the text.
 const PREVIEW_CHARS: usize = 140;
@@ -163,22 +215,30 @@ fn preview(text: &str) -> String {
     cut
 }
 
-/// The MJML source of the branded message: the sender's mark and name, the
-/// title and body on a card, the fields as a table, the link as a button,
-/// and a short footer.
+/// The MJML source of the branded message: the Bookclerk mark and name as
+/// the header; a card with the sender (the From name), the title, the body,
+/// the fields as a table and the link as a button; and a footer linking the
+/// library's home page and Bookclerk's site.
 ///
 /// # Arguments
 ///
 /// * `message` - The rendered message.
-/// * `sender` - The name shown beside the mark (the From name).
+/// * `sender` - The From name, shown at the top of the card.
 #[must_use]
 pub fn mjml_source(message: &NotificationMessage, sender: &str) -> String {
     let title = escape_html(&message.title);
-    let sender = escape_html(if sender.trim().is_empty() {
-        "Bookclerk"
+    // The card names who it is from (the From name), unless that is just
+    // the product name the header already shows.
+    let sender = sender.trim();
+    let eyebrow = if sender.is_empty() || sender.eq_ignore_ascii_case("Bookclerk") {
+        String::new()
     } else {
-        sender.trim()
-    });
+        format!(
+            "<mj-text color=\"{}\" font-size=\"13px\" font-weight=\"600\" padding=\"4px 28px 0\">{}</mj-text>\n",
+            palette::MUTED,
+            escape_html(sender)
+        )
+    };
     let body = match message.html.as_deref() {
         Some(html) => format!("<mj-text>{html}</mj-text>"),
         None => text_paragraphs(&message.text)
@@ -207,10 +267,11 @@ pub fn mjml_source(message: &NotificationMessage, sender: &str) -> String {
     };
     let button = match message.link.as_deref() {
         Some(link) if !body.contains(&escape_html(link)) => format!(
-            "<mj-button href=\"{}\" align=\"left\" background-color=\"{}\" color=\"#ffffff\" \
-             font-weight=\"600\" border-radius=\"6px\" inner-padding=\"12px 22px\">{}</mj-button>",
+            "<mj-button href=\"{}\" align=\"left\" background-color=\"{}\" color=\"{}\" \
+             font-weight=\"600\" border-radius=\"6px\" inner-padding=\"13px 22px\">{}</mj-button>",
             escape_html(link),
-            palette::TEAL,
+            palette::INK,
+            palette::PAPER,
             escape_html(&link_label(link)),
         ),
         _ => String::new(),
@@ -229,15 +290,16 @@ pub fn mjml_source(message: &NotificationMessage, sender: &str) -> String {
 </mj-head>
 <mj-body background-color="{paper}" width="560px">
 <mj-section padding="24px 0 12px"><mj-column>
-<mj-text padding="0 28px" font-size="14px" font-weight="600"><img src="cid:{logo}" width="28" height="28" alt="" style="vertical-align:middle;border:0;margin-right:8px">{sender}</mj-text>
+<mj-text padding="0 28px" font-family="{serif}" font-size="19px" font-weight="700"><img src="cid:{logo}" width="30" height="30" alt="" style="vertical-align:middle;border:0;margin-right:10px">Bookclerk</mj-text>
 </mj-column></mj-section>
-<mj-section background-color="{card}" border-radius="10px" padding="18px 0 22px"><mj-column>
-<mj-text font-size="20px" font-weight="600" line-height="1.3" padding="6px 28px 10px">{title}</mj-text>
+<mj-section background-color="{card}" border-top="4px solid {brick}" border-radius="6px" padding="20px 0 24px"><mj-column>
+{eyebrow}<mj-text font-family="{serif}" font-size="23px" font-weight="700" line-height="1.25" padding="6px 28px 12px">{title}</mj-text>
 {body}
 {fields}
 {button}
 </mj-column></mj-section>
-<mj-section padding="14px 0 28px"><mj-column>
+{intro}
+<mj-section padding="16px 0 28px"><mj-column>
 <mj-text color="{muted}" font-size="12px" padding="0 28px">{footer}</mj-text>
 </mj-column></mj-section>
 </mj-body>
@@ -249,8 +311,60 @@ pub fn mjml_source(message: &NotificationMessage, sender: &str) -> String {
         card = palette::CARD,
         muted = palette::MUTED,
         logo = LOGO_CONTENT_ID,
-        footer = escape_html(FOOTER),
+        footer = html_footer(message),
+        serif = SERIF_STACK,
+        brick = palette::BRICK,
+        intro = intro_section(message),
     )
+}
+
+/// The introduction panel for recipients who may not know Bookclerk
+/// (`introduce_bookclerk`), on parchment under the card; empty otherwise.
+///
+/// # Arguments
+///
+/// * `message` - The rendered message.
+fn intro_section(message: &NotificationMessage) -> String {
+    if !message.introduce_bookclerk {
+        return String::new();
+    }
+    format!(
+        "<mj-section padding=\"0\"><mj-column><mj-spacer height=\"14px\" /></mj-column></mj-section>\n\
+         <mj-section background-color=\"{}\" border-radius=\"6px\" padding=\"14px 0 16px\"><mj-column>\n\
+         <mj-text font-family=\"{SERIF_STACK}\" font-size=\"17px\" font-weight=\"700\" padding=\"4px 28px 2px\">{}</mj-text>\n\
+         <mj-text font-size=\"14px\" padding=\"4px 28px\">{}</mj-text>\n\
+         <mj-text font-size=\"14px\" font-weight=\"600\" padding=\"4px 28px\"><a href=\"{BOOKCLERK_SITE}\" style=\"color:{};text-decoration:underline\">Learn more at bookclerk.app</a></mj-text>\n\
+         </mj-column></mj-section>",
+        palette::PARCHMENT,
+        escape_html(INTRO_TITLE),
+        escape_html(INTRO_TEXT),
+        palette::INK,
+    )
+}
+
+/// The HTML footer: the same words as [`plain_footer`], with the library's
+/// host and Bookclerk as links.
+///
+/// # Arguments
+///
+/// * `message` - The rendered message.
+fn html_footer(message: &NotificationMessage) -> String {
+    let link = |href: &str, text: &str| {
+        format!(
+            "<a href=\"{}\" style=\"color:{};text-decoration:underline\">{}</a>",
+            escape_html(href),
+            palette::MUTED,
+            escape_html(text)
+        )
+    };
+    let bookclerk = link(BOOKCLERK_SITE, "Bookclerk");
+    match library_home(message) {
+        Some(home) => format!(
+            "Sent by your library at {} with {bookclerk}. {FOOTER_NOTE}",
+            link(home, link_host(home).unwrap_or(home))
+        ),
+        None => format!("Sent by your library with {bookclerk}. {FOOTER_NOTE}"),
+    }
 }
 
 /// Compiles MJML to HTML, with no web fonts (nothing is fetched to show the
@@ -329,7 +443,7 @@ pub fn simple_html(message: &NotificationMessage) -> String {
 /// # Arguments
 ///
 /// * `message` - The rendered message.
-/// * `sender` - The name shown beside the mark.
+/// * `sender` - The From name, shown at the top of the card.
 #[must_use]
 pub fn html_body(message: &NotificationMessage, sender: &str) -> (String, bool) {
     match render_mjml(&mjml_source(message, sender)) {
