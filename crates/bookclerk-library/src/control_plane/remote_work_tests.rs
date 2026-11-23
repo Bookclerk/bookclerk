@@ -583,7 +583,6 @@ async fn a_released_resume_stays_a_resume() {
             HOST,
             &job_id,
             claimed.job.lease_generation,
-            claimed.resumed,
             SETTINGS.limits
         )
         .await
@@ -594,6 +593,85 @@ async fn a_released_resume_stays_a_resume() {
     assert!(job.payload.resume_pending, "the resume flag is back");
     assert_eq!(job.attempt_count, 1, "the earlier attempt is kept");
     assert!(claim(&w.store).await.unwrap().resumed);
+}
+
+/// Whether a released claim was a resume is the library's record, not the
+/// Host's: a claim that spent an attempt gets it back and never becomes a
+/// resume, even right after a resumed claim of the same job, so a Host
+/// cannot keep a job by claiming and releasing it without spending its
+/// attempts.
+#[tokio::test]
+async fn a_release_follows_the_librarys_record_of_the_claim() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let payload = serde_json::to_string(&JobPayload {
+        account: Some("riley-acct".into()),
+        resume_pending: true,
+        ..Default::default()
+    })
+    .unwrap();
+    jobs::Entity::update_many()
+        .col_expr(jobs::Column::Payload, Expr::value(payload))
+        .col_expr(jobs::Column::AttemptCount, Expr::value(1i64))
+        .filter(jobs::Column::Id.eq(&job_id))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    // The resumed claim finishes as a failure, so the next claim is an
+    // ordinary one that spends an attempt.
+    let resumed = claim(&w.store).await.unwrap();
+    assert!(resumed.resumed);
+    assert_eq!(
+        resumed.job.payload.resumed_generation,
+        Some(resumed.job.lease_generation)
+    );
+    assert_eq!(
+        finish_remote_job(
+            &w.store,
+            HOST,
+            &job_id,
+            resumed.job.lease_generation,
+            SETTINGS.limits,
+            RemoteOutcome::Fail {
+                kind: "store_error",
+                message: "the store failed",
+            }
+        )
+        .await
+        .unwrap(),
+        RemoteFinish::Done
+    );
+    // Past its retry backoff.
+    jobs::Entity::update_many()
+        .col_expr(
+            jobs::Column::RunAfter,
+            Expr::value((chrono::Utc::now() - chrono::Duration::seconds(5)).to_rfc3339()),
+        )
+        .filter(jobs::Column::Id.eq(&job_id))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    for _ in 0..3 {
+        let ordinary = claim(&w.store).await.unwrap();
+        assert!(!ordinary.resumed);
+        assert_eq!(ordinary.job.attempt_count, 2);
+        assert_eq!(
+            release_remote_job(
+                &w.store,
+                HOST,
+                &job_id,
+                ordinary.job.lease_generation,
+                SETTINGS.limits
+            )
+            .await
+            .unwrap(),
+            RemoteFinish::Done
+        );
+        let job = w.store.get_job(&job_id).await.unwrap().unwrap();
+        assert!(!job.payload.resume_pending, "never made a resume");
+        assert_eq!(job.attempt_count, 1, "the attempt it spent is back");
+    }
 }
 
 /// A fence reclaimed while the Host was away, presented by another node,
@@ -1012,7 +1090,7 @@ async fn a_released_job_returns_unspent() {
     assert_eq!(claimed.job.attempt_count, 1);
 
     assert_eq!(
-        release_remote_job(&w.store, HOST, &job_id, fence, false, SETTINGS.limits)
+        release_remote_job(&w.store, HOST, &job_id, fence, SETTINGS.limits)
             .await
             .unwrap(),
         RemoteFinish::Done
@@ -1028,7 +1106,7 @@ async fn a_released_job_returns_unspent() {
         "permits are given back"
     );
     assert_eq!(
-        release_remote_job(&w.store, HOST, &job_id, fence, false, SETTINGS.limits)
+        release_remote_job(&w.store, HOST, &job_id, fence, SETTINGS.limits)
             .await
             .unwrap(),
         RemoteFinish::Lost
@@ -3390,7 +3468,7 @@ async fn a_released_claim_is_given_back_unspent() {
     let fence = claimed.job.lease_generation;
 
     assert_eq!(
-        release_remote_job(&w.store, HOST, &job_id, fence, false, SETTINGS.limits)
+        release_remote_job(&w.store, HOST, &job_id, fence, SETTINGS.limits)
             .await
             .unwrap(),
         RemoteFinish::Done
@@ -3412,7 +3490,7 @@ async fn a_released_claim_is_given_back_unspent() {
         WriteBack::Refused("fence_not_live")
     );
     assert_eq!(
-        release_remote_job(&w.store, HOST, &job_id, fence, false, SETTINGS.limits)
+        release_remote_job(&w.store, HOST, &job_id, fence, SETTINGS.limits)
             .await
             .unwrap(),
         RemoteFinish::Lost,
@@ -3558,7 +3636,7 @@ async fn forgetting_an_earlier_lease_keeps_the_successors_handoffs() {
     let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
     let first = claim(&w.store).await.unwrap().job.lease_generation;
     assert_eq!(
-        release_remote_job(&w.store, HOST, &job_id, first, false, SETTINGS.limits)
+        release_remote_job(&w.store, HOST, &job_id, first, SETTINGS.limits)
             .await
             .unwrap(),
         RemoteFinish::Done
@@ -3676,6 +3754,72 @@ async fn write_back_is_one_guarded_batch_without_begin() {
         WriteBack::Refused("fence_not_live")
     );
     assert_eq!(read_token(&w.store, &w.riley_token).await, "riley-token-v2");
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+}
+
+/// The node's trust is checked inside the write-back batch too: an owner
+/// disabled, or an account unlinked, after the checks but before the write
+/// leaves the token untouched; an owner trusted with every job (an
+/// Administrator) still writes back for an account they do not hold.
+#[tokio::test]
+async fn write_back_checks_the_nodes_trust_inside_the_batch() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Scan, "riley-acct").await;
+    let claimed = claim(&w.store).await.unwrap();
+    let fence = claimed.job.lease_generation;
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let exec = Arc::new(RacingBatchExec {
+        db: w.store.db().clone(),
+        before: Mutex::new(None),
+        calls: calls.clone(),
+    });
+    let store = w.store.clone().with_typed_exec(exec.clone());
+    let write = |value: &'static [u8]| {
+        let store = store.clone();
+        let job_id = job_id.clone();
+        let secret = w.riley_token.clone();
+        async move {
+            write_back_job_secret(&store, HOST, &job_id, fence, &secret, value)
+                .await
+                .unwrap()
+        }
+    };
+
+    // The branch's owner is disabled just before the batch.
+    *exec.before.lock().unwrap() = Some("UPDATE users SET status = 'disabled'");
+    assert_eq!(
+        write(b"riley-token-v2").await,
+        WriteBack::Refused("fence_not_live")
+    );
+    assert_eq!(read_token(&w.store, &w.riley_token).await, "riley-token-v1");
+    w.store
+        .db()
+        .execute_unprepared("UPDATE users SET status = 'active'")
+        .await
+        .unwrap();
+
+    // The account is unlinked from the owner just before the batch.
+    *exec.before.lock().unwrap() = Some("DELETE FROM account_links");
+    assert_eq!(
+        write(b"riley-token-v3").await,
+        WriteBack::Refused("fence_not_live")
+    );
+    assert_eq!(read_token(&w.store, &w.riley_token).await, "riley-token-v1");
+
+    // Promoted to Administrator (trusted with every job), the owner's
+    // node writes back even though no link remains.
+    w.store
+        .db()
+        .execute_unprepared(
+            "UPDATE users SET role = 'administrator' WHERE id IN \
+             (SELECT owner_user_id FROM nodes WHERE node_id = 'host-riley')",
+        )
+        .await
+        .unwrap();
+    assert_eq!(write(b"riley-token-v4").await, WriteBack::Written);
+    assert_eq!(read_token(&w.store, &w.riley_token).await, "riley-token-v4");
     assert_eq!(calls.load(Ordering::SeqCst), 3);
 }
 

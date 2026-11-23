@@ -587,7 +587,7 @@ pub async fn handoff_routed_job(
     let Some(fence) = claim.job.fence().filter(|f| f.owner == request.owner) else {
         return Ok(None);
     };
-    store.release_job_claim(&fence, claim.resumed).await?;
+    store.release_job_claim(&fence, false).await?;
     release_permits(store, &claim.permits).await?;
     Ok(None)
 }

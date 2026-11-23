@@ -226,30 +226,39 @@ pub enum Body {
         message: String,
     },
     /// Host → owner: give a job back unrun (its operator no longer
-    /// consents to the job's plugin). The job returns to pending without
-    /// spending the attempt. Answered with [`Body::Accepted`] or
+    /// consents to the job's plugin, or its claim timed out before the
+    /// `work` answer arrived). The job returns to pending without spending
+    /// the attempt; whether the claim was a resume is the owner's own
+    /// record, never the host's. Answered with [`Body::Accepted`] or
     /// [`Body::Lost`].
     Release {
         /// Job id.
         job_id: String,
         /// Lease generation the host holds.
         fence: i64,
-        /// Stable reason (`awaiting_host_consent`, ...), for the log.
+        /// Stable reason (`awaiting_host_consent`, `claim_abandoned`, ...),
+        /// for the log.
         #[serde(default)]
         reason: String,
-        /// The `resumed` flag of the job's `work` frame, so a resumed
-        /// claim is given back resumable.
-        #[serde(default)]
-        resumed: bool,
     },
-    /// Host → owner: the deployments that target this host and should run.
-    /// Answered with [`Body::Deployments`].
+    /// Host → owner: one page of the deployments that target this host and
+    /// should run. Answered with [`Body::Deployments`].
     #[serde(rename = "deployments.list")]
-    DeploymentsList {},
-    /// Owner → host: the answer to [`Body::DeploymentsList`].
+    DeploymentsList {
+        /// The `next` of the previous page; absent for the first page.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<String>,
+    },
+    /// Owner → host: one page of the answer to [`Body::DeploymentsList`],
+    /// as many entries as fit a frame.
     Deployments {
-        /// One entry per deployment, in deployment-id order.
+        /// One entry per deployment, in deployment-id order, each after
+        /// the request's `after`.
         items: Vec<RemoteDeployment>,
+        /// Where the next page starts (the last entry's deployment id);
+        /// absent on the last page.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next: Option<String>,
     },
     /// Host → owner: `CONFIG` and `SECRETS` of an instance deployed to this
     /// host. Answered with [`Body::InstanceConfig`], or `error {code:
@@ -392,11 +401,17 @@ pub enum Body {
         job_id: String,
         /// Lease generation the host holds.
         fence: i64,
+        /// Only titles whose holding id sorts after this one: the last
+        /// target this run already tried, so titles that failed earlier in
+        /// the run never fill the plan's cap. Absent for the first plan.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<String>,
     },
     /// Owner → host: the titles to acquire and how to package them.
     #[serde(rename = "acquire.targets")]
     AcquireTargets {
-        /// Titles still to acquire, each one of the job's accounts.
+        /// Titles still to acquire, each one of the job's accounts, in
+        /// holding-id order and each after the plan's `after`.
         targets: Vec<AcquireTarget>,
         /// Every output destination deployed on the answering shared node,
         /// the primary first, each with its own packaging and naming
@@ -1481,6 +1496,42 @@ impl Frame {
     }
 }
 
+/// Why a branch would refuse one `deployments` page answering
+/// `deployments.list {after}`, or `None` when it takes it: every entry's
+/// deployment id sorts byte-wise after `after` and after the entry before
+/// it (so no deployment is listed twice), and `next`, when present, sorts
+/// after `after` and is not before the last entry. A page that breaks this
+/// would let a library keep a branch paging forever or list a deployment
+/// twice, so the branch drops the whole listing and retries.
+///
+/// # Arguments
+///
+/// * `after` - The cursor the branch asked with (`None` for the first
+///   page).
+/// * `items` - The page's entries.
+/// * `next` - The page's next cursor.
+#[must_use]
+pub fn deployments_page_problem(
+    after: Option<&str>,
+    items: &[RemoteDeployment],
+    next: Option<&str>,
+) -> Option<&'static str> {
+    let mut previous = after;
+    for item in items {
+        if previous.is_some_and(|previous| item.deployment_id.as_str() <= previous) {
+            return Some("unordered_deployments");
+        }
+        previous = Some(item.deployment_id.as_str());
+    }
+    if let Some(next) = next {
+        if previous.is_some_and(|previous| next < previous)
+            || after.is_some_and(|after| next <= after)
+        {
+            return Some("invalid_cursor");
+        }
+    }
+    None
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1874,11 +1925,10 @@ mod tests {
                     job_id: job_id(),
                     fence: 2,
                     reason: "awaiting_host_consent".into(),
-                    resumed: false,
                 },
                 "release",
             ),
-            (Body::DeploymentsList {}, "deployments.list"),
+            (Body::DeploymentsList { after: None }, "deployments.list"),
             (
                 Body::Deployments {
                     items: vec![RemoteDeployment {
@@ -1890,6 +1940,7 @@ mod tests {
                         default_instance: true,
                         version: None,
                     }],
+                    next: Some("d".into()),
                 },
                 "deployments",
             ),
@@ -1981,6 +2032,7 @@ mod tests {
                 Body::AcquirePlan {
                     job_id: job_id(),
                     fence: 2,
+                    after: Some("b".into()),
                 },
                 "acquire.plan",
             ),
@@ -2200,5 +2252,39 @@ mod tests {
             &sealed_value
         )
         .is_err());
+    }
+
+    #[test]
+    fn a_deployments_page_must_move_forward() {
+        let entry = |id: &str| RemoteDeployment {
+            deployment_id: id.into(),
+            instance_id: "i".into(),
+            plugin_key: "store".into(),
+            desired: "present".into(),
+            revision: 1,
+            default_instance: false,
+            version: None,
+        };
+        let page = [entry("b"), entry("c")];
+        assert_eq!(deployments_page_problem(None, &page, None), None);
+        assert_eq!(deployments_page_problem(Some("a"), &page, Some("c")), None);
+        assert_eq!(deployments_page_problem(Some("a"), &page, Some("d")), None);
+        assert_eq!(deployments_page_problem(Some("a"), &[], Some("b")), None);
+        assert_eq!(
+            deployments_page_problem(Some("b"), &page, None),
+            Some("unordered_deployments")
+        );
+        assert_eq!(
+            deployments_page_problem(None, &[entry("c"), entry("c")], None),
+            Some("unordered_deployments")
+        );
+        assert_eq!(
+            deployments_page_problem(None, &page, Some("b")),
+            Some("invalid_cursor")
+        );
+        assert_eq!(
+            deployments_page_problem(Some("a"), &[], Some("a")),
+            Some("invalid_cursor")
+        );
     }
 }

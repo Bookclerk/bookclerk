@@ -57,11 +57,13 @@ use bookclerk_library::control_plane::{
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_node_client::{HostClientHandle, AWAITING_HOST_CONSENT};
-use bookclerk_node_proto::{Body, ClaimScope, RemoteDeployment, RemoteVersion};
+use bookclerk_node_proto::{
+    deployments_page_problem, Body, ClaimScope, RemoteDeployment, RemoteVersion,
+};
 use bookclerk_plugin_host::{
     approve_remote_request, host_artifact, is_sha256_hex, materialize_owner_version,
-    remote_platform_auto_approval, remote_row_consent_state, PluginGrant, RemoteConsentState,
-    RemoteNarrowing,
+    remote_platform_auto_approval, remote_row_consent_state, LocalPlatformInstall, PluginGrant,
+    RemoteConsentState, RemoteNarrowing,
 };
 use tokio::sync::watch;
 use tokio::time::Instant;
@@ -70,6 +72,10 @@ use super::remote_bindings::{RemoteCatalog, RemoteInstanceConfig, RemoteInstance
 
 /// How often consent rows are re-read without a notification.
 pub const CONSENT_POLL: Duration = Duration::from_secs(5);
+
+/// Most `deployments.list` pages one refresh reads (each up to a frame,
+/// so far more than any branch is deployed).
+pub const MAX_DEPLOYMENT_PAGES: usize = 256;
 
 /// First delay before an unfinished refresh is retried.
 pub const RETRY_MIN: Duration = CONSENT_POLL;
@@ -175,9 +181,10 @@ pub struct LinkSupervisor {
     pub handle: HostClientHandle,
     /// The link's catalog, shared with the job runner.
     pub catalog: Arc<RemoteCatalog>,
-    /// Payload digests of this host's own platform-bundled plugins, by
-    /// plugin key (from this host's provenance check).
-    pub platform_payloads: BTreeMap<String, String>,
+    /// This host's own platform-bundled plugins, by plugin key (from this
+    /// host's provenance check): their payload digests and the grants (and
+    /// so the budgets) this host gives them.
+    pub platform_installs: BTreeMap<String, LocalPlatformInstall>,
 }
 
 impl LinkSupervisor {
@@ -340,14 +347,7 @@ impl LinkSupervisor {
         // Read before the request, so a list answered on an older
         // connection never opens claims on a newer one.
         let connection = *self.handle.connections().borrow();
-        let Some(frame) = self.handle.request(Body::DeploymentsList {}).await else {
-            return Refreshed::Unfinished;
-        };
-        let Body::Deployments { items } = frame.body else {
-            tracing::warn!(
-                library_id = self.library_id(),
-                "owner refused deployments.list"
-            );
+        let Some(items) = self.list_deployments().await else {
             return Refreshed::Unfinished;
         };
         if !self.link_present().await {
@@ -408,6 +408,52 @@ impl LinkSupervisor {
             }
         }
         outcome
+    }
+
+    /// Reads every page of what the owner deployed here
+    /// (`deployments.list`, [`MAX_DEPLOYMENT_PAGES`] at most). `None` when
+    /// a page was not answered, was refused, or did not move past the
+    /// previous one: a partial list is never used as the whole.
+    async fn list_deployments(&self) -> Option<Vec<RemoteDeployment>> {
+        let mut items = Vec::new();
+        let mut after: Option<String> = None;
+        for _ in 0..MAX_DEPLOYMENT_PAGES {
+            let frame = self
+                .handle
+                .request(Body::DeploymentsList {
+                    after: after.clone(),
+                })
+                .await?;
+            let Body::Deployments { items: page, next } = frame.body else {
+                tracing::warn!(
+                    library_id = self.library_id(),
+                    "owner refused deployments.list"
+                );
+                return None;
+            };
+            // Each page must move forward, or a misbehaving owner could
+            // keep this loop on one page or list a deployment twice.
+            if let Some(problem) =
+                deployments_page_problem(after.as_deref(), &page, next.as_deref())
+            {
+                tracing::warn!(
+                    library_id = self.library_id(),
+                    problem,
+                    "owner's deployments.list page refused"
+                );
+                return None;
+            }
+            items.extend(page);
+            match next {
+                None => return Some(items),
+                Some(next) => after = Some(next),
+            }
+        }
+        tracing::warn!(
+            library_id = self.library_id(),
+            "owner's deployments.list has more pages than this host reads"
+        );
+        None
     }
 
     /// Brings each of `entries` up to the consent rows as they stand now
@@ -561,9 +607,7 @@ impl LinkSupervisor {
         if !remote_platform_auto_approval(
             &requested,
             &artifact.payload_root_sha256,
-            self.platform_payloads
-                .get(&row.plugin_key)
-                .map(String::as_str),
+            self.platform_installs.get(&row.plugin_key),
         ) {
             return row;
         }
@@ -838,9 +882,14 @@ fn plugin_version(plugin_key: &str, remote: &RemoteVersion) -> Result<PluginVers
     })
 }
 
-/// Payload digests of this host's platform-bundled plugins, by key.
+/// This host's platform-bundled plugins, by key: each one's payload digest
+/// and the grant this host gives it without asking
+/// ([`bookclerk_plugin_host::consent_request`] of its own manifest), whose
+/// budgets an owner's automatic approval may not exceed.
 #[must_use]
-pub fn platform_payloads(config: &bookclerk_config::Config) -> BTreeMap<String, String> {
+pub fn platform_installs(
+    config: &bookclerk_config::Config,
+) -> BTreeMap<String, LocalPlatformInstall> {
     let Ok(plugins) = bookclerk_plugin_host::discover_plugins(config) else {
         return BTreeMap::new();
     };
@@ -851,9 +900,14 @@ pub fn platform_payloads(config: &bookclerk_config::Config) -> BTreeMap<String, 
                 == bookclerk_plugin_catalog::PluginProvenance::PlatformBundled
         })
         .map(|plugin| {
+            let request =
+                bookclerk_plugin_host::consent_request(&plugin.manifest, plugin.plugin_key());
             (
                 plugin.identity.plugin_key.canonical().to_string(),
-                plugin.identity.artifact.payload_root_sha256.clone(),
+                LocalPlatformInstall {
+                    payload_root_sha256: plugin.identity.artifact.payload_root_sha256.clone(),
+                    request,
+                },
             )
         })
         .collect()

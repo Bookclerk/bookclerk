@@ -1114,8 +1114,10 @@ Built 2026-10-15 (H-4 step 5), on the routed claim above.
   (demoted, disabled, unlinked, revoked), or its own lease expired,
   `release_job_claim` returns the row to `pending` under the
   claim's fence without spending an attempt (a resumed claim gets its
-  one-shot resume flag back), the permits are released, and nothing is
-  handed over. The lease generation stays bumped, so the refused fence
+  one-shot resume flag back; the claim records its own generation as
+  `resumed_generation` on the job, so a release reads whether it was a
+  resume from the row, never from the claimant), the permits are
+  released, and nothing is handed over. The lease generation stays bumped, so the refused fence
   can never write again. The daemon's own worker claims as
   `Claimant::Local` and needs no handoff; the node API's work frames
   (step 6) claim as `Claimant::Remote` and hand off through it.
@@ -1211,12 +1213,12 @@ Built 2026-10-17 (H-4 step 6), over the node socket and the claim above.
   job row, then an update of the existing secret row guarded on the
   fence, the handoff row and the credential, so a reclaim, a claim by
   another node, or a revocation that lands after the checks leaves the
-  token untouched. The trust predicate itself (the owner's role and
-  status, and the account links) is checked just before the batch, not
-  inside it, so a demotion, a disabled owner or an unlinked account that
-  lands between the check and the batch can still let one update of a
-  secret already handed under that fence through. Moving the whole trust
-  predicate into the batch guard is follow-up work (issue #306).
+  token untouched. The batch also guards on the trust predicate for the
+  secret's account: the node's owner is active, and is an Owner or
+  Administrator or has that account linked to one of their identities.
+  A demotion, a disabled owner or an unlinked account that commits
+  between the checks and the batch therefore leaves the token untouched
+  too, on every backend.
   Rejected: plaintext values inside TLS. tungstenite traces every
   received message at TRACE, and the daemon bridges `log` into tracing
   with the diagnostics ring at TRACE, so a plaintext value would land in
@@ -1325,10 +1327,12 @@ join`) and `bookclerkd/src/library_link.rs`.
   each `renewed`, counted from when the request was sent) by the time it
   runs out, connected or not, marks the job lost and cancels it, so it
   never runs on a lease the owner may have handed elsewhere. A `work`
-  that answers a claim which already timed out is failed at once as
-  `claim_abandoned` under its fence (this retries the job like any
-  failure; `release` is kept for a job this host will not run) rather
-  than left to expire.
+  that answers a claim which already timed out is given back at once
+  with `release` (reason `claim_abandoned`) under its fence rather than
+  left to expire: the job never ran, so it spends no attempt and a
+  resumed job keeps its resume. `release` carries no `resumed` flag;
+  the owner reads whether the claim was a resume from the job row, so a
+  host cannot keep a job by claiming and releasing it as resumed.
   Client shutdown cancels every held job as lost, as revocation does.
   A lost fence's result is discarded. Write-back
   (`HostJobCtx::write_back`) accepts only a ref handed with the job,

@@ -44,8 +44,8 @@
 //!    fence. A job whose lease the owner has not confirmed (by `work` or
 //!    `renewed`) within its length is cancelled as lost, connected or
 //!    not, so it never runs past a lease the owner may have handed on. A
-//!    `work` answering a claim that already timed out is failed at once
-//!    with [`CLAIM_ABANDONED`] under its fence.
+//!    `work` answering a claim that already timed out is given back at
+//!    once with `release` (reason [`CLAIM_ABANDONED`]) under its fence.
 //! 6. On disconnect the client backs off from
 //!    [`ClientTiming::backoff_min`] to [`ClientTiming::backoff_max`] with
 //!    jitter, and the backoff resets after a welcomed connection. A close
@@ -109,9 +109,9 @@ pub const KIND_NOT_RUN_HERE: &str = "kind_not_run_here";
 /// Largest artifact fetched from the owner (the library blob cap).
 pub const MAX_ARTIFACT_BYTES: usize = bookclerk_library::control_plane::MAX_ARTIFACT_BLOB_BYTES;
 
-/// Error kind of the `fail` a host sends for a job the owner granted to a
+/// Reason of the `release` a host sends for a job the owner granted to a
 /// claim that had already timed out here: nothing runs it, so the lease is
-/// handed back at once instead of being left to expire.
+/// handed back at once, unspent, instead of being left to expire.
 pub const CLAIM_ABANDONED: &str = "claim_abandoned";
 
 /// Longest lease this host counts on from one `work` or `renewed`; a
@@ -261,29 +261,49 @@ struct Conn {
 #[derive(Debug)]
 struct Unavailable;
 
+/// Removes a request's waiting entry from [`Conn::pending`] when dropped:
+/// on every return of [`Conn::request`] and when its future is dropped
+/// before it finishes. Removing an entry the reader already took (to
+/// deliver the answer) does nothing.
+struct PendingEntry<'a> {
+    /// The connection's waiting requests.
+    pending: &'a Mutex<HashMap<String, oneshot::Sender<Frame>>>,
+    /// The request's frame id.
+    id: &'a str,
+}
+
+impl Drop for PendingEntry<'_> {
+    fn drop(&mut self) {
+        lock(self.pending).remove(self.id);
+    }
+}
+
 impl Conn {
     /// Sends `body` and waits for the frame answering it.
+    ///
+    /// The waiting entry is removed however the request ends, including
+    /// when the caller drops the future (an outer timeout), so abandoned
+    /// requests never pile up in `pending` on a long-lived connection.
     async fn request(&self, body: Body) -> Result<Frame, Unavailable> {
         let id = format!("q{}", self.next_id.fetch_add(1, Ordering::Relaxed));
         let (answer, answered) = oneshot::channel();
         lock(&self.pending).insert(id.clone(), answer);
+        let _waiting = PendingEntry {
+            pending: &self.pending,
+            id: &id,
+        };
         let message = Message::Text(Frame::new(id.clone(), body).to_text().into());
         let sent = matches!(
             tokio::time::timeout(self.timeout, self.outbox.send(message)).await,
             Ok(Ok(()))
         );
-        let frame = if sent {
-            match tokio::time::timeout(self.timeout, answered).await {
-                Ok(Ok(frame)) => Some(frame),
-                _ => None,
-            }
-        } else {
-            None
-        };
-        if frame.is_none() {
-            lock(&self.pending).remove(&id);
+        if !sent {
+            return Err(Unavailable);
         }
-        frame.ok_or(Unavailable)
+        match tokio::time::timeout(self.timeout, answered).await {
+            Ok(Ok(frame)) => Ok(frame),
+            _ => Err(Unavailable),
+        }
     }
 
     /// True once the writer task is gone (the connection is over).
@@ -701,10 +721,12 @@ impl Shared {
         &self,
         job_id: &str,
         fence: i64,
+        after: Option<&str>,
     ) -> Result<(Vec<AcquireTarget>, Vec<PlanDestination>), OwnerCallError> {
         let body = Body::AcquirePlan {
             job_id: job_id.to_string(),
             fence,
+            after: after.map(str::to_string),
         };
         match self.job_call(job_id, fence, body).await? {
             Body::AcquireTargets {
@@ -2081,9 +2103,10 @@ async fn read_loop(
 
 /// Handles an owner frame no request is waiting for. A `work` for a job
 /// answers a claim that already timed out (and was retried): nothing here
-/// runs it, so it is failed with [`CLAIM_ABANDONED`] under its fence and
-/// the owner frees the lease now instead of when it expires. Anything else
-/// is dropped.
+/// runs it, so it is given back with `release` (reason
+/// [`CLAIM_ABANDONED`]) under its fence. The owner frees the lease now
+/// instead of when it expires, and the job spends no attempt and keeps its
+/// resume, since it never ran. Anything else is dropped.
 fn unsolicited(shared: &Arc<Shared>, conn: &Conn, frame: Frame) {
     let Body::Work {
         item, job, fence, ..
@@ -2100,11 +2123,10 @@ fn unsolicited(shared: &Arc<Shared>, conn: &Conn, frame: Frame) {
     let conn = conn.clone();
     tokio::spawn(async move {
         let answer = conn
-            .request(Body::Fail {
+            .request(Body::Release {
                 job_id: job.id.clone(),
                 fence,
-                error_kind: CLAIM_ABANDONED.into(),
-                message: "the host's claim timed out before the owner answered".into(),
+                reason: CLAIM_ABANDONED.into(),
             })
             .await;
         if !matches!(
@@ -2399,7 +2421,6 @@ async fn run_job<R: HostJobRunner>(
     let job_id = host_job.job.id.clone();
     let fence = host_job.fence;
     let lease_secs = host_job.lease_secs;
-    let claim_resumed = host_job.resumed;
     let cancel = Arc::new(AtomicBool::new(false));
     let lost = Arc::new(AtomicBool::new(false));
     let finished = Arc::new(AtomicBool::new(false));
@@ -2437,7 +2458,7 @@ async fn run_job<R: HostJobRunner>(
     let refused = *lock(&release);
     if let Some(reason) = refused {
         tracing::warn!(%job_id, fence, reason, "giving back a job this host will not run");
-        give_back(&shared, &job_id, fence, claim_resumed, reason, &lost).await;
+        give_back(&shared, &job_id, fence, reason, &lost).await;
         shared.release(&job_id, fence);
         drop(slot);
         return;
@@ -2514,15 +2535,12 @@ async fn run_job<R: HostJobRunner>(
         tracing::warn!(%job_id, fence, "discarding the result of a job whose fence was lost");
     } else if let Some(reason) = given_back {
         tracing::warn!(%job_id, fence, reason, "discarding the result of a job given back");
-        give_back(&shared, &job_id, fence, claim_resumed, reason, &lost).await;
+        give_back(&shared, &job_id, fence, reason, &lost).await;
     } else if finished.load(Ordering::SeqCst) && result.is_ok() {
         // The owner completed the job with its last upload's commit.
         tracing::info!(%job_id, fence, "the job completed with its last upload");
     } else {
-        let give_back_on = GiveBackOn {
-            release: &release,
-            resumed: claim_resumed,
-        };
+        let give_back_on = GiveBackOn { release: &release };
         report(&shared, &job_id, fence, result, &lost, give_back_on).await;
     }
     drop(renewer);
@@ -2530,13 +2548,12 @@ async fn run_job<R: HostJobRunner>(
     drop(slot);
 }
 
-/// Gives a job back unrun with `release` under its fence. `resumed` is
-/// the claim's [`HostJob::resumed`].
+/// Gives a job back unrun with `release` under its fence. The owner
+/// decides from its own record whether the claim was a resume.
 async fn give_back(
     shared: &Arc<Shared>,
     job_id: &str,
     fence: i64,
-    resumed: bool,
     reason: &'static str,
     lost: &AtomicBool,
 ) {
@@ -2544,7 +2561,6 @@ async fn give_back(
         job_id: job_id.to_string(),
         fence,
         reason: reason.into(),
-        resumed,
     };
     send_final(shared, job_id, fence, body, false, lost, None).await;
 }
@@ -2554,8 +2570,6 @@ async fn give_back(
 struct GiveBackOn<'a> {
     /// The job's release marker.
     release: &'a Mutex<Option<&'static str>>,
-    /// The claim's [`HostJob::resumed`].
-    resumed: bool,
 }
 
 /// Extends a job's lease every third of it. A `lost` answer cancels the
@@ -2741,7 +2755,6 @@ async fn send_final(
                     job_id: job_id.to_string(),
                     fence,
                     reason: reason.into(),
-                    resumed: on.resumed,
                 };
             }
         }

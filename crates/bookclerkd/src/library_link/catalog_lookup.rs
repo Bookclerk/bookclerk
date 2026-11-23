@@ -62,6 +62,11 @@ impl CatalogAnswerer {
                     ),
                 }
             }
+            // One deadline per wait: a wake that is not `catalog.asked` must
+            // not restart the poll, or frequent unrelated wakes would keep
+            // the periodic pull from ever running.
+            let poll = tokio::time::sleep(LOOKUP_POLL);
+            tokio::pin!(poll);
             loop {
                 tokio::select! {
                     changed = shutdown.changed() => {
@@ -83,7 +88,7 @@ impl CatalogAnswerer {
                         Err(broadcast::error::RecvError::Lagged(_)) => break,
                         Err(broadcast::error::RecvError::Closed) => return,
                     },
-                    () = tokio::time::sleep(LOOKUP_POLL) => break,
+                    () = &mut poll => break,
                 }
             }
         }
