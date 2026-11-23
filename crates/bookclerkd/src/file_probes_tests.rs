@@ -131,3 +131,79 @@ async fn the_walk_probes_files_stored_without_a_probe() {
         .await
         .expect("write"));
 }
+
+/// The walk waits for an acquire that holds the work lock, and a file the
+/// acquire wrote again meanwhile keeps no probe of the bytes the walk
+/// would have read before.
+#[tokio::test]
+async fn the_walk_waits_for_an_acquire_writing_its_file() {
+    bookclerk_media::replace_pool(bookclerk_media::MediaPool::new(
+        bookclerk_media::MediaPoolConfig {
+            confinement: bookclerk_media::Confinement::Off,
+            ..bookclerk_media::MediaPoolConfig::default()
+        },
+    ));
+    let files = tempfile::tempdir().expect("tempdir");
+    let storage = tempfile::tempdir().expect("tempdir");
+    let (state, library) = crate::node_api::tests::test_state(&files).await;
+    crate::node_api::uploads::set_test_destination(files.path(), storage.path());
+    library
+        .upsert_account(PLUGIN, "acct", "us", None, true, "audible")
+        .await
+        .expect("account");
+    let book = library
+        .upsert_book(&NewBook {
+            plugin_key: PLUGIN.to_string(),
+            ..NewBook::minimal("B0PROBE2", "acct", "us", "Busy Copy")
+        })
+        .await
+        .expect("book");
+    let edition = library
+        .edition_of_holding(&book.holding_id)
+        .await
+        .expect("read")
+        .expect("edition");
+    let owner = FileOwner::Edition(edition.clone());
+    let key = "Busy Copy/Busy Copy.m4b";
+    std::fs::create_dir_all(storage.path().join("Busy Copy")).expect("dir");
+    std::fs::write(
+        storage.path().join(key),
+        bookclerk_tags::fixtures::tagged_m4b(),
+    )
+    .expect("write");
+    assert!(library
+        .record_edition_file("local", key, &owner, FileRole::Audio)
+        .await
+        .expect("record"));
+
+    // An acquire holds the lock: the walk does not finish while it does.
+    let acquire = state.work_lock.lock().await;
+    let walk = walk_file_probes(&state, None, std::time::Duration::ZERO);
+    tokio::pin!(walk);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(300), &mut walk)
+            .await
+            .is_err(),
+        "the walk waits for the work lock"
+    );
+    // The acquire records the key again and writes new bytes, then lets go.
+    assert!(library
+        .record_edition_file("local", key, &owner, FileRole::Audio)
+        .await
+        .expect("record"));
+    std::fs::write(storage.path().join(key), b"not audio yet").expect("write");
+    drop(acquire);
+
+    let summary = walk.await.expect("walk");
+    assert!(summary.starts_with("0 file(s) probed"), "{summary}");
+    let stored = library.edition_audio_files(&edition).await.expect("files");
+    assert!(
+        stored
+            .iter()
+            .find(|f| f.storage_key == key)
+            .expect("the audio row")
+            .probe
+            .is_none(),
+        "the replaced file keeps no probe of the old bytes"
+    );
+}

@@ -15,7 +15,11 @@
 //! in `(destination, storage_key)` pages, reads each file's tags through
 //! its destination's ranged reads with the confined tag reader
 //! ([`bookclerk_media::MediaPool::read_tags`]), and stores the probe and
-//! the stream. A probed row drops out of the walk, so a job that stops
+//! the stream. Each file is read and written under the daemon's work lock,
+//! which every acquire holds from recording a key until its file is
+//! written, and the probe is stored only while the row still carries the
+//! `written_at` the walk read, so a file replaced around the walk keeps no
+//! probe of the old bytes. A probed row drops out of the walk, so a job that stops
 //! part way (cancelled, or its node restarted) resumes where it left off
 //! when the next one runs. A file that still cannot be probed is skipped
 //! and tried again by the next job.
@@ -274,6 +278,10 @@ async fn walk_file_probes(
             let Some(destination) = destinations.iter().find(|d| d.id == file.destination) else {
                 continue;
             };
+            // Acquires record a row before they write its file and hold
+            // the work lock until the write is done: holding it here keeps
+            // the probe from reading a file mid-replacement.
+            let _writes = state.work_lock.lock().await;
             match probe_one(&library, destination, file).await? {
                 Probed::Stored => stored += 1,
                 Probed::Unreadable => unreadable += 1,

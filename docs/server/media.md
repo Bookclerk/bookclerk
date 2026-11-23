@@ -277,8 +277,9 @@ is not downloaded whole), stores the probe and the stream values in one
 write, and takes the source store from the edition's holdings when they
 are all through one store. It leaves a row written in the last hour for
 a later job, since an acquire records a key before it writes the file and
-probes the file itself; a file written again while the job read it keeps
-no probe from the old one. A file it still cannot read is tried again by the
+probes the file itself. It reads each file while no acquire is running on
+the node (it waits for the one that is), and a file written again since
+the job read its row keeps no probe from the old one. A file it still cannot read is tried again by the
 next day's job; until then, comparing copies treats it as unknown
 quality.
 
