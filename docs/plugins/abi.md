@@ -302,7 +302,9 @@ capability. Under workerd:
 
 1. The trusted adapter isolate mints a per-`open`, events-only grant token
    on the launcher's `GRANTED` channel.
-2. It hands the author a `GrantedEvents` `RpcTarget`.
+2. It hands the author a settled transport for `EVENTS`, which reports a
+   failure as a value so its code survives the hop to the author (see
+   [Binding errors between the isolates](../internals/workerd-bridge.md#binding-errors-between-the-isolates)).
 3. `publish()` POSTs the event to `/events/publish`. The launcher checks
    the grant again (unknown, expired or database-only grants are
    `forbidden`) and enforces the payload cap, before forwarding to the host
@@ -509,7 +511,7 @@ The rules mirror `event(batch)`:
 - **Transports.** Native guests receive producers on `Bindings.queues` as
   Cap'n Proto capabilities, and the batch on `QueueConsumer.queue`. Under
   workerd, the adapter isolate mints one queue-only grant token per
-  binding and hands the author a `GrantedQueue` `RpcTarget`. `send` and
+  binding and hands the author a settled transport for it. `send` and
   `sendBatch` POST to `/queues/send` on the launcher's `GRANTED` channel,
   where the grant and the caps are checked again before the host producer
   writes the outbox.
