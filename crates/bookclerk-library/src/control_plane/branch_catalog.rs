@@ -1095,13 +1095,13 @@ const PENDING_PAGE: u64 = 200;
 /// Up to `limit` of `node_id`'s shared titles whose files have not
 /// arrived (or changed since), leaving out titles whose edition already
 /// has audio here from another writer, and titles whose current manifest
-/// this library refused for good less than [`REFUSAL_RETRY_AFTER`] ago
-/// ([`refused_for_good`]).
+/// this library refused for good less than a day ago (a key or folder
+/// another title holds here).
 ///
 /// A left-out title whose edition's files on record are exactly its own
-/// manifest, while no node holding of that edition is delivered, is
-/// recorded as delivered by those files ([`adopt_left_behind_files`]), so
-/// it can still be passed on after the branch that wrote them left.
+/// manifest, left behind by a branch that no longer holds the title while
+/// no node holding of that edition is delivered, is recorded as delivered
+/// by those files, so it can still be passed on after that branch left.
 ///
 /// # Errors
 ///
