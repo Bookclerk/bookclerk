@@ -112,7 +112,7 @@ fn introduces_bookclerk(message: &NotificationMessage) -> bool {
 pub const INTRO_TITLE: &str = "New to Bookclerk?";
 
 /// The introduction, in both parts.
-pub const INTRO_TEXT: &str = "Bookclerk is a home for audiobooks. It gathers the books a household has bought from multiple audiobook storefronts into one library that runs on its owner's own computer. With your sign-in you can browse the shelves, listen in your browser and keep your own wishlist. It's free and open source.";
+pub const INTRO_TEXT: &str = "Bookclerk is a home for audiobooks. It gathers the books bought from multiple audiobook storefronts into one library that runs on its owner's own computer. With your sign-in you can browse the shelves, listen in your browser and keep your own wishlist. It's free and open source.";
 
 /// Bookclerk's own site, linked from every footer.
 pub const BOOKCLERK_SITE: &str = "https://bookclerk.app";
