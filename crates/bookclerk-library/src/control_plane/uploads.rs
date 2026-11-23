@@ -1175,8 +1175,13 @@ pub async fn grant_upload(
             generation,
             receiving_node_id,
             req,
-            None,
-            upgrade,
+            OpenAs::Job {
+                copy: if upgrade {
+                    EditionCopy::Better
+                } else {
+                    EditionCopy::Shared
+                },
+            },
         )
         .await;
     }
@@ -1187,10 +1192,36 @@ pub async fn grant_upload(
         generation,
         receiving_node_id,
         req,
-        None,
-        false,
+        OpenAs::Job {
+            copy: EditionCopy::Shared,
+        },
     )
     .await
+}
+
+/// How a copy an upload delivers compares with the edition's copy in the
+/// library ([`upload_upgrades_edition`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EditionCopy {
+    /// Better: it may replace the edition's files, whoever wrote them.
+    Better,
+    /// Not known to be better: the edition's files stay with their writers.
+    Shared,
+}
+
+/// What [`open_upload_session`] opens.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum OpenAs<'a> {
+    /// A job's upload of one title (or its closing upload).
+    Job {
+        /// How its copy compares with the edition's.
+        copy: EditionCopy,
+    },
+    /// A branch's catalog upload of a title it shares.
+    Catalog {
+        /// The title's manifest digest at grant.
+        digest: &'a str,
+    },
 }
 
 /// Inserts an open upload (its token hashed) after an earlier open upload
@@ -1208,12 +1239,15 @@ pub(super) async fn open_upload_session(
     generation: i64,
     receiving_node_id: &str,
     req: &UploadGrantRequest<'_>,
-    catalog_digest: Option<&str>,
-    upgrade: bool,
+    open_as: OpenAs<'_>,
 ) -> Result<UploadGrant> {
     if let Some(reason) = manifest_problem(req) {
         return Ok(UploadGrant::Refused(reason));
     }
+    let (catalog_digest, upgrade) = match open_as {
+        OpenAs::Job { copy } => (None, copy == EditionCopy::Better),
+        OpenAs::Catalog { digest } => (Some(digest), false),
+    };
     let catalog = job_id == bookclerk_node_proto::CATALOG_ITEM;
     // A holding's keys are its edition's, an account holding's or a node
     // holding's alike. Resolved before the row goes in, so a catalog upload

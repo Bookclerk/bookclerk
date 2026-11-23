@@ -1576,8 +1576,10 @@ async fn acquire_titles<G: HostGuests>(
                     &title,
                     &outbox,
                     &done,
-                    keep_copy.then_some(&copied),
-                    attempt.as_ref(),
+                    keep_copy.then_some(KeptCopy {
+                        copied: &copied,
+                        attempt: attempt.as_ref(),
+                    }),
                     &commit_unsettled,
                 )
                 .await
@@ -2022,8 +2024,19 @@ async fn keeps_local_copy<G: HostGuests>(host: &HostJobCtx, guests: &G) -> bool 
     host.job.job.for_node_owner || guests.keeps_member_copies().await
 }
 
+/// Where a title kept on this host's own destinations tracks its copies:
+/// the files it wrote (removed when the owner does not commit the title)
+/// and, with a [`CopyLedger`], its [`CopyAttempt`].
+#[derive(Clone, Copy)]
+struct KeptCopy<'a> {
+    /// Each copy this run created, as it is written.
+    copied: &'a std::sync::Mutex<Vec<LocalCopy>>,
+    /// The title's record in this install's library, when it keeps one.
+    attempt: Option<&'a CopyAttempt>,
+}
+
 /// Copies one title's files to this host's own destinations (H-2) when
-/// the job keeps them (`copied` is `Some`, [`keeps_local_copy`]), then
+/// the job keeps them (`kept` is `Some`, [`keeps_local_copy`]), then
 /// streams them to the owner and commits the title. A title it keeps is
 /// uploaded only once every one of this host's destinations got it. Each
 /// copy is put in `copied` as it is written, so the caller can remove them when
@@ -2043,10 +2056,10 @@ async fn upload_title<G: HostGuests>(
     title: &HostTitle,
     outbox: &Path,
     acquired: &AcquiredTitle,
-    copied: Option<&std::sync::Mutex<Vec<LocalCopy>>>,
-    attempt: Option<&CopyAttempt>,
+    kept: Option<KeptCopy<'_>>,
     commit_unsettled: &AtomicBool,
 ) -> anyhow::Result<()> {
+    let attempt = kept.and_then(|kept| kept.attempt);
     let book_uuid = title.holding_id.as_str();
     let manifest = upload_manifest(
         &title.destinations,
@@ -2055,9 +2068,10 @@ async fn upload_title<G: HostGuests>(
         Some(title.book.source.as_str()),
     )
     .await?;
-    let placed = match copied {
-        Some(copied) => {
-            copy_to_local_destinations(guests, book_uuid, outbox, acquired, copied, attempt).await?
+    let placed = match kept {
+        Some(kept) => {
+            copy_to_local_destinations(guests, book_uuid, outbox, acquired, kept.copied, attempt)
+                .await?
         }
         None => Vec::new(),
     };

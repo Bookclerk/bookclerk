@@ -54,7 +54,7 @@ use super::enrollment::load_node_credential;
 use super::trust::accounts_owned_by;
 use super::uploads::{
     claims_another_titles_key, granted_key_count, open_upload_session, upload_holds_its_keys,
-    GrantedDestination, UploadDestination, UploadGrant, UploadGrantRequest, UploadSession,
+    GrantedDestination, OpenAs, UploadDestination, UploadGrant, UploadGrantRequest, UploadSession,
 };
 use crate::entities::{
     accounts, edition_acquisitions, edition_files, editions, holdings, node_upload_sessions, nodes,
@@ -1191,8 +1191,7 @@ pub async fn grant_catalog_upload(
         fence,
         receiving_node_id,
         &request,
-        Some(&digest),
-        false,
+        OpenAs::Catalog { digest: &digest },
     )
     .await
 }
