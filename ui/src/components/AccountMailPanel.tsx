@@ -59,31 +59,43 @@ export function AccountMailPanel() {
   }, [load]);
 
   // After a test is queued, re-read the status until its delivery shows as
-  // a new `tested_at`, or stop after a bounded wait.
+  // a new `tested_at`, or stop at a deadline that does not wait on a
+  // request: a read still in flight then is ignored when it settles.
   useEffect(() => {
     if (waitingPast === undefined) return;
-    const started = Date.now();
+    let done = false;
+    let inFlight = false;
     const timer = window.setInterval(() => {
+      if (inFlight) return;
+      inFlight = true;
       void (async () => {
         try {
           const next = await getAccountMail();
-          if (!mounted.current) return;
+          if (done || !mounted.current) return;
           setStatus(next);
           if (next.tested_at && next.tested_at !== waitingPast) {
+            done = true;
             setWaitingPast(undefined);
             setNotice("The test arrived.");
-            return;
           }
         } catch {
           // A failed read is retried on the next tick.
-        }
-        if (Date.now() - started >= TEST_POLL_LIMIT_MS && mounted.current) {
-          setWaitingPast(undefined);
-          setNotice("The test has not arrived yet. Check the notifier, then try again.");
+        } finally {
+          inFlight = false;
         }
       })();
     }, TEST_POLL_MS);
-    return () => window.clearInterval(timer);
+    const deadline = window.setTimeout(() => {
+      if (done || !mounted.current) return;
+      done = true;
+      setWaitingPast(undefined);
+      setNotice("The test has not arrived yet. Check the notifier, then try again.");
+    }, TEST_POLL_LIMIT_MS);
+    return () => {
+      done = true;
+      window.clearInterval(timer);
+      window.clearTimeout(deadline);
+    };
   }, [waitingPast]);
 
   async function choose(id: string) {
