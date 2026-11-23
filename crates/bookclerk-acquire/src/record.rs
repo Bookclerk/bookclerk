@@ -80,30 +80,31 @@ impl RecordingBackend {
     /// that cannot be probed (a format the tag reader does not know, or no
     /// confined worker where one is required) keeps a row with no probe:
     /// the file is stored either way, and the acquire does not fail for it.
-    async fn probe(&self, key: &str, path: &Path, role: FileRole) {
+    ///
+    /// A walk on another node sharing the destination may have probed the
+    /// bytes this write replaced, so whenever no probe of the new file can
+    /// be stored the row's probe is cleared instead
+    /// ([`LibraryStore::clear_edition_file_probe`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Other`] when neither a probe of the new file
+    /// nor the clear could be written: the write then fails, and the retry
+    /// records the key again, which drops any probe of the old bytes.
+    async fn probe(&self, key: &str, path: &Path, role: FileRole) -> bookclerk_storage::Result<()> {
         match role {
             FileRole::Audio | FileRole::Part | FileRole::Chapter => {}
             FileRole::Pdf
             | FileRole::Cover
             | FileRole::Sidecar
             | FileRole::Transcript
-            | FileRole::Epub => return,
+            | FileRole::Epub => return Ok(()),
         }
         let probed = match self.media.probe_file(path).await {
             Ok(probed) => probed,
             Err(err) => {
                 tracing::debug!(key, error = %err, "written audio file was not probed");
-                // A walk on another node sharing this destination may have
-                // probed the bytes this write replaced: no probe stands
-                // that was not taken after the write.
-                if let Err(err) = self
-                    .library
-                    .clear_edition_file_probe(self.destination.as_str(), key, &self.owner)
-                    .await
-                {
-                    tracing::warn!(key, error = %err, "could not clear a replaced file's probe");
-                }
-                return;
+                return self.clear_probe(key).await;
             }
         };
         let probe = FileProbe {
@@ -126,10 +127,10 @@ impl RecordingBackend {
         {
             Ok(true) => {}
             // Another edition took the key over: nothing to describe.
-            Ok(false) => return,
+            Ok(false) => return Ok(()),
             Err(err) => {
                 tracing::warn!(key, error = %err, "could not store a file's probe result");
-                return;
+                return self.clear_probe(key).await;
             }
         }
         let stream = AudioStream {
@@ -144,6 +145,25 @@ impl RecordingBackend {
         {
             tracing::warn!(key, error = %err, "could not store a file's audio stream");
         }
+        Ok(())
+    }
+
+    /// Clears the probe on the row of `key` when no probe of the file just
+    /// written could be stored, so no probe of the bytes it replaced stands.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Other`] when the clear cannot be written.
+    async fn clear_probe(&self, key: &str) -> bookclerk_storage::Result<()> {
+        self.library
+            .clear_edition_file_probe(self.destination.as_str(), key, &self.owner)
+            .await
+            .map(|_| ())
+            .map_err(|err| {
+                StorageError::Other(anyhow::anyhow!(
+                    "could not clear the probe of a replaced file: {err}"
+                ))
+            })
     }
 
     /// Records `key` for the edition before it is written, with the role
@@ -340,7 +360,7 @@ impl StorageBackend for RecordingBackend {
     ) -> bookclerk_storage::Result<()> {
         let role = self.record(key).await?;
         self.inner.put_file(key, path, meta).await?;
-        self.probe(key, path, role).await;
+        self.probe(key, path, role).await?;
         Ok(())
     }
 
