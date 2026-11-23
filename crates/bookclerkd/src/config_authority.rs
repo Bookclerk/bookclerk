@@ -1836,24 +1836,9 @@ pub async fn post_plugin_instance_provision(
         )
             .into_response()
     })?;
-    let outcome = replace_instance_config(
-        &library,
-        &operator_actor(),
-        &instance_id,
-        &pinned.schema,
-        body.expected_revision,
-        &document,
-        &uuid::Uuid::new_v4().to_string(),
-    )
-    .await
-    .map_err(events_error)?;
-    let revision = match outcome {
-        InstanceConfigReplace::Applied(doc) => doc.revision,
-        InstanceConfigReplace::Replayed { revision } => revision,
-        InstanceConfigReplace::Conflict { current_revision } => {
-            return Err(conflict(current_revision))
-        }
-    };
+    // Credentials are sealed before the revision that names them is
+    // written: the new revision is what restarts a running instance, and it
+    // must then read the new credentials, never the old ones.
     for (key, credential) in &checked.secrets {
         seal_instance_secret(
             &library,
@@ -1865,10 +1850,26 @@ pub async fn post_plugin_instance_provision(
         .await
         .map_err(|err| {
             events_error(bookclerk_library::LibraryError::Other(anyhow::anyhow!(
-                "document revision {revision} was saved but credential `{key}` was not stored \
-                 ({err}); run the guided setup again"
+                "credential `{key}` could not be stored ({err}); run the guided setup again"
             )))
         })?;
+    }
+    let outcome = replace_instance_config(
+        &library,
+        &operator_actor(),
+        &instance_id,
+        &pinned.schema,
+        body.expected_revision,
+        &document,
+        &uuid::Uuid::new_v4().to_string(),
+    )
+    .await
+    .map_err(events_error)?;
+    match outcome {
+        InstanceConfigReplace::Applied(_) | InstanceConfigReplace::Replayed { .. } => {}
+        InstanceConfigReplace::Conflict { current_revision } => {
+            return Err(conflict(current_revision))
+        }
     }
     let doc = load_instance_config(&library, &instance_id)
         .await
