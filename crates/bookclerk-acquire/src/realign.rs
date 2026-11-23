@@ -335,6 +335,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl MetadataProviders for OneLayout {
+        fn provider_keys(&self) -> Vec<String> {
+            vec![String::from("test-provider")]
+        }
+
         async fn lookup(
             &self,
             _params: &bookclerk_plugin_abi::MetadataLookupParams,

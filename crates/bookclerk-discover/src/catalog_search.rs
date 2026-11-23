@@ -608,7 +608,7 @@ pub async fn catalog_search_page(
                 }
             }
             if let Some(pool) = pool {
-                attach_pooled_recordings(pool, registry, &mut round).await;
+                attach_pooled_recordings(pool, registry, &region, &mut round).await;
             }
             for hit in round {
                 upsert_hit(&mut by_key, hit);
@@ -1332,20 +1332,27 @@ fn insert_search_row(map: &mut HashMap<String, StorefrontCandidate>, row: Storef
 ///
 /// * `pool` - The library holding the shared listing pool.
 /// * `registry` - Maps each hit's store to the plugin key it pools under.
+/// * `region` - The marketplace the stores were searched in, which scopes
+///   each hit's product id.
 /// * `hits` - One fetch round's hits.
 async fn attach_pooled_recordings(
     pool: &bookclerk_library::LibraryStore,
     registry: &SourceRegistry,
+    region: &str,
     hits: &mut [StorefrontCandidate],
 ) {
-    let keys: Vec<Option<(String, String)>> = hits
+    let keys: Vec<Option<bookclerk_library::ListedProduct>> = hits
         .iter()
         .map(|hit| {
             let source = registry.get(&hit.source)?;
-            Some((source.plugin_key().to_string(), hit.product_id.clone()))
+            Some(bookclerk_library::ListedProduct::new(
+                source.plugin_key(),
+                region,
+                hit.product_id.clone(),
+            ))
         })
         .collect();
-    let pairs: Vec<(String, String)> = keys.iter().flatten().cloned().collect();
+    let pairs: Vec<bookclerk_library::ListedProduct> = keys.iter().flatten().cloned().collect();
     if pairs.is_empty() {
         return;
     }

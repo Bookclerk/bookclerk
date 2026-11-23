@@ -12,9 +12,10 @@ use std::collections::{HashMap, HashSet};
 use sea_orm::{ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter};
 use sea_orm::{QueryOrder, QuerySelect};
 
-use super::{now_str, LibraryStore};
+use super::{now_str, parse_dt, LibraryStore};
 use crate::entities::{
-    edition_identifiers, editions, expressions, holdings, store_listings, works,
+    edition_enrich_attempts, edition_identifiers, editions, expressions, holdings, store_listings,
+    works,
 };
 use crate::error::{LibraryError, Result};
 use crate::store::library_model::{find_chunked, find_chunked_paged};
@@ -98,6 +99,30 @@ pub struct EditionEnrichment {
     pub source: String,
     /// How sure the enricher was, from 0.0 to 1.0.
     pub confidence: f64,
+}
+
+/// How a gap-fill attempt that left an edition's gaps open ended
+/// (`edition_enrich_attempts.outcome`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnrichAttemptOutcome {
+    /// A record filled some of the gaps, and others stay open.
+    Partial,
+    /// Every enricher answered, and no record matched or filled a gap.
+    Unmatched,
+}
+
+impl EnrichAttemptOutcome {
+    /// Every outcome, in the order the table's check lists them.
+    pub const ALL: [Self; 2] = [Self::Partial, Self::Unmatched];
+
+    /// The stored spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Partial => "partial",
+            Self::Unmatched => "unmatched",
+        }
+    }
 }
 
 /// `value` unless it is missing or blank.
@@ -371,6 +396,82 @@ impl LibraryStore {
         am.enrich_updated_at = Set(Some(now.clone()));
         am.updated_at = Set(now);
         am.update(self.db()).await.map_err(LibraryError::Orm)?;
+        Ok(())
+    }
+
+    /// The editions among `edition_ids` that `enricher` tried at or after
+    /// `since` without filling every gap
+    /// ([`LibraryStore::record_enrich_attempt`]).
+    ///
+    /// # Arguments
+    ///
+    /// * `enricher` - Which enricher asked (such as `metadata`).
+    /// * `edition_ids` - The editions to check.
+    /// * `since` - Attempts before this time no longer count.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn enrich_attempted_since(
+        &self,
+        enricher: &str,
+        edition_ids: &[String],
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<HashSet<String>> {
+        let rows = find_chunked::<edition_enrich_attempts::Entity, _>(self, edition_ids, |part| {
+            edition_enrich_attempts::Entity::find()
+                .filter(edition_enrich_attempts::Column::Enricher.eq(enricher))
+                .filter(edition_enrich_attempts::Column::EditionId.is_in(part.iter().cloned()))
+        })
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter(|row| parse_dt(&row.attempted_at) >= since)
+            .map(|row| row.edition_id)
+            .collect())
+    }
+
+    /// Records that `enricher` tried `edition_id` now and left gaps open,
+    /// replacing its earlier attempt.
+    ///
+    /// # Arguments
+    ///
+    /// * `edition_id` - The edition asked about.
+    /// * `enricher` - Which enricher asked (such as `metadata`).
+    /// * `outcome` - How the attempt ended.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the write fails (an edition that
+    /// is gone fails its foreign key).
+    pub async fn record_enrich_attempt(
+        &self,
+        edition_id: &str,
+        enricher: &str,
+        outcome: EnrichAttemptOutcome,
+    ) -> Result<()> {
+        use sea_orm::sea_query::OnConflict;
+        let am = edition_enrich_attempts::ActiveModel {
+            edition_id: Set(edition_id.to_string()),
+            enricher: Set(enricher.to_string()),
+            outcome: Set(outcome.as_str().to_string()),
+            attempted_at: Set(now_str()),
+        };
+        edition_enrich_attempts::Entity::insert(am)
+            .on_conflict(
+                OnConflict::columns([
+                    edition_enrich_attempts::Column::EditionId,
+                    edition_enrich_attempts::Column::Enricher,
+                ])
+                .update_columns([
+                    edition_enrich_attempts::Column::Outcome,
+                    edition_enrich_attempts::Column::AttemptedAt,
+                ])
+                .to_owned(),
+            )
+            .exec_without_returning(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
         Ok(())
     }
 

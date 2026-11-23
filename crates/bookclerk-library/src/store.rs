@@ -7179,7 +7179,7 @@ pub use edition_copies::{
     MAX_COPY_ATTEMPTS,
 };
 pub use edition_enrichment::{
-    EditionAsin, EditionEnrichment, EnrichCandidate, EnrichCandidatePage,
+    EditionAsin, EditionEnrichment, EnrichAttemptOutcome, EnrichCandidate, EnrichCandidatePage,
 };
 pub use edition_files::{
     AcquireWriter, AudioStream, EditionAcquisition, EditionFile, FileOwner, FileProbe, FileRole,

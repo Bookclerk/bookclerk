@@ -44,6 +44,7 @@ pub mod domain_events;
 pub mod edition_acquisitions;
 pub mod edition_chapters;
 pub mod edition_copies;
+pub mod edition_enrich_attempts;
 pub mod edition_files;
 pub mod edition_identifiers;
 pub mod editions;
