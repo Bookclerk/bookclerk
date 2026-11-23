@@ -910,6 +910,15 @@ async fn acquires_are_trusted_and_planned_per_item(owner_db: LibraryStore, host_
     assert!(!claimant_may_run(Claimant::Remote, &paced));
     assert!(claimant_may_run(Claimant::Local, &paced));
     assert!(claimant_may_run(Claimant::Remote, &forced_scan));
+    let align = record(
+        JobKind::ChapterAlign,
+        JobPayload {
+            title: Some("edition".into()),
+            ..JobPayload::default()
+        },
+    );
+    assert!(!claimant_may_run(Claimant::Remote, &align));
+    assert!(claimant_may_run(Claimant::Local, &align));
     assert!(job_trusted(&host_db, &trust, &forced).await.unwrap());
     assert!(
         !node_may_claim_job(&host_db, HOST, Claimant::Remote, &forced)

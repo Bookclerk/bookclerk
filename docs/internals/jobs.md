@@ -215,6 +215,7 @@ stateDiagram-v2
 | `branch_request` | `branch_request:node={id}:work={id}` | `network` | none: the branch it is pinned to takes it over the node socket (`requests.claim` / `requests.finish`) |
 | `notify_send` | `notify_send:delivery={id}` | `network` | `run_notify_send` on a node running the notifier instance (requires it); parks itself between retries with `defer_job` |
 | `ingest_batch` | `ingest_batch:batch={id}` | `network` | `run_ingest_batch` on the node that holds the upload's bytes (pinned by `payload.node_id`; never handed to a branch) |
+| `chapter_align` | `chapter_align:edition={id}` | `network` | `run_chapter_align` on a node that holds the library database; the edition is `payload.title` (see [Aligning chapters to a copy](../server/playback.md#aligning-chapters-to-a-copy)) |
 
 `plugin_scheduled` jobs aren't enqueued through the API. Each daemon's cron
 ticker claims a due fire with a compare-and-swap on the instance's
@@ -272,8 +273,8 @@ priority 100 so a backlog of store work does not hold it back. The dedup key
 folds a sweep that comes due while another is queued into that one; one
 that comes due while a sweep runs is asked for again on the next heartbeat,
 so it runs under the limits in force by then. The job evicts from the node's image caches, then deletes scratch
-directories under `{cache}/acquire`, `{cache}/acquire-pdf` and
-`{cache}/convert` that no active job has registered and in which nothing
+directories under `{cache}/acquire`, `{cache}/acquire-pdf`,
+`{cache}/convert` and `{cache}/chapter-align` that no active job has registered and in which nothing
 has changed for an hour (a job may create its directory just before
 registering it, so a file still being written keeps its directory). The heartbeat queues it only after its own beat is
 recorded, so the requirements sweep never finds the job before the node's

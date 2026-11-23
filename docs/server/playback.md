@@ -149,6 +149,7 @@ track list never outranks a book's real chapters.
 | `PUT /api/library/editions/{id}/chapters` | Administrator | Set the chapters by hand; `{"chapters": []}` clears them |
 | `DELETE /api/library/editions/{id}/chapters` | Administrator | Remove the edit, so the best remaining source plays again |
 | `PUT`, `DELETE /api/library/editions/{id}/chapters/pin` | Administrator | Pin one source's list, or remove the pin |
+| `POST /api/library/editions/{id}/chapters/realign` | Administrator | Ask the metadata providers for the chapters again and align them to a stored copy (`202` with the job's id) |
 
 "Administrator" here means the operator, an Owner or an Administrator, as
 for every other metadata edit; an Owner can stop one Administrator
@@ -181,6 +182,34 @@ than 2 seconds longer or shorter than the list's timeline, and its files
 carry chapters, the manifest and `/player` serve the copy's own chapters
 instead. A copy whose files were never probed, or that carries no
 chapters, keeps the edition's list.
+
+### Aligning chapters to a copy
+
+An acquire aligns a metadata provider's chapters to the audio while it
+holds it. A copy that arrived another way is aligned by a `chapter_align`
+job, which an upload naming an ASIN queues once its files are stored and
+an Administrator queues with **Re-align chapters** in the book's details
+(or `POST /api/library/editions/{id}/chapters/realign`). One edition has
+at most one such job waiting; asking again returns it. An edition with no
+ASIN gets `409`.
+
+The job:
+
+1. Asks the metadata providers for the edition's chapters by its ASIN.
+2. Reads a stored copy from the first of the node's destinations that
+   holds every file with a probed running time, into a scratch folder
+   under the download cache that is removed when it ends.
+3. Places the provider's chapters on the copy's timeline. A copy as long
+   as the provider's full runtime keeps the store's brand intro and outro,
+   so the starts stand; any other copy has the intro cut from every start
+   and the outro's chapters dropped, as an acquire from another store
+   does. The destination's chapter title options apply.
+4. Snaps each chapter start to where its title is spoken in the file it
+   falls in, and records the provider's list and the aligned list as
+   claims. The aligned list plays unless a pin or an edit says otherwise.
+
+An edition with no stored copy here, or no provider list, finishes with
+nothing recorded.
 
 ## Events and live updates
 

@@ -63,6 +63,10 @@ another path (by case or Unicode form) is refused.
    become the copy's chapter claim, each file's chapters shifted by the
    running time of the files before it (see
    [Chapters](playback.md#chapters)).
+9. When the book names an ASIN, a `chapter_align` job is queued: it asks
+   the metadata providers for the book's chapters and lines them up with
+   the stored audio (see
+   [Aligning chapters to a copy](playback.md#aligning-chapters-to-a-copy)).
 
 Every file ends with one outcome:
 

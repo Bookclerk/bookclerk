@@ -6,6 +6,7 @@ import { ContinueListening } from "@/components/ContinueListening";
 import { LibraryTagsEditor } from "@/components/LibraryTagsEditor";
 import { TitleDetailModal, type TitleMetaSearchKind } from "@/components/TitleDetailModal";
 import { ConvertBookPanel } from "@/components/ConvertBookPanel";
+import { RealignChaptersPanel } from "@/components/RealignChaptersPanel";
 import { titleDetailFromWork } from "@/lib/titleDetail";
 import { WorkRow } from "@/components/WorkRow";
 import { JobsStrip } from "@/components/JobsStrip";
@@ -607,10 +608,13 @@ export function LibraryPage({
               <>
                 <LibraryTagsEditor workId={selected.id} />
                 {storedEditions(selectedDetail).length > 0 ? (
-                  <ConvertBookPanel
-                    editions={storedEditions(selectedDetail)}
-                    onQueued={() => void refreshMeta()}
-                  />
+                  <>
+                    <ConvertBookPanel
+                      editions={storedEditions(selectedDetail)}
+                      onQueued={() => void refreshMeta()}
+                    />
+                    <RealignChaptersPanel editions={storedEditions(selectedDetail)} />
+                  </>
                 ) : null}
               </>
             ) : undefined

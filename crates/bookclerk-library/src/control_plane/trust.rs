@@ -276,7 +276,8 @@ async fn job_pin_plugin(store: &LibraryStore, job: &JobRecord) -> Result<Option<
 /// interlibrary request ([`JobKind::BranchRequest`]) is never run through
 /// the routed claim: only its branch claims it, over `requests.claim`
 /// (`super::claim_branch_requests`). An ingest batch and a notification
-/// send run only on a node that holds the library database.
+/// send run only on a node that holds the library database, as does a
+/// chapter alignment, which records claims in it.
 #[must_use]
 pub fn claimant_may_run(claimant: Claimant, job: &JobRecord) -> bool {
     if job.kind == JobKind::BranchRequest {
@@ -290,6 +291,11 @@ pub fn claimant_may_run(claimant: Claimant, job: &JobRecord) -> bool {
     // A notification send reads the rendered message and the destination's
     // address from the library database and writes the delivery log.
     if job.kind == JobKind::NotifySend {
+        return claimant == Claimant::Local;
+    }
+    // A chapter alignment reads the edition's files and records its
+    // chapter claims in the library database.
+    if job.kind == JobKind::ChapterAlign {
         return claimant == Claimant::Local;
     }
     claimant == Claimant::Local

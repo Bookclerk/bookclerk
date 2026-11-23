@@ -105,7 +105,12 @@ pub async fn sweep_orphan_temp_dirs(
         }
     }
     let mut swept = 0u32;
-    for name in ["acquire", "acquire-pdf", "convert"] {
+    for name in [
+        "acquire",
+        "acquire-pdf",
+        "convert",
+        crate::chapter_align::SCRATCH_DIR,
+    ] {
         swept += sweep_dir(&cache_dir.join(name), &active_keep, min_age).await;
     }
     Ok(swept)

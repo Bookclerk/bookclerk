@@ -1436,6 +1436,7 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
         ))
         .routes(routes!(crate::library_overrides::list_conflicts))
         .routes(routes!(crate::library_chapters::list_chapter_claims))
+        .routes(routes!(crate::library_chapters::post_chapter_realign))
         .routes(routes!(
             crate::library_chapters::put_edition_chapters,
             crate::library_chapters::delete_edition_chapters

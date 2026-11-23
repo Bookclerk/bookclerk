@@ -25,7 +25,7 @@ use bookclerk_library::control_plane::{
 };
 use bookclerk_library::{
     call_number, copy_source_id, AcquireStatus, AudioStream, ChapterClaimWrite, ChapterSource,
-    FileOwner, FileProbe, JobPayload, LibraryStore,
+    FileOwner, FileProbe, JobPayload, JobTrigger, LibraryStore,
 };
 use bookclerk_resolve::{Entitlement, Holder, HoldingDraft, LinkReason, Listing};
 use bookclerk_storage::{ByteRange, ObjectMeta};
@@ -39,6 +39,7 @@ use super::intake_copy::{self, CopyFailure};
 use super::staging;
 use crate::api::AppState;
 use crate::job_handler::JobExecCtx;
+use crate::jobs::AdmitJob;
 use crate::node_api::uploads::{owner_destinations, OwnerDestination};
 
 /// What one run did, as the job's result text.
@@ -613,7 +614,32 @@ impl Run<'_> {
                 Some(&edition_id),
             ));
         }
+        if evidence.asin.is_some() {
+            self.queue_chapter_align(&edition_id).await;
+        }
         Ok(all(result, None, Some(&edition_id)))
+    }
+
+    /// Queues the alignment of a metadata provider's chapters to the copy
+    /// just stored (`docs/adr/edition-chapters.md`, decision 3). Best
+    /// effort: the book is stored either way, and an Administrator can ask
+    /// for the alignment again.
+    async fn queue_chapter_align(&self, edition_id: &str) {
+        match crate::chapter_align::enqueue_chapter_align(
+            self.state,
+            edition_id,
+            JobTrigger::Scheduler,
+        )
+        .await
+        {
+            Ok(AdmitJob::Created(_) | AdmitJob::Duplicate(_)) => {}
+            Ok(AdmitJob::QueueFull) => {
+                warn!(batch = %self.batch.id, edition = %edition_id, "job queue is full; chapter alignment not queued");
+            }
+            Err(err) => {
+                warn!(batch = %self.batch.id, edition = %edition_id, error = %err, "could not queue the chapter alignment");
+            }
+        }
     }
 
     /// Reads the tags of each of `group`'s audio files, in play order. A
