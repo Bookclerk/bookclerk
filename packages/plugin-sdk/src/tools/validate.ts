@@ -2223,6 +2223,15 @@ const FORBIDDEN_WEBHOOK_HEADERS = [
   "x-real-ip",
 ];
 
+/** Keys an `hmac-sha256` signature table may carry; the host refuses any other. */
+const HMAC_SIGNATURE_FIELDS: readonly string[] = [
+  "scheme",
+  "header",
+  "prefix",
+  "encoding",
+  "secret_setting",
+];
+
 /**
  * Whether `name` is a lowercase HTTP header name (RFC 9110 token characters).
  *
@@ -2335,6 +2344,12 @@ function validateWebhooks(m: Manifest): void {
     if (signature.scheme !== "hmac-sha256") {
       throw new Error(
         `plugin.toml: webhooks[${i}].signature.scheme must be \`none\` or \`hmac-sha256\``,
+      );
+    }
+    const unknown = Object.keys(signature).find((k) => !HMAC_SIGNATURE_FIELDS.includes(k));
+    if (unknown !== undefined) {
+      throw new Error(
+        `plugin.toml: webhooks[${i}].signature.${unknown} is not a field of \`scheme = "hmac-sha256"\``,
       );
     }
     const header = signature.header ?? "";

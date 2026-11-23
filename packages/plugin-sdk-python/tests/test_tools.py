@@ -2230,6 +2230,22 @@ def test_shape_rules_the_host_decodes() -> None:
                             "scheme": "hmac-sha256",
                             "header": "x-sig",
                             "secret_setting": "hook_key",
+                            "algorithm": "sha1",
+                        },
+                    }
+                ]
+            },
+            "signature.algorithm is not a field",
+        ),
+        (
+            {
+                "webhooks": [
+                    {
+                        "name": "inbound",
+                        "signature": {
+                            "scheme": "hmac-sha256",
+                            "header": "x-sig",
+                            "secret_setting": "hook_key",
                             "prefix": 123,
                         },
                     }

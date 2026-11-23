@@ -1819,6 +1819,9 @@ _FORBIDDEN_WEBHOOK_HEADERS = frozenset(
 )
 """Headers a row may never keep: they carry credentials or describe the hop."""
 
+_HMAC_SIGNATURE_FIELDS = frozenset({"scheme", "header", "prefix", "encoding", "secret_setting"})
+"""Keys an ``hmac-sha256`` signature table may carry; the host refuses any other."""
+
 _WEBHOOK_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*\Z")
 """Webhook name grammar."""
 
@@ -1933,6 +1936,12 @@ def _validate_webhooks(m: dict[str, Any]) -> None:
         if scheme != "hmac-sha256":
             raise ValueError(
                 f"plugin.toml: webhooks[{i}].signature.scheme must be `none` or `hmac-sha256`"
+            )
+        unknown = next((k for k in signature if k not in _HMAC_SIGNATURE_FIELDS), None)
+        if unknown is not None:
+            raise ValueError(
+                f"plugin.toml: webhooks[{i}].signature.{unknown} is not a field of "
+                '`scheme = "hmac-sha256"`'
             )
         header = signature.get("header") or ""
         if not _is_webhook_header_name(header) or header in _FORBIDDEN_WEBHOOK_HEADERS:

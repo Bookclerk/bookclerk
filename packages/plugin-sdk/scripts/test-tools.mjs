@@ -566,6 +566,24 @@ for (const triggers of [
     },
     "does not apply to",
   );
+  refuses(
+    "unknown field on a signed webhook",
+    {
+      ...hook,
+      webhooks: [
+        {
+          name: "inbound",
+          signature: {
+            scheme: "hmac-sha256",
+            header: "x-sig",
+            secret_setting: "hook_key",
+            algorithm: "sha1",
+          },
+        },
+      ],
+    },
+    "signature.algorithm is not a field",
+  );
 }
 console.log("ok formatter keeps cron and job triggers");
 const { validateManifest } = await import("../dist/tools/validate.js");
