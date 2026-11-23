@@ -1765,11 +1765,11 @@ fn public_routes() -> OpenApiRouter<Arc<AppState>> {
         ))
         .routes(routes!(
             crate::patron_scopes::get_default_controls,
-            crate::patron_scopes::put_default_controls
+            crate::patron_scopes::patch_default_controls
         ))
         .routes(routes!(
             crate::patron_scopes::get_user_controls,
-            crate::patron_scopes::put_user_controls
+            crate::patron_scopes::patch_user_controls
         ))
         .routes(routes!(
             crate::admin_controls::get_default_admin_controls,

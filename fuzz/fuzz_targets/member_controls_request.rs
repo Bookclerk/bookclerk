@@ -1,7 +1,7 @@
 //! Coverage-guided checks of a member controls body
-//! (`bookclerk-library::control_plane::parse_member_controls` and
-//! `parse_user_controls_request`): the bodies of
-//! `PUT /api/users/default-controls` and `PUT /api/users/{id}/controls`.
+//! (`bookclerk-library::control_plane::parse_default_controls_patch` and
+//! `parse_user_controls_patch`): the bodies of
+//! `PATCH /api/users/default-controls` and `PATCH /api/users/{id}/controls`.
 //! The oracle in `fuzz/oracles/member_controls_request.rs` is shared with
 //! the replay test.
 

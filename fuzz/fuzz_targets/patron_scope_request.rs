@@ -1,5 +1,5 @@
 //! Coverage-guided checks of a patron scope body
-//! (`bookclerk-library::control_plane::parse_patron_scope` and
+//! (`bookclerk-library::control_plane::parse_default_scope_request` and
 //! `parse_user_scope_request`): the bodies of `PUT /api/users/default-scope`
 //! and `PUT /api/users/{id}/scope`. The oracle in
 //! `fuzz/oracles/patron_scope_request.rs` is shared with the replay test.

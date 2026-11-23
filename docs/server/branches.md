@@ -294,8 +294,8 @@ accounts and which of them would travel.
 - **The branch operator's rule.** Each operator decides whether members
   may connect store accounts there with the **Link store accounts**
   member control, for every member or one (**Settings → User
-  Management**, `PUT /api/users/default-controls` and
-  `PUT /api/users/{id}/controls`; see
+  Management**, `PATCH /api/users/default-controls` and
+  `PATCH /api/users/{id}/controls`; see
   [Sharing](../guide/sharing.md#limit-what-a-patron-may-do)). It is on
   by default and nobody can change their own. An Owner or the operator
   can turn it off for one Administrator too; Owners are never limited. A member it is off for adds nothing from a join,

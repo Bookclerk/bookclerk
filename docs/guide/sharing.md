@@ -72,6 +72,10 @@ To set scopes:
    explicit** if you want), and save. **Follow the library's
    default** returns them to the default.
 
+If another Administrator saved a change to the same scope after you
+opened it, Bookclerk saves nothing and says so; open the scope again to
+see their change before you make yours.
+
 A scope applies to the Library page: the list, search, filter menus, book
 pages and covers. It also applies to **Discover**: its shelves and its
 store search show a patron only titles inside their scope. Those titles
@@ -170,6 +174,9 @@ To set them:
 3. To change one person, select them and pick **Allowed** or **Off** for a
    control under **What this patron may do**. **Default** makes that
    control follow the library's default again.
+
+Each control saves on its own, so two Administrators changing different
+controls at the same time keep both changes.
 
 An Owner can also turn single controls off for an Administrator, under
 **What this Administrator may do**: for example, to stop them linking

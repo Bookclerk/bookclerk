@@ -266,12 +266,13 @@ pub(crate) use live::{
 };
 pub use live::{changed_topics, live_revisions, LiveRevision, LiveRevisions, LiveTopic};
 pub use member_controls::{
-    assigned_member_controls, default_member_controls, effective_controls,
-    load_default_member_controls, member_control_overrides, parse_member_controls,
-    parse_user_controls_request, role_follows_default_controls, role_has_controls,
+    assigned_member_controls, change_default_member_controls, change_member_control_overrides,
+    change_member_control_overrides_for, default_member_controls, effective_controls,
+    load_default_member_controls, member_control_overrides, parse_default_controls_patch,
+    parse_user_controls_patch, role_follows_default_controls, role_has_controls,
     set_default_member_controls, set_member_control_overrides, set_member_control_overrides_for,
-    user_may, AssignedControls, ControlOverrides, MemberControl, MemberControls, PutUserControls,
-    MEMBER_CONTROLS_NAMESPACE,
+    user_may, AssignedControls, ControlChanges, ControlChoice, ControlOverrides, MemberControl,
+    MemberControls, PatchDefaultControls, PatchUserControls, MEMBER_CONTROLS_NAMESPACE,
 };
 pub use node_queue::{
     is_node_consumer_id, is_valid_node_id, node_consumer_id, node_queue_name, publish_node_message,
@@ -293,10 +294,11 @@ pub use output::{
 pub use ownership::{nodes_owned_by, set_node_owner, verify_node_owner};
 pub use patron_scope::{
     assigned_patron_scope, default_patron_scope, default_work_scope, load_default_patron_scope,
-    parse_patron_scope, parse_user_scope_request, role_is_scoped, scope_for_user,
-    set_default_patron_scope, set_patron_scope, verify_patron_administrator, work_scope_for_user,
-    AssignedScope, ExplicitContent, PatronScope, PutUserScope, RuleEffect, ScopeField, ScopeRule,
-    EXPLICIT_FACET_KEY, MAX_SCOPE_JSON_BYTES, MAX_SCOPE_RULES, MAX_SCOPE_VALUE_BYTES,
+    parse_default_scope_request, parse_user_scope_request, replace_default_patron_scope,
+    replace_patron_scope, role_is_scoped, scope_for_user, set_default_patron_scope,
+    set_patron_scope, verify_patron_administrator, work_scope_for_user, AssignedScope,
+    ExplicitContent, PatronScope, PutDefaultScope, PutUserScope, RuleEffect, ScopeField, ScopeRule,
+    ScopeVersion, EXPLICIT_FACET_KEY, MAX_SCOPE_JSON_BYTES, MAX_SCOPE_RULES, MAX_SCOPE_VALUE_BYTES,
     PATRON_SCOPE_NAMESPACE,
 };
 pub use pending_joins::{
