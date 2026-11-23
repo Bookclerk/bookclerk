@@ -464,6 +464,7 @@ export function canonicalManifest(manifest: Manifest, options: FormatOptions = {
   const notifications = tableAt(m, "notifications") ?? {};
   const notificationTypes = listAt(notifications, "types").filter(isTable);
   const ingress = tableAt(m, "ingress");
+  const provisioning = tableAt(m, "provisioning");
   const ai = tableAt(m, "ai") ?? {};
   const aiTable = table([
     ["serves", nonEmptyStrings(ai, "serves")],
@@ -624,6 +625,20 @@ export function canonicalManifest(manifest: Manifest, options: FormatOptions = {
         : undefined,
     ],
     ["ingress", ingress ? table([["kind", str(ingress, "kind")]]) : undefined],
+    [
+      "provisioning",
+      provisioning
+        ? table([
+            ["provider", str(provisioning, "provider")],
+            ["grants", strings(provisioning, "grants")],
+            ["token_url", optString(provisioning, "token_url")],
+            ["token_permissions", nonEmptyStrings(provisioning, "token_permissions")],
+            ["inputs", nonEmptyStrings(provisioning, "inputs")],
+            ["outputs", strings(provisioning, "outputs")],
+            ["deprovision", bool(provisioning, "deprovision")],
+          ])
+        : undefined,
+    ],
     ["ai", nonEmpty(aiTable)],
     [
       "capabilities",

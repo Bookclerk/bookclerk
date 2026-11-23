@@ -289,6 +289,32 @@ def _non_empty_table(table: Table) -> Any:
     return table if table else _SKIP
 
 
+def _provisioning(src: Table | None) -> Any:
+    """Return the `[provisioning]` table in the host's field order.
+
+    Args:
+        src: The parsed `[provisioning]` table, or None when absent.
+
+    Returns:
+        `_SKIP` when the table is absent, otherwise the ordered table;
+        `token_url`, `token_permissions` and `inputs` are left out when
+        unset, and `deprovision` is always written.
+    """
+    if src is None:
+        return _SKIP
+    return _table(
+        [
+            ("provider", _str(src, "provider")),
+            ("grants", _strings(src, "grants")),
+            ("token_url", _opt_str(src, "token_url")),
+            ("token_permissions", _non_empty_strings(src, "token_permissions")),
+            ("inputs", _non_empty_strings(src, "inputs")),
+            ("outputs", _strings(src, "outputs")),
+            ("deprovision", _bool(src, "deprovision")),
+        ]
+    )
+
+
 def _named_binding(src: Table | None) -> Any:
     """Return a canonical ``NamedBinding`` (``[secrets]``, ``[work_fs]``, ...).
 
@@ -764,6 +790,7 @@ def canonical_manifest(m: Table) -> Table:
                 if _table_at(m, "ingress") is None
                 else {"kind": _str(_table_at(m, "ingress") or {}, "kind")},
             ),
+            ("provisioning", _provisioning(_table_at(m, "provisioning"))),
             (
                 "ai",
                 _non_empty_table(
