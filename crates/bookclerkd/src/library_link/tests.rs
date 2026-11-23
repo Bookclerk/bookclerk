@@ -1486,6 +1486,8 @@ mod results_and_uploads {
         keeper: Option<Arc<dyn super::super::host_jobs::LocalKeeper>>,
         /// File keys another edition in this install's own library holds.
         held_keys: Vec<String>,
+        /// Whether reading this install's own library for held keys fails.
+        key_check_fails: bool,
     }
 
     /// A [`super::super::host_jobs::LocalKeeper`] that keeps every account,
@@ -1663,6 +1665,9 @@ mod results_and_uploads {
             _destination: &bookclerk_config::DestinationId,
             key: &str,
         ) -> anyhow::Result<bool> {
+            if self.key_check_fails {
+                anyhow::bail!("library unreadable");
+            }
             Ok(self.held_keys.iter().any(|held| held == key))
         }
 
@@ -5059,19 +5064,35 @@ mod results_and_uploads {
     }
 
     /// A key another edition in this host's own library holds is never
-    /// overwritten: the host keeps no copy of the title at all.
+    /// overwritten, and neither is one whose holder cannot be told: the
+    /// host keeps no copy of the title at all.
     #[tokio::test]
     async fn local_copy_skips_a_key_another_edition_holds() {
+        let key = "Author/Title/Title.m4b".to_string();
+        local_copy_keeps_nothing(|local| StubGuests {
+            local: Some(local),
+            held_keys: vec![key.clone()],
+            ..StubGuests::default()
+        })
+        .await;
+        local_copy_keeps_nothing(|local| StubGuests {
+            local: Some(local),
+            key_check_fails: true,
+            ..StubGuests::default()
+        })
+        .await;
+    }
+
+    /// Copies a title whose key already holds another file to this host's
+    /// own destination through the guests `stub` builds over it, and
+    /// asserts nothing is kept and the file there is untouched.
+    async fn local_copy_keeps_nothing(stub: impl FnOnce(PathBuf) -> StubGuests) {
         use super::super::host_jobs::copy_to_local_destinations;
 
         let host_local = tempfile::tempdir().unwrap();
         let work = tempfile::tempdir().unwrap();
         let key = "Author/Title/Title.m4b".to_string();
-        let guests = StubGuests {
-            local: Some(host_local.path().to_path_buf()),
-            held_keys: vec![key.clone()],
-            ..StubGuests::default()
-        };
+        let guests = stub(host_local.path().to_path_buf());
         let book = owner_book("riley-acct", "P1");
         let outbox = work.path().join("t1");
         let source = destination_outbox(&outbox, 0).join(&key);
