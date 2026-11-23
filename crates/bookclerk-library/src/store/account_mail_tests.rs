@@ -5,6 +5,9 @@ use chrono::{Duration, Utc};
 
 use super::notifications::NotifyQueueLimits;
 use super::LibraryStore;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+
+use crate::entities::email_verifications;
 use crate::hash_token;
 use crate::models::UserRole;
 use crate::notifications::{
@@ -170,12 +173,12 @@ async fn only_the_newest_invite_works_and_using_it_verifies_under_every_profile(
             .await
             .unwrap();
         let first = store
-            .mint_invite_ticket(identity.id, "lee@example.com", "account_mail", None)
+            .mint_invite_ticket(user, identity.id, "lee@example.com", "account_mail", None)
             .await
             .unwrap()
             .expect("minted");
         let second = store
-            .mint_invite_ticket(identity.id, "lee@example.com", "account_mail", None)
+            .mint_invite_ticket(user, identity.id, "lee@example.com", "account_mail", None)
             .await
             .unwrap()
             .expect("minted");
@@ -296,7 +299,7 @@ async fn a_stale_send_mints_nothing_and_voids_no_link_under_every_profile() {
             .await
             .unwrap();
         let live = store
-            .mint_invite_ticket(identity.id, "kit@example.com", "account_mail", None)
+            .mint_invite_ticket(user, identity.id, "kit@example.com", "account_mail", None)
             .await
             .unwrap()
             .expect("minted");
@@ -313,7 +316,13 @@ async fn a_stale_send_mints_nothing_and_voids_no_link_under_every_profile() {
         };
         assert!(
             store
-                .mint_invite_ticket(identity.id, "kit@example.com", "account_mail", Some(&lost))
+                .mint_invite_ticket(
+                    user,
+                    identity.id,
+                    "kit@example.com",
+                    "account_mail",
+                    Some(&lost)
+                )
                 .await
                 .unwrap()
                 .is_none(),
@@ -407,14 +416,16 @@ async fn pruning_expired_links_reads_no_rows_under_every_profile() {
         let name = profile.name();
         let store = memory(profile).await.into_store();
         // More outstanding links than the smallest result cap.
+        let mut hashes = Vec::new();
         for n in 0..3 {
             let address = format!("p{n}@example.com");
             let user = member(&store, &address).await;
-            store
+            let token = store
                 .mint_email_verification(user, &address, None)
                 .await
                 .unwrap()
                 .expect("minted");
+            hashes.push(hash_token(token.expose()));
         }
         let later = Utc::now() + Duration::days(2);
         for pass in 0..2 {
@@ -422,6 +433,13 @@ async fn pruning_expired_links_reads_no_rows_under_every_profile() {
                 .prune_account_mail(later)
                 .await
                 .unwrap_or_else(|err| panic!("{name}: pass {pass}: {err}"));
+        }
+        for hash in &hashes {
+            let row = email_verifications::Entity::find_by_id(hash.as_str())
+                .one(&store.db)
+                .await
+                .unwrap();
+            assert!(row.is_none(), "{name}: an expired link survived pruning");
         }
     }
 }
@@ -525,5 +543,67 @@ async fn overlapping_resends_record_one_message_under_every_profile() {
             .await
             .unwrap();
         assert!(later.is_some(), "{name}");
+    }
+}
+
+#[tokio::test]
+async fn a_send_for_an_old_address_mints_nothing_and_voids_no_link_under_every_profile() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = memory(profile).await.into_store();
+        let user = member(&store, "old@example.com").await;
+        store
+            .set_user_email(user, Some("new@example.com"))
+            .await
+            .unwrap();
+        let live = store
+            .mint_email_verification(user, "new@example.com", None)
+            .await
+            .unwrap()
+            .expect("minted");
+        let stale = store
+            .mint_email_verification(user, "old@example.com", None)
+            .await
+            .unwrap();
+        assert!(
+            stale.is_none(),
+            "{name}: a link was minted for an old address"
+        );
+        let identity = store
+            .ensure_local_portal_identity(user, Some("Old"))
+            .await
+            .unwrap();
+        let ticket = store
+            .mint_invite_ticket(user, identity.id, "new@example.com", "account_mail", None)
+            .await
+            .unwrap()
+            .expect("minted");
+        let stale_invite = store
+            .mint_invite_ticket(user, identity.id, "old@example.com", "account_mail", None)
+            .await
+            .unwrap();
+        assert!(
+            stale_invite.is_none(),
+            "{name}: an invite went to an old address"
+        );
+        // The links issued for the current address still work.
+        let body = format!(r#"{{"token":"{}"}}"#, live.expose());
+        let live = parse_verify_email_request(body.as_bytes()).unwrap();
+        assert_eq!(
+            store
+                .use_email_verification(&live, Utc::now())
+                .await
+                .unwrap(),
+            Some(user),
+            "{name}"
+        );
+        let row = crate::entities::claim_tickets::Entity::find()
+            .filter(
+                crate::entities::claim_tickets::Column::TokenHash.eq(hash_token(ticket.expose())),
+            )
+            .one(&store.db)
+            .await
+            .unwrap();
+        assert!(row.is_some_and(|t| t.redeemed_at.is_none()), "{name}");
     }
 }

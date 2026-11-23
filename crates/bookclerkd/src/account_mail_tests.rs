@@ -89,7 +89,7 @@ async fn user_of(library: &LibraryStore, external: &str) -> i64 {
 /// # Returns
 ///
 /// The instance id and the directory, which must outlive the test.
-async fn install_mail_notifier(
+pub(crate) async fn install_mail_notifier(
     state: &crate::api::AppState,
     library: &LibraryStore,
 ) -> (String, tempfile::TempDir) {

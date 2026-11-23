@@ -273,8 +273,10 @@ message, and the message is marked sensitive so notifiers never log it.
 A send that is retried makes a new link and voids the last.
 
 Account mail retries like any other send (see below). A message whose
-user was deleted or disabled, whose address changed before it went out,
-or that has no public address to link to is dropped. Records of sent
+user was deleted or disabled, whose address changed before it went out
+(checked again in the same write that makes its link), whose notifier no
+longer opts into account mail, or that has no public address to link to
+is dropped. Records of sent
 account mail, without their links, are kept for 30 days.
 
 The web API:

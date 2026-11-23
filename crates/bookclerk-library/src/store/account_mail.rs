@@ -80,6 +80,11 @@ pub fn account_mail_slot(kind: AccountMailKind, user_id: i64) -> String {
     format!("account-mail:{}:{user_id}", kind.as_str())
 }
 
+/// SQL condition: the user still has the address a link is minted for, so
+/// a send that read an old address mints nothing and voids nothing.
+/// Binds: user id, address.
+const STILL_ADDRESSED: &str = "EXISTS (SELECT 1 FROM users WHERE id = ? AND email = ?)";
+
 impl LibraryStore {
     /// The instance account mail goes through; `None` when none is chosen.
     ///
@@ -591,6 +596,8 @@ impl LibraryStore {
     ///
     /// # Arguments
     ///
+    /// * `user_id` - The user; nothing is minted or voided unless their
+    ///   stored address is still `emailed_to`.
     /// * `identity_id` - The user's local portal identity.
     /// * `emailed_to` - The address the invite goes to.
     /// * `created_by` - Audit label of whoever asked for the invite.
@@ -599,13 +606,15 @@ impl LibraryStore {
     ///
     /// # Returns
     ///
-    /// The raw ticket, for the link; `None` when the fence no longer holds.
+    /// The raw ticket, for the link; `None` when the fence no longer holds
+    /// or the user's address changed.
     ///
     /// # Errors
     ///
     /// An error when the batch fails.
     pub async fn mint_invite_ticket(
         &self,
+        user_id: i64,
         identity_id: i64,
         emailed_to: &str,
         created_by: &str,
@@ -618,19 +627,31 @@ impl LibraryStore {
                 &format!("account-mail-invite-{}", uuid::Uuid::new_v4()),
                 vec![
                     fenced(
-                        "DELETE FROM claim_tickets WHERE identity_id = ? AND redeemed_at IS NULL",
-                        vec![batch::int(identity_id)],
+                        &format!(
+                            "DELETE FROM claim_tickets WHERE identity_id = ? \
+                             AND redeemed_at IS NULL AND {STILL_ADDRESSED}"
+                        ),
+                        vec![
+                            batch::int(identity_id),
+                            batch::int(user_id),
+                            batch::text(emailed_to),
+                        ],
                         fence,
                     ),
                     fenced(
-                        "INSERT INTO claim_tickets (token_hash, identity_id, expires_at, \
-                         created_by, created_at, emailed_to) SELECT ?, ?, ?, ?, ?, ? WHERE 1 = 1",
+                        &format!(
+                            "INSERT INTO claim_tickets (token_hash, identity_id, expires_at, \
+                             created_by, created_at, emailed_to) SELECT ?, ?, ?, ?, ?, ? \
+                             WHERE {STILL_ADDRESSED}"
+                        ),
                         vec![
                             batch::text(&hash_token(&raw)),
                             batch::int(identity_id),
                             batch::text(&(now + Duration::days(INVITE_DAYS)).to_rfc3339()),
                             batch::text(created_by),
                             batch::text(&now.to_rfc3339()),
+                            batch::text(emailed_to),
+                            batch::int(user_id),
                             batch::text(emailed_to),
                         ],
                         fence,
@@ -654,7 +675,8 @@ impl LibraryStore {
     ///
     /// # Returns
     ///
-    /// The raw token, for the link; `None` when the fence no longer holds.
+    /// The raw token, for the link; `None` when the fence no longer holds
+    /// or the user's address is no longer `email`.
     ///
     /// # Errors
     ///
@@ -672,13 +694,18 @@ impl LibraryStore {
                 &format!("account-mail-verify-{}", uuid::Uuid::new_v4()),
                 vec![
                     fenced(
-                        "DELETE FROM email_verifications WHERE user_id = ?",
-                        vec![batch::int(user_id)],
+                        &format!(
+                            "DELETE FROM email_verifications WHERE user_id = ? \
+                             AND {STILL_ADDRESSED}"
+                        ),
+                        vec![batch::int(user_id), batch::int(user_id), batch::text(email)],
                         fence,
                     ),
                     fenced(
-                        "INSERT INTO email_verifications (token_hash, user_id, email, \
-                         expires_at, created_at) SELECT ?, ?, ?, ?, ? WHERE 1 = 1",
+                        &format!(
+                            "INSERT INTO email_verifications (token_hash, user_id, email, \
+                             expires_at, created_at) SELECT ?, ?, ?, ?, ? WHERE {STILL_ADDRESSED}"
+                        ),
                         vec![
                             batch::text(&hash_token(&raw)),
                             batch::int(user_id),
@@ -687,6 +714,8 @@ impl LibraryStore {
                                 &(now + Duration::hours(EMAIL_VERIFICATION_HOURS)).to_rfc3339(),
                             ),
                             batch::text(&now.to_rfc3339()),
+                            batch::int(user_id),
+                            batch::text(email),
                         ],
                         fence,
                     ),

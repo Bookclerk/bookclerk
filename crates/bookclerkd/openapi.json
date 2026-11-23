@@ -36624,7 +36624,7 @@
             }
           },
           "409": {
-            "description": "The email is used by another account (`email_in_use`), or it changed since the profile was read (`email_changed`; reload and try again).",
+            "description": "The email is used by another account (`email_in_use`), or another change to the address landed while this one was being applied (`email_changed`; reload and try again). It does not detect a change made before this request read the address, so it does not reject a stale form.",
             "content": {
               "application/json": {
                 "schema": {

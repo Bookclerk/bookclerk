@@ -388,7 +388,7 @@ mod tests {
             .await
             .unwrap();
         let ticket = store
-            .mint_invite_ticket(identity.id, "mailed@example.com", "test", None)
+            .mint_invite_ticket(user.id, identity.id, "mailed@example.com", "test", None)
             .await
             .unwrap()
             .expect("minted");

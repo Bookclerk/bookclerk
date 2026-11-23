@@ -39,6 +39,9 @@ export function AccountMailPanel() {
   // The `tested_at` a sent test must replace, while one is on its way.
   const [waitingPast, setWaitingPast] = useState<string | null | undefined>(undefined);
   const mounted = useRef(true);
+  // Advanced by each saved notifier choice; a status read that started
+  // before a save is discarded so it cannot show the old choice.
+  const selection = useRef(0);
 
   const load = useCallback(async () => {
     try {
@@ -70,8 +73,9 @@ export function AccountMailPanel() {
       inFlight = true;
       void (async () => {
         try {
+          const generation = selection.current;
           const next = await getAccountMail();
-          if (done || !mounted.current) return;
+          if (done || !mounted.current || generation !== selection.current) return;
           setStatus(next);
           if (next.tested_at && next.tested_at !== waitingPast) {
             done = true;
@@ -103,7 +107,9 @@ export function AccountMailPanel() {
     setError(null);
     setNotice(null);
     try {
-      setStatus(await putAccountMail(id === "" ? null : id));
+      const next = await putAccountMail(id === "" ? null : id);
+      selection.current += 1;
+      setStatus(next);
     } catch (err) {
       setError(isApiError(err) ? err.message : "Could not save");
     } finally {
@@ -163,7 +169,9 @@ export function AccountMailPanel() {
         <Button
           type="button"
           variant="secondary"
-          disabled={busy || !chosen || status?.not_ready === "notifier_missing"}
+          disabled={
+            busy || waitingPast !== undefined || !chosen || status?.not_ready === "notifier_missing"
+          }
           onClick={() => void test()}
         >
           Send a test

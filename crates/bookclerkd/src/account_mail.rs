@@ -574,6 +574,26 @@ struct Composed {
     link: Option<String>,
 }
 
+/// Ends a send whose link mint changed nothing: the mail is dropped when
+/// the user's address changed meanwhile, otherwise the send lost its
+/// lease and the job is left to its new owner.
+///
+/// # Errors
+///
+/// An error when the send lost its lease, or the library could not be
+/// read or written.
+async fn unminted(
+    library: &LibraryStore,
+    mail: &AccountMail,
+    fence: Option<&bookclerk_library::JobFence>,
+) -> anyhow::Result<String> {
+    let current = library.get_user(mail.user_id).await?;
+    if current.and_then(|u| u.email).as_deref() != Some(mail.address.as_str()) {
+        return dropped(library, &mail.id, "the user's address changed", fence).await;
+    }
+    anyhow::bail!("the send lost its lease before minting the link")
+}
+
 /// Runs one `notify_send` job that sends account mail: mints the link's
 /// token, sends the message and records the outcome on the mail.
 ///
@@ -642,6 +662,24 @@ pub async fn run_account_mail_send(
         )
         .await;
     };
+    // The instance must still opt into account mail: a package under the
+    // same key may have dropped `[notifier] account_mail` since queueing.
+    let opted_in = crate::notifications_api::is_account_mail_notifier(
+        state,
+        &library,
+        &mail.plugin_instance_id,
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("the plugin catalog could not be read"))?;
+    if !opted_in {
+        return dropped(
+            &library,
+            mail_id,
+            "the notifier no longer sends account mail",
+            fence,
+        )
+        .await;
+    }
     let Some(user) = library.get_user(mail.user_id).await? else {
         return dropped(&library, mail_id, "the user was deleted", fence).await;
     };
@@ -682,10 +720,16 @@ pub async fn run_account_mail_send(
                 .ensure_local_portal_identity(user.id, user.display_name.as_deref())
                 .await?;
             let Some(ticket) = library
-                .mint_invite_ticket(identity.id, &mail.address, INVITE_CREATED_BY, fence)
+                .mint_invite_ticket(
+                    user.id,
+                    identity.id,
+                    &mail.address,
+                    INVITE_CREATED_BY,
+                    fence,
+                )
                 .await?
             else {
-                anyhow::bail!("the send lost its lease before minting the invite");
+                return unminted(&library, &mail, fence).await;
             };
             Composed {
                 title: "You're invited to a Bookclerk library".into(),
@@ -712,7 +756,7 @@ pub async fn run_account_mail_send(
                 .mint_email_verification(user.id, &mail.address, fence)
                 .await?
             else {
-                anyhow::bail!("the send lost its lease before minting the link");
+                return unminted(&library, &mail, fence).await;
             };
             Composed {
                 title: "Confirm your email address".into(),
@@ -907,4 +951,4 @@ pub(crate) async fn sweep_once(
 
 #[cfg(test)]
 #[path = "account_mail_tests.rs"]
-mod tests;
+pub(crate) mod tests;
