@@ -20,13 +20,13 @@ fn urls_parse_into_their_targets() {
     assert_eq!(
         target,
         SocketTarget {
-            secure: true,
+            scheme: SocketScheme::Wss,
             host: "abs.example.com".into(),
             port: 443,
         }
     );
     let target = parse_socket_url("ws://10.0.0.5:13378/socket.io").expect("ws");
-    assert_eq!((target.secure, target.port), (false, 13378));
+    assert_eq!((target.scheme, target.port), (SocketScheme::Ws, 13378));
     let target = parse_socket_url("ws://[::1]:8080").expect("v6");
     assert_eq!((target.host.as_str(), target.port), ("::1", 8080));
     let target = parse_socket_url("ws://192.168.1.10:8080").expect("v4");
@@ -194,4 +194,84 @@ fn connect_requests_refuse_each_list_and_value_bound() {
         response: SocketFrame::Binary(vec![0; 257]),
     }];
     assert!(validate_socket_connect(&heartbeat).is_err());
+}
+
+#[test]
+fn tls_urls_are_a_host_and_an_explicit_port() {
+    let target = parse_socket_url("TLS://Connect.Example.com:443").expect("tls");
+    assert_eq!(
+        target,
+        SocketTarget {
+            scheme: SocketScheme::Tls,
+            host: "connect.example.com".into(),
+            port: 443,
+        }
+    );
+    assert!(target.scheme.uses_tls() && target.scheme.is_stream());
+    assert_eq!(target.scheme.as_str(), "tls");
+    assert!(SocketScheme::Wss.uses_tls() && !SocketScheme::Wss.is_stream());
+    assert!(!SocketScheme::Ws.uses_tls());
+    assert_eq!(
+        (SocketScheme::Ws.as_str(), SocketScheme::Wss.as_str()),
+        ("ws", "wss")
+    );
+    let v6 = parse_socket_url("tls://[::1]:7844").expect("v6");
+    assert_eq!((v6.host.as_str(), v6.port), ("::1", 7844));
+    for bad in [
+        "tls://connect.example.com",
+        "tls://[::1]",
+        "tls://connect.example.com:443/",
+        "tls://connect.example.com:443?x=1",
+        "tls://connect.example.com:",
+        "tls://user@connect.example.com:443",
+    ] {
+        assert!(parse_socket_url(bad).is_err(), "{bad} accepted");
+    }
+}
+
+#[test]
+fn tls_connects_take_alpn_ids_and_nothing_websocket() {
+    let mut req = request("tls://connect.example.com:443");
+    req.protocols = vec!["h2".into(), "x-tunnel/1".into()];
+    assert_eq!(
+        validate_socket_connect(&req).expect("alpn").scheme,
+        SocketScheme::Tls
+    );
+    // ALPN ids are not tokens: '/' is fine, space and empty are not.
+    for bad in ["", "has space", "\u{e9}t\u{e9}"] {
+        let mut req = req.clone();
+        req.protocols = vec![bad.into()];
+        assert!(validate_socket_connect(&req).is_err(), "{bad:?} accepted");
+    }
+    let mut long = req.clone();
+    long.protocols = vec!["a".repeat(MAX_SOCKET_ALPN_BYTES + 1)];
+    assert!(validate_socket_connect(&long).is_err());
+    let mut many = req.clone();
+    many.protocols = vec!["a".into(); MAX_SOCKET_HEADERS as usize + 1];
+    assert!(validate_socket_connect(&many).is_err());
+    let mut headers = req.clone();
+    headers.headers = vec![SocketHeader {
+        name: "Authorization".into(),
+        value: "x".into(),
+    }];
+    assert!(validate_socket_connect(&headers).is_err());
+    let mut beats = req.clone();
+    beats.auto_responses = vec![SocketAutoResponse {
+        request: text("2"),
+        response: text("3"),
+    }];
+    assert!(validate_socket_connect(&beats).is_err());
+    let mut attached = req;
+    attached.attachment = vec![0; MAX_SOCKET_ATTACHMENT_BYTES as usize + 1];
+    assert!(validate_socket_connect(&attached).is_err());
+}
+
+#[test]
+fn a_tls_stream_carries_binary_frames_only() {
+    let binary = SocketFrame::Binary(vec![1, 2, 3]);
+    assert!(check_socket_frame_for(SocketScheme::Tls, &binary).is_ok());
+    assert!(check_socket_frame_for(SocketScheme::Tls, &text("x")).is_err());
+    assert!(check_socket_frame_for(SocketScheme::Wss, &text("x")).is_ok());
+    let big = SocketFrame::Binary(vec![0; MAX_SOCKET_FRAME_BYTES as usize + 1]);
+    assert!(check_socket_frame_for(SocketScheme::Tls, &big).is_err());
 }

@@ -1,8 +1,10 @@
 //! Broker tests against a local WebSocket server.
 
 use super::*;
+use bookclerk_plugin_abi::sockets::SocketScheme;
 use bookclerk_plugin_abi::{PluginErrorCode, SocketAutoResponse, SocketHeader, SocketMessageOk};
 use bookclerk_plugin_manifest::NetworkMode;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
 
@@ -598,7 +600,7 @@ async fn the_network_grant_decides_every_dial() {
             assert!(target_granted(
                 &policy,
                 &SocketTarget {
-                    secure: false,
+                    scheme: SocketScheme::Ws,
                     host: "127.0.0.1".into(),
                     port,
                 }
@@ -606,7 +608,7 @@ async fn the_network_grant_decides_every_dial() {
             assert!(!target_granted(
                 &policy,
                 &SocketTarget {
-                    secure: false,
+                    scheme: SocketScheme::Ws,
                     host: "127.0.0.1".into(),
                     port: port.wrapping_add(1),
                 }
@@ -665,7 +667,7 @@ async fn a_refused_connection_frees_its_slot() {
 #[test]
 fn a_fetch_entry_grants_its_own_port_or_the_web_ports() {
     let target = |port| SocketTarget {
-        secure: false,
+        scheme: SocketScheme::Ws,
         host: "127.0.0.1".into(),
         port,
     };
@@ -676,4 +678,196 @@ fn a_fetch_entry_grants_its_own_port_or_the_web_ports() {
     let on = loopback_policy_on(8080);
     assert!(target_granted(&on, &target(8080)));
     assert!(!target_granted(&on, &target(8081)));
+}
+
+/// A one-connection TLS server for `127.0.0.1` offering `alpn`, running
+/// `script` on the stream; returns its port, client settings that trust it,
+/// and the script's result.
+async fn serve_tls_once<F, Fut>(
+    alpn: &[&str],
+    script: F,
+) -> (u16, Arc<ClientConfig>, tokio::task::JoinHandle<Vec<u8>>)
+where
+    F: FnOnce(tokio_rustls::server::TlsStream<TcpStream>) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Vec<u8>> + Send,
+{
+    use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+    use tokio_rustls::rustls::ServerConfig;
+
+    let issued = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()]).expect("cert");
+    let cert = CertificateDer::from(issued.cert.der().to_vec());
+    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(issued.signing_key.serialize_der()));
+    let mut server = ServerConfig::builder_with_provider(bookclerk_tls::crypto_provider())
+        .with_safe_default_protocol_versions()
+        .expect("versions")
+        .with_no_client_auth()
+        .with_single_cert(vec![cert.clone()], key)
+        .expect("server config");
+    server.alpn_protocols = alpn.iter().map(|p| p.as_bytes().to_vec()).collect();
+    let mut roots = RootCertStore::empty();
+    roots.add(cert).expect("root");
+    let client = ClientConfig::builder_with_provider(bookclerk_tls::crypto_provider())
+        .with_safe_default_protocol_versions()
+        .expect("versions")
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
+    let task = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.expect("accept");
+        match acceptor.accept(tcp).await {
+            Ok(stream) => script(stream).await,
+            Err(_) => Vec::new(),
+        }
+    });
+    (port, Arc::new(client), task)
+}
+
+/// A policy with a TCP grant for loopback `port` only.
+fn tcp_policy_on(port: u16) -> EgressPolicy {
+    EgressPolicy {
+        domains: Vec::new(),
+        tcp: vec![bookclerk_plugin_manifest::TcpGrant {
+            host: "127.0.0.1".into(),
+            ports: vec![port],
+        }],
+        ..loopback_policy()
+    }
+}
+
+/// A broker over `policy` with `tls` settings and a fresh recorder.
+fn new_tls_broker(policy: EgressPolicy, tls: Arc<ClientConfig>) -> (SocketBroker, Rc<Seen>) {
+    let seen = Rc::new(Seen::default());
+    let handler: Rc<dyn SocketHandler> = Rc::new(Recorder(Rc::clone(&seen)));
+    (SocketBroker::new(policy, tls, handler, "t-"), seen)
+}
+
+/// A `tls://` connect request for the local server.
+fn tls_request(port: u16, alpn: &[&str]) -> SocketConnectRequest {
+    SocketConnectRequest {
+        url: format!("tls://127.0.0.1:{port}"),
+        protocols: alpn.iter().map(|p| (*p).to_string()).collect(),
+        attachment: b"stream".to_vec(),
+        ..SocketConnectRequest::default()
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_tls_stream_carries_bytes_both_ways_and_the_peer_ends_it_cleanly() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (port, tls, server) = serve_tls_once(&["x-tunnel"], |mut stream| async move {
+                let mut got = vec![0_u8; 4];
+                stream.read_exact(&mut got).await.expect("read");
+                stream.write_all(b"pong").await.expect("write");
+                stream.shutdown().await.expect("close_notify");
+                got
+            })
+            .await;
+            let (broker, seen) = new_tls_broker(tcp_policy_on(port), tls);
+            let info = broker
+                .connect(tls_request(port, &["h2", "x-tunnel"]))
+                .await
+                .expect("connect");
+            assert_eq!(info.protocol.as_deref(), Some("x-tunnel"));
+            let err = broker
+                .send(info.socket.clone(), SocketFrame::Text("ping".into()))
+                .await
+                .expect_err("text on a stream");
+            assert_eq!(err.code, PluginErrorCode::InvalidParams);
+            broker
+                .send(info.socket.clone(), SocketFrame::Binary(b"ping".to_vec()))
+                .await
+                .expect("send");
+            let events = wait_for(&seen, 2).await;
+            assert_eq!(
+                events,
+                vec![
+                    format!("message {:?} stream", SocketFrame::Binary(b"pong".to_vec())),
+                    "closed 1000  true".to_string(),
+                ]
+            );
+            assert_eq!(server.await.expect("server"), b"ping");
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_guest_close_ends_a_tls_stream_with_close_notify() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (port, tls, server) = serve_tls_once(&[], |mut stream| async move {
+                let mut got = Vec::new();
+                // Ends at the broker's close_notify.
+                stream.read_to_end(&mut got).await.expect("read to end");
+                let _ = stream.shutdown().await;
+                got
+            })
+            .await;
+            let (broker, seen) = new_tls_broker(tcp_policy_on(port), tls);
+            let info = broker
+                .connect(tls_request(port, &[]))
+                .await
+                .expect("connect");
+            assert_eq!(info.protocol, None);
+            broker
+                .send(info.socket.clone(), SocketFrame::Binary(b"bye".to_vec()))
+                .await
+                .expect("send");
+            broker
+                .close(info.socket.clone(), 1000, "done".into())
+                .await
+                .expect("close");
+            assert_eq!(server.await.expect("server"), b"bye");
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while !broker.list().await.expect("list").is_empty() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("closed in time");
+            assert!(seen
+                .events
+                .borrow()
+                .iter()
+                .all(|event| !event.starts_with("message")));
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_tls_stream_needs_a_tcp_grant_and_a_trusted_certificate() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (port, tls, _server) =
+                serve_tls_once(&[], |_stream| async move { Vec::new() }).await;
+            // A fetch grant for the same host and port does not cover it.
+            let target = SocketTarget {
+                scheme: SocketScheme::Tls,
+                host: "127.0.0.1".into(),
+                port,
+            };
+            assert!(!target_granted(&loopback_policy_on(port), &target));
+            assert!(target_granted(&tcp_policy_on(port), &target));
+            let (broker, _seen) = new_tls_broker(loopback_policy_on(port), Arc::clone(&tls));
+            let err = broker
+                .connect(tls_request(port, &[]))
+                .await
+                .expect_err("no tcp grant");
+            assert_eq!(err.code, PluginErrorCode::NetworkNotGranted);
+
+            // Granted, but Mozilla's roots do not trust the test certificate.
+            let (broker, _seen) = new_broker(tcp_policy_on(port));
+            let err = broker
+                .connect(tls_request(port, &[]))
+                .await
+                .expect_err("untrusted");
+            assert_eq!(err.code, PluginErrorCode::Unavailable);
+            assert!(broker.shared.table.borrow().is_empty(), "no pending leak");
+        })
+        .await;
 }

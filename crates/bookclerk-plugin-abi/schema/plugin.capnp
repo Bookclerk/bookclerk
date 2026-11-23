@@ -4215,7 +4215,8 @@ struct AiRunReply {
   }
 }
 
-# One WebSocket message.
+# One WebSocket message, or one chunk of a `tls://` stream (always
+# `binary`).
 struct SocketFrame {
   union {
     # Text message, UTF-8.
@@ -4244,14 +4245,18 @@ struct SocketAutoResponse {
 
 # Arguments of `Sockets.connect`.
 struct SocketConnectRequest {
-  # `wss://` or `ws://` URL, at most `maxSocketUrlBytes`. The host must be on
-  # the plugin's network grant.
+  # `wss://` or `ws://` URL, at most `maxSocketUrlBytes`, or
+  # `tls://host:port` for a raw TLS byte stream (port required, nothing
+  # after it). The host must be on the plugin's network grant; a `tls://`
+  # stream needs a `tcp` grant for that host and port.
   url @0 :Text;
-  # Requested subprotocols, at most `maxSocketHeaders`.
+  # Requested subprotocols, at most `maxSocketHeaders`; on a `tls://`
+  # stream, the ALPN protocol ids to offer (visible ASCII, 1 to 255 bytes).
   protocols @1 :List(Text);
-  # Extra request headers, at most `maxSocketHeaders`.
+  # Extra request headers, at most `maxSocketHeaders`; none on `tls://`.
   headers @2 :List(SocketHeader);
-  # Heartbeats the broker answers, at most `maxSocketAutoResponses`.
+  # Heartbeats the broker answers, at most `maxSocketAutoResponses`; none on
+  # `tls://`.
   autoResponses @3 :List(SocketAutoResponse);
   # Initial attachment, at most `maxSocketAttachmentBytes`.
   attachment @4 :Data;
@@ -4263,7 +4268,8 @@ struct SocketInfo {
   socket @0 :Text;
   # URL the socket was opened to, without credentials.
   url @1 :Text;
-  # Subprotocol the server chose; empty when none.
+  # Subprotocol the server chose (on `tls://`, the negotiated ALPN id);
+  # empty when none.
   protocol @2 :Text $optional;
   # Current attachment.
   attachment @3 :Data;

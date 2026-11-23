@@ -624,6 +624,18 @@ are UTF-8 JSON, so any SDK reads what another stored. See the
   instance holds at most 8 sockets it dialed (`maxSocketsPerInstance`),
   and apart from those at most 256 sockets to the library that
   `Origin.connect` opened (`maxOriginSocketsPerInstance`).
+- **TLS streams.** A `tls://host:port` URL opens a raw TLS byte stream
+  instead of a WebSocket, for a protocol that has no WebSocket transport
+  (an ngrok or Cloudflare Tunnel agent's connection, for example). The
+  port is required and nothing may follow it. The subprotocols are the
+  ALPN ids to offer (1 to 255 visible ASCII bytes each), and the socket's
+  `protocol` is the one the server chose. A stream takes no headers and
+  no heartbeats, and carries binary frames only: each frame the plugin
+  sends is written as is, and each read (up to 64 KiB) arrives as one
+  binary message, so the plugin does its own framing. The server ending
+  the stream is a clean close with code 1000. Closing a stream sends TLS
+  `close_notify` and waits up to 5 seconds for the server to end its
+  side; the close reports the plugin's code.
 - **Handler.** A plugin that declares `[sockets]` may return a
   `SocketHandler` from `open`. The host calls `message` with each frame
   and the socket's attachment, and `closed` once when the socket ends,
@@ -657,11 +669,12 @@ are UTF-8 JSON, so any SDK reads what another stored. See the
   network grant as any other connection is.
 - **Broker.** One broker per plugin instance holds its sockets: the
   front door, `bookclerk-workerd`, started in broker mode inside the
-  plugin's jail under its effective network grant. A socket's host must
-  be on the grant's `domains` (a WebSocket starts as an HTTP request) or
-  have a `tcp` entry for its port, and the broker connects only to
-  resolved addresses the grant allows, with no redirects. `wss://` is
-  checked against Mozilla's root certificates. The broker sends the
+  plugin's jail under its effective network grant. A WebSocket's host
+  must be on the grant's `domains` (a WebSocket starts as an HTTP
+  request) or have a `tcp` entry for its port; a `tls://` stream needs
+  the `tcp` entry. The broker connects only to resolved addresses the
+  grant allows, with no redirects. `wss://` and `tls://` are checked
+  against Mozilla's root certificates. The broker sends the
   host's `User-Agent` (see [User-Agent](capabilities.md#user-agent)) and
   gives up on a connection after 10 seconds, a handshake after 15, a
   frame write after 10 and a close after 5.

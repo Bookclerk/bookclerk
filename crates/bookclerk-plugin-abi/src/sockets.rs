@@ -1,5 +1,8 @@
 //! Sans-IO checks for host-brokered sockets (`Bindings.sockets`).
 //!
+//! A socket is a WebSocket (`ws://`, `wss://`) or a raw TLS byte stream
+//! (`tls://host:port`) whose chunks travel as binary frames.
+//!
 //! Every side applies the same rules: the guest SDK before it sends, the host
 //! when it serves `Sockets`, and the broker before it dials or answers a
 //! heartbeat. Keeping them here, over plain values, lets the fuzz target and
@@ -36,11 +39,56 @@ const FORBIDDEN_HEADERS: &[&str] = &[
     "upgrade",
 ];
 
+/// What kind of connection a socket URL asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SocketScheme {
+    /// `ws://`: a WebSocket over plain TCP.
+    Ws,
+    /// `wss://`: a WebSocket over TLS.
+    Wss,
+    /// `tls://`: a raw TLS byte stream; frames are binary chunks.
+    Tls,
+}
+
+impl SocketScheme {
+    /// True when the connection runs over TLS (`wss://` and `tls://`).
+    #[must_use]
+    pub fn uses_tls(self) -> bool {
+        match self {
+            Self::Ws => false,
+            Self::Wss | Self::Tls => true,
+        }
+    }
+
+    /// True for a raw byte stream rather than a WebSocket.
+    #[must_use]
+    pub fn is_stream(self) -> bool {
+        match self {
+            Self::Ws | Self::Wss => false,
+            Self::Tls => true,
+        }
+    }
+
+    /// The scheme as a URL spells it, lowercase.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ws => "ws",
+            Self::Wss => "wss",
+            Self::Tls => "tls",
+        }
+    }
+}
+
+/// Longest ALPN protocol id a `tls://` stream may offer, in bytes (the TLS
+/// limit).
+pub const MAX_SOCKET_ALPN_BYTES: usize = 255;
+
 /// Where a validated socket URL points.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SocketTarget {
-    /// True for `wss://`.
-    pub secure: bool,
+    /// The kind of connection.
+    pub scheme: SocketScheme,
     /// Host name or IP literal, lowercased, without brackets.
     pub host: String,
     /// Port, defaulted from the scheme when the URL names none.
@@ -140,7 +188,8 @@ pub fn check_socket_close(code: u16, reason: &str) -> Result<u16> {
 /// Parses a socket URL into its target.
 ///
 /// Only `ws://` and `wss://` URLs with a host, no userinfo and no fragment
-/// are accepted, at most `maxSocketUrlBytes` long. A name host may use only
+/// are accepted, at most `maxSocketUrlBytes` long, and `tls://host:port`
+/// with an explicit port and nothing after it. A name host may use only
 /// letters, digits, `.`, `-` and `_`, with no punycode (`xn--`) label; a
 /// bracketed host must be an IPv6 address. Percent-encoded hosts fail closed. Whether the host is reachable is the network grant's call, not
 /// this function's.
@@ -160,13 +209,15 @@ pub fn parse_socket_url(url: &str) -> Result<SocketTarget> {
             "socket url has whitespace or control bytes",
         ));
     }
-    let (secure, rest) = if let Some(rest) = strip_prefix_ci(url, "wss://") {
-        (true, rest)
+    let (scheme, rest) = if let Some(rest) = strip_prefix_ci(url, "wss://") {
+        (SocketScheme::Wss, rest)
     } else if let Some(rest) = strip_prefix_ci(url, "ws://") {
-        (false, rest)
+        (SocketScheme::Ws, rest)
+    } else if let Some(rest) = strip_prefix_ci(url, "tls://") {
+        (SocketScheme::Tls, rest)
     } else {
         return Err(PluginError::invalid_params(
-            "socket url must start with ws:// or wss://",
+            "socket url must start with ws://, wss:// or tls://",
         ));
     };
     if rest.contains('#') {
@@ -186,7 +237,16 @@ pub fn parse_socket_url(url: &str) -> Result<SocketTarget> {
             "socket url host may not be percent-encoded",
         ));
     }
-    let default_port = if secure { 443 } else { 80 };
+    if scheme.is_stream() && authority_end != rest.len() {
+        return Err(PluginError::invalid_params(
+            "a tls:// socket url is only a host and port",
+        ));
+    }
+    let default_port = match scheme {
+        SocketScheme::Ws => Some(80),
+        SocketScheme::Wss => Some(443),
+        SocketScheme::Tls => None,
+    };
     let (host, port) = split_host_port(authority, default_port)?;
     if host.is_empty() {
         return Err(PluginError::invalid_params("socket url has no host"));
@@ -219,7 +279,7 @@ pub fn parse_socket_url(url: &str) -> Result<SocketTarget> {
         ));
     }
     Ok(SocketTarget {
-        secure,
+        scheme,
         host: host.to_ascii_lowercase(),
         port,
     })
@@ -229,9 +289,10 @@ pub fn parse_socket_url(url: &str) -> Result<SocketTarget> {
 ///
 /// # Errors
 ///
-/// `invalid_params` for a malformed port, an unclosed or non-IPv6 bracketed
-/// host, or an unbracketed IPv6 host.
-fn split_host_port(authority: &str, default_port: u16) -> Result<(&str, u16)> {
+/// `invalid_params` for a malformed or missing port (when there is no
+/// `default_port`), an unclosed or non-IPv6 bracketed host, or an
+/// unbracketed IPv6 host.
+fn split_host_port(authority: &str, default_port: Option<u16>) -> Result<(&str, u16)> {
     let bad_port = || PluginError::invalid_params("socket url has a malformed port");
     if let Some(rest) = authority.strip_prefix('[') {
         let close = rest
@@ -246,7 +307,7 @@ fn split_host_port(authority: &str, default_port: u16) -> Result<(&str, u16)> {
         let after = &rest[close + 1..];
         let port = match after.strip_prefix(':') {
             Some(port) => parse_port(port).ok_or_else(bad_port)?,
-            None if after.is_empty() => default_port,
+            None if after.is_empty() => default_port.ok_or_else(bad_port)?,
             None => return Err(bad_port()),
         };
         return Ok((host, port));
@@ -260,7 +321,7 @@ fn split_host_port(authority: &str, default_port: u16) -> Result<(&str, u16)> {
             }
             Ok((host, parse_port(port).ok_or_else(bad_port)?))
         }
-        None => Ok((authority, default_port)),
+        None => Ok((authority, default_port.ok_or_else(bad_port)?)),
     }
 }
 
@@ -342,6 +403,9 @@ pub(crate) fn is_token(name: &str) -> bool {
 /// frames, or an oversized attachment.
 pub fn validate_socket_connect(request: &SocketConnectRequest) -> Result<SocketTarget> {
     let target = parse_socket_url(&request.url)?;
+    if target.scheme.is_stream() {
+        return validate_stream_connect(request, target);
+    }
     if request.protocols.len() > MAX_SOCKET_HEADERS as usize {
         return Err(PluginError::invalid_params(format!(
             "{} subprotocols exceed {MAX_SOCKET_HEADERS}",
@@ -394,6 +458,66 @@ pub fn validate_socket_connect(request: &SocketConnectRequest) -> Result<SocketT
     check_auto_responses(&request.auto_responses)?;
     check_socket_attachment(&request.attachment)?;
     Ok(target)
+}
+
+/// The rest of a `tls://` connect request: ALPN ids instead of
+/// subprotocols, and no headers or heartbeats, which a byte stream has no
+/// place for.
+///
+/// # Errors
+///
+/// `invalid_params` naming the first problem, or the attachment check's
+/// `payload_too_large`.
+fn validate_stream_connect(
+    request: &SocketConnectRequest,
+    target: SocketTarget,
+) -> Result<SocketTarget> {
+    if request.protocols.len() > MAX_SOCKET_HEADERS as usize {
+        return Err(PluginError::invalid_params(format!(
+            "{} ALPN protocols exceed {MAX_SOCKET_HEADERS}",
+            request.protocols.len()
+        )));
+    }
+    if request.protocols.iter().any(|p| !is_alpn_id(p)) {
+        return Err(PluginError::invalid_params(format!(
+            "an ALPN protocol id must be 1 to {MAX_SOCKET_ALPN_BYTES} bytes of visible ASCII"
+        )));
+    }
+    if !request.headers.is_empty() {
+        return Err(PluginError::invalid_params(
+            "a tls:// socket takes no request headers",
+        ));
+    }
+    if !request.auto_responses.is_empty() {
+        return Err(PluginError::invalid_params(
+            "a tls:// socket takes no heartbeats",
+        ));
+    }
+    check_socket_attachment(&request.attachment)?;
+    Ok(target)
+}
+
+/// True when `id` is an ALPN protocol id the broker offers: 1 to
+/// [`MAX_SOCKET_ALPN_BYTES`] bytes of visible ASCII.
+#[must_use]
+pub fn is_alpn_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= MAX_SOCKET_ALPN_BYTES && id.bytes().all(|b| b.is_ascii_graphic())
+}
+
+/// Checks a frame the guest sends on a socket of `scheme`: a `tls://`
+/// stream carries bytes only.
+///
+/// # Errors
+///
+/// `invalid_params` for a text frame on a stream; the frame size check's
+/// `payload_too_large`.
+pub fn check_socket_frame_for(scheme: SocketScheme, frame: &SocketFrame) -> Result<()> {
+    if scheme.is_stream() && matches!(frame, SocketFrame::Text(_)) {
+        return Err(PluginError::invalid_params(
+            "a tls:// socket carries binary frames only",
+        ));
+    }
+    check_socket_frame(frame)
 }
 
 /// Checks declared heartbeat pairs: at most `maxSocketAutoResponses`, each

@@ -6851,7 +6851,9 @@ SocketFrame = Union[
     SocketFrameText,
     SocketFrameBinary,
 ]
-"""One WebSocket message."""
+"""One WebSocket message, or one chunk of a `tls://` stream (always
+`binary`).
+"""
 
 
 class SocketHeader(TypedDict):
@@ -6883,11 +6885,15 @@ class SocketConnectRequest(TypedDict):
     """Arguments of `Sockets.connect`.
 
     Attributes:
-        url: `wss://` or `ws://` URL, at most `maxSocketUrlBytes`. The host must be on
-            the plugin's network grant.
-        protocols: Requested subprotocols, at most `maxSocketHeaders`.
-        headers: Extra request headers, at most `maxSocketHeaders`.
-        autoResponses: Heartbeats the broker answers, at most `maxSocketAutoResponses`.
+        url: `wss://` or `ws://` URL, at most `maxSocketUrlBytes`, or `tls://host:port`
+            for a raw TLS byte stream (port required, nothing after it). The host must
+            be on the plugin's network grant; a `tls://` stream needs a `tcp` grant for
+            that host and port.
+        protocols: Requested subprotocols, at most `maxSocketHeaders`; on a `tls://`
+            stream, the ALPN protocol ids to offer (visible ASCII, 1 to 255 bytes).
+        headers: Extra request headers, at most `maxSocketHeaders`; none on `tls://`.
+        autoResponses: Heartbeats the broker answers, at most `maxSocketAutoResponses`;
+            none on `tls://`.
         attachment: Initial attachment, at most `maxSocketAttachmentBytes`.
     """
 
@@ -6904,8 +6910,8 @@ class SocketInfo(TypedDict):
     Attributes:
         socket: Host-minted socket id, stable for the socket's life.
         url: URL the socket was opened to, without credentials.
-        protocol: Subprotocol the server chose; empty when none. Omitted when absent
-            (wire zero value).
+        protocol: Subprotocol the server chose (on `tls://`, the negotiated ALPN id);
+            empty when none. Omitted when absent (wire zero value).
         attachment: Current attachment.
     """
 

@@ -1609,6 +1609,18 @@ fn socket_request_seeds_are_current() {
     };
     let mut bad_id = delivery.clone();
     bad_id.socket = "../s".into();
+    let tunnel = SocketConnectRequest {
+        url: "tls://connect.ngrok-agent.com:443".into(),
+        protocols: vec!["h2".into(), "x-tunnel/1".into()],
+        attachment: b"session".to_vec(),
+        ..SocketConnectRequest::default()
+    };
+    let mut tunnel_headers = tunnel.clone();
+    tunnel_headers.headers = abs.headers.clone();
+    let mut tunnel_heartbeat = tunnel.clone();
+    tunnel_heartbeat.auto_responses = abs.auto_responses.clone();
+    let mut tunnel_alpn = tunnel.clone();
+    tunnel_alpn.protocols = vec!["has space".into()];
     let seeds: Vec<(&str, Vec<u8>)> = vec![
         ("url_wss.bin", url("wss://abs.example.com/socket.io/?EIO=4")),
         ("url_ws_port.bin", url("ws://10.0.0.5:13378/socket.io")),
@@ -1617,6 +1629,23 @@ fn socket_request_seeds_are_current() {
         ("url_backslash.bin", url("wss://exa\\mple.com/")),
         ("url_short_ipv4.bin", url("ws://127.1/")),
         ("url_https.bin", url("https://example.com")),
+        ("url_tls.bin", url("tls://Connect.Example.com:443")),
+        ("url_tls_v6.bin", url("tls://[::1]:7844")),
+        ("url_tls_no_port.bin", url("tls://connect.example.com")),
+        ("url_tls_path.bin", url("tls://connect.example.com:443/x")),
+        ("connect_tls.bin", capnp_socket_connect(&tunnel)),
+        (
+            "connect_tls_headers.bin",
+            capnp_socket_connect(&tunnel_headers),
+        ),
+        (
+            "connect_tls_heartbeat.bin",
+            capnp_socket_connect(&tunnel_heartbeat),
+        ),
+        (
+            "connect_tls_bad_alpn.bin",
+            capnp_socket_connect(&tunnel_alpn),
+        ),
         ("connect_abs.bin", capnp_socket_connect(&abs)),
         (
             "connect_smuggled_header.bin",
