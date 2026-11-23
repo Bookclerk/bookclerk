@@ -36,7 +36,7 @@
       "description": "Named capabilities this plugin exports from PluginWorker.open.",
       "items": {
         "type": "string",
-        "enum": ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles", "notifier", "ingress", "ai"]
+        "enum": ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles", "notifier", "ingress", "ai", "provisioning"]
       }
     },
     "media": {
@@ -129,6 +129,55 @@
           "type": "string",
           "enum": ["relay", "direct"],
           "description": "relay: the provider relays each request to the plugin, which hands it to the library through ORIGIN. direct: the public address points at the daemon; the plugin only keeps it current."
+        }
+      }
+    },
+    "provisioning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "grants", "outputs"],
+      "description": "The guided setup a provisioning plugin offers. Required for a plugin exporting the provisioning entrypoint; forbidden for every other plugin.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,31}$",
+          "description": "The provider the grant is for (cloudflare); the account-linking screen groups plugins by it."
+        },
+        "grants": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "The grants the plugin accepts.",
+          "items": { "type": "string", "enum": ["api_token"] }
+        },
+        "token_url": {
+          "type": "string",
+          "pattern": "^https://",
+          "maxLength": 2048,
+          "description": "Where the operator creates a token at the provider."
+        },
+        "token_permissions": {
+          "type": "array",
+          "maxItems": 16,
+          "description": "The permissions a pasted token needs, one line each, shown on the setup screen.",
+          "items": { "type": "string", "minLength": 1, "maxLength": 120 }
+        },
+        "inputs": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "Non-secret setting keys the screen asks for before running.",
+          "items": { "type": "string" }
+        },
+        "outputs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "Setting keys, secret or not, the plugin may write; the host refuses any other key in its answer.",
+          "items": { "type": "string" }
+        },
+        "deprovision": {
+          "type": "boolean",
+          "description": "Whether the plugin can remove what it created; the host offers it before the instance is deleted."
         }
       }
     },

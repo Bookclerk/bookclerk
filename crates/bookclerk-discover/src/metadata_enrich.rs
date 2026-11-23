@@ -10,6 +10,13 @@
 //!
 //! The edition is marked enriched only after the rest is written, so a
 //! write that fails leaves it unmarked and the next run tries again.
+//!
+//! An ask that leaves gaps open (no record matched, or the record filled
+//! only some) is recorded as an attempt, and the edition is not asked again
+//! until [`MetadataEnrichOptions::retry_after`] passes. So titles that never
+//! match do not spend each run's requests ahead of titles that would, and a
+//! partly filled title is asked again later for the rest. An ask a provider
+//! failed is not recorded, so the next run asks again.
 
 use std::time::Duration;
 
@@ -17,7 +24,7 @@ use bookclerk_enrich::{
     isbn_identifier, normalize_isbn, record_identifier, MetadataAnswer, MetadataProviders,
     ProvidedRecord,
 };
-use bookclerk_library::{EditionEnrichment, EnrichCandidate, LibraryStore};
+use bookclerk_library::{EditionEnrichment, EnrichAttemptOutcome, EnrichCandidate, LibraryStore};
 use bookclerk_plugin_sdk::{
     IdentifierScheme, MetadataLookupParams, MetadataRecord, MetadataSearchParams,
 };
@@ -35,9 +42,12 @@ const SEARCH_LIMIT: u32 = 5;
 /// `enrich_source` prefix marking a title filled by a metadata provider; the
 /// provider's plugin key follows it.
 pub const METADATA_ENRICH_SOURCE_PREFIX: &str = "metadata:";
-/// `enrich_source` the in-process Open Library code wrote before providers
-/// moved into plugins; such editions count as already enriched.
-const LEGACY_OPENLIBRARY_SOURCE: &str = "openlibrary";
+/// The enricher name gap-fill attempts are recorded under
+/// (`edition_enrich_attempts.enricher`).
+pub const METADATA_ENRICHER: &str = "metadata";
+/// Default wait before an edition whose last ask left gaps open is asked
+/// again (30 days).
+pub const DEFAULT_RETRY_AFTER: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// Confidence recorded for a provider fill (an ISBN or title match, not scored).
 const PROVIDER_CONFIDENCE: f64 = 0.7;
 
@@ -48,6 +58,9 @@ pub struct MetadataEnrichOptions {
     pub min_interval: Duration,
     /// Most provider asks in one run; titles past the cap wait for the next run.
     pub max_requests: usize,
+    /// How long an edition whose last ask left gaps open waits before it
+    /// is asked again.
+    pub retry_after: Duration,
 }
 
 impl Default for MetadataEnrichOptions {
@@ -55,6 +68,7 @@ impl Default for MetadataEnrichOptions {
         Self {
             min_interval: DEFAULT_MIN_INTERVAL,
             max_requests: DEFAULT_MAX_REQUESTS_PER_RUN,
+            retry_after: DEFAULT_RETRY_AFTER,
         }
     }
 }
@@ -89,6 +103,16 @@ impl Gaps {
         self.subjects || self.description || self.cover || self.language
     }
 
+    /// The gaps left once `filled` were filled.
+    fn without(self, filled: Self) -> Self {
+        Self {
+            subjects: self.subjects && !filled.subjects,
+            description: self.description && !filled.description,
+            cover: self.cover && !filled.cover,
+            language: self.language && !filled.language,
+        }
+    }
+
     /// True when `record` has a non-blank value for at least one gap.
     fn filled_by(self, record: &MetadataRecord) -> bool {
         let has =
@@ -112,8 +136,9 @@ const ENRICH_PAGE: u64 = 2;
 /// Fills missing description, subjects, cover and language from the
 /// deployed metadata providers.
 ///
-/// Walks the held editions and skips those a provider already filled. With
-/// no provider deployed, every answer is empty and nothing changes.
+/// Walks the held editions with gaps, skipping those whose last ask left
+/// gaps open less than [`MetadataEnrichOptions::retry_after`] ago. With no
+/// provider deployed nothing is asked.
 ///
 /// # Arguments
 ///
@@ -135,6 +160,13 @@ pub async fn enrich_books_from_metadata(
 ) -> Result<usize> {
     let mut enriched = 0usize;
     let mut requests = 0usize;
+    if providers.provider_keys().is_empty() {
+        return Ok(0);
+    }
+    let retry_after = chrono::Duration::from_std(opts.retry_after).unwrap_or(chrono::Duration::MAX);
+    let since = chrono::Utc::now()
+        .checked_sub_signed(retry_after)
+        .unwrap_or(chrono::DateTime::<chrono::Utc>::MIN_UTC);
 
     // The library is read a page at a time, and reading stops once the
     // run's request cap is spent.
@@ -148,12 +180,18 @@ pub async fn enrich_books_from_metadata(
         let page = library
             .enrich_candidates_page(after.as_deref(), ENRICH_PAGE)
             .await?;
+        let with_gaps: Vec<String> = page
+            .candidates
+            .iter()
+            .filter(|book| Gaps::of(book).any())
+            .map(|book| book.edition_id.clone())
+            .collect();
+        let tried = library
+            .enrich_attempted_since(METADATA_ENRICHER, &with_gaps, since)
+            .await?;
         for book in page.candidates {
-            if already_enriched(&book) {
-                continue;
-            }
             let gaps = Gaps::of(&book);
-            if !gaps.any() {
+            if !gaps.any() || tried.contains(&book.edition_id) {
                 continue;
             }
             let isbn = book
@@ -216,17 +254,32 @@ pub async fn enrich_books_from_metadata(
                     "metadata provider failed for this edition"
                 );
             }
-            let Some(matched) = matched else {
-                continue;
+            // A provider that failed might have had the record (or the
+            // rest of it): only an ask every provider answered is recorded.
+            let answered = answer.failures.is_empty();
+            let filled = match &matched {
+                Some(matched) => apply_record(library, &book, gaps, matched).await?,
+                None => None,
             };
-            if apply_record(library, &book, gaps, &matched).await? {
-                enriched += 1;
-                tracing::info!(
-                    edition_id = %book.edition_id,
-                    title = %book.title,
-                    provider = %matched.provider,
-                    "filled edition metadata from a metadata provider"
-                );
+            let outcome = match filled {
+                Some(filled) => {
+                    enriched += 1;
+                    tracing::info!(
+                        edition_id = %book.edition_id,
+                        title = %book.title,
+                        provider = matched.as_ref().map_or("", |m| m.provider.as_str()),
+                        "filled edition metadata from a metadata provider"
+                    );
+                    gaps.without(filled)
+                        .any()
+                        .then_some(EnrichAttemptOutcome::Partial)
+                }
+                None => Some(EnrichAttemptOutcome::Unmatched),
+            };
+            if let Some(outcome) = outcome.filter(|_| answered) {
+                library
+                    .record_enrich_attempt(&book.edition_id, METADATA_ENRICHER, outcome)
+                    .await?;
             }
         }
         match page.next {
@@ -236,13 +289,6 @@ pub async fn enrich_books_from_metadata(
     }
 
     Ok(enriched)
-}
-
-/// True when a provider already filled `book`.
-fn already_enriched(book: &EnrichCandidate) -> bool {
-    book.enrich_source.as_deref().is_some_and(|source| {
-        source.starts_with(METADATA_ENRICH_SOURCE_PREFIX) || source == LEGACY_OPENLIBRARY_SOURCE
-    })
 }
 
 /// The first search hit with the same title as `title`, once both are
@@ -280,13 +326,13 @@ fn normalized_title(title: &str) -> String {
 ///
 /// # Returns
 ///
-/// `false` when the record fills none of the edition's gaps.
+/// The gaps the record filled; `None` when it fills none of them.
 async fn apply_record(
     library: &LibraryStore,
     book: &EnrichCandidate,
     gaps: Gaps,
     matched: &ProvidedRecord,
-) -> Result<bool> {
+) -> Result<Option<Gaps>> {
     let record = &matched.record;
     let fill = |gap: bool, value: Option<&String>| -> Option<String> {
         value
@@ -298,8 +344,14 @@ async fn apply_record(
     let description = fill(gaps.description, record.description.as_ref());
     let cover_url = fill(gaps.cover, record.cover_url.as_ref());
     let language = fill(gaps.language, record.language.as_ref());
-    if subjects.is_none() && description.is_none() && cover_url.is_none() && language.is_none() {
-        return Ok(false);
+    let filled = Gaps {
+        subjects: subjects.is_some(),
+        description: description.is_some(),
+        cover: cover_url.is_some(),
+        language: language.is_some(),
+    };
+    if !filled.any() {
+        return Ok(None);
     }
 
     // The work's Open Library id first: the edition is marked last, so a
@@ -330,7 +382,7 @@ async fn apply_record(
             },
         )
         .await?;
-    Ok(true)
+    Ok(Some(filled))
 }
 
 /// First non-empty author token from a comma/semicolon/ampersand-separated list.
@@ -386,6 +438,10 @@ mod tests {
 
     #[async_trait]
     impl MetadataProviders for Fixed {
+        fn provider_keys(&self) -> Vec<String> {
+            vec![String::from("test-provider")]
+        }
+
         async fn lookup(&self, params: &MetadataLookupParams) -> MetadataAnswer {
             let isbn = params.identifiers[0].value.clone();
             self.asks.lock().unwrap().push(format!("isbn:{isbn}"));
@@ -416,6 +472,7 @@ mod tests {
         MetadataEnrichOptions {
             min_interval: Duration::ZERO,
             max_requests,
+            retry_after: DEFAULT_RETRY_AFTER,
         }
     }
 
@@ -629,14 +686,17 @@ mod tests {
         );
     }
 
+    /// A title with every field filled is never asked. A title marked by
+    /// an earlier fill (here the legacy Open Library mark) that still has
+    /// gaps is asked once more; with no match the ask is recorded, and the
+    /// next run leaves it alone.
     #[tokio::test]
-    async fn complete_and_legacy_rows_are_skipped() {
+    async fn complete_rows_are_skipped_and_marked_rows_with_gaps_asked_again() {
         let (store, uuids) = store_with(&[
             ("p1", "Full", Some("9780441172719")),
             ("p2", "Legacy", Some("9780553293357")),
         ])
         .await;
-        // Every field filled by someone else, and a legacy Open Library mark.
         let full = store.edition_of_holding(&uuids[0]).await.unwrap().unwrap();
         store
             .enrich_edition(
@@ -665,13 +725,92 @@ mod tests {
             .await
             .unwrap();
         let providers = Fixed::default();
+        for _ in 0..2 {
+            assert_eq!(
+                enrich_books_from_metadata(&store, &providers, &opts(5))
+                    .await
+                    .unwrap(),
+                0
+            );
+        }
         assert_eq!(
+            providers.asks.lock().unwrap().clone(),
+            ["isbn:9780553293357"],
+            "only the title with gaps, and only once"
+        );
+        let tried = store
+            .enrich_attempted_since(
+                METADATA_ENRICHER,
+                &[full, legacy.clone()],
+                chrono::DateTime::<chrono::Utc>::MIN_UTC,
+            )
+            .await
+            .unwrap();
+        assert_eq!(tried, std::collections::HashSet::from([legacy]));
+    }
+
+    /// Titles that never match spend the budget once, then wait, so the
+    /// next run's requests go to titles that were not asked yet.
+    #[tokio::test]
+    async fn unmatched_titles_give_the_budget_to_the_rest() {
+        let (store, uuids) = store_with(&[
+            ("p1", "A", Some("9780441172719")),
+            ("p2", "B", Some("9780553293357")),
+            ("p3", "C", Some("9780141439518")),
+        ])
+        .await;
+        let providers = Fixed {
+            by_isbn: vec![("9780141439518".into(), ol_record("C"))],
+            ..Fixed::default()
+        };
+        let mut filled_titles = 0;
+        for _ in 0..3 {
+            filled_titles += enrich_books_from_metadata(&store, &providers, &opts(1))
+                .await
+                .unwrap();
+        }
+        assert_eq!(filled_titles, 1, "the third run reaches the third title");
+        assert_eq!(providers.asks.lock().unwrap().len(), 3, "each asked once");
+        assert_eq!(
+            filled(&store, &uuids[2]).await.description.as_deref(),
+            Some("A blurb")
+        );
+        // Once the wait is over they are asked again.
+        let retry = MetadataEnrichOptions {
+            retry_after: Duration::ZERO,
+            ..opts(5)
+        };
+        enrich_books_from_metadata(&store, &providers, &retry)
+            .await
+            .unwrap();
+        assert_eq!(providers.asks.lock().unwrap().len(), 5);
+    }
+
+    /// An ask a provider failed is not recorded: the next run asks again.
+    #[tokio::test]
+    async fn a_failed_ask_is_asked_again_next_run() {
+        let (store, _) = store_with(&[("p1", "A", Some("9780441172719"))]).await;
+        let providers = Fixed {
+            fail: true,
+            ..Fixed::default()
+        };
+        for _ in 0..2 {
             enrich_books_from_metadata(&store, &providers, &opts(5))
                 .await
-                .unwrap(),
-            0
-        );
-        assert!(providers.asks.lock().unwrap().is_empty());
+                .unwrap();
+        }
+        assert_eq!(providers.asks.lock().unwrap().len(), 2);
+    }
+
+    /// With no provider deployed, nothing is read or asked.
+    #[tokio::test]
+    async fn no_provider_asks_nothing() {
+        let (store, _) = store_with(&[("p1", "A", Some("9780441172719"))]).await;
+        let n =
+            enrich_books_from_metadata(&store, &bookclerk_enrich::NoMetadataProviders, &opts(5))
+                .await
+                .unwrap();
+        assert_eq!(n, 0);
     }
 
     #[tokio::test]
@@ -800,6 +939,29 @@ mod tests {
         assert_eq!(book.language.as_deref(), Some("en"));
         assert_eq!(book.description, None);
         assert!(book.enrich_source.is_some(), "the title is marked");
+
+        // The partial fill waits, then is asked again for the rest.
+        enrich_books_from_metadata(&store, &providers, &opts(5))
+            .await
+            .unwrap();
+        assert_eq!(providers.asks.lock().unwrap().len(), 1, "still waiting");
+        let providers = Fixed {
+            by_isbn: vec![("9780441172719".into(), ol_record("Dune"))],
+            ..Fixed::default()
+        };
+        let retry = MetadataEnrichOptions {
+            retry_after: Duration::ZERO,
+            ..opts(5)
+        };
+        assert_eq!(
+            enrich_books_from_metadata(&store, &providers, &retry)
+                .await
+                .unwrap(),
+            1
+        );
+        let book = filled(&store, &uuids[0]).await;
+        assert_eq!(book.language.as_deref(), Some("en"), "kept");
+        assert_eq!(book.description.as_deref(), Some("A blurb"), "the rest");
     }
 
     #[tokio::test]

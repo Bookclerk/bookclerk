@@ -902,6 +902,83 @@
       "error": "plugin.toml: `[ingress]` needs the `ingress` entrypoint"
     },
     {
+      "name": "provisioning plugin",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\", \"provisioning\"]\n",
+      "tables": "[vars]\n\n[secrets]\n\n[[settings]]\nkey = \"bucket\"\ntype = \"string\"\n\n[[settings]]\nkey = \"access_key\"\ntype = \"secret\"\n\n[[settings]]\nkey = \"rows\"\ntype = \"table\"\ncolumns = [{ key = \"name\", type = \"string\" }]\n\n[provisioning]\nprovider = \"cloudflare\"\ngrants = [\"api_token\"]\ntoken_url = \"https://dash.cloudflare.com/profile/api-tokens\"\ntoken_permissions = [\"Account · Workers R2 Storage · Edit\"]\ninputs = [\"bucket\"]\noutputs = [\"bucket\", \"access_key\"]\ndeprovision = true\n",
+      "error": null
+    },
+    {
+      "name": "provisioning plugin without the table",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\", \"provisioning\"]\n",
+      "error": "plugin.toml: `[provisioning]` is required for a plugin with the `provisioning` entrypoint"
+    },
+    {
+      "name": "provisioning table without the entrypoint",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\"]\n",
+      "tables": "[vars]\n\n[secrets]\n\n[[settings]]\nkey = \"bucket\"\ntype = \"string\"\n\n[[settings]]\nkey = \"access_key\"\ntype = \"secret\"\n\n[[settings]]\nkey = \"rows\"\ntype = \"table\"\ncolumns = [{ key = \"name\", type = \"string\" }]\n\n[provisioning]\nprovider = \"cloudflare\"\ngrants = [\"api_token\"]\ntoken_url = \"https://dash.cloudflare.com/profile/api-tokens\"\ntoken_permissions = [\"Account · Workers R2 Storage · Edit\"]\ninputs = [\"bucket\"]\noutputs = [\"bucket\", \"access_key\"]\ndeprovision = true\n",
+      "error": "plugin.toml: `[provisioning]` needs the `provisioning` entrypoint"
+    },
+    {
+      "name": "provisioning provider upper case",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\", \"provisioning\"]\n",
+      "tables": "[vars]\n\n[secrets]\n\n[[settings]]\nkey = \"bucket\"\ntype = \"string\"\n\n[[settings]]\nkey = \"access_key\"\ntype = \"secret\"\n\n[[settings]]\nkey = \"rows\"\ntype = \"table\"\ncolumns = [{ key = \"name\", type = \"string\" }]\n\n[provisioning]\nprovider = \"Cloudflare\"\ngrants = [\"api_token\"]\ntoken_url = \"https://dash.cloudflare.com/profile/api-tokens\"\ntoken_permissions = [\"Account · Workers R2 Storage · Edit\"]\ninputs = [\"bucket\"]\noutputs = [\"bucket\", \"access_key\"]\ndeprovision = true\n",
+      "error": "plugin.toml: `[provisioning].provider` must match ^[a-z][a-z0-9-]{0,31}$"
+    },
+    {
+      "name": "provisioning without grants",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\", \"provisioning\"]\n",
+      "tables": "[vars]\n\n[secrets]\n\n[[settings]]\nkey = \"bucket\"\ntype = \"string\"\n\n[[settings]]\nkey = \"access_key\"\ntype = \"secret\"\n\n[[settings]]\nkey = \"rows\"\ntype = \"table\"\ncolumns = [{ key = \"name\", type = \"string\" }]\n\n[provisioning]\nprovider = \"cloudflare\"\ngrants = []\ntoken_url = \"https://dash.cloudflare.com/profile/api-tokens\"\ntoken_permissions = [\"Account · Workers R2 Storage · Edit\"]\ninputs = [\"bucket\"]\noutputs = [\"bucket\", \"access_key\"]\ndeprovision = true\n",
+      "error": "plugin.toml: `[provisioning].grants` must list each grant kind once and not be empty"
+    },
+    {
+      "name": "provisioning grant twice",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\", \"provisioning\"]\n",
+      "tables": "[vars]\n\n[secrets]\n\n[[settings]]\nkey = \"bucket\"\ntype = \"string\"\n\n[[settings]]\nkey = \"access_key\"\ntype = \"secret\"\n\n[[settings]]\nkey = \"rows\"\ntype = \"table\"\ncolumns = [{ key = \"name\", type = \"string\" }]\n\n[provisioning]\nprovider = \"cloudflare\"\ngrants = [\"api_token\", \"api_token\"]\ntoken_url = \"https://dash.cloudflare.com/profile/api-tokens\"\ntoken_permissions = [\"Account · Workers R2 Storage · Edit\"]\ninputs = [\"bucket\"]\noutputs = [\"bucket\", \"access_key\"]\ndeprovision = true\n",
+      "error": "plugin.toml: `[provisioning].grants` must list each grant kind once and not be empty"
+    },
+    {
+      "name": "provisioning token url over http",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\", \"provisioning\"]\n",
+      "tables": "[vars]\n\n[secrets]\n\n[[settings]]\nkey = \"bucket\"\ntype = \"string\"\n\n[[settings]]\nkey = \"access_key\"\ntype = \"secret\"\n\n[[settings]]\nkey = \"rows\"\ntype = \"table\"\ncolumns = [{ key = \"name\", type = \"string\" }]\n\n[provisioning]\nprovider = \"cloudflare\"\ngrants = [\"api_token\"]\ntoken_url = \"http://dash.cloudflare.com/profile/api-tokens\"\ntoken_permissions = [\"Account · Workers R2 Storage · Edit\"]\ninputs = [\"bucket\"]\noutputs = [\"bucket\", \"access_key\"]\ndeprovision = true\n",
+      "error": "plugin.toml: `[provisioning].token_url` must be an https:// URL"
+    },
+    {
+      "name": "provisioning empty permission line",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\", \"provisioning\"]\n",
+      "tables": "[vars]\n\n[secrets]\n\n[[settings]]\nkey = \"bucket\"\ntype = \"string\"\n\n[[settings]]\nkey = \"access_key\"\ntype = \"secret\"\n\n[[settings]]\nkey = \"rows\"\ntype = \"table\"\ncolumns = [{ key = \"name\", type = \"string\" }]\n\n[provisioning]\nprovider = \"cloudflare\"\ngrants = [\"api_token\"]\ntoken_url = \"https://dash.cloudflare.com/profile/api-tokens\"\ntoken_permissions = [\" \"]\ninputs = [\"bucket\"]\noutputs = [\"bucket\", \"access_key\"]\ndeprovision = true\n",
+      "error": "plugin.toml: `[provisioning].token_permissions` takes at most 16 non-empty lines of at most 120 characters"
+    },
+    {
+      "name": "provisioning secret input",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\", \"provisioning\"]\n",
+      "tables": "[vars]\n\n[secrets]\n\n[[settings]]\nkey = \"bucket\"\ntype = \"string\"\n\n[[settings]]\nkey = \"access_key\"\ntype = \"secret\"\n\n[[settings]]\nkey = \"rows\"\ntype = \"table\"\ncolumns = [{ key = \"name\", type = \"string\" }]\n\n[provisioning]\nprovider = \"cloudflare\"\ngrants = [\"api_token\"]\ntoken_url = \"https://dash.cloudflare.com/profile/api-tokens\"\ntoken_permissions = [\"Account · Workers R2 Storage · Edit\"]\ninputs = [\"access_key\"]\noutputs = [\"bucket\", \"access_key\"]\ndeprovision = true\n",
+      "error": "plugin.toml: `[provisioning].inputs` entry `access_key` must be a declared setting that is not a secret or a table, listed once"
+    },
+    {
+      "name": "provisioning undeclared input",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\", \"provisioning\"]\n",
+      "tables": "[vars]\n\n[secrets]\n\n[[settings]]\nkey = \"bucket\"\ntype = \"string\"\n\n[[settings]]\nkey = \"access_key\"\ntype = \"secret\"\n\n[[settings]]\nkey = \"rows\"\ntype = \"table\"\ncolumns = [{ key = \"name\", type = \"string\" }]\n\n[provisioning]\nprovider = \"cloudflare\"\ngrants = [\"api_token\"]\ntoken_url = \"https://dash.cloudflare.com/profile/api-tokens\"\ntoken_permissions = [\"Account · Workers R2 Storage · Edit\"]\ninputs = [\"region\"]\noutputs = [\"bucket\", \"access_key\"]\ndeprovision = true\n",
+      "error": "plugin.toml: `[provisioning].inputs` entry `region` must be a declared setting that is not a secret or a table, listed once"
+    },
+    {
+      "name": "provisioning without outputs",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\", \"provisioning\"]\n",
+      "tables": "[vars]\n\n[secrets]\n\n[[settings]]\nkey = \"bucket\"\ntype = \"string\"\n\n[[settings]]\nkey = \"access_key\"\ntype = \"secret\"\n\n[[settings]]\nkey = \"rows\"\ntype = \"table\"\ncolumns = [{ key = \"name\", type = \"string\" }]\n\n[provisioning]\nprovider = \"cloudflare\"\ngrants = [\"api_token\"]\ntoken_url = \"https://dash.cloudflare.com/profile/api-tokens\"\ntoken_permissions = [\"Account · Workers R2 Storage · Edit\"]\ninputs = [\"bucket\"]\noutputs = []\ndeprovision = true\n",
+      "error": "plugin.toml: `[provisioning].outputs` must not be empty"
+    },
+    {
+      "name": "provisioning table output",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\", \"provisioning\"]\n",
+      "tables": "[vars]\n\n[secrets]\n\n[[settings]]\nkey = \"bucket\"\ntype = \"string\"\n\n[[settings]]\nkey = \"access_key\"\ntype = \"secret\"\n\n[[settings]]\nkey = \"rows\"\ntype = \"table\"\ncolumns = [{ key = \"name\", type = \"string\" }]\n\n[provisioning]\nprovider = \"cloudflare\"\ngrants = [\"api_token\"]\ntoken_url = \"https://dash.cloudflare.com/profile/api-tokens\"\ntoken_permissions = [\"Account · Workers R2 Storage · Edit\"]\ninputs = [\"bucket\"]\noutputs = [\"rows\"]\ndeprovision = true\n",
+      "error": "plugin.toml: `[provisioning].outputs` entry `rows` must be a declared setting that is not a table, listed once"
+    },
+    {
+      "name": "provisioning output twice",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\", \"provisioning\"]\n",
+      "tables": "[vars]\n\n[secrets]\n\n[[settings]]\nkey = \"bucket\"\ntype = \"string\"\n\n[[settings]]\nkey = \"access_key\"\ntype = \"secret\"\n\n[[settings]]\nkey = \"rows\"\ntype = \"table\"\ncolumns = [{ key = \"name\", type = \"string\" }]\n\n[provisioning]\nprovider = \"cloudflare\"\ngrants = [\"api_token\"]\ntoken_url = \"https://dash.cloudflare.com/profile/api-tokens\"\ntoken_permissions = [\"Account · Workers R2 Storage · Edit\"]\ninputs = [\"bucket\"]\noutputs = [\"bucket\", \"bucket\"]\ndeprovision = true\n",
+      "error": "plugin.toml: `[provisioning].outputs` entry `bucket` must be a declared setting that is not a table, listed once"
+    },
+    {
       "name": "model plugin serving text embeddings",
       "top": "runtime = \"workerd\"\nentrypoints = [\"ai\"]\n",
       "tables": "[ai]\nserves = [\"textEmbeddings\"]\n",

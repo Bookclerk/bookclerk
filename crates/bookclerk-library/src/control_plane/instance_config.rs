@@ -690,6 +690,37 @@ pub async fn resolve_instance_bindings(
     grant: &InstanceBindingGrant,
     schema: &SettingsSchema,
 ) -> Result<ResolvedInstanceBindings> {
+    resolve_instance_bindings_with(store, instance_id, grant, schema, RequiredSettings::Enforce)
+        .await
+}
+
+/// Whether [`resolve_instance_bindings_with`] insists on required settings
+/// and secrets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequiredSettings {
+    /// A missing required setting or secret fails resolution: the guest is
+    /// opened to serve.
+    Enforce,
+    /// Missing required settings and secrets are left out: the guest is
+    /// opened for guided setup (`Invocation.purpose = provision`), which
+    /// is what fills them in.
+    Relax,
+}
+
+/// [`resolve_instance_bindings`], optionally without the required-setting
+/// checks.
+///
+/// # Errors
+///
+/// As [`resolve_instance_bindings`], less the missing-required errors when
+/// `required` is [`RequiredSettings::Relax`].
+pub async fn resolve_instance_bindings_with(
+    store: &LibraryStore,
+    instance_id: &PluginInstanceId,
+    grant: &InstanceBindingGrant,
+    schema: &SettingsSchema,
+    required: RequiredSettings,
+) -> Result<ResolvedInstanceBindings> {
     let instance = load_plugin_instance(store, instance_id)
         .await?
         .ok_or_else(|| LibraryError::not_found(EntityKind::PluginInstance, instance_id))?;
@@ -710,13 +741,21 @@ pub async fn resolve_instance_bindings(
         .map(|(k, v)| (k.clone(), serde_json::to_value(v).unwrap_or(Value::Null)))
         .collect();
     let effective = schema.effective_config(&settings);
-    if !effective.missing.is_empty() {
+    if required == RequiredSettings::Enforce && !effective.missing.is_empty() {
         return Err(invalid(&format!(
             "required settings are not set: {}",
             effective.missing.join(", ")
         )));
     }
-    let secrets = resolve_secrets(store, &instance, &document.body, grant.secrets, schema).await?;
+    let secrets = resolve_secrets(
+        store,
+        &instance,
+        &document.body,
+        grant.secrets,
+        schema,
+        required,
+    )
+    .await?;
     let object: serde_json::Map<String, Value> = if grant.config {
         effective.config.into_iter().collect()
     } else {
@@ -775,6 +814,7 @@ async fn resolve_secrets(
     body: &PluginInstanceConfigV1,
     grant_secrets: bool,
     schema: &SettingsSchema,
+    required: RequiredSettings,
 ) -> Result<ExtensibleConfig> {
     let refs: Vec<&InstanceSecretRefV1> = body
         .secret_refs
@@ -785,7 +825,7 @@ async fn resolve_secrets(
         .required_secret_keys()
         .filter(|key| !refs.iter().any(|r| r.key == *key))
         .collect();
-    if !missing.is_empty() {
+    if required == RequiredSettings::Enforce && !missing.is_empty() {
         return Err(invalid(&format!(
             "required secrets are not set: {}",
             missing.join(", ")

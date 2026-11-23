@@ -156,7 +156,7 @@ pub(super) async fn upload(
     host: &HostContext,
     id: String,
     fence: i64,
-    title: (String, String),
+    title: &bookclerk_node_proto::CatalogRef,
     files: Vec<UploadFile>,
 ) -> bookclerk_library::Result<Frame> {
     if files.len() > MAX_UPLOAD_FILES {
@@ -166,14 +166,12 @@ pub(super) async fn upload(
     if destinations.is_empty() {
         return Ok(error(id, "unavailable", "no_destination"));
     }
-    let (store_id, product_id) = title;
     let granted = grant_catalog_upload(
         library,
         &host.node_id,
         fence,
         &host.shared_node_id,
-        &store_id,
-        &product_id,
+        title,
         &files,
         &destinations,
     )

@@ -5,7 +5,7 @@
 //! `describe()` advertises typed [`PluginCapabilities`], then
 //! `open(invocation, bindings)` returns the exported [`Entrypoints`]
 //! (`storefront`, `storage`, `databaseAdapter`, `remoteLibrary`, `cli`,
-//! `oidc`, `metadata`, `covers`, `metadataFiles`, `notifier`, `ai`, plus the `eventConsumer` / `jobRunner` triggers). Host-granted
+//! `oidc`, `metadata`, `covers`, `metadataFiles`, `notifier`, `ai`, `provisioning`, plus the `eventConsumer` / `jobRunner` triggers). Host-granted
 //! [`Bindings`] carry `CONFIG` / `SECRETS`, the `EVENTS` publisher, and named
 //! `[[databases]]` sessions — the Workers `env` idiom.
 //!
@@ -50,6 +50,7 @@
 //! | [`metadata_files`] | Checks on `metadataFiles` requests and the records dialects return |
 //! | [`methods`] | Capability / consent method name constants (`login`, `event`, …) |
 //! | [`notifications`] | Checks on notification messages, addresses, raises and notifier replies |
+//! | [`provision`] | Checks on what a guided setup (`provisioning`) returns |
 //! | Crate-root DTOs | [`PluginDescribe`], health, CLI, destination objects |
 //! | [`kind`] | Kind-specific DTOs (source / integration / output) |
 //! | [`settings_schema`] | `[[settings]]` operator settings schema shared by manifest and host |
@@ -96,6 +97,7 @@ pub mod notifications;
 pub mod origin;
 pub mod package_version;
 mod plugin_migration;
+pub mod provision;
 pub mod quality_offers;
 mod roles;
 mod rpc;
@@ -274,7 +276,9 @@ pub use limits::{
     MAX_NOTIFICATION_TITLE_BYTES, MAX_NOTIFIER_ADDRESS_BYTES, MAX_ORIGIN_HEADERS,
     MAX_ORIGIN_HEADER_BYTES, MAX_ORIGIN_REFUSAL_BODY_BYTES, MAX_ORIGIN_SOCKETS_PER_INSTANCE,
     MAX_ORIGIN_TARGET_BYTES, MAX_PLUGIN_MIGRATION_OPS, MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES,
-    MAX_PLUGIN_MIGRATION_TOTAL_OPS, MAX_REFRESHED_CREDENTIAL_BYTES, MAX_SCALAR_BYTES,
+    MAX_PLUGIN_MIGRATION_TOTAL_OPS, MAX_PROVISION_SECRETS, MAX_PROVISION_SECRET_BYTES,
+    MAX_PROVISION_SETTINGS_BYTES, MAX_PROVISION_SUMMARY_LINES, MAX_PROVISION_SUMMARY_LINE_BYTES,
+    MAX_PROVISION_TOKEN_BYTES, MAX_REFRESHED_CREDENTIAL_BYTES, MAX_SCALAR_BYTES,
     MAX_SCAN_CURSOR_BYTES, MAX_SCAN_PAGE_BOOKS, MAX_SOCKETS_PER_INSTANCE,
     MAX_SOCKET_ATTACHMENT_BYTES, MAX_SOCKET_AUTO_RESPONSES, MAX_SOCKET_AUTO_RESPONSE_BYTES,
     MAX_SOCKET_FRAME_BYTES, MAX_SOCKET_HEADERS, MAX_SOCKET_TRUST_ANCHORS,
@@ -306,9 +310,9 @@ pub use roles::{
     Destination, Entrypoints, EventConsumer, EventPublisher, GuestDatabase, Ingress, JobController,
     JobRunner, KvNamespace, MetadataFiles, MetadataProvider, NamedKvBinding, NamedQueueBinding,
     NeverCancel, NotificationRaiser, Notifier, Oidc, Origin, OriginReply, PluginCli, PluginWorker,
-    ProgressSink, QueueConsumer, QueueProducer, ReadResult, RemoteLibrary, ScheduledHandler,
-    SocketHandler, Sockets, Source, WebhookHandler, Webhooks, PURCHASE_HINTS_BUDGET,
-    PURCHASE_HINTS_CONCURRENCY,
+    ProgressSink, Provisioning, QueueConsumer, QueueProducer, ReadResult, RemoteLibrary,
+    ScheduledHandler, SocketHandler, Sockets, Source, WebhookHandler, Webhooks,
+    PURCHASE_HINTS_BUDGET, PURCHASE_HINTS_CONCURRENCY,
 };
 #[cfg(feature = "host")]
 pub use rpc::AdapterSessionHandle;
@@ -321,10 +325,10 @@ pub use rpc::{
     EventPublisherClient, EventReadCodec, EventReadMessage, HostBindings, IngressClient,
     JobRunnerClient, KvNamespaceClient, MetadataFilesClient, MetadataProviderClient, NoOrigin,
     NotificationRaiserClient, NotifierClient, OidcClient, OpenedEntrypoints, OriginClient,
-    PluginCliClient, PluginClient, PluginServer, QueueConsumerClient, QueueProducerClient,
-    RemoteLibraryClient, ScheduledHandlerClient, SocketCodec, SocketHandlerClient,
-    SocketWireMessage, SocketsClient, SourceClient, SourceServer, WebhookCodec,
-    WebhookHandlerClient, WebhookWireMessage, WebhooksClient,
+    PluginCliClient, PluginClient, PluginServer, ProvisioningClient, QueueConsumerClient,
+    QueueProducerClient, RemoteLibraryClient, ScheduledHandlerClient, SocketCodec,
+    SocketHandlerClient, SocketWireMessage, SocketsClient, SourceClient, SourceServer,
+    WebhookCodec, WebhookHandlerClient, WebhookWireMessage, WebhooksClient,
 };
 pub use rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, HealthOk, JobCheckpoint, JobInvocation,

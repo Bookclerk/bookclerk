@@ -1,0 +1,1 @@
+{"success":false,"errors":[{"code":10004,"message":"The bucket you tried to create already exists, and you own it."}]}

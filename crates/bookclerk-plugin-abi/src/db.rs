@@ -126,6 +126,7 @@ pub fn binding_values_from_adapter_config(
         secrets: crate::ExtensibleConfig::default(),
         adapter: config.clone(),
         network: crate::NetworkGrant::default(),
+        purpose: crate::InvocationPurpose::Serve,
     }
 }
 
@@ -166,6 +167,7 @@ pub fn binding_values_from_params(params: &DbConnectParams) -> crate::Result<cra
         secrets: crate::ExtensibleConfig::default(),
         adapter: crate::DatabaseAdapterConfig::default(),
         network: crate::NetworkGrant::default(),
+        purpose: crate::InvocationPurpose::Serve,
     })
 }
 

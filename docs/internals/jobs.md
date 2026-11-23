@@ -682,12 +682,13 @@ node that runs it needs. At admission the daemon records
   nowhere is not recorded, so the job is claimed anywhere and fails there as
   before instead of waiting forever.
 - An acquire requires every deployed instance of a node-bound output (today
-  the verified first-party `local` destination), because it writes to every
-  deployed destination and a `local` output is the disk of the nodes it is
-  deployed to. If plugin discovery fails on the admitting node (say an
-  unrelated plugin has a duplicate alias), every instance whose plugin key
-  names the first-party `local` package is required instead, unverified, so
-  the acquire is never left claimable by a node without those outputs.
+  the first-party `local` destination), because it writes to every deployed
+  destination and a `local` output is the disk of the nodes it is deployed
+  to. The node-bound keys are read from the library's instance list (every
+  instance whose plugin key names the first-party `local` package,
+  `jobs::node_bound_output_keys`), not from the plugins installed on the
+  admitting node, so admission runs no plugin discovery and every node
+  admits the same requirements, whatever it has installed.
 - Everything else (unpinned scans, listen sync, integration scans,
   `plugin_copy`) has no requirements and is claimable on any node.
 
@@ -723,13 +724,12 @@ or retired, or the scheduler moves a replica. Each daemon runs a sweep loop
 A pass runs every 30 s, on a deployment or install wakeup on this node, and
 after a scheduler pass that moved replicas. A wakeup waits until wakeups have
 been quiet for 0.5 s (at most 3 s), so a burst of deployment changes, such
-as enabling several plugins at once, is swept once. Discovery runs on a
-blocking thread. It re-resolves the requirements
-of every pending acquire, pinned job, or job that already has requirements,
-with the node-bound output keys the daemon discovers plus every instance
-keyed as the first-party `local` destination (so a sweeping node without
-that plugin, or whose discovery failed, never strips them; a pass that cannot
-read the instance list is skipped), and:
+as enabling several plugins at once, is swept once. It re-resolves the
+requirements of every pending acquire, pinned job, or job that already has
+requirements, with the same node-bound output keys admission uses (every
+instance keyed as the first-party `local` destination, so a sweeping node
+without that plugin never strips them; a pass that cannot read the instance
+list is skipped), and:
 
 - **applies at once** a set that is unchanged or only gains instances when
   some node is deployed to run all of them (a newly deployed `local` output
