@@ -1,0 +1,92 @@
+api_version = 3
+id = "cloudflare_relay"
+name = "Cloudflare relay"
+version = "0.1.0"
+runtime = "workerd"
+entrypoints = ["ingress"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[workerd.limits]
+cpu_ms = 30000
+subrequests = 100
+
+[[modules]]
+name = "index.js"
+path = "index.js"
+type = "js"
+
+[[modules]]
+name = "cloudflare.js"
+path = "cloudflare.js"
+type = "js"
+
+[[modules]]
+name = "lifecycle.js"
+path = "lifecycle.js"
+type = "js"
+
+[[modules]]
+name = "protocol.js"
+path = "protocol.js"
+type = "js"
+
+[[modules]]
+name = "relay-core.js"
+path = "relay-core.js"
+type = "js"
+
+[[modules]]
+name = "relay-source.js"
+path = "relay-source.js"
+type = "js"
+
+[[modules]]
+name = "serve.js"
+path = "serve.js"
+type = "js"
+
+[[modules]]
+name = "version.js"
+path = "version.js"
+type = "js"
+
+[vars]
+
+[[settings]]
+key = "account_id"
+label = "Cloudflare account id"
+type = "string"
+required = true
+description = "The 32-character id on the account's Workers & Pages overview."
+
+[[settings]]
+key = "worker_name"
+label = "Relay Worker name"
+type = "string"
+default = "bookclerk-relay"
+description = "Name of the Worker the plugin deploys; it becomes the first label of the library's address."
+
+[[settings]]
+key = "api_token"
+label = "Cloudflare API token"
+type = "secret"
+description = "An API token with the Workers Scripts: Edit permission on this account."
+
+[secrets]
+
+[sockets]
+
+[ingress]
+kind = "relay"
+
+[capabilities.network]
+mode = "outbound"
+domains = [
+    "api.cloudflare.com",
+    "*.workers.dev",
+]

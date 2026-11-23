@@ -102,6 +102,29 @@ run(["fmt", "--check", path.join(fixtures, "fmt-full/plugin.toml")], false);
   }
 }
 
+// Formatter corpus: every first-party manifest, formatted by the Rust
+// formatter (crates/bookclerk-plugin-manifest/tests/fmt_corpus.rs). `fmt`
+// must write the same bytes for each source.
+{
+  const corpus = path.join(fixtures, "fmt-corpus");
+  const index = JSON.parse(fs.readFileSync(path.join(corpus, "index.json"), "utf8"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fmt-corpus-"));
+  try {
+    for (const [name, source] of Object.entries(index)) {
+      const target = path.join(dir, "plugin.toml");
+      fs.copyFileSync(path.join(root, source), target);
+      run(["fmt", target], true, "wrote");
+      const gold = fs.readFileSync(path.join(corpus, name), "utf8");
+      if (fs.readFileSync(target, "utf8") !== gold) {
+        throw new Error(`FAIL fmt-corpus: ${source} formats differently from ${name}`);
+      }
+      run(["fmt", "--check", path.join(corpus, name)], true);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // Shared logo and compatibility-date cases: the Rust and Python checkers
 // read the same files and must agree on every result and error message.
 {
@@ -194,18 +217,24 @@ run(["fmt", "--check", path.join(fixtures, "fmt-full/plugin.toml")], false);
     [table + column("a", "string") + column("a", "bool"), "column `a` is duplicated"],
     [table + column("a", "secret"), "column `a` must be a string, bool, integer or enum"],
     [table + column("Bad", "string"), "column `Bad` must match"],
-    [table + column("a", "enum"), "column `a` must declare `values`"],
-    [table + column("a", "string", "default = 1\n"), "default for table setting"],
+    [
+      table + column("a", "enum"),
+      "table setting `mappings`: enum setting `a` must declare `values`",
+    ],
+    [
+      table + column("a", "string", "default = 1\n"),
+      "table setting `mappings` column default: setting `a` must be a string",
+    ],
     [
       table.replace('type = "table"\n', 'type = "table"\ndefault = [{ b = "x" }]\n') +
         column("a", "string", "required = true\n") +
         column("b", "string"),
-      "does not match its columns",
+      "default for setting `mappings` row 1: column `a` is required",
     ],
     [
       table.replace('type = "table"\n', 'type = "table"\ndefault = [{ c = "x" }]\n') +
         column("a", "string"),
-      "does not match its columns",
+      "default for setting `mappings` row 1: column `c` is not declared",
     ],
   ];
   for (const [tables, needle] of cases) {
@@ -259,7 +288,7 @@ run(["fmt", "--check", path.join(fixtures, "fmt-full/plugin.toml")], false);
   const failed = [
     canonical(reparsed.settings) !== canonical(withDefault.settings) && "settings changed",
     !formatted.includes(
-      'default = [\n    { library = "a" },\n    { library = "b", mode = "write" },\n]',
+      '[[settings.default]]\nlibrary = "a"\n\n[[settings.default]]\nlibrary = "b"\nmode = "write"\n',
     ) && "default rows not formatted",
     formatManifest(reparsed) !== formatted && "second format differs",
   ].filter(Boolean);
@@ -359,7 +388,12 @@ for (const triggers of [
       capabilities: { network: { mode: "deny" } },
     }),
   );
-  if (JSON.stringify(roundTrip.triggers) !== JSON.stringify(triggers)) {
+  // Key order follows the Rust struct (`crons` before `jobs`), so compare
+  // each list rather than the whole table text.
+  const same = ["crons", "jobs"].every(
+    (key) => JSON.stringify(roundTrip.triggers?.[key]) === JSON.stringify(triggers[key]),
+  );
+  if (!same) {
     console.error("FAIL formatter changed [triggers]", JSON.stringify(roundTrip.triggers));
     process.exit(1);
   }

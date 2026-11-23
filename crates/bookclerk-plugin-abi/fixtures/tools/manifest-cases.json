@@ -952,6 +952,251 @@
       "name": "called tasks take the AI binding",
       "tables": "[ai]\ncalls = [\"textEmbeddings\"]\n\n[[queues.producers]]\nbinding = \"AI\"\nqueue = \"jobs\"\n",
       "error": "plugin.toml: [queues.producers][0] binding collides with another binding"
+    },
+    {
+      "name": "webhook name grammar",
+      "tables": "[[webhooks]]\nname = \"Bad\"\n[webhooks.signature]\nscheme = \"none\"\n",
+      "error": "plugin.toml: webhooks[0].name must be `[a-z0-9][a-z0-9-]*` and at most 32 chars"
+    },
+    {
+      "name": "webhook name repeats",
+      "tables": "[[webhooks]]\nname = \"a\"\n[webhooks.signature]\nscheme = \"none\"\n[[webhooks]]\nname = \"a\"\n[webhooks.signature]\nscheme = \"none\"\n",
+      "error": "plugin.toml: webhooks[1].name repeats an earlier row"
+    },
+    {
+      "name": "webhook rate zero",
+      "tables": "[[webhooks]]\nname = \"a\"\nrate_per_minute = 0\n[webhooks.signature]\nscheme = \"none\"\n",
+      "error": "plugin.toml: webhooks[0].rate_per_minute must be 1..=600"
+    },
+    {
+      "name": "webhook retention too short",
+      "tables": "[[webhooks]]\nname = \"a\"\nretention_secs = 59\n[webhooks.signature]\nscheme = \"none\"\n",
+      "error": "plugin.toml: webhooks[0].retention_secs must be 60..=604800"
+    },
+    {
+      "name": "webhook keeps a forbidden header",
+      "tables": "[[webhooks]]\nname = \"a\"\nheaders = [\"cookie\"]\n[webhooks.signature]\nscheme = \"none\"\n",
+      "error": "plugin.toml: webhooks[0].headers may not keep `cookie`"
+    },
+    {
+      "name": "webhook header not lowercase",
+      "tables": "[[webhooks]]\nname = \"a\"\nheaders = [\"X-Id\"]\n[webhooks.signature]\nscheme = \"none\"\n",
+      "error": "plugin.toml: webhooks[0].headers entries must be lowercase header names"
+    },
+    {
+      "name": "webhook hmac secret setting missing",
+      "tables": "[[webhooks]]\nname = \"a\"\n[webhooks.signature]\nscheme = \"hmac-sha256\"\nheader = \"x-sig\"\nsecret_setting = \"hook\"\n",
+      "error": "plugin.toml: webhooks[0].signature.secret_setting must name a `type = \"secret\"` entry in [[settings]]"
+    },
+    {
+      "name": "webhook hmac prefix too long",
+      "tables": "[secrets]\n[[settings]]\nkey = \"hook\"\ntype = \"secret\"\n[[webhooks]]\nname = \"a\"\n[webhooks.signature]\nscheme = \"hmac-sha256\"\nheader = \"x-sig\"\nprefix = \"sha256-and-more-text=\"\nsecret_setting = \"hook\"\n",
+      "error": "plugin.toml: webhooks[0].signature.prefix must be at most 16 visible ASCII characters"
+    },
+    {
+      "name": "webhook hmac accepted",
+      "tables": "[secrets]\n[[settings]]\nkey = \"hook\"\ntype = \"secret\"\n[[webhooks]]\nname = \"a\"\nheaders = [\"x-id\"]\n[webhooks.signature]\nscheme = \"hmac-sha256\"\nheader = \"x-sig\"\nprefix = \"sha256=\"\nsecret_setting = \"hook\"\n",
+      "error": null
+    },
+    {
+      "name": "webhooks binding collides with a kv namespace",
+      "tables": "[[webhooks]]\nname = \"a\"\n[webhooks.signature]\nscheme = \"none\"\n[[kv_namespaces]]\nbinding = \"WEBHOOKS\"\n",
+      "error": "plugin.toml: [kv_namespaces][0] binding collides with another binding"
+    },
+    {
+      "name": "kv may take SOCKETS when there is no sockets table",
+      "tables": "[[kv_namespaces]]\nbinding = \"SOCKETS\"\n",
+      "error": null
+    },
+    {
+      "name": "oidc client id blank",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\", \"oidc\"]\n",
+      "tables": "[[oidc.clients]]\nclient_id = \" \"\ncallback_path = \"/cb\"\norigin_config_key = \"origin\"\n",
+      "error": "plugin.toml: oidc.clients[0].client_id is required"
+    },
+    {
+      "name": "oidc callback path without slash",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\", \"oidc\"]\n",
+      "tables": "[[oidc.clients]]\nclient_id = \"app\"\ncallback_path = \"cb\"\norigin_config_key = \"origin\"\n",
+      "error": "plugin.toml: oidc.clients[0].callback_path must start with `/`"
+    },
+    {
+      "name": "oidc origin config key blank",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\", \"oidc\"]\n",
+      "tables": "[[oidc.clients]]\nclient_id = \"app\"\ncallback_path = \"/cb\"\norigin_config_key = \"\"\n",
+      "error": "plugin.toml: oidc.clients[0].origin_config_key is required"
+    },
+    {
+      "name": "credentials without storefront",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\"]\ncredentials = \"shareable\"\n",
+      "error": "plugin.toml: `credentials` needs the `storefront` entrypoint (only storefronts connect store accounts)"
+    },
+    {
+      "name": "domain with a space",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"outbound\"\ndomains = [\"exa mple.com\"]\n",
+      "error": "plugin.toml: capabilities.network.domains entry `exa mple.com` is not a valid hostname with an optional `:port` (IDNA ToASCII failed, percent-encoded host, a port on `*`, or a port that is not 1-65535 in plain digits)"
+    },
+    {
+      "name": "domain port zero",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"outbound\"\ndomains = [\"example.com:0\"]\n",
+      "error": "plugin.toml: capabilities.network.domains entry `example.com:0` is not a valid hostname with an optional `:port` (IDNA ToASCII failed, percent-encoded host, a port on `*`, or a port that is not 1-65535 in plain digits)"
+    },
+    {
+      "name": "domain port on star",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"outbound\"\ndomains = [\"*:443\"]\n",
+      "error": "plugin.toml: capabilities.network.domains entry `*:443` is not a valid hostname with an optional `:port` (IDNA ToASCII failed, percent-encoded host, a port on `*`, or a port that is not 1-65535 in plain digits)"
+    },
+    {
+      "name": "domain percent encoded",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"outbound\"\ndomains = [\"ex%61mple.com\"]\n",
+      "error": "plugin.toml: capabilities.network.domains entry `ex%61mple.com` is not a valid hostname with an optional `:port` (IDNA ToASCII failed, percent-encoded host, a port on `*`, or a port that is not 1-65535 in plain digits)"
+    },
+    {
+      "name": "domains with ports wildcards and ipv6",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"outbound\"\ndomains = [\"api.example.com:8443\", \"*.cdn.example.com\", \"*\", \"[2001:db8::1]:443\", \"bücher.example\"]\n",
+      "error": null
+    },
+    {
+      "name": "tcp host star",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"deny\"\n[[capabilities.network.tcp]]\nhost = \"*\"\nports = [5432]\n",
+      "error": "plugin.toml: capabilities.network.tcp host `*` is not a valid hostname (`*` is a fetch grant only)"
+    },
+    {
+      "name": "tcp host without ports",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"deny\"\n[[capabilities.network.tcp]]\nhost = \"db.example.com\"\nports = []\n",
+      "error": "plugin.toml: capabilities.network.tcp host `db.example.com` must declare at least one port"
+    },
+    {
+      "name": "tcp hosts accepted",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"deny\"\n[[capabilities.network.tcp]]\nhost = \"[2001:db8::2]\"\nports = [5432]\n[[capabilities.network.tcp]]\nhost = \"*.db.example.com\"\nports = [5432, 5433]\n",
+      "error": null
+    },
+    {
+      "name": "address cidr prefix too long",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"deny\"\naddress_cidrs = [\"10.0.0.0/33\"]\n",
+      "error": "plugin.toml: capabilities.network.address_cidrs entry `10.0.0.0/33`: CIDR prefix 33 exceeds 32"
+    },
+    {
+      "name": "address cidr not an address",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"deny\"\naddress_cidrs = [\"nope\"]\n",
+      "error": "plugin.toml: capabilities.network.address_cidrs entry `nope`: invalid IP `nope`"
+    },
+    {
+      "name": "address cidr bad prefix",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"deny\"\naddress_cidrs = [\"10.0.0.0/x\"]\n",
+      "error": "plugin.toml: capabilities.network.address_cidrs entry `10.0.0.0/x`: invalid CIDR prefix `x`"
+    },
+    {
+      "name": "address cidr bad network",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"deny\"\naddress_cidrs = [\"10.0.0/8\"]\n",
+      "error": "plugin.toml: capabilities.network.address_cidrs entry `10.0.0/8`: invalid CIDR address `10.0.0`"
+    },
+    {
+      "name": "address cidrs accepted",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"deny\"\naddress_cidrs = [\"10.0.0.0/8\", \"192.168.1.7\", \"fd00::/8\", \"::1\"]\n",
+      "error": null
+    },
+    {
+      "name": "event consumer schema versions empty",
+      "tables": "[[events.consumers]]\ntype = \"book_acquired\"\nschema_versions = []\n",
+      "error": "plugin.toml: events.consumers[0].schema_versions must not be empty"
+    },
+    {
+      "name": "event consumer resource class unsupported",
+      "tables": "[[events.consumers]]\ntype = \"book_acquired\"\nresource_class = \"cpu\"\n",
+      "error": "plugin.toml: events.consumers[0].resource_class `cpu` is not supported (only `network`)"
+    },
+    {
+      "name": "too many database bindings",
+      "tables": "[[databases]]\nbinding = \"DB0\"\n[[databases]]\nbinding = \"DB1\"\n[[databases]]\nbinding = \"DB2\"\n[[databases]]\nbinding = \"DB3\"\n[[databases]]\nbinding = \"DB4\"\n[[databases]]\nbinding = \"DB5\"\n[[databases]]\nbinding = \"DB6\"\n[[databases]]\nbinding = \"DB7\"\n[[databases]]\nbinding = \"DB8\"\n",
+      "error": "plugin.toml: [[databases]] lists 9 bindings; max is 8"
+    },
+    {
+      "name": "job type not snake case",
+      "tables": "[triggers]\njobs = [\"Sync\"]\n",
+      "error": "plugin.toml: triggers.jobs[0] `Sync` must be snake_case `[a-z][a-z0-9_]*`"
+    },
+    {
+      "name": "enum setting value repeated",
+      "tables": "[vars]\n[[settings]]\nkey = \"mode\"\ntype = \"enum\"\nvalues = [{ id = \"a\" }, { id = \"a\" }]\n",
+      "error": "plugin.toml: [[settings]] enum setting `mode` value `a` is duplicated"
+    },
+    {
+      "name": "setting network on a non-string",
+      "tables": "[vars]\n[[settings]]\nkey = \"port\"\ntype = \"integer\"\nnetwork = \"tcp\"\n",
+      "error": "plugin.toml: [[settings]] setting `port` declares `network` but is not a string"
+    },
+    {
+      "name": "setting default port without network",
+      "tables": "[vars]\n[[settings]]\nkey = \"host\"\ntype = \"string\"\ndefault_port = 5432\n",
+      "error": "plugin.toml: [[settings]] setting `host` declares `default_port` without `network`"
+    },
+    {
+      "name": "setting default port zero",
+      "tables": "[vars]\n[[settings]]\nkey = \"host\"\ntype = \"string\"\nnetwork = \"tcp\"\ndefault_port = 0\n",
+      "error": "plugin.toml: [[settings]] setting `host` `default_port` must be 1-65535"
+    },
+    {
+      "name": "setting network accepted",
+      "tables": "[vars]\n[[settings]]\nkey = \"host\"\ntype = \"string\"\nnetwork = \"tcp\"\ndefault_port = 5432\n",
+      "error": null
+    },
+    {
+      "name": "bool setting default is a string",
+      "tables": "[vars]\n[[settings]]\nkey = \"flag\"\ntype = \"bool\"\ndefault = \"yes\"\n",
+      "error": "plugin.toml: [[settings]] default for setting `flag` must be a boolean"
+    },
+    {
+      "name": "enum setting default not listed",
+      "tables": "[vars]\n[[settings]]\nkey = \"mode\"\ntype = \"enum\"\nvalues = [{ id = \"a\" }, { id = \"b\" }]\ndefault = \"c\"\n",
+      "error": "plugin.toml: [[settings]] default for setting `mode` must be one of: a, b"
+    },
+    {
+      "name": "table column network",
+      "tables": "[vars]\n[[settings]]\nkey = \"rows\"\ntype = \"table\"\n[[settings.columns]]\nkey = \"host\"\ntype = \"string\"\nnetwork = \"tcp\"\n",
+      "error": "plugin.toml: [[settings]] table setting `rows` column `host` may not declare `network` or `default_port`"
+    },
+    {
+      "name": "blank queue producer binding",
+      "tables": "[[queues.producers]]\nqueue = \"jobs\"\nbinding = \"\"\n",
+      "error": "plugin.toml: [queues.producers][0] binding must be `[A-Z][A-Z0-9_]*`"
+    },
+    {
+      "name": "two rules: oidc field before sockets mode",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\", \"oidc\"]\n",
+      "tables": "[sockets]\n[[oidc.clients]]\nclient_id = \"app\"\ncallback_path = \"cb\"\norigin_config_key = \"origin\"\n",
+      "error": "plugin.toml: oidc.clients[0].callback_path must start with `/`"
+    },
+    {
+      "name": "two rules: database binding before event type",
+      "tables": "[[databases]]\nbinding = \"db\"\n[[events.consumers]]\ntype = \"Bad\"\n",
+      "error": "plugin.toml: [[databases]] binding `db` must be `[A-Z][A-Z0-9_]*` and at most 32 chars"
+    },
+    {
+      "name": "two rules: event consumer before kv namespace",
+      "tables": "[[events.consumers]]\ntype = \"book_acquired\"\nschema_versions = []\n[[kv_namespaces]]\nbinding = \"KV\"\nnamespace = \"Bad Name\"\n",
+      "error": "plugin.toml: events.consumers[0].schema_versions must not be empty"
+    },
+    {
+      "name": "two rules: domain before duplicate entrypoint",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"cli\", \"cli\"]\n",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"outbound\"\ndomains = [\"exa mple.com\"]\n",
+      "error": "plugin.toml: capabilities.network.domains entry `exa mple.com` is not a valid hostname with an optional `:port` (IDNA ToASCII failed, percent-encoded host, a port on `*`, or a port that is not 1-65535 in plain digits)"
+    },
+    {
+      "name": "two rules: settings before database binding",
+      "tables": "[[settings]]\nkey = \"name\"\ntype = \"string\"\n[[databases]]\nbinding = \"db\"\n",
+      "error": "plugin.toml: [[settings]] setting `name` requires the `[vars]` binding"
+    },
+    {
+      "name": "two rules: queue binding before queue name",
+      "tables": "[[queues.producers]]\nqueue = \"Jobs\"\nbinding = \"\"\n",
+      "error": "plugin.toml: [queues.producers][0] binding must be `[A-Z][A-Z0-9_]*`"
+    },
+    {
+      "name": "two rules: webhook before metadata files",
+      "tables": "[[webhooks]]\nname = \"Bad\"\n[webhooks.signature]\nscheme = \"none\"\n[metadata_files]\n[[metadata_files.dialects]]\nid = \"x\"\nname = \"X\"\n",
+      "error": "plugin.toml: webhooks[0].name must be `[a-z0-9][a-z0-9-]*` and at most 32 chars"
     }
   ]
 }

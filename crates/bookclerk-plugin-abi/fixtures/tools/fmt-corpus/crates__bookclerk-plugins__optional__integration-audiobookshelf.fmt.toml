@@ -1,0 +1,222 @@
+api_version = 3
+id = "audiobookshelf"
+name = "Audiobookshelf"
+version = "0.2.0"
+logo = "https://www.google.com/s2/favicons?domain=audiobookshelf.org&sz=128"
+runtime = "workerd"
+entrypoints = [
+    "remoteLibrary",
+    "oidc",
+    "metadataFiles",
+]
+
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[workerd.limits]
+cpu_ms = 30000
+subrequests = 1000
+
+[[modules]]
+name = "index.js"
+path = "index.js"
+type = "js"
+
+[[modules]]
+name = "client.js"
+path = "client.js"
+type = "js"
+
+[[modules]]
+name = "settings.js"
+path = "settings.js"
+type = "js"
+
+[[modules]]
+name = "guest.js"
+path = "guest.js"
+type = "js"
+
+[[modules]]
+name = "hash.js"
+path = "hash.js"
+type = "js"
+
+[[modules]]
+name = "keyed.js"
+path = "keyed.js"
+type = "js"
+
+[[modules]]
+name = "listening.js"
+path = "listening.js"
+type = "js"
+
+[[modules]]
+name = "push.js"
+path = "push.js"
+type = "js"
+
+[[modules]]
+name = "watch.js"
+path = "watch.js"
+type = "js"
+
+[[modules]]
+name = "dialects.js"
+path = "dialects.js"
+type = "js"
+
+[[modules]]
+name = "text.js"
+path = "text.js"
+type = "js"
+
+[[modules]]
+name = "abs-json.js"
+path = "abs-json.js"
+type = "js"
+
+[[modules]]
+name = "nfo.js"
+path = "nfo.js"
+type = "js"
+
+[[modules]]
+name = "plain-text.js"
+path = "plain-text.js"
+type = "js"
+
+[[events.consumers]]
+type = "book_acquired"
+schema_versions = [1]
+supports_suspend = false
+resource_class = "network"
+
+[[databases]]
+binding = "LISTENING_STATE"
+
+[vars]
+
+[[settings]]
+key = "base_url"
+label = "Audiobookshelf URL"
+type = "string"
+required = true
+description = "Scheme and host of the Audiobookshelf server (https unless loopback)."
+
+[[settings]]
+key = "library_id"
+label = "Library id"
+type = "string"
+
+[[settings]]
+key = "watch_users"
+label = "Watch users"
+type = "bool"
+default = true
+
+[[settings]]
+key = "notify_scan_on_acquire"
+label = "Notify scan on acquire"
+type = "bool"
+default = true
+
+[[settings]]
+key = "allow_credential_login"
+label = "Allow credential login"
+type = "bool"
+default = true
+
+[[settings]]
+key = "api_key"
+label = "API key"
+type = "secret"
+
+[secrets]
+
+[sockets]
+
+[[metadata_files.dialects]]
+id = "abs_metadata_json"
+name = "Audiobookshelf metadata.json"
+file_names = ["metadata.json"]
+fields = [
+    "title",
+    "subtitle",
+    "description",
+    "publisher",
+    "publishedAt",
+    "language",
+    "genres",
+    "tags",
+    "abridgement",
+    "explicitness",
+    "identifiers",
+    "credits",
+    "series",
+    "chapters",
+]
+credit_roles = [
+    "author",
+    "narrator",
+]
+writes = true
+
+[[metadata_files.dialects]]
+id = "abs_nfo"
+name = "Audiobookshelf .nfo"
+suffixes = [".nfo"]
+fields = [
+    "title",
+    "subtitle",
+    "description",
+    "publisher",
+    "publishedAt",
+    "language",
+    "genres",
+    "tags",
+    "abridgement",
+    "identifiers",
+    "credits",
+    "series",
+]
+credit_roles = [
+    "author",
+    "narrator",
+]
+writes = true
+
+[[metadata_files.dialects]]
+id = "desc_txt"
+name = "Audiobookshelf desc.txt"
+file_names = ["desc.txt"]
+fields = ["description"]
+writes = true
+
+[[metadata_files.dialects]]
+id = "reader_txt"
+name = "Audiobookshelf reader.txt"
+file_names = ["reader.txt"]
+fields = ["credits"]
+credit_roles = ["narrator"]
+writes = true
+
+[capabilities.network]
+mode = "outbound"
+domains = ["*"]
+
+[[oidc.clients]]
+client_id = "audiobookshelf"
+display_name = "Audiobookshelf"
+callback_path = "/auth/openid/callback"
+public_client = true
+default_scopes = [
+    "openid",
+    "profile",
+]
+issue_refresh_token = true
+origin_config_key = "integrations.audiobookshelf.base_url"

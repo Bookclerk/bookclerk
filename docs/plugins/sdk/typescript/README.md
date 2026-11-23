@@ -285,7 +285,13 @@ npx bookclerk-plugin smoke .   # download the pinned workerd, then describe + he
 
 `check` enforces the v3 author model: the main module imports the SDK,
 does not reference the removed `BookclerkPlugin` base, and exports one
-class per named entrypoint.
+class per named entrypoint. It also checks `plugin.toml` with the host's
+rules, in the host's order and with its messages, so a manifest that passes
+`check` loads and one that fails gets the error the host would give first.
+
+`fmt` writes `plugin.toml` exactly as the Rust `bookclerk-plugin fmt` does:
+every table the manifest declares, in the host's field order, with the
+defaults the host fills in. Comments are not kept.
 
 `smoke` does not need a built `bookclerk-workerd`. It downloads the
 pinned Cloudflare `workerd` into `~/.cache/bookclerk/workerd` (override

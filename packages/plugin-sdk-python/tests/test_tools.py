@@ -420,6 +420,22 @@ mode = "deny"
         validate_manifest(tomllib.loads(text))
 
 
+_FMT_CORPUS = FIXTURES / "fmt-corpus"
+_FMT_CORPUS_INDEX: dict[str, str] = json.loads(
+    (_FMT_CORPUS / "index.json").read_text(encoding="utf-8")
+)
+
+
+@pytest.mark.parametrize("name", sorted(_FMT_CORPUS_INDEX))
+def test_fmt_matches_the_rust_corpus(name: str, tmp_path: Path) -> None:
+    """``fmt`` writes what the Rust formatter wrote for each first-party manifest."""
+    target = tmp_path / "plugin.toml"
+    shutil.copyfile(ROOT / _FMT_CORPUS_INDEX[name], target)
+    fmt_plugin_toml(target, check_only=False)
+    assert target.read_text(encoding="utf-8") == (_FMT_CORPUS / name).read_text(encoding="utf-8")
+    assert fmt_plugin_toml(_FMT_CORPUS / name, check_only=True).startswith("ok ")
+
+
 def test_format_manifest_does_not_insert_python_flags():
     rendered = format_manifest(
         {
@@ -1811,7 +1827,8 @@ def test_format_manifest_writes_the_defaults_a_manifest_leaves_out():
     consumer = parsed["events"]["consumers"][0]
     assert consumer["schema_versions"] == [1]
     assert consumer["resource_class"] == "network"
-    assert "filter" not in consumer
+    # The Rust formatter keeps an empty filter table (`Some({})`).
+    assert consumer["filter"] == {}
     assert parsed["capabilities"]["network"] == {"mode": "deny"}
     assert parsed["cli"]["commands"][0]["args"][0]["kind"] == "string"
     client = parsed["oidc"]["clients"][0]

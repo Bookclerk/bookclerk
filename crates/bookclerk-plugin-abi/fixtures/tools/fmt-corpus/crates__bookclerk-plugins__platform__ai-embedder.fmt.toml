@@ -1,0 +1,32 @@
+api_version = 3
+id = "embedder"
+name = "Text embeddings"
+version = "0.1.0"
+logo = "assets/logo.svg"
+runtime = "native"
+command = "./bookclerk-plugin-ai-embedder"
+entrypoints = ["ai"]
+
+[vars]
+
+[[settings]]
+key = "model"
+label = "Model"
+type = "enum"
+default = "bekko-a8m"
+required = true
+description = "The model that turns text into vectors for Discover and search. Each node downloads the chosen model once; changing it embeds the library again in the background."
+
+[[settings.values]]
+id = "bekko-a8m"
+label = "Bekko (fast)"
+
+[[settings.values]]
+id = "harrier-270m-q4"
+label = "Harrier (most accurate)"
+
+[ai]
+serves = ["textEmbeddings"]
+
+[capabilities.network]
+mode = "deny"

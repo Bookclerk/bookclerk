@@ -1,0 +1,101 @@
+api_version = 3
+id = "b2"
+name = "Backblaze B2"
+version = "0.1.0"
+logo = "https://www.google.com/s2/favicons?domain=backblaze.com&sz=128"
+runtime = "native"
+command = "./bookclerk-plugin-destination-b2"
+entrypoints = ["storage"]
+
+[triggers]
+jobs = ["stream_copy"]
+
+[vars]
+
+[[settings]]
+key = "bucket"
+label = "Bucket"
+type = "string"
+required = true
+description = "The bucket's name."
+
+[[settings]]
+key = "prefix"
+label = "Key prefix"
+type = "string"
+default = "library/"
+
+[[settings]]
+key = "naming_profile"
+label = "Naming profile"
+type = "enum"
+description = "Overrides [output].naming_profile for this destination only; unset inherits it."
+
+[[settings.values]]
+id = "audiobookshelf"
+label = "Audiobookshelf"
+
+[[settings.values]]
+id = "classic"
+label = "Classic Libation"
+
+[[settings]]
+key = "folder_template"
+label = "Folder template"
+type = "string"
+
+[[settings]]
+key = "file_template"
+label = "File template"
+type = "string"
+
+[[settings]]
+key = "chapter_file_template"
+label = "Chapter file template"
+type = "string"
+
+[[settings]]
+key = "application_key_id"
+label = "Application key ID"
+type = "secret"
+required = true
+description = "The keyID of a B2 application key with read and write access to the bucket (listFiles, readFiles, writeFiles, deleteFiles), plus readBucketNotifications and writeBucketNotifications for the change feed."
+
+[[settings]]
+key = "application_key"
+label = "Application key"
+type = "secret"
+required = true
+
+[[settings]]
+key = "webhook_signing_secret"
+label = "Event notification signing secret"
+type = "secret"
+description = "Turns on the change feed: 32 letters or digits B2 signs its event notifications with. The destination then keeps event notification rules on the bucket that post to this library's webhook URL, which needs a public https origin. Unset, changes made outside Bookclerk are found by listing."
+
+[secrets]
+
+[work_fs]
+
+[[webhooks]]
+name = "changes"
+max_body_bytes = 262144
+rate_per_minute = 600
+
+[webhooks.signature]
+scheme = "hmac-sha256"
+header = "x-bz-event-notification-signature"
+prefix = "v1="
+encoding = "hex"
+secret_setting = "webhook_signing_secret"
+
+[capabilities.network]
+mode = "outbound"
+
+[[capabilities.network.tcp]]
+host = "*.backblazeb2.com"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "*.backblaze.com"
+ports = [443]

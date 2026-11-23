@@ -1,0 +1,90 @@
+api_version = 3
+id = "ngrok"
+name = "ngrok"
+version = "0.1.0"
+runtime = "workerd"
+entrypoints = ["ingress"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[workerd.limits]
+cpu_ms = 30000
+subrequests = 100
+
+[[modules]]
+name = "index.js"
+path = "index.js"
+type = "js"
+
+[[modules]]
+name = "agent.js"
+path = "agent.js"
+type = "js"
+
+[[modules]]
+name = "ca.js"
+path = "ca.js"
+type = "js"
+
+[[modules]]
+name = "http1.js"
+path = "http1.js"
+type = "js"
+
+[[modules]]
+name = "lifecycle.js"
+path = "lifecycle.js"
+type = "js"
+
+[[modules]]
+name = "messages.js"
+path = "messages.js"
+type = "js"
+
+[[modules]]
+name = "mux.js"
+path = "mux.js"
+type = "js"
+
+[[modules]]
+name = "serve.js"
+path = "serve.js"
+type = "js"
+
+[[modules]]
+name = "version.js"
+path = "version.js"
+type = "js"
+
+[vars]
+
+[[settings]]
+key = "domain"
+label = "ngrok domain"
+type = "string"
+required = true
+description = "The domain to serve on: your free static domain (such as example.ngrok-free.app) or a domain reserved in your ngrok account."
+
+[[settings]]
+key = "authtoken"
+label = "ngrok authtoken"
+type = "secret"
+description = "The authtoken from your ngrok dashboard (Your Authtoken)."
+
+[secrets]
+
+[sockets]
+
+[ingress]
+kind = "relay"
+
+[capabilities.network]
+mode = "outbound"
+
+[[capabilities.network.tcp]]
+host = "connect.ngrok-agent.com"
+ports = [443]
