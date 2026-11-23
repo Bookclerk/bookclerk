@@ -8,6 +8,11 @@
  * it. Without the database the set lives in the isolate's memory and is
  * seeded again whenever the plugin starts, so a user created while it slept
  * is not reported.
+ *
+ * A host that acknowledges polls (`ackFollows`) gets each new user again on
+ * every poll until it acknowledges that user (`ackEvents`): the user is held
+ * in `abs_watch_pending` (or the isolate's memory) between the two, so a
+ * reply lost on the way to the host does not lose the user.
  */
 import { WATCH_KEY_TAG, hexKey } from "./hash.js";
 import { readKeyed, text, textAt, writeAll } from "./keyed.js";
@@ -35,6 +40,23 @@ export const WATCH_MIGRATION = {
     ],
 };
 /**
+ * The migration that adds the table of users reported but not yet
+ * acknowledged.
+ *
+ * `abs_watch_pending` holds one row per user handed to a host that said it
+ * acknowledges polls, until the host acknowledges that user; like
+ * `abs_watch_users`, its `person` column is a hash of the user id.
+ */
+export const WATCH_PENDING_MIGRATION = {
+    id: "abs-user-watch-pending-v1",
+    operations: [
+        {
+            kind: "schema",
+            value: "CREATE TABLE IF NOT EXISTS abs_watch_pending (person TEXT NOT NULL PRIMARY KEY)",
+        },
+    ],
+};
+/**
  * The watch key of an Audiobookshelf user id.
  *
  * @param userId - User id.
@@ -51,7 +73,20 @@ export function watchKey(userId) {
  * @throws The binding's error, and an `Error` for a row of the wrong shape.
  */
 async function known(db) {
-    const rows = await readKeyed(db, "SELECT person FROM abs_watch_users WHERE person > ? ORDER BY person LIMIT ?", [], "person");
+    const keys = await keysIn(db, "abs_watch_users");
+    const seeded = keys.delete(SEEDED);
+    return { keys, seeded };
+}
+/**
+ * Every `person` key in one of the watch tables.
+ *
+ * @param db - The plugin database.
+ * @param table - `abs_watch_users` or `abs_watch_pending`.
+ * @returns The keys.
+ * @throws The binding's error, and an `Error` for a row of the wrong shape.
+ */
+async function keysIn(db, table) {
+    const rows = await readKeyed(db, `SELECT person FROM ${table} WHERE person > ? ORDER BY person LIMIT ?`, [], "person");
     const keys = new Set();
     for (const row of rows) {
         const person = textAt(row, "person");
@@ -59,8 +94,7 @@ async function known(db) {
             throw new Error("watch user row has the wrong shape");
         keys.add(person);
     }
-    const seeded = keys.delete(SEEDED);
-    return { keys, seeded };
+    return keys;
 }
 /**
  * Records `keys` as known, in batches that each fit one request.
@@ -75,22 +109,40 @@ export async function insertKeys(db, keys) {
         .bind(text(person))
         .asRun()));
 }
+/**
+ * Records `keys` as reported but not yet acknowledged.
+ *
+ * @param db - The plugin database.
+ * @param keys - User keys.
+ * @throws The binding's error.
+ */
+async function insertPending(db, keys) {
+    await writeAll(db, keys.map((person) => db
+        .prepare("INSERT OR IGNORE INTO abs_watch_pending (person) VALUES (?)")
+        .bind(text(person))
+        .asRun()));
+}
 /** Where the reported-user set lives for one call. */
 export class UserWatch {
     /** The plugin database, when the operator granted it. */
     #db;
     /** The in-memory set, used only without the database. */
     #memory;
+    /** The in-memory set of unacknowledged user keys, used only without the database. */
+    #pending;
     /**
-     * A watch over `db` when granted, else over `memory`.
+     * A watch over `db` when granted, else over `memory` and `pending`.
      *
      * @param db - The plugin's `LISTENING_STATE` database, when granted.
      * @param memory - The isolate's in-memory set of user keys, plus
      *   {@link SEEDED} once seeded.
+     * @param pending - The isolate's in-memory set of keys of users reported
+     *   to a host that acknowledges polls and not yet acknowledged.
      */
-    constructor(db, memory) {
+    constructor(db, memory, pending = new Set()) {
         this.#db = db;
         this.#memory = memory;
+        this.#pending = pending;
     }
     /**
      * Records every user in `users` as known when the set was never seeded,
@@ -125,20 +177,27 @@ export class UserWatch {
         return count;
     }
     /**
-     * The users in `users` not reported before, now recorded as known.
+     * The users in `users` not reported before, now recorded as known, plus
+     * (when `ackFollows`) those reported before but not yet acknowledged.
      *
-     * A failed write does not lose users: when recording them fails part way
-     * the users are still returned, and those whose rows were not written are
-     * reported again by the next poll (the host then mints a second claim
-     * ticket for the same person rather than none). A reply lost after the
-     * rows were written is not retried, because `pollEvents` has no
-     * acknowledgement.
+     * When `ackFollows`, every new user is recorded as pending before it is
+     * recorded as known, and stays pending until {@link ack}; a reply lost on
+     * the way to the host is answered again by the next poll. A pending user
+     * no longer on the server is not reported again.
+     *
+     * Without `ackFollows` (an older host) there is no acknowledgement: when
+     * recording users fails part way they are still returned, and those whose
+     * rows were not written are reported again by the next poll (the host
+     * then mints a second claim ticket for the same person rather than none),
+     * but a reply lost after the rows were written is not retried.
      *
      * @param users - The server's users.
-     * @returns The new users, in the server's order.
-     * @throws The database's error when the known set cannot be read.
+     * @param ackFollows - Whether the host acknowledges what it receives.
+     * @returns The users to report, in the server's order.
+     * @throws The database's error when the known set cannot be read, or
+     *   (when `ackFollows`) when the new users cannot be recorded as pending.
      */
-    async takeNew(users) {
+    async takeNew(users, ackFollows = false) {
         const db = this.#db;
         const fresh = [];
         if (db === undefined) {
@@ -146,12 +205,18 @@ export class UserWatch {
                 const key = await watchKey(user.id);
                 if (!this.#memory.has(key)) {
                     this.#memory.add(key);
+                    if (ackFollows)
+                        this.#pending.add(key);
+                    fresh.push(user);
+                }
+                else if (ackFollows && this.#pending.has(key)) {
                     fresh.push(user);
                 }
             }
             return fresh;
         }
         const seen = (await known(db)).keys;
+        const pending = ackFollows ? await keysIn(db, "abs_watch_pending") : new Set();
         const keys = [];
         for (const user of users) {
             const key = await watchKey(user.id);
@@ -160,7 +225,14 @@ export class UserWatch {
                 keys.push(key);
                 fresh.push(user);
             }
+            else if (pending.has(key)) {
+                fresh.push(user);
+            }
         }
+        // Pending first: a user written as known but not as pending would never
+        // be reported again.
+        if (ackFollows)
+            await insertPending(db, keys);
         try {
             await insertKeys(db, keys);
         }
@@ -168,5 +240,22 @@ export class UserWatch {
             console.warn(`Audiobookshelf user watch could not record new users; the next poll reports them again: ${String(err)}`);
         }
         return fresh;
+    }
+    /**
+     * Marks the users in `userIds` acknowledged, so polls stop reporting them.
+     *
+     * @param userIds - Audiobookshelf user ids the host acknowledged; ids that
+     *   were never pending are ignored.
+     * @throws The database's error.
+     */
+    async ack(userIds) {
+        const keys = await Promise.all(userIds.map((id) => watchKey(id)));
+        const db = this.#db;
+        if (db === undefined) {
+            for (const key of keys)
+                this.#pending.delete(key);
+            return;
+        }
+        await writeAll(db, keys.map((person) => db.prepare("DELETE FROM abs_watch_pending WHERE person = ?").bind(text(person)).asRun()));
     }
 }
