@@ -482,7 +482,12 @@ Every scan and acquire is admitted through a planner, whoever asks:
 - **Scan** (`control_plane::plan_scan`): operator authority, an Owner or an
   Administrator scanning every account gets one job per scan-enabled
   account; anyone else only the accounts they own (see the control-plane
-  ADR, *Per-item trust and the scan planner*).
+  ADR, *Per-item trust and the scan planner*). A scan-all job names its
+  account by its exact id (`account_match = "exact_id"` in the payload), so
+  an account whose label is another account's id is still scanned once, by
+  its own job, and the other account is not scanned twice. An id that
+  exists on two plugins gets one job when every row is scan-enabled, and
+  otherwise one job pinned to each enabled row's default instance.
 - **Acquire** (`control_plane::plan_acquire`): each named title id
   (`titles`, UUID, ASIN, ISBN or product id) becomes its own job, so each
   can go to any node trusted with it. Operator authority, an Owner or an

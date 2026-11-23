@@ -111,11 +111,48 @@ pub enum OAuthProgress {
     },
 }
 
+/// How a scan's account names pick accounts ([`ScanOptions::accounts`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountMatch {
+    /// A name matches an account's id or its label, ignoring ASCII case:
+    /// what a person types.
+    #[default]
+    IdOrLabel,
+    /// A name matches only the account with exactly that id. A scan of
+    /// every account plans these, so a label that equals another account's
+    /// id never makes two jobs reach one account.
+    ExactId,
+}
+
+impl AccountMatch {
+    /// True when `name` picks the account with `account_id` and `label`.
+    #[must_use]
+    pub fn matches(self, name: &str, account_id: &str, label: Option<&str>) -> bool {
+        match self {
+            Self::IdOrLabel => {
+                account_id.eq_ignore_ascii_case(name)
+                    || label.is_some_and(|label| label.eq_ignore_ascii_case(name))
+            }
+            Self::ExactId => account_id == name,
+        }
+    }
+
+    /// True for the default ([`AccountMatch::IdOrLabel`]); lets a stored
+    /// job leave the field out.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::IdOrLabel
+    }
+}
+
 /// Options for a library scan.
 #[derive(Debug, Clone)]
 pub struct ScanOptions {
     /// Limit to specific account nicknames / ids.
     pub accounts: Vec<String>,
+    /// How [`Self::accounts`] picks accounts.
+    pub account_match: AccountMatch,
     /// Upstream library page size (titles per HTTP page; default 50).
     pub page_size: u32,
     /// Import podcast episodes — consumed by plugins that support it.
@@ -130,6 +167,7 @@ impl Default for ScanOptions {
     fn default() -> Self {
         Self {
             accounts: Vec::new(),
+            account_match: AccountMatch::IdOrLabel,
             page_size: 50,
             import_episodes: true,
             import_plus_titles: true,

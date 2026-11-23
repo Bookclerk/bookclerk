@@ -145,6 +145,7 @@ impl JobTransport for InProcessJobTransport {
                 run_scan(
                     &self.state,
                     cmd.payload.account.as_deref(),
+                    cmd.payload.account_match,
                     cmd.payload.plugin_instance_id.as_deref(),
                     Some(&ctx),
                 )

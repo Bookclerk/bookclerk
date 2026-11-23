@@ -1835,6 +1835,14 @@ pub struct JobPayload {
     /// Optional account filter (`None` = all eligible accounts).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// How [`Self::account`] picks accounts: by id or label (what a person
+    /// types, the default), or by exact id (a scan of every account plans
+    /// these, one job per account).
+    #[serde(
+        default,
+        skip_serializing_if = "bookclerk_storefront::AccountMatch::is_default"
+    )]
+    pub account_match: bookclerk_storefront::AccountMatch,
     /// Optional title filter (uuid / ASIN / ISBN / product id).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -2005,6 +2013,7 @@ impl Default for JobPayload {
         Self {
             v: JOB_PAYLOAD_VERSION,
             account: None,
+            account_match: bookclerk_storefront::AccountMatch::IdOrLabel,
             title: None,
             plugin_instance_id: None,
             requires: Vec::new(),

@@ -32,7 +32,7 @@
 //! scan-enabled account so each can be routed to any node trusted with
 //! it. Any other user's scan covers only the accounts they own.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
 use sea_orm::sea_query::Query;
@@ -1205,13 +1205,12 @@ async fn requester_scope(store: &LibraryStore, requester: ScanRequester) -> Resu
 
 /// One job a scan of every account plans.
 struct ScanTarget {
-    /// The account id the job names.
+    /// The account id the job names, matched exactly
+    /// ([`bookclerk_storefront::AccountMatch::ExactId`]).
     account_id: String,
     /// The plugin the job must stay on, when the id also names an account
     /// with scanning turned off on another plugin.
     plugin_key: Option<String>,
-    /// The accounts the job touches.
-    touched: BTreeSet<AccountKey>,
 }
 
 /// Builds the payload for `target`, pinning it to its plugin's default
@@ -1228,6 +1227,7 @@ async fn target_payload(
     payload: &impl Fn(Option<&str>) -> JobPayload,
 ) -> Result<Option<JobPayload>> {
     let mut job = payload(Some(&target.account_id));
+    job.account_match = bookclerk_storefront::AccountMatch::ExactId;
     if let (Some(key), None) = (&target.plugin_key, &job.plugin_instance_id) {
         let Some(instance) = default_instance_for_key(store, key).await? else {
             return Ok(None);
@@ -1242,22 +1242,18 @@ fn not_your_account() -> LibraryError {
     LibraryError::Forbidden("that store account is not linked to this user".into())
 }
 
-/// The jobs a scan of every account plans, within `plugin_key` if given.
+/// The jobs a scan of every account plans, within `plugin_key` if given:
+/// one per scan-enabled account id, naming it exactly
+/// ([`bookclerk_storefront::AccountMatch::ExactId`]).
 ///
-/// A job names an account id, and a job's account filter matches that id or
-/// label on every plugin it runs on, whatever their scan flags. So each
-/// scan-enabled id is one unpinned job when every account it would touch is
-/// scan-enabled, and otherwise one job per plugin where every account it
-/// would touch is scan-enabled, pinned to that plugin. An account that only
-/// shares its plugin with a scan-disabled account matching the same id is
-/// left out, since no job can reach it alone.
-///
-/// Targets `allowed` refuses are dropped, and a target whose accounts the
-/// kept targets already cover (an id differing only in case, or another
-/// account's label) is skipped so no account is scanned twice. Targets that
-/// reach more accounts are kept first, so a needle that only reaches part
-/// of another's accounts is the one skipped. A chain of labels that each
-/// name another account's id can still scan its middle account twice.
+/// An exact id reaches the accounts with that id on every plugin the job
+/// runs on, whatever their scan flags, and never another account through a
+/// label or a different case. So each id is one unpinned job when every
+/// account with it is scan-enabled, and otherwise one job per plugin where
+/// it is, pinned to that plugin. The jobs partition the accounts: none is
+/// scanned twice, however labels and ids overlap (a chain of labels that
+/// each name another account's id once scanned its middle account twice).
+/// Targets `allowed` refuses are left out. Targets come out in id order.
 ///
 /// # Errors
 ///
@@ -1272,81 +1268,35 @@ async fn scan_all_targets(
         query = query.filter(accounts::Column::PluginKey.eq(key));
     }
     let rows = query.all(store.db()).await.map_err(LibraryError::Orm)?;
-    let ids: BTreeSet<&str> = rows
-        .iter()
-        .filter(|row| row.scan_enabled != 0)
-        .map(|row| row.account_id.as_str())
-        .collect();
-    let mut candidates: Vec<ScanTarget> = Vec::new();
-    for id in ids {
-        let matching: Vec<&accounts::Model> = rows
-            .iter()
-            .filter(|row| {
-                row.account_id.eq_ignore_ascii_case(id)
-                    || row
-                        .label
-                        .as_deref()
-                        .is_some_and(|label| label.eq_ignore_ascii_case(id))
-            })
-            .collect();
+    // Each id's accounts, by plugin, with their scan flags.
+    let mut by_id: BTreeMap<&str, Vec<&accounts::Model>> = BTreeMap::new();
+    for row in &rows {
+        by_id.entry(row.account_id.as_str()).or_default().push(row);
+    }
+    let mut out = Vec::new();
+    for (id, accounts) in by_id {
         let keys = |rows: &[&accounts::Model]| -> BTreeSet<AccountKey> {
             rows.iter()
                 .map(|row| (row.plugin_key.clone(), row.account_id.clone()))
                 .collect()
         };
-        if matching.iter().all(|row| row.scan_enabled != 0) {
-            candidates.push(ScanTarget {
-                account_id: id.to_string(),
-                plugin_key: None,
-                touched: keys(&matching),
-            });
+        if accounts.iter().all(|row| row.scan_enabled != 0) {
+            if allowed(&keys(&accounts)) {
+                out.push(ScanTarget {
+                    account_id: id.to_string(),
+                    plugin_key: None,
+                });
+            }
             continue;
         }
-        let plugins: BTreeSet<&str> = matching
-            .iter()
-            .filter(|row| row.scan_enabled != 0 && row.account_id == id)
-            .map(|row| row.plugin_key.as_str())
-            .collect();
-        for key in plugins {
-            let on_plugin: Vec<&accounts::Model> = matching
-                .iter()
-                .copied()
-                .filter(|row| row.plugin_key == key)
-                .collect();
-            if on_plugin.iter().all(|row| row.scan_enabled != 0) {
-                candidates.push(ScanTarget {
+        for row in accounts.iter().filter(|row| row.scan_enabled != 0) {
+            if allowed(&keys(&[*row])) {
+                out.push(ScanTarget {
                     account_id: id.to_string(),
-                    plugin_key: Some(key.to_string()),
-                    touched: keys(&on_plugin),
+                    plugin_key: Some(row.plugin_key.clone()),
                 });
             }
         }
     }
-    // Wider targets are decided first: when another account's label equals
-    // an id, the needle that reaches both is kept and the one that reaches
-    // only one is then covered. Kept targets still come out in id order.
-    let mut order: Vec<usize> = (0..candidates.len()).collect();
-    order.sort_by_key(|&index| std::cmp::Reverse(candidates[index].touched.len()));
-    // Accounts some kept target already touches. A target whose accounts
-    // are all among them (an id that differs only in case, or another
-    // account's label) would scan them twice, possibly at once on two
-    // nodes.
-    let mut covered: BTreeSet<AccountKey> = BTreeSet::new();
-    let mut keep = vec![false; candidates.len()];
-    for index in order {
-        let touched = &candidates[index].touched;
-        // Refused targets are dropped before coalescing, so they never
-        // hide a later target the requester may run.
-        if !allowed(touched) || touched.is_subset(&covered) {
-            continue;
-        }
-        covered.extend(touched.iter().cloned());
-        keep[index] = true;
-    }
-    let out: Vec<ScanTarget> = candidates
-        .into_iter()
-        .zip(keep)
-        .filter_map(|(target, kept)| kept.then_some(target))
-        .collect();
     Ok(out)
 }

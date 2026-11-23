@@ -454,6 +454,8 @@ impl HostGuests for GuestHost {
             .scan_handed(
                 bookclerk_source::ScanOptions {
                     accounts: scan.accounts,
+                    // The library handed only the accounts the job names.
+                    account_match: bookclerk_source::AccountMatch::IdOrLabel,
                     page_size: 50,
                     import_episodes: scan.import_episodes,
                     import_plus_titles: scan.import_plus_titles,

@@ -788,9 +788,11 @@ pub async fn run_plugin_copy(
 ///
 /// `plugin_instance_id` pins the scan to one deployed instance; otherwise
 /// every plugin is scanned once through its default instance.
+/// `account_match` says how `account` picks accounts.
 pub async fn run_scan(
     state: &AppState,
     account: Option<&str>,
+    account_match: bookclerk_source::AccountMatch,
     plugin_instance_id: Option<&str>,
     ctx: Option<&JobExecCtx>,
 ) -> anyhow::Result<String> {
@@ -806,6 +808,7 @@ pub async fn run_scan(
     let registry = registry_for_job(state).await;
     let options = ScanOptions {
         accounts: account.map(|a| vec![a.to_string()]).unwrap_or_default(),
+        account_match,
         page_size: 50,
         import_episodes: cfg.library.import_episodes,
         import_plus_titles: cfg.library.import_plus_titles,

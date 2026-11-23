@@ -804,7 +804,8 @@ only that. The others check:
   plugin instances) and one Member's scan or acquire request into an
   in-memory database, then plans it. Every planned job names an account,
   and every account its needle reaches at run time (id or label, ignoring
-  ASCII case, within the pinned instance's plugin) is linked to that
+  ASCII case, or only the exact id when the job says so, within the pinned
+  instance's plugin) is linked to that
   Member, checked against the oracle's own model rather than the planner's
   queries. A refusal is `Forbidden` or `Invalid`. The shared oracle is
   `fuzz/oracles/plan_authz.rs`, replayed from `bookclerk-library`.
