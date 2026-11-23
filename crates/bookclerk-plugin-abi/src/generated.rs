@@ -4815,6 +4815,26 @@ pub struct DeprovisionRequest {
     pub grant: ProvisionGrant,
 }
 
+/// Params of `RemoteLibrary.pollEvents`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventPollParams {
+    /// The host calls `ackEvents` with every user it passes on, so the guest
+    /// keeps returning a user until it is acknowledged. False from hosts that
+    /// predate `ackEvents`: the guest then treats a returned user as delivered.
+    #[serde(default)]
+    pub ack_follows: bool,
+}
+
+/// Params of `RemoteLibrary.ackEvents`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventAckParams {
+    /// `ExternalUser.externalUserId` of each user the host passed on.
+    #[serde(default)]
+    pub external_user_ids: Vec<String>,
+}
+
 /// Encode a [`EventConsumerSpec`] onto a Cap'n Proto builder.
 ///
 /// # Errors
@@ -11452,9 +11472,68 @@ pub fn read_deprovision_request(
     })
 }
 
+/// Encode a [`EventPollParams`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_event_poll_params(
+    mut b: plugin_capnp::event_poll_params::Builder<'_>,
+    v: &EventPollParams,
+) -> capnp::Result<()> {
+    b.set_ack_follows(v.ack_follows);
+    Ok(())
+}
+
+/// Decode a [`EventPollParams`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_event_poll_params(
+    r: plugin_capnp::event_poll_params::Reader<'_>,
+) -> capnp::Result<EventPollParams> {
+    Ok(EventPollParams {
+        ack_follows: r.get_ack_follows(),
+    })
+}
+
+/// Encode a [`EventAckParams`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_event_ack_params(
+    mut b: plugin_capnp::event_ack_params::Builder<'_>,
+    v: &EventAckParams,
+) -> capnp::Result<()> {
+    {
+        let mut items = b
+            .reborrow()
+            .init_external_user_ids(list_len(v.external_user_ids.len())?);
+        for (i, item) in v.external_user_ids.iter().enumerate() {
+            items.set(list_len(i)?, item);
+        }
+    }
+    Ok(())
+}
+
+/// Decode a [`EventAckParams`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_event_ack_params(
+    r: plugin_capnp::event_ack_params::Reader<'_>,
+) -> capnp::Result<EventAckParams> {
+    Ok(EventAckParams {
+        external_user_ids: read_text_list(r.get_external_user_ids()?)?,
+    })
+}
+
 /// Number of root structs [`read_any_message`] can decode; selectors are
 /// `0..READ_ANY_COUNT` in schema order.
-pub const READ_ANY_COUNT: u8 = 179;
+pub const READ_ANY_COUNT: u8 = 181;
 
 /// Decodes `bytes` as an unpacked single-segment Cap'n Proto message whose
 /// root is the struct `selector` names, through that struct's `read_*`
@@ -12277,6 +12356,16 @@ pub fn read_any_message(selector: u8, bytes: &[u8]) -> capnp::Result<()> {
         178 => {
             let _ = read_deprovision_request(
                 reader.get_root::<plugin_capnp::deprovision_request::Reader<'_>>()?,
+            )?;
+        }
+        179 => {
+            let _ = read_event_poll_params(
+                reader.get_root::<plugin_capnp::event_poll_params::Reader<'_>>()?,
+            )?;
+        }
+        180 => {
+            let _ = read_event_ack_params(
+                reader.get_root::<plugin_capnp::event_ack_params::Reader<'_>>()?,
             )?;
         }
         _ => {
@@ -19959,6 +20048,94 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                     // needs to reproduce the difference.
                     return Err(RoundTripFailure::Codec(
                         "round trip changed the decoded DeprovisionRequest value".to_string(),
+                    ));
+                }
+            }
+        }
+        179 => {
+            let first = read_event_poll_params(
+                reader.get_root::<plugin_capnp::event_poll_params::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_event_poll_params(
+                message.init_root::<plugin_capnp::event_poll_params::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_event_poll_params(
+                    again.get_root::<plugin_capnp::event_poll_params::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_event_poll_params(
+                    message.init_root::<plugin_capnp::event_poll_params::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded EventPollParams value".to_string(),
+                    ));
+                }
+            }
+        }
+        180 => {
+            let first = read_event_ack_params(
+                reader.get_root::<plugin_capnp::event_ack_params::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_event_ack_params(
+                message.init_root::<plugin_capnp::event_ack_params::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_event_ack_params(
+                    again.get_root::<plugin_capnp::event_ack_params::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_event_ack_params(
+                    message.init_root::<plugin_capnp::event_ack_params::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded EventAckParams value".to_string(),
                     ));
                 }
             }

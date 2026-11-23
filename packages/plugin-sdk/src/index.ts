@@ -163,6 +163,7 @@ export type {
   AdapterEnv,
   AuthorStub,
   CancelWatchLike,
+  ScheduledFire,
   Checkpoint,
   CopyResult,
   DeliveredCheckpoint,

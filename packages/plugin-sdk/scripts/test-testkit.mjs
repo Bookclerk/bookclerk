@@ -20,6 +20,7 @@ const workspace = join(root, "../../..");
 const { TEST_DATABASE_PROFILES, createTestDatabase, defaultProfile, kitMigrations, testkitBinary } =
   await import(join(dist, "testkit.js"));
 const { PluginError } = await import(join(dist, "errors.js"));
+const { canonicalExecuteRequestHash } = await import(join(dist, "db-execute.js"));
 
 function ensureBinary() {
   if (
@@ -177,6 +178,48 @@ for (const profile of TEST_DATABASE_PROFILES) {
     await db.close();
   }
   console.log("ok first-party streamed all()");
+}
+
+// --- A retry token minted over the SQL as written --------------------------
+// The binding desugars `ORDER BY` before it hashes; a token the plugin
+// computed over the request it sent still names that request.
+for (const profile of TEST_DATABASE_PROFILES) {
+  const db = await createTestDatabase({ profile, migrations: MIGRATIONS });
+  try {
+    await db.binding
+      .prepare("INSERT INTO notes (id, body) VALUES (?, ?)")
+      .bind(i64(1), text("a"))
+      .run();
+    const statement = {
+      sql: "SELECT id FROM notes ORDER BY id",
+      parameters: [],
+      kind: "select",
+      maxRows: 0,
+      resultSelection: "rows",
+    };
+    const operationId = "retry-ordered-read";
+    const requestHash = await canonicalExecuteRequestHash({
+      operationId,
+      requestHash: "",
+      statements: [statement],
+      deadlineUnixMs: 0,
+    });
+    const reply = await db.binding.execute([statement], { retry: { operationId, requestHash } });
+    assert.deepEqual(
+      reply.statements[0].rows.map((row) => row.values[0]),
+      [i64(1)],
+      `${profile}: as-written retry token`,
+    );
+    await assert.rejects(
+      db.binding.execute([statement], {
+        retry: { operationId: "retry-forged", requestHash: "0".repeat(64) },
+      }),
+      (err) => err instanceof PluginError && err.code === "invalid_params",
+    );
+  } finally {
+    await db.close();
+  }
+  console.log("ok", profile, "as-written retry token");
 }
 
 // --- Default profile ------------------------------------------------------------

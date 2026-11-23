@@ -44,7 +44,10 @@ users and mints a claim ticket for each. The plugin also opens
 Audiobookshelf's Socket.io channel through the host (`[sockets]`): the host
 holds it while the plugin sleeps and answers its pings, and a `user_added`
 message makes the plugin ask the host to poll at once. `src/push.ts` reads
-the channel; `src/watch.ts` remembers which users were reported.
+the channel; `src/watch.ts` remembers which users were reported. Each new
+user is reported again on every poll until the host acknowledges it
+(`ackEvents`), so a reply lost on the way to the host does not lose the
+user.
 
 ## Sidecar files
 

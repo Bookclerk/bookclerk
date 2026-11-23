@@ -255,6 +255,12 @@ fn authorize_typed_request_as(
     caps: &DbCapabilities,
     stamp: RequestHashStamp,
 ) -> crate::error::Result<()> {
+    // An SDK mints its retry token over the request as it sent it, before
+    // the host desugars the SQL and assigns statement kinds. Both forms
+    // name the same executed request (desugaring and kinds are functions of
+    // the SQL), so a token over either is accepted; the canonical digest is
+    // what gets stamped.
+    let as_sent = as_sent_request_hash(req);
     bookclerk_plugin_abi::desugar_execute_request(req);
     for stmt in &mut req.statements {
         stmt.kind = host_statement_kind(&stmt.sql);
@@ -286,7 +292,10 @@ fn authorize_typed_request_as(
         }
     }
     .map_err(|err| crate::LibraryError::Other(anyhow::anyhow!(err.to_string())))?;
-    if !req.request_hash.is_empty() && req.request_hash != computed {
+    if !req.request_hash.is_empty()
+        && req.request_hash != computed
+        && as_sent.as_deref() != Some(req.request_hash.as_str())
+    {
         return Err(crate::LibraryError::Other(anyhow::anyhow!(
             "retry token requestHash does not match the canonical request"
         )));
@@ -294,6 +303,20 @@ fn authorize_typed_request_as(
     req.request_hash = computed;
     validate_execute_request(req, caps)?;
     Ok(())
+}
+
+/// The canonical digest of `req` exactly as the guest sent it, when it
+/// carries a retry token to check.
+///
+/// # Returns
+///
+/// `None` when `req` has no `requestHash` or cannot be encoded; the
+/// canonical check that follows reports the encoding error.
+fn as_sent_request_hash(req: &ExecuteRequest) -> Option<String> {
+    if req.request_hash.is_empty() {
+        return None;
+    }
+    bookclerk_plugin_abi::canonical_execute_request_hash(req).ok()
 }
 
 /// Refuses what encoding `req` for its digest refuses: no statements, or

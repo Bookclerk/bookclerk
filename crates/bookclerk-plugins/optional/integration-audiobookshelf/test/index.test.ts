@@ -152,7 +152,7 @@ test("a pushed user_added frame asks the host to poll", async () => {
 
 test("migrations are offered for LISTENING_STATE", () => {
   const plugin = new Plugin({} as never, ENV as never);
-  assert.equal(plugin.databaseMigrations("LISTENING_STATE").length, 2);
+  assert.equal(plugin.databaseMigrations("LISTENING_STATE").length, 3);
   assert.deepEqual(plugin.databaseMigrations("OTHER"), []);
 });
 
@@ -172,6 +172,12 @@ test("remoteLibrary methods reach the server and map failures", async () => {
     library.pollEvents(),
     (err: unknown) => err instanceof PluginError && err.code === "unauthorized",
   );
+  await assert.rejects(
+    library.pollEvents({ ackFollows: true }),
+    (err: unknown) => err instanceof PluginError && err.code === "unauthorized",
+  );
+  // Without the database the acknowledgement is held in memory and never fails.
+  await library.ackEvents({ externalUserIds: ["u1"] });
   await assert.rejects(library.syncListening(), (err: unknown) => err instanceof PluginError);
   const unconfigured = new RemoteLibrary({} as never, { CONFIG: {}, SECRETS: {} } as never);
   await assert.rejects(
