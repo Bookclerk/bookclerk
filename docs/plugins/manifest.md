@@ -310,6 +310,7 @@ entrypoints = ["notifier"]
 destinations = ["channel", "personal"]
 account_mail = true
 formats = ["text", "html"]
+deliverability_check = true
 
 [[notifier.address_fields]]
 key = "email"
@@ -325,6 +326,9 @@ required = true
   `email` address field. Defaults to false.
 - `formats`: the bodies the service shows, from `text`, `markdown` and
   `html`. Must include `text`. Defaults to `["text"]`.
+- `deliverability_check`: whether the plugin answers
+  `checkDeliverability`, which puts a **Check deliverability** button on
+  the instance's settings page. Defaults to false.
 - `[[notifier.address_fields]]`: the fields of a personal address, at most
   16, required exactly when `destinations` names `personal`. `key` is
   `[a-z][a-z0-9_]{0,63}` and unique; `label` is shown to the patron;

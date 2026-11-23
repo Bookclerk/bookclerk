@@ -183,8 +183,21 @@ The receiver's answer decides what happens next:
 
 The first-party `email` plugin sends each notification as an email
 through a mail server you already use (your provider's SMTP submission
-server, or your own). Each message has a plain text part and, when the
-notification has one, an HTML part.
+server, or your own). Each message has a plain text part and a branded
+HTML part, both quoted-printable so they stay readable in any mail
+client.
+
+The HTML part is laid out with [MJML](https://mjml.io), compiled inside
+the plugin, so it renders the same in mail clients that strip styles
+from the document head. It shows the Bookclerk mark and name, then a card
+with the From name, the title, the body and the link as a button labelled
+"Open" followed by the From name ("Open your library" when the From name
+is `Bookclerk`). The mark travels inside the message as an inline image,
+so nothing is fetched when the mail is opened. The footer links your
+library's home page (from its public origin) and bookclerk.app. Invites
+also carry a short introduction to Bookclerk, for recipients who have not
+heard of it. When the HTML a notification brings cannot be laid out, the
+plugin sends a plain HTML document instead.
 
 To set up a channel:
 
@@ -217,6 +230,32 @@ The plugin checks the server's certificate against the usual public
 roots, signs in only after TLS (`AUTH PLAIN`, or `AUTH LOGIN` when that is
 all the server offers), and marks every message `Auto-Submitted:
 auto-generated` so mail clients do not answer it.
+
+### Checking deliverability
+
+An email instance's settings page has a **Check deliverability** button.
+It sends the `test` notification, built as a real one is, through up to
+three checkers and turns what they find into a list of recommendations,
+most urgent first:
+
+- **Postmark spam check** (`spamcheck.postmarkapp.com`) scores the message
+  with SpamAssassin. Rules about the sending domain are left to the DNS
+  check, since an unsent message has no signature yet.
+- **DNS records** (Cloudflare's DNS-over-HTTPS resolver,
+  `cloudflare-dns.com`) looks up the SPF record of the `from_address`
+  domain and its DMARC record at `_dmarc`.
+- **mail-tester.com** (`www.mail-tester.com`) is used only when you set
+  `mail_tester_account` to your mail-tester account name. The plugin
+  sends a real test message through your mail server to a mail-tester
+  address, waits up to a minute for the score, and links the full report.
+  It uses one of the account's test credits.
+
+Each checker's host is a network grant you approve in the plugin's network
+settings; a checker whose grant is not approved is shown as not run. The
+check uses the saved settings and can take up to two minutes. Only
+administrators can run it.
+
+### When a send fails
 
 What the server answers decides what happens next:
 
