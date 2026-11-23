@@ -757,6 +757,43 @@ async fn shared_node_removal_is_one_batch_without_an_interactive_transaction() {
     }
 }
 
+/// Waits (up to 30 s) until `count` other sessions of this test's own
+/// database wait on a lock, as seen from the session holding it.
+///
+/// # Panics
+///
+/// Panics when they don't within the time, or the read fails.
+async fn waiters_on_the_row(holder: &sea_orm::DatabaseTransaction, count: i64) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        // A transaction keeps its first view of `pg_stat_activity` until
+        // the view is cleared.
+        holder
+            .execute_unprepared("SELECT pg_stat_clear_snapshot()")
+            .await
+            .expect("clear the activity snapshot");
+        let row = holder
+            .query_one_raw(sea_orm::Statement::from_string(
+                sea_orm::DatabaseBackend::Postgres,
+                "SELECT count(*)::bigint AS waiting FROM pg_stat_activity \
+                 WHERE datname = current_database() AND pid <> pg_backend_pid() \
+                 AND wait_event_type = 'Lock'",
+            ))
+            .await
+            .expect("read pg_stat_activity")
+            .expect("one row");
+        let waiting: i64 = row.try_get("", "waiting").expect("waiting");
+        if waiting >= count {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{waiting} of {count} sessions wait on the node row"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// A node's first heartbeat and the removal of that node order themselves
 /// on the node's `nodes` row on PostgreSQL (`READ COMMITTED`): with both
 /// queued behind a lock on that row, the node never ends up removed while
@@ -805,13 +842,15 @@ async fn postgres_removal_and_a_first_heartbeat_order_on_the_node_row() {
             let actor = as_owner.clone();
             tokio::spawn(async move { remove_shared_node(&store, &actor, &node, &this).await })
         };
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        // Wait until the removal waits on the row, so it is queued first
+        // however slow the runner is.
+        waiters_on_the_row(&holder, 1).await;
         let heartbeat = {
             let (store, node) = (store_b.clone(), node_id.clone());
             let beat = NodeSampler::new(dir.path()).sample();
             tokio::spawn(async move { record_node_heartbeat(&store, &node, &beat).await })
         };
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        waiters_on_the_row(&holder, 2).await;
         holder.commit().await.unwrap();
         let removed = removal.await.unwrap();
         let beat = heartbeat.await.unwrap();
