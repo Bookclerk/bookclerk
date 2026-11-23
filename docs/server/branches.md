@@ -552,7 +552,9 @@ Another user sees only the ones they own.
 A shared branch that isn't running can be removed there
 (`DELETE /api/config/nodes/{node_id}`) by the operator, or by an Owner after
 elevating, since removing one deletes its records. Stop Bookclerk on it
-first.
+first: a branch that heartbeats while it's being removed either keeps its
+place (the removal is refused as running) or is removed and then has its
+heartbeats refused until it restarts and joins again.
 
 > [!WARNING]
 > Removing a shared branch doesn't take back the database credentials or key it
