@@ -82,7 +82,9 @@ fn holds_this_edition(hit: &CatalogSearchHit, held: &bookclerk_library::HeldIden
 
 /// Sets `in_library` on every hit of a catalog search page.
 ///
-/// See the [module docs](self) for how a hit is matched. A hit the library
+/// A hit is this edition when one of its ASIN, ISBN or store products
+/// belongs to a held edition, and another edition when only its work (from
+/// the listing pool, or else the library's resolver) is held. A hit the library
 /// does not hold gets `None`.
 ///
 /// # Arguments
