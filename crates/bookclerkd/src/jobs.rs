@@ -198,12 +198,19 @@ pub(crate) async fn node_bound_output_keys(
     let instances = bookclerk_library::control_plane::list_all_plugin_instances(library).await?;
     Ok(instances
         .into_iter()
-        .filter(|instance| {
-            bookclerk_plugin_catalog::PluginKey::parse(&instance.plugin_key)
-                .is_ok_and(|key| bookclerk_plugin_host::is_first_party_local_output_key(&key))
-        })
         .map(|instance| instance.plugin_key)
+        .filter(|key| is_node_bound_key(key))
         .collect())
+}
+
+/// True when the stored plugin key `key` names a node-bound output (the
+/// first-party local destination): what [`node_bound_output_keys`] keeps,
+/// handed to claims so they check a job's requirements against the
+/// deployments committed now
+/// (`bookclerk_library::control_plane::JobClaimRequest::node_bound`).
+pub(crate) fn is_node_bound_key(key: &str) -> bool {
+    bookclerk_plugin_catalog::PluginKey::parse(key)
+        .is_ok_and(|key| bookclerk_plugin_host::is_first_party_local_output_key(&key))
 }
 
 /// True when the fence asked to stop or the row is flagged cancelled.
@@ -781,9 +788,11 @@ pub async fn run_plugin_copy(
 ///
 /// `plugin_instance_id` pins the scan to one deployed instance; otherwise
 /// every plugin is scanned once through its default instance.
+/// `account_match` says how `account` picks accounts.
 pub async fn run_scan(
     state: &AppState,
     account: Option<&str>,
+    account_match: bookclerk_source::AccountMatch,
     plugin_instance_id: Option<&str>,
     ctx: Option<&JobExecCtx>,
 ) -> anyhow::Result<String> {
@@ -799,6 +808,7 @@ pub async fn run_scan(
     let registry = registry_for_job(state).await;
     let options = ScanOptions {
         accounts: account.map(|a| vec![a.to_string()]).unwrap_or_default(),
+        account_match,
         page_size: 50,
         import_episodes: cfg.library.import_episodes,
         import_plus_titles: cfg.library.import_plus_titles,

@@ -120,6 +120,17 @@ pub enum Body {
         /// [`crate::BranchOrigin::parse`] accepts it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         public_origin: Option<String>,
+        /// The CPU, in millicores, of the branch's own budget it gives
+        /// this library (its `node.runtime` budget cut to this library's
+        /// share of the machine). The library records the smaller of this
+        /// and its own budget for the node. Absent from a branch that
+        /// reports none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        budget_cpu_millicores: Option<i64>,
+        /// The memory, in bytes, of the branch's own budget it gives this
+        /// library, like `budget_cpu_millicores`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        budget_memory_bytes: Option<i64>,
     },
     /// Host → owner: pull one work item. Answered with [`Body::Work`] or
     /// [`Body::NoWork`].
