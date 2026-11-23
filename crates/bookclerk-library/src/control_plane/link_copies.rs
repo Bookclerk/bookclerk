@@ -134,7 +134,7 @@ async fn held_by_another_edition(
 /// the same title (an earlier attempt's kept copy, or one still copying,
 /// which the newest attempt takes over). It is refused, changing nothing,
 /// when another title's copy holds it, or when this install's own library
-/// recorded it for another edition ([`held_by_another_edition`]): the copy
+/// recorded it for another edition (whose call number differs): the copy
 /// must not overwrite that file.
 ///
 /// # Errors
