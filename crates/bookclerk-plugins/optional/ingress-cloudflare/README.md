@@ -17,6 +17,15 @@ each public request back over that connection.
   socket. The plugin pulls the request from the relay, hands it to the
   library through `env.ORIGIN` with the client address Cloudflare reported,
   and pushes the answer back. Bodies stream both ways.
+- A WebSocket upgrade takes the same path. The plugin opens a socket to
+  the library with `env.ORIGIN.connect` and, when the library accepts,
+  pushes a `101` naming that socket; the library's refusal goes back as
+  an ordinary answer. The connection's messages then travel as binary
+  live frames on the relay socket that served the upgrade, so live
+  connections use none of the plugin's outbound sockets. The relay keeps
+  each client's socket under the hibernation API, so it can sleep while
+  connections are idle. When a relay socket closes, the connections on it
+  close too and the client reconnects.
 - `health` asks the relay how many sockets it holds and reopens any that
   closed. When every socket has closed, it looks the relay's address up
   through the Cloudflare API and reconnects. `stop` closes the sockets and leaves the Worker deployed, so
@@ -64,8 +73,9 @@ fake sockets; it has not yet been run against a live Cloudflare account.
 - A socket stays busy until the answer's body has reached the client, so a
   long download holds one of the six.
 - Request bodies are capped at 100 MB by Cloudflare's Free plan.
-- WebSocket upgrades are refused with `501`; a branch's live socket and a
-  clerk's live link don't connect through the relay yet.
+- A live connection's messages are at most 256 KiB less a few bytes of
+  framing (`MAX_LIVE_MESSAGE_BYTES`); a larger one closes the connection
+  with `1009`. The host holds at most 256 live connections per instance.
 - The relay drops `Content-Length` from answers and streams them, so a
   client sees no total size.
 - A custom domain is not set up by the plugin yet; the address is always
@@ -89,6 +99,9 @@ npm test
 ```
 
 `test/relay.test.ts` runs the relay hub and the plugin's request handling
-together under Node, with fake sockets and a fake library.
+together under Node, with fake sockets and a fake library;
+`test/live.test.ts` does the same for upgrades and live frames, and
+`test/worker.test.ts` drives the relay Worker's Durable Object with a fake
+state.
 `test/fuzz.test.ts` fuzzes the relay protocol (see
 [Fuzzing](../../../../docs/contributing/fuzzing.md#cloudflare-relay-guest)).

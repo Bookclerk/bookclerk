@@ -63,11 +63,27 @@ mock.module("@bookclerk/plugin-sdk/workerd", {
   namedExports: { BookclerkEntrypoint: Entrypoint, IngressEntrypoint: Entrypoint, PluginError },
 });
 const { Ingress, default: Plugin } = await import("../src/index.ts");
-const { handleMessage, relayHealth, relaySockets, startRelay, stopRelay, targetOf, topUpSockets } =
-  await import("../src/lifecycle.ts");
+const {
+  handleClose,
+  handleMessage,
+  relayHealth,
+  relaySockets,
+  startRelay,
+  stopRelay,
+  targetOf,
+  topUpSockets,
+} = await import("../src/lifecycle.ts");
 const { API_BASE, MIGRATION_TAG, relayToken } = await import("../src/cloudflare.ts");
-const { RELAY_HEALTH_PATH, RELAY_PULL_PATH, RELAY_PUSH_PATH, RELAY_SOCKETS, encodeFrame } =
-  await import("../src/protocol.ts");
+const {
+  MAX_LIVE_MESSAGE_BYTES,
+  RELAY_HEALTH_PATH,
+  RELAY_PULL_PATH,
+  RELAY_PUSH_PATH,
+  RELAY_SOCKETS,
+  encodeFrame,
+  encodeLiveFrame,
+  parseLiveFrame,
+} = await import("../src/protocol.ts");
 const { VERSION } = await import("../src/version.ts");
 
 /** The account in these tests. */
@@ -80,6 +96,8 @@ const HOST = "bookclerk-relay.acme.workers.dev";
 interface FakeSocket extends HostWebSocket {
   /** Close code, once closed. */
   closedWith: number | null;
+  /** Messages sent on it. */
+  sent: unknown[];
 }
 
 /**
@@ -94,6 +112,7 @@ function fakeSockets(refuseAfter = Infinity): {
   connects: Array<{ url: string; options: SocketConnectOptions | undefined }>;
 } {
   const open: FakeSocket[] = [];
+  let minted = 0;
   const connects: Array<{ url: string; options: SocketConnectOptions | undefined }> = [];
   /**
    * Makes a socket handle.
@@ -104,11 +123,16 @@ function fakeSockets(refuseAfter = Infinity): {
    */
   const socket = (url: string, attachment: unknown): FakeSocket => {
     const ws: FakeSocket = {
-      id: `s${open.length}`,
+      id: `s${minted++}`,
       url,
       protocol: "",
       closedWith: null,
-      send: () => Promise.resolve(),
+      sent: [],
+      send: (message) => {
+        if (ws.closedWith !== null) return Promise.reject(new PluginError("not_found", "closed"));
+        ws.sent.push(message);
+        return Promise.resolve();
+      },
       close: (code?: number) => {
         ws.closedWith = code ?? 1000;
         const index = open.indexOf(ws);
@@ -130,6 +154,13 @@ function fakeSockets(refuseAfter = Infinity): {
       return Promise.resolve(ws);
     },
     getWebSockets: () => Promise.resolve([...open]),
+    getWebSocket(id) {
+      const found = open.find((ws) => ws.id === id);
+      if (found) return found;
+      const gone = socket("", null);
+      gone.closedWith = 1006;
+      return gone;
+    },
   };
   return { binding, open, connects };
 }
@@ -146,7 +177,10 @@ function envOf(sockets: SocketsBinding, origin?: OriginBinding): Parameters<type
     CONFIG: { account_id: ACCOUNT, worker_name: "bookclerk-relay" },
     SECRETS: { api_token: "cf-api-token" },
     SOCKETS: sockets,
-    ORIGIN: origin ?? { fetch: () => Promise.resolve(new Response("library")) },
+    ORIGIN: origin ?? {
+      fetch: () => Promise.resolve(new Response("library")),
+      connect: () => Promise.reject(new Error("no upgrades here")),
+    },
   } as unknown as Parameters<typeof targetOf>[0];
 }
 
@@ -324,6 +358,7 @@ test("a notice is served through the library; other messages are ignored", async
       seen.push(new URL(request.url).pathname);
       return Promise.resolve(new Response("hi"));
     },
+    connect: () => Promise.reject(new Error("no upgrades here")),
   };
   const relay = async (input: string, init?: RequestInit): Promise<Response> => {
     if (input.includes(RELAY_PULL_PATH))
@@ -344,6 +379,89 @@ test("a notice is served through the library; other messages are ignored", async
   const orphan = await binding.connect(`wss://${HOST}/c`, { attachment: null });
   await handleMessage(env, relay, orphan, JSON.stringify({ t: "request", id: "abc-2" }));
   assert.equal(seen.length, 1);
+});
+
+/**
+ * The live frame a fake socket sent.
+ *
+ * @param message - What was sent.
+ * @returns The parsed frame.
+ */
+function sentFrame(message: unknown): ReturnType<typeof parseLiveFrame> {
+  assert.ok(message instanceof Uint8Array);
+  return parseLiveFrame(message);
+}
+
+test("live frames pass between the relay socket and the library's sockets", async () => {
+  const { binding } = fakeSockets();
+  const env = envOf(binding);
+  const fetch = () => Promise.reject(new Error("no requests here"));
+  const relay = await binding.connect(`wss://${HOST}/c`, { attachment: { host: HOST } });
+  const local = await binding.connect("", { attachment: { live: "req-1", relay: relay.id } });
+  const toLibrary = (frame: Parameters<typeof encodeLiveFrame>[0]): ArrayBuffer =>
+    encodeLiveFrame(frame).buffer;
+
+  // Relay to library.
+  await handleMessage(env, fetch, relay, toLibrary({ op: "text", id: local.id, text: "hi" }));
+  const data = new Uint8Array([7, 8]);
+  await handleMessage(env, fetch, relay, toLibrary({ op: "binary", id: local.id, data }));
+  await handleMessage(env, fetch, relay, new Uint8Array([1]).buffer);
+  await handleMessage(env, fetch, relay, toLibrary({ op: "text", id: "gone", text: "x" }));
+  assert.deepEqual((local as unknown as { sent: unknown[] }).sent, ["hi", data]);
+
+  // Library to relay.
+  await handleMessage(env, fetch, local, "from library");
+  await handleMessage(env, fetch, local, new Uint8Array([3]).buffer);
+  const sent = (relay as unknown as { sent: unknown[] }).sent;
+  assert.deepEqual(sentFrame(sent[0]), { op: "text", id: "req-1", text: "from library" });
+  assert.deepEqual(sentFrame(sent[1]), { op: "binary", id: "req-1", data: new Uint8Array([3]) });
+
+  // A message too large for a frame closes both sides with 1009.
+  await handleMessage(env, fetch, local, "x".repeat(MAX_LIVE_MESSAGE_BYTES + 1));
+  assert.equal((local as unknown as { closedWith: number }).closedWith, 1009);
+  assert.deepEqual(sentFrame(sent[2]), {
+    op: "close",
+    id: "req-1",
+    code: 1009,
+    reason: "message too large",
+  });
+
+  // The relay's close reaches the library socket.
+  const second = await binding.connect("", { attachment: { live: "req-2", relay: relay.id } });
+  await handleMessage(
+    env,
+    fetch,
+    relay,
+    toLibrary({ op: "close", id: second.id, code: 4000, reason: "bye" }),
+  );
+  assert.equal((second as unknown as { closedWith: number }).closedWith, 4000);
+
+  // A connection whose relay socket is gone is closed with 1011.
+  const orphan = await binding.connect("", { attachment: { live: "req-3", relay: "s99" } });
+  await handleMessage(env, fetch, orphan, "x");
+  assert.equal((orphan as unknown as { closedWith: number }).closedWith, 1011);
+});
+
+test("closes travel between the library's sockets and the relay", async () => {
+  const { binding, open, connects } = fakeSockets();
+  const env = envOf(binding);
+  const relay = await binding.connect(`wss://${HOST}/c`, { attachment: { host: HOST } });
+  const local = await binding.connect("", { attachment: { live: "req-1", relay: relay.id } });
+  const other = await binding.connect("", { attachment: { live: "req-2", relay: "s77" } });
+  // The library closed abnormally: the relay hears 1011.
+  await handleClose(env, local, 1006, "");
+  const sent = (relay as unknown as { sent: unknown[] }).sent;
+  assert.deepEqual(sentFrame(sent[0]), { op: "close", id: "req-1", code: 1011, reason: "" });
+  // Topping up the relay sockets leaves live connections alone.
+  await topUpSockets(binding, HOST, "token-0123456789abcdef");
+  assert.equal((local as unknown as { closedWith: number | null }).closedWith, null);
+  // The relay socket closed: its connections end; others stay.
+  const before = connects.length;
+  await handleClose(env, relay, 1000, "");
+  assert.equal((local as unknown as { closedWith: number }).closedWith, 1001);
+  assert.equal((other as unknown as { closedWith: number | null }).closedWith, null);
+  assert.equal(connects.length, before);
+  assert.ok(open.includes(other as never));
 });
 
 test("the entrypoint classes delegate to the lifecycle functions", async () => {
@@ -367,7 +485,7 @@ test("the entrypoint classes delegate to the lifecycle functions", async () => {
   const ws = await binding.connect(`wss://${HOST}/c`, { attachment: { host: HOST } });
   const before = open.length;
   // A close the plugin made itself (1000) is not reopened.
-  await plugin.webSocketClose(ws, 1000);
+  await plugin.webSocketClose(ws, 1000, "");
   assert.equal(open.length, before);
   await ingress.stop();
   assert.equal(open.length, 0);

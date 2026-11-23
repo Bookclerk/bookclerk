@@ -196,6 +196,9 @@ export type {
 } from "./env.js";
 export type {
   OriginBinding,
+  OriginConnectOptions,
+  OriginConnectResult,
+  OriginConnectTransportReply,
   OriginFetchOptions,
   OriginTransport,
   OriginTransportReply,

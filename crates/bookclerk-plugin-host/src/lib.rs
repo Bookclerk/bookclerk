@@ -183,7 +183,9 @@ pub use host_control_plane::{
     open_host_control_plane_with_store, refresh_present, HostControlPlane, NodeEnrollment,
     PresentDeployment,
 };
-pub use ingress::{IngressHost, INGRESS_HEALTH_INTERVAL};
+pub use ingress::{
+    BrokeredOrigin, IngressHost, LibraryOrigin, OriginUpgrade, INGRESS_HEALTH_INTERVAL,
+};
 pub use install::{
     add_package_version, enroll_version, grant_covers_version, host_artifact, install_plugin_key,
     install_version, is_sha256_hex, materialize_owner_version, materialize_version,
@@ -238,7 +240,9 @@ pub use setting_grants::{
     library_setting_statuses, network_grant_binding, network_settings, setting_grant_statuses,
     InstanceSettingStatuses, SettingDestinationMap, SettingGrantState, SettingGrantStatus,
 };
-pub use socket_broker::{BrokerSockets, SocketBroker, SocketEvent, SocketSink};
+pub use socket_broker::{
+    BrokerSockets, LocalInbound, LocalOutbound, LocalSocket, SocketBroker, SocketEvent, SocketSink,
+};
 pub use spawn_plan::{
     GuestRuntimeKind, SpawnPlan, SpawnTransport, WorkerdFrontDoor, WORKERD_BIN_ENV,
     WORKERD_LAUNCHER_ENV,

@@ -438,6 +438,25 @@ function wireQueueMessage(overrides = {}) {
     () => sockets.routeFrame(42),
     (err) => err.wireCode === "invalid_params",
   );
+  // getWebSocket makes a handle by id without asking the host.
+  const asked = [];
+  const binding = sockets.socketsBinding({
+    async call(op, body) {
+      asked.push({ op, body });
+      return op === "send" ? { err: { code: "not_found", message: "gone" } } : { ok: {} };
+    },
+  });
+  const byId = binding.getWebSocket("o7");
+  assert.equal(asked.length, 0);
+  assert.equal(byId.id, "o7");
+  assert.equal(byId.url, "");
+  assert.equal(byId.deserializeAttachment(), null);
+  await byId.close(1000, "bye");
+  assert.deepEqual(asked, [{ op: "close", body: { socket: "o7", code: 1000, reason: "bye" } }]);
+  await assert.rejects(
+    () => byId.send("x"),
+    (err) => err instanceof PluginError && err.wireCode === "not_found",
+  );
   assert.equal(sockets.socketMessageData(undefined), "");
   assert.equal(sockets.socketMessageData({ kind: "text", value: "t" }), "t");
 }
@@ -967,6 +986,130 @@ for (const [label, mod] of [
     null,
   );
   assert.equal(unreachable.err.code, "unavailable");
+
+  // An upgrade sends the head without handshake fields and the attachment
+  // as JSON; an accepted one is a socket of the SOCKETS grant.
+  let connectSeen;
+  const socketCalls = [];
+  const upgrading = origin.originBinding(
+    {
+      async connect(head, attachment) {
+        connectSeen = { head, attachment };
+        if (head.target === "/refuse") {
+          return {
+            ok: {
+              refused: {
+                status: 401,
+                headers: [{ name: "content-type", value: "text/plain" }],
+                body: btoa("sign in"),
+              },
+            },
+          };
+        }
+        return {
+          ok: {
+            socket: {
+              socket: "o1",
+              url: "https://lib.example/api/live",
+              protocol: "bookclerk.v1",
+              attachment: attachment,
+            },
+          },
+        };
+      },
+    },
+    {
+      async call(op, body) {
+        socketCalls.push([op, body]);
+        return { ok: {} };
+      },
+    },
+  );
+  const accepted = await upgrading.connect(
+    new Request("https://lib.example/api/live?t=1", {
+      headers: {
+        upgrade: "websocket",
+        connection: "Upgrade",
+        "sec-websocket-protocol": "bookclerk.v1",
+        cookie: "s=1",
+      },
+    }),
+    { clientAddress: "203.0.113.9", attachment: { relay: "r1" } },
+  );
+  assert.equal(connectSeen.head.method, "GET");
+  assert.equal(connectSeen.head.target, "/api/live?t=1");
+  assert.equal(connectSeen.head.clientAddress, "203.0.113.9");
+  assert.deepEqual(
+    connectSeen.head.headers.map((h) => h.name),
+    ["cookie", "sec-websocket-protocol"],
+    "connection fields are dropped",
+  );
+  assert.deepEqual(JSON.parse(atob(connectSeen.attachment)), { relay: "r1" });
+  assert.equal(accepted.socket.id, "o1");
+  assert.equal(accepted.socket.protocol, "bookclerk.v1");
+  assert.deepEqual(accepted.socket.deserializeAttachment(), { relay: "r1" });
+  await accepted.socket.send("hi");
+  assert.deepEqual(socketCalls, [["send", { socket: "o1", frame: { text: "hi" } }]]);
+
+  const refusedUpgrade = await upgrading.connect(new Request("https://lib.example/refuse"));
+  assert.equal(refusedUpgrade.response.status, 401);
+  assert.equal(await refusedUpgrade.response.text(), "sign in");
+
+  await assert.rejects(
+    () =>
+      origin
+        .originBinding({ connect: async () => ({ ok: { neither: true } }) })
+        .connect(new Request("https://lib.example/")),
+    (err) => err instanceof PluginError && err.wireCode === "internal",
+  );
+  await assert.rejects(
+    () =>
+      origin
+        .originBinding({ connect: async () => ({ err: { code: "forbidden", message: "no" } }) })
+        .connect(new Request("https://lib.example/")),
+    (err) => err instanceof PluginError && err.wireCode === "forbidden",
+  );
+
+  // The granted call posts JSON and hands back the route's answer.
+  const connectOk = await origin.grantedOriginConnect(
+    {
+      async fetch(url, init) {
+        assert.equal(url, "http://granted/origin/connect");
+        assert.equal(init.headers.Authorization, "Bearer otok");
+        const body = JSON.parse(init.body);
+        assert.equal(body.request.target, "/live");
+        assert.equal(body.attachment, "e30=");
+        return Response.json({ socket: { socket: "o2", url: "u", attachment: "" } });
+      },
+    },
+    { Authorization: "Bearer otok" },
+    { method: "GET", target: "/live", headers: [] },
+    "e30=",
+  );
+  assert.equal(connectOk.ok.socket.socket, "o2");
+  const connectRefused = await origin.grantedOriginConnect(
+    {
+      fetch: async () =>
+        new Response(JSON.stringify({ error: { code: "limit_exceeded", message: "full" } }), {
+          status: 429,
+        }),
+    },
+    {},
+    { method: "GET", target: "/", headers: [] },
+    "",
+  );
+  assert.deepEqual(connectRefused, { err: { code: "limit_exceeded", message: "full" } });
+  const connectDown = await origin.grantedOriginConnect(
+    {
+      fetch: async () => {
+        throw new Error("down");
+      },
+    },
+    {},
+    { method: "GET", target: "/", headers: [] },
+    "",
+  );
+  assert.equal(connectDown.err.code, "unavailable");
 }
 
 console.log("v3 entrypoint translation ok");

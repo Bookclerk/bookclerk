@@ -17,7 +17,10 @@
 //! listeners with the public origin as its `Host`, the client address the
 //! plugin reported as its peer and [`ListenerKind::Tunnel`] as its listener.
 //! The router runs on the daemon's runtime; the bodies cross between it and
-//! the plugin's thread through channels.
+//! the plugin's thread through channels. A WebSocket upgrade
+//! (`Origin.connect`) passes the same rules and reaches the router over an
+//! in-memory HTTP/1.1 connection ([`tunnel_socket`]); the plugin host holds
+//! the socket for the plugin instance.
 
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
@@ -34,12 +37,15 @@ use bookclerk_library::control_plane::{
 use bookclerk_node_proto::{normalize_tunnel_path, tunnel_refusal, TunnelExposure, TunnelRefusal};
 use bookclerk_plugin_abi::origin::CheckedOriginRequest;
 use bookclerk_plugin_abi::{IngressStarted, Origin, OriginHeader, OriginReply, PluginError};
-use bookclerk_plugin_host::IngressHost;
+use bookclerk_plugin_host::{IngressHost, LibraryOrigin, OriginUpgrade};
 use futures::StreamExt as _;
 use tokio::io::AsyncRead;
 use tower_service::Service as _;
 
 use crate::api::AppState;
+
+#[path = "ingress_socket.rs"]
+mod tunnel_socket;
 use crate::node_api::transport::ListenerKind;
 
 /// Response header fields that describe the connection, which the relay
@@ -187,7 +193,7 @@ impl IngressHost for DaemonIngress {
         }
     }
 
-    fn origin(&self) -> Arc<dyn Origin + Send + Sync> {
+    fn origin(&self) -> Arc<dyn LibraryOrigin> {
         Arc::new(TunnelOrigin {
             shared: Arc::clone(&self.shared),
         })
@@ -282,6 +288,24 @@ impl Origin for TunnelOrigin {
     }
 }
 
+#[async_trait(?Send)]
+impl LibraryOrigin for TunnelOrigin {
+    async fn upgrade(
+        &self,
+        request: CheckedOriginRequest,
+    ) -> bookclerk_plugin_abi::Result<OriginUpgrade> {
+        let client = tunnel_client(request.client)?;
+        let shared = Arc::clone(&self.shared);
+        self.shared
+            .runtime
+            .spawn(async move { tunnel_socket::open(&shared, request, client).await })
+            .await
+            .map_err(|err| {
+                PluginError::unavailable(format!("the library dropped the upgrade: {err}"))
+            })?
+    }
+}
+
 /// The client address a tunnel request may carry.
 ///
 /// # Errors
@@ -302,18 +326,29 @@ fn tunnel_client(client: Option<IpAddr>) -> bookclerk_plugin_abi::Result<IpAddr>
     Ok(client)
 }
 
-/// Serves one tunnel request on the daemon's runtime.
+/// Where a tunnel request may go, once the tunnel's own rules ran.
+enum Gate {
+    /// The path or credential is refused before the router.
+    Refused(TunnelRefusal),
+    /// The router may serve it, under the library's public authority.
+    Open {
+        /// The router the listeners serve.
+        router: axum::Router,
+        /// The public origin's host and any port, for `Host`.
+        authority: String,
+    },
+}
+
+/// Runs the tunnel's rules for one request: the path policy, operator auth
+/// and the operator's credentials, and the public origin.
 ///
 /// # Errors
 ///
-/// `unavailable` while the daemon has no router, public origin or auth;
-/// `invalid_params` for a head the router could not take.
-async fn serve(
+/// `unavailable` while the daemon has no router, public origin or auth.
+async fn gate(
     shared: &Shared,
-    request: CheckedOriginRequest,
-    client: IpAddr,
-    body: Option<Pin<Box<dyn AsyncRead + Send>>>,
-) -> bookclerk_plugin_abi::Result<TunnelAnswer> {
+    request: &CheckedOriginRequest,
+) -> bookclerk_plugin_abi::Result<Gate> {
     let Some(state) = shared.state.upgrade() else {
         return Err(PluginError::unavailable("the daemon is shutting down"));
     };
@@ -322,14 +357,14 @@ async fn serve(
     };
     let path = normalize_tunnel_path(request.target.split('?').next().unwrap_or(""));
     if let Some(refusal) = tunnel_refusal(&path, shared.exposure()) {
-        return Ok(refused(refusal));
+        return Ok(Gate::Refused(refusal));
     }
     let auth = state.auth_snapshot().await;
     if !auth.enabled {
         return Err(PluginError::unavailable("operator auth is off"));
     }
     if carries_operator_credential(&request.headers, |token| auth.token_matches(token)) {
-        return Ok(refused(TunnelRefusal::OperatorOnly));
+        return Ok(Gate::Refused(TunnelRefusal::OperatorOnly));
     }
     let Some(authority) = public_authority(
         state
@@ -343,8 +378,26 @@ async fn serve(
             "the library has no public origin yet",
         ));
     };
+    Ok(Gate::Open { router, authority })
+}
+
+/// Serves one tunnel request on the daemon's runtime.
+///
+/// # Errors
+///
+/// `unavailable` while the daemon has no router, public origin or auth;
+/// `invalid_params` for a head the router could not take.
+async fn serve(
+    shared: &Shared,
+    request: CheckedOriginRequest,
+    client: IpAddr,
+    body: Option<Pin<Box<dyn AsyncRead + Send>>>,
+) -> bookclerk_plugin_abi::Result<TunnelAnswer> {
+    let (mut router, authority) = match gate(shared, &request).await? {
+        Gate::Refused(refusal) => return Ok(refused(refusal)),
+        Gate::Open { router, authority } => (router, authority),
+    };
     let http = tunnel_request(request, &authority, client, body)?;
-    let mut router = router;
     let response = match router.call(http).await {
         Ok(response) => response,
         Err(never) => match never {},

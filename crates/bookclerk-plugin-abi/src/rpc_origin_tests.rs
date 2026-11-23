@@ -184,3 +184,163 @@ fn no_origin_refuses() {
             .is_err());
     });
 }
+
+/// An `Origin` that upgrades `/socket` and answers anything else with the
+/// refusal it holds.
+struct Upgrader {
+    /// The last request and attachment it saw.
+    seen: RefCell<Option<(CheckedOriginRequest, Vec<u8>)>>,
+    /// What it answers for a target other than `/socket`.
+    refusal: crate::generated::OriginRefusal,
+}
+
+#[async_trait::async_trait(?Send)]
+impl Origin for Upgrader {
+    async fn fetch(
+        &self,
+        _request: CheckedOriginRequest,
+        _body: Option<Pin<Box<dyn AsyncRead + Send>>>,
+    ) -> Result<OriginReply> {
+        Err(PluginError::internal("not used"))
+    }
+
+    async fn connect(
+        &self,
+        request: CheckedOriginRequest,
+        attachment: Vec<u8>,
+    ) -> Result<OriginConnected> {
+        let upgrade = request.target == "/socket";
+        *self.seen.borrow_mut() = Some((request, attachment.clone()));
+        Ok(if upgrade {
+            OriginConnected::Socket(crate::generated::SocketInfo {
+                socket: "o1-a".into(),
+                url: "https://library.example/socket".into(),
+                protocol: Some("bookclerk.v1".into()),
+                attachment,
+            })
+        } else {
+            OriginConnected::Refused(self.refusal.clone())
+        })
+    }
+}
+
+/// A client wired to an [`OriginServer`] around an [`Upgrader`].
+fn upgrader(refusal_status: u16) -> (Arc<Upgrader>, OriginClient) {
+    let inner = Arc::new(Upgrader {
+        seen: RefCell::new(None),
+        refusal: crate::generated::OriginRefusal {
+            status: refusal_status,
+            headers: vec![header("Content-Type", "text/plain")],
+            body: b"sign in first".to_vec(),
+        },
+    });
+    let origin = OriginClient::new(
+        capnp_rpc::new_client(OriginServer {
+            inner: Arc::clone(&inner) as Arc<dyn Origin>,
+            window: 4,
+        }),
+        4,
+    );
+    (inner, origin)
+}
+
+/// A checked upgrade request for `target`.
+fn upgrade(target: &str, headers: Vec<OriginHeader>) -> CheckedOriginRequest {
+    CheckedOriginRequest {
+        method: "GET".into(),
+        ..checked(target, headers)
+    }
+}
+
+#[test]
+fn an_accepted_upgrade_answers_its_socket() {
+    local(async {
+        let (inner, origin) = upgrader(401);
+        let connected = origin
+            .connect(
+                upgrade(
+                    "/socket",
+                    vec![
+                        header("Sec-WebSocket-Protocol", "bookclerk.v1"),
+                        header("Sec-WebSocket-Key", "guest-chosen"),
+                    ],
+                ),
+                b"pair:7".to_vec(),
+            )
+            .await
+            .unwrap();
+        let OriginConnected::Socket(info) = connected else {
+            panic!("expected a socket, got {connected:?}");
+        };
+        assert_eq!(info.socket, "o1-a");
+        assert_eq!(info.protocol.as_deref(), Some("bookclerk.v1"));
+        assert_eq!(info.attachment, b"pair:7");
+        let (seen, attachment) = inner.seen.borrow_mut().take().unwrap();
+        // The host writes its own handshake fields.
+        assert_eq!(
+            seen.headers,
+            vec![header("Sec-WebSocket-Protocol", "bookclerk.v1")]
+        );
+        assert_eq!(seen.client, Some("198.51.100.7".parse().unwrap()));
+        assert_eq!(attachment, b"pair:7");
+    });
+}
+
+#[test]
+fn a_refused_upgrade_answers_the_library_response() {
+    local(async {
+        let (_, origin) = upgrader(401);
+        let connected = origin
+            .connect(upgrade("/elsewhere", Vec::new()), Vec::new())
+            .await
+            .unwrap();
+        let OriginConnected::Refused(refusal) = connected else {
+            panic!("expected a refusal, got {connected:?}");
+        };
+        assert_eq!(refusal.status, 401);
+        assert_eq!(refusal.body, b"sign in first");
+    });
+}
+
+#[test]
+fn bad_upgrades_and_bad_refusals_are_refused() {
+    local(async {
+        let (inner, origin) = upgrader(401);
+        let post = checked("/socket", Vec::new());
+        assert_eq!(
+            origin.connect(post, Vec::new()).await.unwrap_err().code,
+            crate::PluginErrorCode::InvalidParams
+        );
+        let big = vec![0u8; MAX_SOCKET_ATTACHMENT_BYTES as usize + 1];
+        assert!(origin
+            .connect(upgrade("/socket", Vec::new()), big)
+            .await
+            .unwrap_err()
+            .message
+            .contains("attachment"));
+        assert!(inner.seen.borrow().is_none(), "nothing reached the library");
+
+        let (_, origin) = upgrader(101);
+        assert!(origin
+            .connect(upgrade("/elsewhere", Vec::new()), Vec::new())
+            .await
+            .unwrap_err()
+            .message
+            .contains("101"));
+    });
+}
+
+#[test]
+fn an_origin_without_upgrades_says_so() {
+    local(async {
+        let echo = Arc::new(Echo {
+            seen: RefCell::new(None),
+            answer: (200, header("X", "y")),
+        });
+        let err = client(echo)
+            .connect(upgrade("/socket", Vec::new()), Vec::new())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, crate::PluginErrorCode::Unavailable);
+    });
+}

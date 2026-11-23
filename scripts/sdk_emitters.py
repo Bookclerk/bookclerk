@@ -2021,8 +2021,15 @@ def _rs_struct_codec(ctx: _RsCtx, st: cs.Struct) -> list[str]:
         out.append("/// # Errors")
         out.append("///")
         out.append("/// Returns a Cap'n Proto error when a nested field cannot be encoded.")
+        # Every arm `init_`s a struct (which takes `b` by value): no `mut`.
+        all_init = all(
+            not (f.type.name == "Void" and f.type.inner is None)
+            and ctx.res.kind_of(f.type) == "struct"
+            for f in st.union_fields
+        )
+        binding = "b" if all_init else "mut b"
         out.append(
-            f"pub fn write_{snake}(mut b: plugin_capnp::{module}::Builder<'_>, v: &{st.name}) -> capnp::Result<()> {{"
+            f"pub fn write_{snake}({binding}: plugin_capnp::{module}::Builder<'_>, v: &{st.name}) -> capnp::Result<()> {{"
         )
         out.append("    match v {")
         for f in st.union_fields:

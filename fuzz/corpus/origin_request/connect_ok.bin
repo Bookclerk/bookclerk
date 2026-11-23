@@ -1,0 +1,1 @@
+{"request":{"method":"GET","target":"/api/node/v1/socket","headers":[{"name":"Sec-WebSocket-Protocol","value":"bookclerk.v1"},{"name":"Sec-WebSocket-Key","value":"x"}],"clientAddress":"203.0.113.9"},"attachment":"cGFpcg=="}

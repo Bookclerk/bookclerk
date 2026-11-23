@@ -18,6 +18,10 @@
 #   entries of the screenshots it changed to the pull request's branch
 #   through the API (signed by GitHub for the App); for a fork it tells the
 #   author what to commit. Any other tick is undone with the reason.
+# - After main moves in a way the visual checks see, visual-recheck.yml runs
+#   the visual check for each ready pull request with auto-merge on, merged
+#   into the new main commit; `propose-recheck` proposes what differs on
+#   each, the same way, before the merge queue fails on it.
 # - Pull request runs reach `propose` through `workflow_run` of CI, which
 #   starts this workflow from the default branch with the App's tokens, fork
 #   pull requests included. It checks out the default branch only and never
@@ -29,7 +33,7 @@ name: Visual baselines
 
 on:
   workflow_run:
-    workflows: ["CI"]
+    workflows: ["CI", "Visual recheck"]
     types: [completed]
   issue_comment:
     types: [created, edited]
@@ -118,6 +122,94 @@ jobs:
           PR_TOKEN: ${{ steps.pr-token.outputs.token }}
           APP_SLUG: ${{ steps.pr-token.outputs.app-slug }}
           ARTIFACT_DIR: ${{ runner.temp }}/ui-visual
+        run: python3 scripts/visual_baselines_bot.py propose
+
+  # A visual recheck of main (visual-recheck.yml) compared queued pull
+  # requests merged into the new main commit; propose what differs on each.
+  propose-recheck:
+    name: Propose rechecked visual baselines
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.path == '.github/workflows/visual-recheck.yml' &&
+      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch') &&
+      github.event.workflow_run.head_branch == github.event.repository.default_branch &&
+      github.event.workflow_run.conclusion != 'cancelled' &&
+      github.event.workflow_run.conclusion != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: visual-baselines-propose-recheck
+      cancel-in-progress: true
+    env:
+      HAS_APP: ${{ secrets.AUTOMATION_APP_CLIENT_ID != '' && secrets.AUTOMATION_APP_PRIVATE_KEY != '' }}
+    permissions:
+      # Read the scripts and each merge commit's lock.
+      contents: read
+      # Download the recheck run's artifacts.
+      actions: read
+      # Read each pull request's state, head and auto-merge.
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/visual_baselines.py
+            scripts/visual_baselines_bot.py
+            scripts/maintainer_review.py
+            scripts/cla_check.py
+          sparse-checkout-cone-mode: false
+
+      # A run with nothing to recheck uploaded no targets.
+      - name: Download the recheck targets
+        id: targets
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: recheck-targets
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/recheck/recheck-targets
+
+      # One folder per pull request, `ui-visual-<number>`.
+      - name: Download the recorded sets
+        if: steps.targets.outcome == 'success'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: ui-visual-*
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/recheck
+
+      - name: Mint the baselines token
+        id: baselines-token
+        if: env.HAS_APP == 'true' && steps.targets.outcome == 'success'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: bookclerk-visual-baselines
+          permission-contents: write
+
+      - name: Mint the comment token
+        id: pr-token
+        if: env.HAS_APP == 'true' && steps.targets.outcome == 'success'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          permission-pull-requests: write
+
+      - name: Propose
+        if: env.HAS_APP == 'true' && steps.targets.outcome == 'success'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASELINES_TOKEN: ${{ steps.baselines-token.outputs.token }}
+          PR_TOKEN: ${{ steps.pr-token.outputs.token }}
+          APP_SLUG: ${{ steps.pr-token.outputs.app-slug }}
+          ARTIFACT_DIR: ${{ runner.temp }}/recheck
         run: python3 scripts/visual_baselines_bot.py propose
 
   approve:
