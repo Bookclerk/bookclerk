@@ -1069,8 +1069,9 @@ batch as its rows:
   subtitle, publication date or duration on its edition, and once a
   listing's credits and series (written in batches after the link) are
   stored for a work, expression or edition that had none, while some
-  listing of that edition is held (a catalog answer that fills credits on
-  a held edition announces them too);
+  listing of any edition of that edition's work is held (a catalog answer
+  that fills credits on a held work announces them too, even through an
+  edition nobody holds);
 - `edition_updated` (`editionId`, `fields: ["chapters"]`) when the
   chapters an edition plays change: a new chapter claim from an acquire,
   or an Administrator's edit or pin (see

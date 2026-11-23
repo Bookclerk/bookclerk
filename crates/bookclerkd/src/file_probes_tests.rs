@@ -132,6 +132,68 @@ async fn the_walk_probes_files_stored_without_a_probe() {
         .expect("write"));
 }
 
+/// A walk that was cancelled still counts toward the daily interval: the
+/// heartbeat queues no second walk until the interval has passed.
+#[tokio::test]
+async fn a_cancelled_walk_still_holds_off_the_next_one() {
+    let files = tempfile::tempdir().expect("tempdir");
+    let storage = tempfile::tempdir().expect("tempdir");
+    let (state, library) = crate::node_api::tests::test_state(&files).await;
+    crate::node_api::uploads::set_test_destination(files.path(), storage.path());
+    library
+        .upsert_account(PLUGIN, "acct", "us", None, true, "audible")
+        .await
+        .expect("account");
+    let book = library
+        .upsert_book(&NewBook {
+            plugin_key: PLUGIN.to_string(),
+            ..NewBook::minimal("B0PROBE3", "acct", "us", "Held Off")
+        })
+        .await
+        .expect("book");
+    let edition = library
+        .edition_of_holding(&book.holding_id)
+        .await
+        .expect("read")
+        .expect("edition");
+    assert!(library
+        .record_edition_file(
+            "local",
+            "Held Off/Held Off.m4b",
+            &FileOwner::Edition(edition),
+            FileRole::Audio
+        )
+        .await
+        .expect("record"));
+
+    let walks = |jobs: Vec<bookclerk_library::JobRecord>| {
+        jobs.into_iter()
+            .filter(|j| j.kind == JobKind::FileProbe)
+            .count()
+    };
+    queue_file_probe_settled(&state, "node-a", std::time::Duration::ZERO).await;
+    let queued = library.list_jobs(50).await.expect("jobs");
+    assert_eq!(walks(queued.clone()), 1);
+    let id = queued
+        .iter()
+        .find(|j| j.kind == JobKind::FileProbe)
+        .expect("the walk")
+        .id
+        .clone();
+    library
+        .request_job_cancel(&id)
+        .await
+        .expect("cancel")
+        .expect("the job");
+
+    queue_file_probe_settled(&state, "node-a", std::time::Duration::ZERO).await;
+    assert_eq!(
+        walks(library.list_jobs(50).await.expect("jobs")),
+        1,
+        "the cancelled walk still counts"
+    );
+}
+
 /// The walk waits for an acquire that holds the work lock, and a file the
 /// acquire wrote again meanwhile keeps no probe of the bytes the walk
 /// would have read before.

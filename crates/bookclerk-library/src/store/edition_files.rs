@@ -29,6 +29,7 @@ use sea_orm::{
     ActiveValue::Set, ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
 };
 
+use super::keyset::read_keyset;
 use super::{now_str, LibraryStore};
 use crate::entities::{
     accounts, edition_acquisitions, edition_files, editions, holdings, node_upload_sessions,
@@ -1525,7 +1526,7 @@ impl LibraryStore {
     ///
     /// Returns an error when a read fails.
     pub async fn sole_store_of_edition(&self, edition_id: &str) -> Result<Option<String>> {
-        let plugins: std::collections::BTreeSet<String> = store_listings::Entity::find()
+        let held = store_listings::Entity::find()
             .filter(store_listings::Column::EditionId.eq(edition_id))
             .filter(
                 store_listings::Column::Id.in_subquery(
@@ -1534,27 +1535,24 @@ impl LibraryStore {
                         .from(holdings::Entity)
                         .to_owned(),
                 ),
-            )
-            .order_by_asc(store_listings::Column::Id)
-            .all(self.db())
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(|l| l.plugin_key)
-            .collect();
+            );
+        let plugins: std::collections::BTreeSet<String> =
+            read_keyset(self, held, &[store_listings::Column::Id])
+                .await?
+                .into_iter()
+                .map(|l| l.plugin_key)
+                .collect();
         let mut plugins = plugins.into_iter();
         let (Some(plugin), None) = (plugins.next(), plugins.next()) else {
             return Ok(None);
         };
-        let aliases: std::collections::BTreeSet<String> = accounts::Entity::find()
-            .filter(accounts::Column::PluginKey.eq(plugin))
-            .order_by_asc(accounts::Column::Id)
-            .all(self.db())
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(|a| a.source)
-            .collect();
+        let of_plugin = accounts::Entity::find().filter(accounts::Column::PluginKey.eq(plugin));
+        let aliases: std::collections::BTreeSet<String> =
+            read_keyset(self, of_plugin, &[accounts::Column::Id])
+                .await?
+                .into_iter()
+                .map(|a| a.source)
+                .collect();
         let mut aliases = aliases.into_iter();
         let (Some(store), None) = (aliases.next(), aliases.next()) else {
             return Ok(None);

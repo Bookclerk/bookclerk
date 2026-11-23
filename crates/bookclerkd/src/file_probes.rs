@@ -123,7 +123,8 @@ async fn queue_file_probe_settled(state: &AppState, node_id: &str, settle: std::
         .map(|d| Utc::now() - d)
         .unwrap_or_else(|_| Utc::now());
     let key = JobKind::FileProbe.dedup_key(&probe_payload(node_id));
-    match library.job_admitted_since(&key, since).await {
+    // A walk that failed or was cancelled still counts: at most one a day.
+    match library.job_admitted_in_any_state_since(&key, since).await {
         Ok(true) => return,
         Ok(false) => {}
         Err(err) => {

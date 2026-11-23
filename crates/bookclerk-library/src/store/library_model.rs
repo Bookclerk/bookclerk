@@ -726,10 +726,11 @@ fn credit_batches(plan: &resolve::Plan) -> Vec<CreditBatchParams> {
 /// it announces, so consumers that derive from credits and series see
 /// them once they are written: the link that refreshed the edition's work
 /// ran before them, in its own batch (#986). No credit batch, no event.
-/// The event is written only while some listing of the edition is held
-/// (checked in the batch itself), so a catalog listing filling credits on
-/// a held edition announces them, while one nobody holds (a Discover or
-/// lookup answer) publishes nothing, since no held work changed.
+/// The event is written only while some listing of any edition of the
+/// edition's work is held (checked in the batch itself), so a catalog
+/// listing filling credits or series on a held work announces them, even
+/// through a sibling edition nobody holds, while one for a work nobody
+/// holds (a Discover or lookup answer) publishes nothing.
 fn announce_credits(
     mut batches: Vec<CreditBatchParams>,
     listing: &resolve::Listing,

@@ -703,7 +703,9 @@ pub(super) fn plan_write_credits(p: &CreditBatchParams, now: &str) -> Vec<SqlStm
     }
     for event in &p.events {
         // The event names its edition in its ordering key, and is written
-        // only while a listing of that edition is held.
+        // only while some listing of any edition of that edition's work is
+        // held: credits and series of a catalog listing for an unheld
+        // edition can still change a work held through a sibling edition.
         out.push(sql(
             "INSERT OR IGNORE INTO domain_events (\
                 id, event_type, schema_version, occurred_at, account_id, source, \
@@ -716,7 +718,15 @@ pub(super) fn plan_write_credits(p: &CreditBatchParams, now: &str) -> Vec<SqlStm
                   AND event_type = ? AND dedup_key = ?\
              ) AND EXISTS (\
                 SELECT 1 FROM holdings WHERE listing_id IN (\
-                    SELECT id FROM store_listings WHERE edition_id = ?\
+                    SELECT id FROM store_listings WHERE edition_id IN (\
+                        SELECT id FROM editions WHERE expression_id IN (\
+                            SELECT id FROM expressions WHERE work_id IN (\
+                                SELECT work_id FROM expressions WHERE id IN (\
+                                    SELECT expression_id FROM editions WHERE id = ?\
+                                )\
+                            )\
+                        )\
+                    )\
                 )\
              )",
             vec![

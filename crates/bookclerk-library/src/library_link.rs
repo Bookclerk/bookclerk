@@ -362,7 +362,8 @@ pub struct CreditBatchParams {
     /// of a link carries one `edition_updated` for the listing's edition,
     /// so consumers that derive from credits and series (the library page
     /// index, the works search index) refresh after them. Each is
-    /// published only while some listing of its edition is held.
+    /// published only while some listing of any edition of its edition's
+    /// work is held.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<LinkEvent>,
 }
