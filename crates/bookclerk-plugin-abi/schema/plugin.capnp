@@ -178,7 +178,7 @@ const maxWebhookHeaderValueBytes :UInt32 = 8192;
 # Longest `ProvisionGrant.token`, in bytes.
 const maxProvisionTokenBytes :UInt32 = 4096;
 # Longest `ProvisionedSecret.value`, in bytes.
-const maxProvisionSecretBytes :UInt32 = 4096;
+const maxProvisionSecretBytes :UInt32 = 1024;
 # Most credentials one `Provisioned` returns.
 const maxProvisionSecrets :UInt32 = 16;
 # Largest `Provisioned.settingsJson` and `ProvisionRequest.inputsJson`, in

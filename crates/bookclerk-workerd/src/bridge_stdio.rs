@@ -38,11 +38,10 @@ use bookclerk_plugin_abi::{
     MetadataFilesClient, MetadataProvider, MetadataProviderClient, Notifier, NotifierClient,
     ObjectMetadata, Oidc, OidcClient, OpenedEntrypoints, PluginCapabilities, PluginCli,
     PluginCliClient, PluginClient, PluginDescribe, PluginMigration, PluginWorker, Provisioning,
-    ProvisioningClient, PutResult,
-    QueueConsumer, QueueConsumerClient, ReadResult, RemoteLibrary, RemoteLibraryClient,
-    ScheduledHandler, ScheduledHandlerClient, SocketHandler, SocketHandlerClient, WebhookHandler,
-    WebhookHandlerClient, WriteOptions, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES,
-    PRODUCT_API_VERSION,
+    ProvisioningClient, PutResult, QueueConsumer, QueueConsumerClient, ReadResult, RemoteLibrary,
+    RemoteLibraryClient, ScheduledHandler, ScheduledHandlerClient, SocketHandler,
+    SocketHandlerClient, WebhookHandler, WebhookHandlerClient, WriteOptions, MAX_SCALAR_BYTES,
+    MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;

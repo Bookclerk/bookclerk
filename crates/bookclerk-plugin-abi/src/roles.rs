@@ -8,13 +8,14 @@ use tokio::io::AsyncRead;
 use crate::generated::{
     AiModelList, AiRunOk, AiRunParams, AuthenticateUserParams, CatalogDetailParams, CatalogHit,
     CliInvokeParams, CliInvokeResult, CliSchema, CoverFetchParams, CoverImage,
-    DatabaseAdapterConfig, DeprovisionRequest, ExpandCandidatesParams, ExternalUser, FetchTitleParams, IngressHealth,
-    Invocation, ListDealsParams, ListeningProgress, LoginCompleteParams, LoginParams, LoginResult,
-    LoginStartResult, MetadataChapters, MetadataChaptersParams, MetadataFileParseParams,
-    MetadataFileParsed, MetadataFileRenderParams, MetadataFileRendered, MetadataLookupParams,
-    MetadataRecord, MetadataSearchParams, NotifyRaiseParams, NotifyRaised, NotifySendParams,
-    NotifySent, NotifyValidateParams, NotifyValidated, OriginHeader, PlainFetch, PluginEvent,
-    ProvisionRequest, Provisioned, PublishOk, PurchaseHint, PurchaseHintParams, PurchaseHintResult, PurchaseHintsParams,
+    DatabaseAdapterConfig, DeprovisionRequest, ExpandCandidatesParams, ExternalUser,
+    FetchTitleParams, IngressHealth, Invocation, ListDealsParams, ListeningProgress,
+    LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, MetadataChapters,
+    MetadataChaptersParams, MetadataFileParseParams, MetadataFileParsed, MetadataFileRenderParams,
+    MetadataFileRendered, MetadataLookupParams, MetadataRecord, MetadataSearchParams,
+    NotifyRaiseParams, NotifyRaised, NotifySendParams, NotifySent, NotifyValidateParams,
+    NotifyValidated, OriginHeader, PlainFetch, PluginEvent, ProvisionRequest, Provisioned,
+    PublishOk, PurchaseHint, PurchaseHintParams, PurchaseHintResult, PurchaseHintsParams,
     QualityOffersParams, QualityOffersResult, RevokeAccountParams, ScanLibraryParams, ScanPage,
     ScanParams, SearchCatalogParams, SocketClosed, SocketConnectRequest, SocketFrame, SocketInfo,
     SocketMessage, SocketMessageOk, SourceAccount, WebhookAckRequest, WebhookDelivered,
@@ -1243,6 +1244,11 @@ pub struct BindingValues {
     /// destination and approval state. Read-only feedback for the guest.
     #[serde(default)]
     pub network: crate::NetworkGrant,
+    /// Not a binding: why the host opens the entrypoints, carried to the
+    /// guest as `Invocation.purpose`. A provision open may lack required
+    /// settings and exports only `provisioning`.
+    #[serde(default)]
+    pub purpose: crate::InvocationPurpose,
 }
 
 impl BindingValues {
@@ -1348,6 +1354,8 @@ impl Bindings {
             secrets: self.secrets.clone(),
             adapter: self.adapter.clone(),
             network: self.network.clone(),
+            // The guest learns the purpose from `Invocation.purpose`.
+            purpose: crate::InvocationPurpose::Serve,
         }
     }
 

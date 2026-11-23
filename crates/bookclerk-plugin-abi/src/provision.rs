@@ -26,7 +26,7 @@ use crate::{
 };
 
 /// Longest string a guided setup may store as one setting, in bytes.
-pub const MAX_PROVISION_SETTING_VALUE_BYTES: usize = 4096;
+pub const MAX_PROVISION_SETTING_VALUE_BYTES: usize = crate::MAX_SETTING_STRING_BYTES;
 
 /// The keys a plugin's guided setup may write (`[provisioning] outputs`),
 /// split by whether the setting is declared `type = "secret"`.
@@ -220,9 +220,9 @@ fn check_settings(
                 text.len() <= MAX_PROVISION_SETTING_VALUE_BYTES && !has_control(text)
             }
             serde_json::Value::Number(_) | serde_json::Value::Bool(_) => true,
-            serde_json::Value::Null | serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
-                false
-            }
+            serde_json::Value::Null
+            | serde_json::Value::Array(_)
+            | serde_json::Value::Object(_) => false,
         };
         if !storable {
             return Err(ProvisionRefusal::BadSettingValue(key.clone()));
@@ -427,7 +427,11 @@ mod tests {
             refuse(reply(&"x".repeat(20_000), &[], &[])),
             ProvisionRefusal::SettingsTooLong
         );
-        for bad in [r#"{"bucket":null}"#, r#"{"bucket":[1]}"#, r#"{"bucket":"a\nb"}"#] {
+        for bad in [
+            r#"{"bucket":null}"#,
+            r#"{"bucket":[1]}"#,
+            r#"{"bucket":"a\nb"}"#,
+        ] {
             assert_eq!(
                 refuse(reply(bad, &[], &[])),
                 ProvisionRefusal::BadSettingValue("bucket".into()),

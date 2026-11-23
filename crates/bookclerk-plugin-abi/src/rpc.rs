@@ -9944,6 +9944,7 @@ mod tests {
                             },
                         ],
                     },
+                    purpose: crate::InvocationPurpose::Serve,
                 };
                 let err = match client
                     .open(

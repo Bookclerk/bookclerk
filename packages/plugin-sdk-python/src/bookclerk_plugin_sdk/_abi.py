@@ -227,7 +227,7 @@ MAX_WEBHOOK_HEADER_VALUE_BYTES: int = 8192
 MAX_PROVISION_TOKEN_BYTES: int = 4096
 """Longest `ProvisionGrant.token`, in bytes."""
 
-MAX_PROVISION_SECRET_BYTES: int = 4096
+MAX_PROVISION_SECRET_BYTES: int = 1024
 """Longest `ProvisionedSecret.value`, in bytes."""
 
 MAX_PROVISION_SECRETS: int = 16

@@ -1557,6 +1557,496 @@ pub async fn put_plugin_instance_config(
     }))
 }
 
+/// The grant an operator gives a guided setup run.
+#[derive(Deserialize, utoipa::ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum ProvisionGrantBody {
+    /// An API token the operator created at the provider. It is used for
+    /// this one run and never stored, logged or echoed back.
+    ApiToken {
+        /// The token text.
+        #[schema(example = "q9W2...redacted")]
+        token: String,
+    },
+}
+
+impl std::fmt::Debug for ProvisionGrantBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ApiToken { .. } => f.write_str("ApiToken(<redacted>)"),
+        }
+    }
+}
+
+impl ProvisionGrantBody {
+    /// The checked token.
+    ///
+    /// # Errors
+    ///
+    /// The `400` response for an empty, long or malformed token.
+    fn token(&self) -> Result<bookclerk_plugin_host::ProvisionToken, Response> {
+        match self {
+            Self::ApiToken { token } => bookclerk_plugin_host::ProvisionToken::parse(token)
+                .map_err(|reason| bad_request(format!("invalid token: {reason}"))),
+        }
+    }
+}
+
+/// `POST /api/config/plugin-instances/{id}/provision` body.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProvisionPluginInstance {
+    /// Revision the caller last observed; the run is refused before it
+    /// starts when it is not current.
+    #[schema(example = 2)]
+    expected_revision: i64,
+    /// The operator's grant for this run.
+    grant: ProvisionGrantBody,
+    /// The operator's choices, keyed by `[provisioning] inputs`; they are
+    /// stored with what the plugin returns.
+    #[serde(default)]
+    #[schema(example = json!({"bucket": "audiobooks"}))]
+    inputs: std::collections::BTreeMap<String, bookclerk_library::control_plane::SettingValue>,
+}
+
+/// `POST /api/config/plugin-instances/{id}/provision` reply: the document
+/// after the plugin's settings and credentials were stored.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct PluginInstanceProvisioned {
+    /// Instance id.
+    #[schema(example = "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b")]
+    plugin_instance_id: String,
+    /// Revision after the write.
+    #[schema(example = 3)]
+    revision: i64,
+    /// Scalar settings now stored.
+    #[schema(example = json!({"account_id": "3f4b7e3dcab231cbfdaa90a6a28bd548", "bucket": "audiobooks"}))]
+    settings: std::collections::BTreeMap<String, bookclerk_library::control_plane::SettingValue>,
+    /// Secret refs now stored, the newly sealed credentials included.
+    secret_refs: Vec<bookclerk_library::control_plane::InstanceSecretRefV1>,
+    /// What the plugin did, for the setup screen.
+    #[schema(example = json!(["Created bucket audiobooks", "Created an API token for the bucket"]))]
+    summary: Vec<String>,
+}
+
+/// `POST /api/config/plugin-instances/{id}/deprovision` body.
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DeprovisionPluginInstance {
+    /// A fresh grant, when the plugin's stored credentials cannot remove
+    /// what it created; omitted to use them.
+    #[serde(default)]
+    grant: Option<ProvisionGrantBody>,
+}
+
+/// `POST /api/config/plugin-instances/{id}/deprovision` reply.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct PluginInstanceDeprovisioned {
+    /// Instance id.
+    #[schema(example = "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b")]
+    plugin_instance_id: String,
+    /// Always true: what the guided setup created is gone.
+    #[schema(example = true)]
+    deprovisioned: bool,
+}
+
+/// A `400` response with `message`.
+fn bad_request(message: String) -> Response {
+    (StatusCode::BAD_REQUEST, Json(ErrorMessage::new(message))).into_response()
+}
+
+/// Maps a failed guided setup run onto a response. A refused answer and a
+/// host failure are logged by category only: the plugin's text may repeat
+/// a credential it was handed.
+fn provision_error(instance: &str, err: bookclerk_plugin_host::ProvisionRunError) -> Response {
+    use bookclerk_plugin_host::ProvisionRunError;
+    let reply = |status: StatusCode, message: String| {
+        (status, Json(ErrorMessage::new(message))).into_response()
+    };
+    match err {
+        ProvisionRunError::NotOffered(message) => reply(StatusCode::CONFLICT, message),
+        ProvisionRunError::BadInput(message) => reply(StatusCode::BAD_REQUEST, message),
+        ProvisionRunError::Refused(refused) => {
+            tracing::warn!(plugin_instance_id = instance, code = %refused.code, "guided setup refused");
+            let status = match refused.code {
+                bookclerk_plugin_abi::PluginErrorCode::InvalidParams
+                | bookclerk_plugin_abi::PluginErrorCode::Unauthorized
+                | bookclerk_plugin_abi::PluginErrorCode::Forbidden
+                | bookclerk_plugin_abi::PluginErrorCode::NotFound
+                | bookclerk_plugin_abi::PluginErrorCode::Conflict => {
+                    StatusCode::UNPROCESSABLE_ENTITY
+                }
+                _ => StatusCode::BAD_GATEWAY,
+            };
+            reply(
+                status,
+                format!(
+                    "the plugin refused ({}): {}",
+                    refused.code,
+                    bookclerk_plugin_abi::notifications::sanitize_reason(&refused.message)
+                ),
+            )
+        }
+        ProvisionRunError::Answer(refusal) => {
+            tracing::warn!(plugin_instance_id = instance, %refusal, "guided setup answer refused");
+            reply(
+                StatusCode::BAD_GATEWAY,
+                format!("the plugin's answer was refused: {refusal}"),
+            )
+        }
+        ProvisionRunError::Host(detail) => {
+            tracing::warn!(plugin_instance_id = instance, "guided setup could not run");
+            reply(
+                StatusCode::BAD_GATEWAY,
+                format!(
+                    "the guided setup could not run: {}",
+                    bookclerk_plugin_abi::notifications::sanitize_reason(&detail)
+                ),
+            )
+        }
+    }
+}
+
+/// The plugin installed on this server that `plugin_key` names.
+///
+/// # Errors
+///
+/// The `409` response when it is not installed here.
+async fn installed_plugin(
+    config: &bookclerk_config::Config,
+    plugin_key: &str,
+) -> Result<bookclerk_plugin_host::DiscoveredPlugin, Response> {
+    let cfg = config.clone();
+    let found = tokio::task::spawn_blocking(move || bookclerk_plugin_host::discover_plugins(&cfg))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|plugin| plugin.plugin_key().canonical() == plugin_key);
+    found.ok_or_else(|| {
+        (
+            StatusCode::CONFLICT,
+            Json(ErrorMessage::new(format!(
+                "plugin {plugin_key} is not installed on this server; run the guided setup on a \
+                 server that has it"
+            ))),
+        )
+            .into_response()
+    })
+}
+
+/// `POST /api/config/plugin-instances/{id}/provision`: runs the plugin's
+/// guided setup with the operator's token and stores what it returns.
+///
+/// Operator principal only. The plugin must be installed on this server.
+/// The token is used for this run only: it is never stored, logged or
+/// echoed back. The plugin runs under its normal grant, network included.
+/// Its settings and credentials are checked against `[provisioning]
+/// outputs` and the pinned schema, then written with the inputs as one
+/// revision; the credentials are sealed. A running instance picks up the
+/// new revision as it does any configuration change.
+#[utoipa::path(
+    post,
+    path = "/api/config/plugin-instances/{id}/provision",
+    params(("id" = String, Path, description = "Plugin instance id.")),
+    request_body = ProvisionPluginInstance,
+    responses(
+        (status = 200, description = "The document after the run.", body = PluginInstanceProvisioned),
+        (status = 400, description = "The body, the token or an input is invalid.", body = ErrorMessage, example = json!({"error": "invalid token: the token is empty"})),
+        (status = 404, description = "No such instance.", body = ErrorMessage, example = json!({"error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"})),
+        (status = 409, description = "`expected_revision` is not current, the plugin offers no guided setup, or it is not installed here.", body = ErrorMessage, example = json!({"error": "revision_conflict", "current_revision": 7})),
+        (status = 422, description = "The plugin refused the run: a choice it cannot honour, or a token without the permissions it needs.", body = ErrorMessage, example = json!({"error": "the plugin refused (forbidden): the token cannot create R2 buckets"})),
+        (status = 502, description = "The plugin could not run, or its answer broke the provisioning contract.", body = ErrorMessage, example = json!({"error": "the plugin's answer was refused: setting `region` is not a declared output"})),
+    ),
+)]
+pub async fn post_plugin_instance_provision(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<ProvisionPluginInstance>,
+) -> Result<Json<PluginInstanceProvisioned>, Response> {
+    use bookclerk_library::control_plane::{
+        load_instance_config, load_plugin_instance, replace_instance_config, require_plugin_schema,
+        seal_instance_secret, set_secret_ref, InstanceConfigReplace, SettingValue,
+    };
+    let token = body.grant.token()?;
+    let library = state.library_snapshot().await;
+    let instance_id = existing_instance(&library, &id).await?;
+    let instance = load_plugin_instance(&library, &instance_id)
+        .await
+        .map_err(events_error)?
+        .ok_or_else(|| {
+            events_error(bookclerk_library::LibraryError::not_found(
+                EntityKind::PluginInstance,
+                &instance_id,
+            ))
+        })?;
+    let pinned = require_plugin_schema(&library, &instance.plugin_key)
+        .await
+        .map_err(events_error)?;
+    let current = load_instance_config(&library, &instance_id)
+        .await
+        .map_err(events_error)?;
+    if current.revision != body.expected_revision {
+        return Err(conflict(current.revision));
+    }
+    for (key, value) in &body.inputs {
+        pinned
+            .schema
+            .check_setting(key, &value.to_json())
+            .map_err(|err| bad_request(format!("invalid input: {err}")))?;
+    }
+    let config = state.config.read().await.clone();
+    let plugin = installed_plugin(&config, &instance.plugin_key).await?;
+    let inputs: std::collections::BTreeMap<String, serde_json::Value> = body
+        .inputs
+        .iter()
+        .map(|(key, value)| (key.clone(), value.to_json()))
+        .collect();
+    let checked = bookclerk_plugin_host::provision_instance(
+        &library,
+        &config,
+        &plugin,
+        &instance_id,
+        &token,
+        &inputs,
+    )
+    .await
+    .map_err(|err| provision_error(instance_id.as_str(), err))?;
+    let mut document = current.body.clone();
+    document.settings.extend(body.inputs);
+    for (key, value) in checked.settings {
+        let value: SettingValue = serde_json::from_value(value).map_err(|err| {
+            provision_error(
+                instance_id.as_str(),
+                bookclerk_plugin_host::ProvisionRunError::Host(err.to_string()),
+            )
+        })?;
+        document.settings.insert(key, value);
+    }
+    for key in checked.secrets.keys() {
+        set_secret_ref(&mut document, key);
+    }
+    document.validate(&pinned.schema).map_err(|err| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorMessage::new(format!(
+                "the plugin's answer does not fit its settings: {err}"
+            ))),
+        )
+            .into_response()
+    })?;
+    let outcome = replace_instance_config(
+        &library,
+        &operator_actor(),
+        &instance_id,
+        &pinned.schema,
+        body.expected_revision,
+        &document,
+        &uuid::Uuid::new_v4().to_string(),
+    )
+    .await
+    .map_err(events_error)?;
+    let revision = match outcome {
+        InstanceConfigReplace::Applied(doc) => doc.revision,
+        InstanceConfigReplace::Replayed { revision } => revision,
+        InstanceConfigReplace::Conflict { current_revision } => {
+            return Err(conflict(current_revision))
+        }
+    };
+    for (key, credential) in &checked.secrets {
+        seal_instance_secret(
+            &library,
+            &instance_id,
+            &instance.plugin_key,
+            key,
+            credential.expose(),
+        )
+        .await
+        .map_err(|err| {
+            events_error(bookclerk_library::LibraryError::Other(anyhow::anyhow!(
+                "document revision {revision} was saved but credential `{key}` was not stored \
+                 ({err}); run the guided setup again"
+            )))
+        })?;
+    }
+    let doc = load_instance_config(&library, &instance_id)
+        .await
+        .map_err(events_error)?;
+    Ok(Json(PluginInstanceProvisioned {
+        plugin_instance_id: instance_id.to_string(),
+        revision: doc.revision,
+        settings: doc.body.settings,
+        secret_refs: doc.body.secret_refs,
+        summary: checked.summary,
+    }))
+}
+
+/// `POST /api/config/plugin-instances/{id}/deprovision`: asks the plugin to
+/// remove what its guided setup created, before the instance is deleted.
+///
+/// Operator principal only. The plugin must be installed on this server and
+/// set `[provisioning] deprovision = true`. Without a grant it uses its
+/// stored credentials; a plugin whose credentials cannot remove what it made
+/// refuses with `unauthorized`, and the operator retries with a token. The
+/// instance's settings are left as they are.
+#[utoipa::path(
+    post,
+    path = "/api/config/plugin-instances/{id}/deprovision",
+    params(("id" = String, Path, description = "Plugin instance id.")),
+    request_body = DeprovisionPluginInstance,
+    responses(
+        (status = 200, description = "What the guided setup created is gone.", body = PluginInstanceDeprovisioned),
+        (status = 400, description = "The body or the token is invalid.", body = ErrorMessage, example = json!({"error": "invalid token: the token holds a space or a control character"})),
+        (status = 404, description = "No such instance.", body = ErrorMessage, example = json!({"error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"})),
+        (status = 409, description = "The plugin does not remove what it creates, or it is not installed here.", body = ErrorMessage, example = json!({"error": "plugin `r2` does not remove what its guided setup creates"})),
+        (status = 422, description = "The plugin refused; with `unauthorized`, retry with a token.", body = ErrorMessage, example = json!({"error": "the plugin refused (unauthorized): a token is needed to delete the bucket's API token"})),
+        (status = 502, description = "The plugin could not run.", body = ErrorMessage, example = json!({"error": "the guided setup could not run: the plugin did not start"})),
+    ),
+)]
+pub async fn post_plugin_instance_deprovision(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<DeprovisionPluginInstance>,
+) -> Result<Json<PluginInstanceDeprovisioned>, Response> {
+    use bookclerk_library::control_plane::load_plugin_instance;
+    let token = body
+        .grant
+        .as_ref()
+        .map(ProvisionGrantBody::token)
+        .transpose()?;
+    let library = state.library_snapshot().await;
+    let instance_id = existing_instance(&library, &id).await?;
+    let instance = load_plugin_instance(&library, &instance_id)
+        .await
+        .map_err(events_error)?
+        .ok_or_else(|| {
+            events_error(bookclerk_library::LibraryError::not_found(
+                EntityKind::PluginInstance,
+                &instance_id,
+            ))
+        })?;
+    let config = state.config.read().await.clone();
+    let plugin = installed_plugin(&config, &instance.plugin_key).await?;
+    bookclerk_plugin_host::deprovision_instance(
+        &library,
+        &config,
+        &plugin,
+        &instance_id,
+        token.as_ref(),
+    )
+    .await
+    .map_err(|err| provision_error(instance_id.as_str(), err))?;
+    Ok(Json(PluginInstanceDeprovisioned {
+        plugin_instance_id: instance_id.to_string(),
+        deprovisioned: true,
+    }))
+}
+
+/// `GET /api/config/plugin-instances/{id}/provisioning` body: what the
+/// setup screen asks for before it runs the plugin's guided setup.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct PluginInstanceProvisioning {
+    /// Instance id.
+    #[schema(example = "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b")]
+    plugin_instance_id: String,
+    /// The plugin's `[provisioning]` table; absent when it offers no guided
+    /// setup.
+    provisioning: Option<ProvisioningView>,
+}
+
+/// A plugin's `[provisioning]` table as the setup screen reads it.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct ProvisioningView {
+    /// The provider the grant is for, lowercase.
+    #[schema(example = "cloudflare")]
+    provider: String,
+    /// The grants the plugin accepts, in `plugin.toml` spelling; never empty.
+    #[schema(example = json!(["api_token"]))]
+    grants: Vec<String>,
+    /// Where the operator creates a token at the provider.
+    #[schema(example = "https://dash.cloudflare.com/profile/api-tokens")]
+    token_url: Option<String>,
+    /// The permissions a pasted token needs, one line each.
+    #[schema(example = json!(["Account > Workers R2 Storage > Edit"]))]
+    token_permissions: Vec<String>,
+    /// Setting keys the screen asks for before running.
+    #[schema(example = json!(["bucket", "jurisdiction"]))]
+    inputs: Vec<String>,
+    /// Setting keys the plugin may write back.
+    #[schema(example = json!(["account_id", "bucket", "access_key_id", "secret_access_key"]))]
+    outputs: Vec<String>,
+    /// Whether the plugin removes what it created, which the screen offers
+    /// before the instance is deleted.
+    deprovision: bool,
+}
+
+impl From<&bookclerk_plugin_manifest::ProvisioningManifest> for ProvisioningView {
+    fn from(table: &bookclerk_plugin_manifest::ProvisioningManifest) -> Self {
+        Self {
+            provider: table.provider.clone(),
+            grants: table
+                .grants
+                .iter()
+                .map(|grant| grant.as_str().to_string())
+                .collect(),
+            token_url: table.token_url.clone(),
+            token_permissions: table.token_permissions.clone(),
+            inputs: table.inputs.clone(),
+            outputs: table.outputs.clone(),
+            deprovision: table.deprovision,
+        }
+    }
+}
+
+/// `GET /api/config/plugin-instances/{id}/provisioning`: whether the
+/// instance's plugin offers a guided setup here, and what it asks for.
+///
+/// Read from the plugin installed on this server, since the guided setup
+/// runs where the plugin is.
+#[utoipa::path(
+    get,
+    path = "/api/config/plugin-instances/{id}/provisioning",
+    params(("id" = String, Path, description = "Plugin instance id.")),
+    responses(
+        (status = 200, description = "The plugin's guided setup, if it offers one.", body = PluginInstanceProvisioning),
+        (status = 404, description = "No such instance.", body = ErrorMessage, example = json!({"error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"})),
+        (status = 409, description = "The plugin is not installed on this server.", body = ErrorMessage, example = json!({"error": "plugin r2 is not installed on this server; run the guided setup on a server that has it"})),
+    ),
+)]
+pub async fn get_plugin_instance_provisioning(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<PluginInstanceProvisioning>, Response> {
+    use bookclerk_library::control_plane::load_plugin_instance;
+    let library = state.library_snapshot().await;
+    let instance_id = existing_instance(&library, &id).await?;
+    let instance = load_plugin_instance(&library, &instance_id)
+        .await
+        .map_err(events_error)?
+        .ok_or_else(|| {
+            events_error(bookclerk_library::LibraryError::not_found(
+                EntityKind::PluginInstance,
+                &instance_id,
+            ))
+        })?;
+    let config = state.config.read().await.clone();
+    let plugin = installed_plugin(&config, &instance.plugin_key).await?;
+    let offered = plugin
+        .manifest
+        .entrypoints
+        .contains(&bookclerk_plugin_manifest::Entrypoint::Provisioning);
+    Ok(Json(PluginInstanceProvisioning {
+        plugin_instance_id: instance_id.to_string(),
+        provisioning: plugin
+            .manifest
+            .provisioning
+            .as_ref()
+            .filter(|_| offered)
+            .map(ProvisioningView::from),
+    }))
+}
+
 /// `GET` and `PUT /api/config/plugin-instances/{id}/filter` body: which
 /// books a storage destination takes.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -3443,6 +3933,167 @@ mod tests {
         assert_eq!(cleared["intake"], Value::Null);
 
         let missing = "/api/config/plugin-instances/3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b/intake";
+        let (status, _) = send(&app, "GET", missing, Value::Null).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn guided_setup_routes_refuse_before_running_the_plugin() {
+        use axum::http::StatusCode;
+        use axum::routing::{get, post};
+        use bookclerk_plugin_abi::{SettingKind, SettingSpec, SettingsSchema};
+        use serde_json::{json, Value};
+
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let (state, store, node, _files) = daemon_state().await;
+        let key = "path:file:///tmp/guided-setup#guided";
+        let schema = SettingsSchema::new(vec![SettingSpec {
+            key: "bucket".into(),
+            label: "Bucket".into(),
+            kind: SettingKind::String,
+            values: Vec::new(),
+            default: None,
+            required: true,
+            description: None,
+            columns: Vec::new(),
+            network: None,
+            default_port: None,
+        }]);
+        bookclerk_library::control_plane::pin_plugin_schema(
+            &store,
+            &bookclerk_library::control_plane::SchemaPin {
+                plugin_key: key,
+                manifest_id: "guided",
+                package_version: "0.1.0",
+                schema: &schema,
+                node_id: &node,
+            },
+        )
+        .await
+        .unwrap();
+        let app = axum::Router::new()
+            .route(
+                "/api/config/plugin-instances",
+                post(super::post_plugin_instance),
+            )
+            .route(
+                "/api/config/plugin-instances/{id}/config",
+                get(super::get_plugin_instance_config),
+            )
+            .route(
+                "/api/config/plugin-instances/{id}/provision",
+                post(super::post_plugin_instance_provision),
+            )
+            .route(
+                "/api/config/plugin-instances/{id}/deprovision",
+                post(super::post_plugin_instance_deprovision),
+            )
+            .route(
+                "/api/config/plugin-instances/{id}/provisioning",
+                get(super::get_plugin_instance_provisioning),
+            )
+            .layer(axum::Extension(crate::auth::NodeAdminCaller::Operator))
+            .with_state(std::sync::Arc::clone(&state));
+        let (status, created) = send(
+            &app,
+            "POST",
+            "/api/config/plugin-instances",
+            json!({ "plugin_key": key }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{created}");
+        let id = created["plugin_instance_id"].as_str().unwrap().to_string();
+        let (_, document) = send(
+            &app,
+            "GET",
+            &format!("/api/config/plugin-instances/{id}/config"),
+            Value::Null,
+        )
+        .await;
+        let revision = document["revision"].as_i64().unwrap();
+        let provision = format!("/api/config/plugin-instances/{id}/provision");
+        let run = |revision: i64, token: &str, inputs: Value| {
+            json!({
+                "expected_revision": revision,
+                "grant": { "kind": "api_token", "token": token },
+                "inputs": inputs,
+            })
+        };
+
+        // A malformed token is refused before anything is read.
+        let (status, refused) =
+            send(&app, "POST", &provision, run(revision, "  ", json!({}))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+        let (status, refused) = send(
+            &app,
+            "POST",
+            &provision,
+            run(revision, "two words", json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+        assert!(!refused.to_string().contains("two words"), "{refused}");
+
+        // A stale revision and an input the schema refuses stop the run.
+        let (status, stale) = send(
+            &app,
+            "POST",
+            &provision,
+            run(revision + 5, "tok3n", json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{stale}");
+        assert_eq!(stale["current_revision"], revision);
+        let (status, bad) = send(
+            &app,
+            "POST",
+            &provision,
+            run(revision, "tok3n", json!({ "region": "auto" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+
+        // The plugin is not installed on this server: every route says so.
+        let (status, absent) = send(
+            &app,
+            "POST",
+            &provision,
+            run(revision, "tok3n", json!({ "bucket": "books" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{absent}");
+        assert!(absent["error"].as_str().unwrap().contains("not installed"));
+        assert!(!absent.to_string().contains("tok3n"), "{absent}");
+        let (status, absent) = send(
+            &app,
+            "POST",
+            &format!("/api/config/plugin-instances/{id}/deprovision"),
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{absent}");
+        let (status, absent) = send(
+            &app,
+            "GET",
+            &format!("/api/config/plugin-instances/{id}/provisioning"),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{absent}");
+
+        // Nothing was written.
+        let (_, after) = send(
+            &app,
+            "GET",
+            &format!("/api/config/plugin-instances/{id}/config"),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(after["revision"], revision);
+
+        // An unknown instance is a 404.
+        let missing =
+            "/api/config/plugin-instances/3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b/provisioning";
         let (status, _) = send(&app, "GET", missing, Value::Null).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
     }

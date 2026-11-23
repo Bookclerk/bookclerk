@@ -243,7 +243,7 @@ export const MAX_WEBHOOK_HEADER_VALUE_BYTES = 8192 as const;
 export const MAX_PROVISION_TOKEN_BYTES = 4096 as const;
 
 /** Longest `ProvisionedSecret.value`, in bytes. */
-export const MAX_PROVISION_SECRET_BYTES = 4096 as const;
+export const MAX_PROVISION_SECRET_BYTES = 1024 as const;
 
 /** Most credentials one `Provisioned` returns. */
 export const MAX_PROVISION_SECRETS = 16 as const;

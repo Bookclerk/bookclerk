@@ -210,11 +210,11 @@ pub use ingress::{
 pub use instance_config::{
     import_instance_config_if_absent, load_instance_config, parse_setting_text,
     reconcile_instance_configs_to_schema, replace_instance_config, resolve_instance_bindings,
-    seal_instance_secret, set_secret_ref, set_setting, InstanceBindingGrant,
-    InstanceConfigDocument, InstanceConfigReplace, InstanceSecretRefV1, PluginInstanceConfigV1,
-    PrunedInstanceConfig, ResolvedInstanceBindings, SettingCell, SettingValue,
-    MAX_INSTANCE_SECRET_REFS, MAX_INSTANCE_SETTINGS, MAX_INSTANCE_SETTING_BYTES,
-    PLUGIN_INSTANCE_CONFIG_SCHEMA_VERSION,
+    resolve_instance_bindings_with, seal_instance_secret, set_secret_ref, set_setting,
+    InstanceBindingGrant, InstanceConfigDocument, InstanceConfigReplace, InstanceSecretRefV1,
+    PluginInstanceConfigV1, PrunedInstanceConfig, RequiredSettings, ResolvedInstanceBindings,
+    SettingCell, SettingValue, MAX_INSTANCE_SECRET_REFS, MAX_INSTANCE_SETTINGS,
+    MAX_INSTANCE_SETTING_BYTES, PLUGIN_INSTANCE_CONFIG_SCHEMA_VERSION,
 };
 pub use instances::{
     create_node_local_instance, create_plugin_instance, default_instance_for_key,

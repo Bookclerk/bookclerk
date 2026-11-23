@@ -81,6 +81,7 @@ mod notify_raiser;
 mod on_demand;
 mod on_demand_source;
 mod on_demand_storage;
+mod provisioning;
 mod python_snapshot;
 mod queue_producer;
 mod registry;
@@ -215,6 +216,9 @@ pub use on_demand_source::{
 };
 pub use on_demand_storage::{
     storage_activates_on_demand, HeldSession, OnDemandStorage, STORAGE_IDLE_TIMEOUT,
+};
+pub use provisioning::{
+    deprovision_instance, provision_instance, ProvisionRunError, ProvisionToken, PROVISION_TIMEOUT,
 };
 pub use queue_producer::{OutboxQueueProducer, QueueOutbox};
 pub use registry::{
