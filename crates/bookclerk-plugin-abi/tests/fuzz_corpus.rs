@@ -2015,6 +2015,58 @@ fn assert_notify_seed(target: &str, name: &str, seed: &[u8]) {
     );
 }
 
+/// Deliverability seeds for `notifier_reply` (selector 2): a report with a
+/// kept and a refused report link, multi-line and over-long text, skipped
+/// advice and too many sources; a report over the check cap; and an
+/// unsupported answer. Refresh with `UPDATE_FUZZ_SEEDS=1`.
+// Test code: failed encoding is the test failing.
+#[allow(clippy::expect_used)]
+#[test]
+fn notifier_reply_deliverability_seeds_are_current() {
+    use bookclerk_plugin_abi::notifications::encode_notify_deliverability_reply_bytes;
+    use bookclerk_plugin_abi::{
+        NotifyCheckOutcome, NotifyDeliverabilityAdvice, NotifyDeliverabilityCheck,
+        NotifyDeliverabilityReport, PluginError, PluginErrorCode,
+    };
+
+    let check = |service: &str, url: Option<&str>| NotifyDeliverabilityCheck {
+        service: service.into(),
+        outcome: NotifyCheckOutcome::Warning,
+        summary: format!("line one\nline two {}", "y".repeat(1_100)),
+        report_url: url.map(str::to_owned),
+    };
+    let report = NotifyDeliverabilityReport {
+        checks: vec![
+            check("mail-tester.com", Some("https://www.mail-tester.com/acct-1")),
+            check("Spoof", Some("https://user@evil.example/")),
+            check("Plain", Some("http://example.com/")),
+        ],
+        advice: vec![NotifyDeliverabilityAdvice {
+            outcome: NotifyCheckOutcome::Skipped,
+            title: "Publish a DMARC record\u{202e}".into(),
+            detail: "Add a TXT record at _dmarc.example.com.".into(),
+            sources: (0..10).map(|n| format!("check {n}")).collect(),
+        }],
+    };
+    let too_many = NotifyDeliverabilityReport {
+        checks: (0..9).map(|n| check(&format!("c{n}"), None)).collect(),
+        advice: Vec::new(),
+    };
+    let replies: Vec<(&str, Result<NotifyDeliverabilityReport, PluginError>)> = vec![
+        ("deliverability_report.bin", Ok(report)),
+        ("deliverability_too_many.bin", Ok(too_many)),
+        (
+            "deliverability_unsupported.bin",
+            Err(PluginError::new(PluginErrorCode::Unsupported, "no check")),
+        ),
+    ];
+    for (name, reply) in replies {
+        let mut seed = vec![2];
+        seed.extend(encode_notify_deliverability_reply_bytes(&reply).expect("encode"));
+        assert_notify_seed("notifier_reply", name, &seed);
+    }
+}
+
 /// Seeds for `notifier_reply`: delivered replies with and without a usable
 /// provider id, a rate limit with and past the hour cap, an unavailable
 /// service, a permanent failure with a multi-line message, and address

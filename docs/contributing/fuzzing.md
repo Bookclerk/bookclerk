@@ -53,7 +53,7 @@ boundary extends it.
 | `quality_offers` | A storefront's `qualityOffers` reply: how many titles it answers, the stream bounds of each offer and the refreshed credentials it carries | `bookclerk-plugin-abi::validate_quality_offers` |
 | `plain_fetch` | A storefront's `fetchTitle` reply: the carrier it fetched and the files it lists by role | `bookclerk-plugin-abi::validate_plain_fetch` |
 | `metadata_file_record` | A metadata-file dialect's `parse` answer about a sidecar file: the fields it says the file states, their values and size caps, credit roles, dates and chapter order, and the dialect's declared fields | `bookclerk-plugin-abi::validate_metadata_file_record` |
-| `notifier_reply` | A notifier's `send` reply (delivered, retried after a capped wait, or failed, with a cut reason) and the address documents a `validateDestination` answer or a patron's form carries | `bookclerk-plugin-abi::notifications` |
+| `notifier_reply` | A notifier's `send` reply (delivered, retried after a capped wait, or failed, with a cut reason), its `checkDeliverability` report, and the address documents a `validateDestination` answer or a patron's form carries | `bookclerk-plugin-abi::notifications` |
 | `notify_raise` | A plugin's `NOTIFY.raise`: the `/notify/raise` JSON body and the Cap'n Proto raise, their type id, fields, patron id, link path, group key and alert | `bookclerk-plugin-abi::notifications::check_raise_params` |
 | `ai_run_reply` | A model plugin's reply to a run (vector count, length, finite values, revision and fallback indexes, against the run it answers) and its model listing | `bookclerk-plugin-abi::ai::check_run_output`, `check_models` |
 | `ai_run` | A plugin's `AI.run`: the `/ai/run` JSON body and the Cap'n Proto run, their model name and the input for one task | `bookclerk-plugin-abi::ai::check_binding_run_params` |
@@ -494,8 +494,9 @@ only that. The others check:
   An accepted record round-trips through the codec and is accepted again.
   The shared oracle is `fuzz/oracles/metadata_file_record.rs`, replayed
   from `bookclerk-plugin-abi`.
-- **`notifier_reply`**: byte 0 modulo 2 picks a `NotifySendReply` message
-  (0) or an address document as text (1). A reply is delivered exactly when
+- **`notifier_reply`**: byte 0 modulo 3 picks a `NotifySendReply` message
+  (0), an address document as text (1) or a `NotifyDeliverabilityReply`
+  message (2). A reply is delivered exactly when
   it is the `ok` arm, keeping a provider id only when it is a non-empty line
   within the field cap; it is retried exactly for `rate_limited`,
   `unavailable`, `deadline_exceeded` and `cancelled`, waiting only on
@@ -506,7 +507,13 @@ only that. The others check:
   object of at most 16 distinct identifier keys with one-line string values
   within the field cap, re-serialises to text that parses back equal, and
   fits a fixed `email` (required) and `name` field list exactly when it has
-  a non-blank `email` and no other key. The shared oracle is
+  a non-blank `email` and no other key. A deliverability report is refused
+  exactly when it has more than 8 checks or 32 pieces of advice; otherwise
+  every list keeps its order and count, every text is cut to the longest
+  prefix within its cap with control and layout characters blanked, a
+  report link survives exactly when it is a credential-free `https` URL
+  within the field cap, `skipped` advice is shown as `warning`, and at most
+  8 sources are kept. The shared oracle is
   `fuzz/oracles/notifier_reply.rs`, replayed from `bookclerk-plugin-abi`.
 - **`notify_raise`**: byte 0 modulo 2 picks the bridge's JSON body (0) or a
   Cap'n Proto `NotifyRaiseParams` (1). The raise is accepted exactly when

@@ -1294,6 +1294,70 @@ mod tests {
         check_message(&m).expect("trigger with key");
         m.alert_action = NotificationAlertAction::None;
         assert_eq!(check_message(&m), Err(NotificationError::BadAlert));
+        let mut m = message();
+        m.library_origin = Some("https://library.example.com/".into());
+        check_message(&m).expect("https home page");
+        m.library_origin = Some("javascript:alert(1)".into());
+        assert!(check_message(&m).is_err());
+    }
+
+    #[test]
+    fn deliverability_reports_are_cut_for_the_operator() {
+        assert_eq!(cut_line("a\nb\u{202e}c", 64), "a b c");
+        assert_eq!(cut_line("héllo", 2), "h");
+        assert!(is_report_url("https://www.mail-tester.com/acct-1"));
+        for bad in [
+            "http://example.com/",
+            "https://user@example.com/",
+            "https:///path",
+            "https://example.com/a b",
+            "https://example.com\\@evil",
+        ] {
+            assert!(!is_report_url(bad), "{bad}");
+        }
+        let check = NotifyDeliverabilityCheck {
+            service: "Postmark".into(),
+            outcome: NotifyCheckOutcome::Failed,
+            summary: "x".repeat(cap(MAX_NOTIFICATION_FIELD_BYTES) + 10),
+            report_url: Some("javascript:alert(1)".into()),
+        };
+        let advice = NotifyDeliverabilityAdvice {
+            outcome: NotifyCheckOutcome::Skipped,
+            title: "Fix\nit".into(),
+            detail: "Do this.".into(),
+            sources: vec!["s".into(); cap(MAX_DELIVERABILITY_CHECKS) + 3],
+        };
+        let shown = check_deliverability_report(NotifyDeliverabilityReport {
+            checks: vec![check.clone()],
+            advice: vec![advice],
+        })
+        .expect("within caps");
+        assert_eq!(
+            shown.checks[0].summary.len(),
+            cap(MAX_NOTIFICATION_FIELD_BYTES)
+        );
+        assert_eq!(shown.checks[0].report_url, None);
+        assert_eq!(shown.advice[0].outcome, NotifyCheckOutcome::Warning);
+        assert_eq!(shown.advice[0].title, "Fix it");
+        assert_eq!(
+            shown.advice[0].sources.len(),
+            cap(MAX_DELIVERABILITY_CHECKS)
+        );
+        let over = NotifyDeliverabilityReport {
+            checks: vec![check; cap(MAX_DELIVERABILITY_CHECKS) + 1],
+            advice: Vec::new(),
+        };
+        assert_eq!(
+            check_deliverability_report(over),
+            Err(NotificationError::TooManyDeliverabilityEntries)
+        );
+        let reply: Result<NotifyDeliverabilityReport, PluginError> =
+            Ok(NotifyDeliverabilityReport::default());
+        let bytes = encode_notify_deliverability_reply_bytes(&reply).expect("encode");
+        assert_eq!(
+            decode_notify_deliverability_reply_bytes(&bytes).expect("decode"),
+            reply
+        );
     }
 
     #[test]
