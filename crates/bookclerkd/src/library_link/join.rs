@@ -78,7 +78,7 @@ use bookclerk_library::control_plane::{
 use bookclerk_node_client::{
     apply_shared_branch_bootstrap, authorize_join, bootstrap_database_kind, inspect_library,
     install_problem, join_library, redeem_branch_code, redeem_shared_branch_code, refuse_cycle,
-    BranchRedeem, InspectedLibrary, JoinError,
+    refuse_loop, BranchRedeem, InspectedLibrary, JoinError,
 };
 use bookclerk_node_proto::{is_branch_name, ConnectionType, JOIN_CALLBACK_PATH};
 use serde::Deserialize;
@@ -654,9 +654,8 @@ pub struct InspectBody {
         )),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The session is impersonating a user."),
-        (status = 409, description = "Joining would make a loop (`join_cycle`, `ancestry_too_deep`), or the library's address is not the one given (`origin_mismatch`, with the address to use in `origin`).", body = JoinConflict, examples(
+        (status = 409, description = "Joining would make a loop (`join_cycle`), or the library's address is not the one given (`origin_mismatch`, with the address to use in `origin`). How deep the library sits is checked once the join's kind is chosen, at `start` and when the code is redeemed.", body = JoinConflict, examples(
             ("join_cycle" = (summary = "The library is this one or one of its branches.", value = json!({"error": "join_cycle", "detail": "that library is this library or one of its own branches; joining it would make a loop"}))),
-            ("ancestry_too_deep" = (summary = "The library sits too deep in its tree of libraries.", value = json!({"error": "ancestry_too_deep", "detail": "that library sits too deep in its tree of libraries; joining it could hide a loop"}))),
             ("origin_mismatch" = (summary = "The library answers under another address.", value = json!({"error": "origin_mismatch", "detail": "this library's address is https://books.example.com; join with that address", "origin": "https://books.example.com"}))),
         )),
         (status = 502, description = "The library could not be reached (`unreachable`), or answered with an error (`library_error`).", body = crate::http_error::ErrorDetail, examples(
@@ -675,7 +674,9 @@ pub async fn post_join_inspect(
         Err(err) => return join_failed(&err),
     };
     let store = state.library_snapshot().await;
-    if let Err(err) = refuse_cycle(&store, &library.info.ancestry).await {
+    // Only the loop: whether the tree is too deep depends on joining as a
+    // branch or a shared branch, which is not chosen yet.
+    if let Err(err) = refuse_loop(&store, &library.info.ancestry).await {
         return join_failed(&err);
     }
     Json(InspectedLibraryResponse {
@@ -733,7 +734,7 @@ pub struct StartBody {
             ("impersonating" = (summary = "The session is impersonating a user.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
         )),
         (status = 404, description = "With `from_card`: this install holds no active library card for that library (`not_found`).", body = crate::http_error::ErrorDetail, example = json!({"error": "not_found", "detail": "this install holds no library card for that library"})),
-        (status = 409, description = "The library's fingerprint is not confirmed, or changed since the card signed in (`fingerprint_unconfirmed`), this install holds data of its own for a shared branch join (`not_empty`), joining would make a loop (`join_cycle`, `ancestry_too_deep`), or the library's address is not the one given, or no longer the card's library (`origin_mismatch`).", body = JoinConflict, examples(
+        (status = 409, description = "The library's fingerprint is not confirmed, or changed since the card signed in (`fingerprint_unconfirmed`), this install holds data of its own for a shared branch join (`not_empty`), joining would make a loop (`join_cycle`) or, for a branch (not a shared branch, which adds no depth), make the tree too deep (`ancestry_too_deep`), or the library's address is not the one given, or no longer the card's library (`origin_mismatch`).", body = JoinConflict, examples(
             ("fingerprint_unconfirmed" = (summary = "A self-signed library's fingerprint was not confirmed.", value = json!({"error": "fingerprint_unconfirmed", "detail": "confirm the library's fingerprint first; it must match the one on its Settings → Branches page"}))),
             ("not_empty" = (summary = "This install already holds library data (shared branch join).", value = json!({"error": "not_empty", "detail": "this server already holds library data of its own (2 accounts, 148 books); only an empty server can join as a shared branch"}))),
             ("join_cycle" = (summary = "The library is this one or one of its branches.", value = json!({"error": "join_cycle", "detail": "that library is this library or one of its own branches; joining it would make a loop"}))),
@@ -773,7 +774,14 @@ pub async fn post_join_start(
         Err(err) => return join_failed(&err),
     };
     let store = state.library_snapshot().await;
-    if let Err(err) = refuse_cycle(&store, &library.info.ancestry).await {
+    // A shared branch adds no depth to the tree (it shares its library's
+    // ancestry), so only a branch join is refused for depth here.
+    let refused = if body.shared_branch {
+        refuse_loop(&store, &library.info.ancestry).await
+    } else {
+        refuse_cycle(&store, &library.info.ancestry).await
+    };
+    if let Err(err) = refused {
         return join_failed(&err);
     }
     if !library.info.enrollment {
