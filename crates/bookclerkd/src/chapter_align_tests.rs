@@ -1,5 +1,6 @@
 //! Tests for the `chapter_align` job's copy choice and scratch naming.
 
+use bookclerk_config::{CopyFormat, CopyQuality};
 use bookclerk_library::{AudioStream, FileRole, ProbedAudioFile};
 
 use super::*;
@@ -52,6 +53,40 @@ fn the_copy_is_the_first_timed_one_here_audio_then_parts_in_key_order() {
     let (_, copy) = copy_here(&destinations, &chapters_only).expect("chapter files");
     assert_eq!(copy.len(), 1);
     assert!(copy_here(&destinations, &[]).is_none());
+}
+
+#[test]
+fn files_of_two_library_copies_are_never_mixed() {
+    let root = tempfile::tempdir().unwrap();
+    let destinations = [destination("a", root.path())];
+    let named = |format: CopyFormat| {
+        Some(OutputCopy {
+            format,
+            quality: CopyQuality::ORIGINAL,
+        })
+    };
+    let in_copy = |key: &str, ms: Option<u64>, copy: Option<OutputCopy>| ProbedAudioFile {
+        copy,
+        ..file("a", key, FileRole::Part, ms)
+    };
+    let files = [
+        // The MP3 copy lacks a running time, so the M4B copy is chosen
+        // whole rather than filled in from it.
+        in_copy("mp3/1.mp3", None, named(CopyFormat::Mp3)),
+        in_copy("m4b/1.m4b", Some(10), named(CopyFormat::M4b)),
+        in_copy("m4b/2.m4b", Some(10), named(CopyFormat::M4b)),
+        in_copy("mp3/2.mp3", Some(10), named(CopyFormat::Mp3)),
+    ];
+    let (_, copy) = copy_here(&destinations, &files).expect("a copy");
+    let keys: Vec<&str> = copy.iter().map(|f| f.storage_key.as_str()).collect();
+    assert_eq!(keys, ["m4b/1.m4b", "m4b/2.m4b"]);
+
+    // An upload's files (no named copy) come before any named copy.
+    let mut with_upload = files.to_vec();
+    with_upload.push(in_copy("up/1.mp3", Some(10), None));
+    let (_, copy) = copy_here(&destinations, &with_upload).expect("a copy");
+    let keys: Vec<&str> = copy.iter().map(|f| f.storage_key.as_str()).collect();
+    assert_eq!(keys, ["up/1.mp3"]);
 }
 
 #[test]

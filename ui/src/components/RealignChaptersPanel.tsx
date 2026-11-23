@@ -22,16 +22,34 @@ export function RealignChaptersPanel({ editions }: RealignChaptersPanelProps) {
     setBusy(true);
     setError(null);
     setMessage(null);
-    try {
-      for (const edition of editions) {
+    // Each edition is asked for on its own, so one that cannot be aligned
+    // (no ASIN, say) does not stop the others.
+    let queued = 0;
+    const failures: string[] = [];
+    for (const edition of editions) {
+      try {
         await realignChapters(edition);
+        queued += 1;
+      } catch (err) {
+        failures.push(isApiError(err) ? err.message : "The chapters could not be re-aligned.");
       }
-      setMessage("Queued. The chapters update once the audio has been checked.");
-    } catch (err) {
-      setError(isApiError(err) ? err.message : "The chapters could not be re-aligned.");
-    } finally {
-      setBusy(false);
     }
+    if (queued > 0) {
+      setMessage(
+        failures.length === 0
+          ? "Queued. The chapters update once the audio has been checked."
+          : `Queued for ${queued} of ${editions.length} editions. The chapters update once the audio has been checked.`,
+      );
+    }
+    if (failures.length > 0) {
+      const reasons = [...new Set(failures)].join(" ");
+      setError(
+        queued > 0
+          ? `${failures.length} of ${editions.length} editions could not be re-aligned: ${reasons}`
+          : reasons,
+      );
+    }
+    setBusy(false);
   }
 
   return (

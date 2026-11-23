@@ -175,11 +175,24 @@ pub(crate) fn copy_timeline(
         .map(|chapter| (chapter.title, chapter.start_ms))
         .collect();
         let scaled = scale_chapters_to_duration(&pairs, full, Some(copy_ms));
-        let map: HashMap<u64, u64> = pairs
+        // Every node in the tree moves by the same scale, including those
+        // the title clean-ups dropped from the list to align, so none keeps
+        // a start on the provider's timeline.
+        let every: Vec<(String, u64)> = flatten_chapters(info)
+            .into_iter()
+            .map(|chapter| (String::new(), chapter.start_ms))
+            .collect();
+        let mut map: HashMap<u64, u64> = every
             .iter()
-            .zip(&scaled)
+            .zip(&scale_chapters_to_duration(&every, full, Some(copy_ms)))
             .map(|((_, old), (_, new))| (*old, *new))
             .collect();
+        map.extend(
+            pairs
+                .iter()
+                .zip(&scaled)
+                .map(|((_, old), (_, new))| (*old, *new)),
+        );
         (scaled, apply_start_map_to_chapter_tree(info, &map))
     } else {
         (
@@ -258,6 +271,23 @@ mod tests {
         let starts: Vec<u64> = flat.iter().map(|(_, start)| *start).collect();
         assert_eq!(starts, vec![0, 10_000, 50_000]);
         assert_eq!(tree["chapters"][2]["startOffsetMs"], json!(50_000));
+    }
+
+    #[test]
+    fn a_chapter_left_out_of_the_list_still_moves_with_the_copy() {
+        let mut info = layout();
+        info["chapters"]
+            .as_array_mut()
+            .expect("chapters")
+            .push(json!({"title": "Audible Studios", "startOffsetMs": 30_000}));
+        let options = DownloadOptions {
+            strip_audible_brand_audio: true,
+            ..DownloadOptions::default()
+        };
+        let (flat, tree) = copy_timeline(&info, 99_000, &options);
+        let starts: Vec<u64> = flat.iter().map(|(_, start)| *start).collect();
+        assert_eq!(starts, vec![0, 9_900, 49_500]);
+        assert_eq!(tree["chapters"][3]["startOffsetMs"], json!(29_700));
     }
 
     #[test]

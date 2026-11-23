@@ -19736,7 +19736,7 @@
           "Library"
         ],
         "summary": "Queues the alignment of a metadata provider's chapters to the\nedition's stored copy.",
-        "description": "The job asks the providers for the edition's chapters by its ASIN,\nreads a stored copy, snaps each chapter start to the spoken title, and\nrecords the provider's list and the aligned list as claims; the edition\nplays the aligned list unless an edit or a pin says otherwise.",
+        "description": "The job asks the providers for the edition's chapters by its ASIN,\nreads a stored copy, snaps each chapter start to the spoken title, and\nrecords the provider's list and the aligned list as claims; the edition\nplays the aligned list unless an edit or a pin says otherwise.\n\nOnly the operator, an Owner, or an Administrator with the \"Fix the\ncatalog\" switch may queue one; the route admits any signed-in user and\nanswers everyone else 403.",
         "operationId": "post_chapter_realign",
         "parameters": [
           {

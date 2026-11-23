@@ -10,11 +10,13 @@
 //! ([`bookclerk_acquire::realign_copy`]) and records the provider and
 //! processed claims; the resolver decides what the edition plays.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context;
 use bookclerk_acquire::{realign_copy, CopyAudio, RealignOutcome, RealignTarget};
+use bookclerk_config::OutputCopy;
 use bookclerk_library::{
     EnqueueJobSpec, FileRole, JobKind, JobPayload, JobTrigger, LibraryStore, ProbedAudioFile,
 };
@@ -224,33 +226,45 @@ async fn read_to(destination: &OwnerDestination, key: &str, path: &Path) -> anyh
     Ok(())
 }
 
-/// The first of `destinations`, in this node's order, that holds a whole
-/// copy of the edition whose files all have a probed running time, and
-/// that copy's files in play order: the primary audio, then its parts in
-/// key order; chapter files only when the copy has nothing else, since
-/// they repeat the primary audio otherwise.
+/// The first whole copy of the edition on `destinations` whose files all
+/// have a probed running time, and that copy's files in play order.
+///
+/// Destinations are tried in this node's order. On each, the files of one
+/// library copy (`output.copies`) are taken together, never mixed with
+/// another copy's: an upload or unnamed copy first, then the named copies
+/// in format and quality order. A copy's files are its primary audio, then
+/// its parts in key order; its chapter files only when it has nothing
+/// else, since they repeat the primary audio otherwise.
 fn copy_here<'a>(
     destinations: &'a [OwnerDestination],
     files: &'a [ProbedAudioFile],
 ) -> Option<(&'a OwnerDestination, Vec<&'a ProbedAudioFile>)> {
     destinations.iter().find_map(|destination| {
-        let on = |roles: &[FileRole]| -> Vec<&ProbedAudioFile> {
-            let mut picked: Vec<&ProbedAudioFile> = files
-                .iter()
-                .filter(|file| file.destination == destination.id && roles.contains(&file.role))
-                .collect();
-            picked.sort_by_key(|file| (file.role != FileRole::Audio, file.storage_key.clone()));
-            picked
-        };
-        let mut copy = on(&[FileRole::Audio, FileRole::Part]);
-        if copy.is_empty() {
-            copy = on(&[FileRole::Chapter]);
-        }
-        let timed = !copy.is_empty()
-            && copy
-                .iter()
-                .all(|file| file.stream.duration_ms.is_some_and(|ms| ms > 0));
-        timed.then_some((destination, copy))
+        let here: Vec<&ProbedAudioFile> = files
+            .iter()
+            .filter(|file| file.destination == destination.id)
+            .collect();
+        let copies: BTreeSet<&Option<OutputCopy>> = here.iter().map(|file| &file.copy).collect();
+        copies.into_iter().find_map(|which| {
+            let on = |roles: &[FileRole]| -> Vec<&ProbedAudioFile> {
+                let mut picked: Vec<&ProbedAudioFile> = here
+                    .iter()
+                    .copied()
+                    .filter(|file| &file.copy == which && roles.contains(&file.role))
+                    .collect();
+                picked.sort_by_key(|file| (file.role != FileRole::Audio, file.storage_key.clone()));
+                picked
+            };
+            let mut copy = on(&[FileRole::Audio, FileRole::Part]);
+            if copy.is_empty() {
+                copy = on(&[FileRole::Chapter]);
+            }
+            let timed = !copy.is_empty()
+                && copy
+                    .iter()
+                    .all(|file| file.stream.duration_ms.is_some_and(|ms| ms > 0));
+            timed.then_some((destination, copy))
+        })
     })
 }
 

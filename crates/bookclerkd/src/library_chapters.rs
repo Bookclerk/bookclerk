@@ -510,6 +510,10 @@ pub(crate) struct ChapterAlignJson {
 /// reads a stored copy, snaps each chapter start to the spoken title, and
 /// records the provider's list and the aligned list as claims; the edition
 /// plays the aligned list unless an edit or a pin says otherwise.
+///
+/// Only the operator, an Owner, or an Administrator with the "Fix the
+/// catalog" switch may queue one; the route admits any signed-in user and
+/// answers everyone else 403.
 #[utoipa::path(
     post,
     path = "/api/library/editions/{id}/chapters/realign",
