@@ -40,6 +40,7 @@ mod intake_items;
 mod job_routing;
 mod keeper;
 mod leases;
+mod link_copies;
 mod link_imports;
 mod live;
 mod member_controls;
@@ -256,6 +257,10 @@ pub use library_links::{
     set_library_link_state, set_library_link_work, CapacityBody, JobCapRequest, LibraryLink,
     LibraryLinkKeys, LibraryLinkSettings, LinkJobCap, NewLibraryLink, SharingBody, SharingRequest,
     LIBRARY_LINK_ACTIVE, LIBRARY_LINK_KEYS_NAME, LIBRARY_LINK_LEFT, LIBRARY_LINK_REVOKED,
+};
+pub use link_copies::{
+    claim_link_copy, keep_link_copies, link_copy_title_ref, link_copy_writer, release_link_copies,
+    stale_link_copies, LinkCopyAttempt, LinkCopyClaim, StaleLinkCopy, STALE_LINK_COPY_AGE_SECS,
 };
 pub use link_imports::{
     books_imported_from_link, import_link_title, record_copy_taken_from_link, HeldBookKey,

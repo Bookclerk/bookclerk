@@ -66,6 +66,7 @@ pub mod library_leases;
 pub mod library_links;
 pub mod library_work_facets;
 pub mod library_work_rows;
+pub mod link_copy_files;
 pub mod link_imports;
 pub mod link_requests;
 pub mod listening_progress;

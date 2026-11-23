@@ -62,7 +62,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use bookclerk_config::DestinationId;
-use bookclerk_library::control_plane::LinkImportOutcome;
+use bookclerk_library::control_plane::{self, LinkImportOutcome};
 use bookclerk_library::{AcquireTitle, JobKind, LibraryStore, NewBook};
 use bookclerk_node_client::{HostJobCtx, LocalFileSource, OwnerCallError};
 use bookclerk_node_proto::{
@@ -267,6 +267,153 @@ pub trait HostGuests: Send + Sync + 'static {
     fn local_keeper(&self) -> Option<Arc<dyn LocalKeeper>> {
         None
     }
+
+    /// Where this host records the copies it keeps on its own destinations
+    /// (#314, [`CopyLedger`]); `None` when it records none, and its copies
+    /// then overwrite as a local acquire's would.
+    fn copy_ledger(&self) -> impl Future<Output = Option<CopyLedger>> + Send {
+        std::future::ready(None)
+    }
+}
+
+/// Where a host records the copies it keeps on this install's own
+/// destinations: this install's own library
+/// ([`bookclerk_library::control_plane::claim_link_copy`]), for the library
+/// the job is for, by this node.
+#[derive(Clone)]
+pub struct CopyLedger {
+    /// This install's own library.
+    pub store: LibraryStore,
+    /// The library the job acquires for.
+    pub library_id: String,
+    /// This node's id, which every attempt's writer starts with.
+    pub node_id: String,
+}
+
+/// One title's copy attempt in a [`CopyLedger`]: every key it copies is
+/// claimed under it first, and the attempt is kept or given back as a
+/// whole.
+pub struct CopyAttempt {
+    /// The ledger.
+    ledger: CopyLedger,
+    /// The title the keys are claimed for
+    /// ([`bookclerk_library::control_plane::link_copy_title_ref`]).
+    title_ref: String,
+    /// The attempt's writer
+    /// ([`bookclerk_library::control_plane::link_copy_writer`]).
+    writer: String,
+}
+
+impl CopyAttempt {
+    /// A new attempt for the title the owner holds as `holding_id`, named
+    /// there by `call_number`.
+    #[must_use]
+    pub fn new(ledger: &CopyLedger, call_number: Option<&str>, holding_id: &str) -> Self {
+        Self {
+            ledger: ledger.clone(),
+            title_ref: control_plane::link_copy_title_ref(call_number, holding_id),
+            writer: control_plane::link_copy_writer(
+                &ledger.node_id,
+                control_plane::current_process_incarnation(),
+            ),
+        }
+    }
+
+    /// Claims `key` on `destination` before it is written; an error when
+    /// another title holds it, so the copy never overwrites that file.
+    async fn claim(&self, destination: &DestinationId, key: &str) -> anyhow::Result<()> {
+        let claim = control_plane::claim_link_copy(
+            &self.ledger.store,
+            control_plane::LinkCopyAttempt {
+                library_id: &self.ledger.library_id,
+                title_ref: &self.title_ref,
+                writer: &self.writer,
+            },
+            destination.as_str(),
+            key,
+        )
+        .await?;
+        match claim {
+            control_plane::LinkCopyClaim::Fresh | control_plane::LinkCopyClaim::Replaced => Ok(()),
+            control_plane::LinkCopyClaim::HeldByAnotherTitle => anyhow::bail!(
+                "another title holds {key:?} on this host's own destination {destination}"
+            ),
+        }
+    }
+
+    /// Keeps every copy of the attempt (the owner committed the title, or
+    /// its files stay because the outcome is unknown). Logged, not an
+    /// error: the files are in place either way.
+    async fn keep(&self) {
+        if let Err(err) = control_plane::keep_link_copies(&self.ledger.store, &self.writer).await {
+            tracing::warn!(writer = %self.writer, error = %err, "could not record a title's copies on this host's own destinations as kept");
+        }
+    }
+
+    /// Gives back every key of the attempt once its files were removed.
+    /// Logged, not an error.
+    async fn release(&self) {
+        if let Err(err) = control_plane::release_link_copies(&self.ledger.store, &self.writer).await
+        {
+            tracing::warn!(writer = %self.writer, error = %err, "could not give back a failed title's keys on this host's own destinations");
+        }
+    }
+}
+
+/// Removes the copies an earlier process of this node left mid-title on
+/// this host's own destinations ([`control_plane::stale_link_copies`]):
+/// their attempt never learned whether the owner committed them, so no one
+/// else would ever remove them. A copy that had taken over a kept copy of
+/// its title keeps its file and is recorded kept again. Best effort, logged.
+async fn sweep_stale_copies<G: HostGuests>(guests: &G, ledger: &CopyLedger) {
+    let stale = match control_plane::stale_link_copies(
+        &ledger.store,
+        &ledger.node_id,
+        control_plane::current_process_incarnation(),
+        chrono::Utc::now(),
+    )
+    .await
+    {
+        Ok(stale) if stale.is_empty() => return,
+        Ok(stale) => stale,
+        Err(err) => {
+            tracing::warn!(error = %err, "could not read the unfinished copies on this host's own destinations");
+            return;
+        }
+    };
+    let local = match guests.local_destinations().await {
+        Ok(local) => local,
+        Err(err) => {
+            tracing::warn!(error = %err, "could not open this host's own destinations to remove unfinished copies");
+            return;
+        }
+    };
+    let mut writers = BTreeSet::new();
+    for copy in &stale {
+        if !copy.replaced {
+            match local.iter().find(|(id, _)| id.as_str() == copy.destination) {
+                Some((_, backend)) => {
+                    if let Err(err) = backend.delete(&copy.key).await {
+                        tracing::warn!(key = %copy.key, error = %err, "could not remove an unfinished copy from this host's own destination; retried on the next job");
+                        continue;
+                    }
+                }
+                None => {
+                    tracing::warn!(destination = %copy.destination, key = %copy.key, "an unfinished copy is on a destination this host no longer has; left in place")
+                }
+            }
+        }
+        writers.insert(copy.writer.clone());
+    }
+    for writer in writers {
+        if let Err(err) = control_plane::release_link_copies(&ledger.store, &writer).await {
+            tracing::warn!(%writer, error = %err, "could not settle an unfinished copy's record");
+        }
+    }
+    tracing::info!(
+        copies = stale.len(),
+        "removed copies an earlier run left unfinished on this host's own destinations"
+    );
 }
 
 /// One of this host's own destinations: its destination id (`local`,
@@ -421,6 +568,21 @@ impl HostGuests for GuestHost {
             state: Arc::clone(&self.state),
             library_id: self.library_id.clone(),
         }))
+    }
+
+    async fn copy_ledger(&self) -> Option<CopyLedger> {
+        let node_id = match control_plane::load_or_create_node_identity(&self.files_dir) {
+            Ok(identity) => identity.node_id,
+            Err(err) => {
+                tracing::warn!(error = %err, "node identity unavailable; this host's own copies go unrecorded");
+                return None;
+            }
+        };
+        Some(CopyLedger {
+            store: self.state.library_snapshot().await,
+            library_id: self.library_id.clone(),
+            node_id,
+        })
     }
 
     async fn scan(
@@ -1323,6 +1485,17 @@ async fn acquire_titles<G: HostGuests>(
     let mut failed = 0u32;
     // Read once per job, so every title of one job follows one setting.
     let keep_copy = keeps_local_copy(host, guests).await;
+    // The copies are recorded in this install's own library, so a copy
+    // never overwrites another title's file and one an earlier run left
+    // unfinished is removed now (#314).
+    let ledger = if keep_copy {
+        guests.copy_ledger().await
+    } else {
+        None
+    };
+    if let Some(ledger) = &ledger {
+        sweep_stale_copies(guests, ledger).await;
+    }
     'plan: loop {
         let (targets, planned) = with_retries(|| host.acquire_plan())
             .await
@@ -1383,6 +1556,9 @@ async fn acquire_titles<G: HostGuests>(
             // job is cancelled; a dropped upload's files are discarded by
             // the owner (its stream breaks, or its upload is aborted).
             let copied = std::sync::Mutex::new(Vec::new());
+            let attempt = ledger.as_ref().map(|ledger| {
+                CopyAttempt::new(ledger, title.call_number.as_deref(), &title.holding_id)
+            });
             let commit_unsettled = AtomicBool::new(false);
             let uploaded = until_cancelled(&ctx.cancel, async {
                 let done = guests
@@ -1401,6 +1577,7 @@ async fn acquire_titles<G: HostGuests>(
                     &outbox,
                     &done,
                     keep_copy.then_some(&copied),
+                    attempt.as_ref(),
                     &commit_unsettled,
                 )
                 .await
@@ -1422,12 +1599,25 @@ async fn acquire_titles<G: HostGuests>(
                             "the owner's answer to a title's commit is unknown; keeping its copies on this host's own destinations"
                         );
                     }
+                    if let Some(attempt) = &attempt {
+                        attempt.keep().await;
+                    }
                 } else {
                     // The owner never committed the title (its grant or a
                     // file failed, or it refused the commit), so this host
                     // keeps no copy of it either, unless the fence is lost:
                     // a replacement run may own those keys by now.
-                    remove_local_copies(&title.holding_id, &copies, host.is_lost()).await;
+                    let lost = host.is_lost();
+                    remove_local_copies(&title.holding_id, &copies, lost).await;
+                    if let Some(attempt) = &attempt {
+                        if lost {
+                            // The files stay for the replacement run, which
+                            // takes over the title's keys.
+                            attempt.keep().await;
+                        } else {
+                            attempt.release().await;
+                        }
+                    }
                 }
             }
             let _ = tokio::fs::remove_dir_all(&outbox).await;
@@ -1729,7 +1919,10 @@ pub(crate) async fn upload_manifest_probed_by(
 pub type LocalCopy = (Arc<dyn StorageBackend>, String);
 
 /// Copies one title's files (the primary destination's keys) to every one
-/// of this host's own destinations. Any failed copy fails the title. Each
+/// of this host's own destinations. Any failed copy fails the title. With
+/// an `attempt`, each key is claimed in this install's own library before
+/// it is written, and one another title holds there fails the title
+/// instead of being overwritten. Each
 /// copy this run created (its key was not there before) is put in `copied`
 /// as soon as it is written, so the caller removes exactly what this run
 /// created ([`remove_local_copies`]) whether this fails or is dropped
@@ -1749,6 +1942,7 @@ pub async fn copy_to_local_destinations<G: HostGuests>(
     outbox: &Path,
     acquired: &AcquiredTitle,
     copied: &std::sync::Mutex<Vec<LocalCopy>>,
+    attempt: Option<&CopyAttempt>,
 ) -> anyhow::Result<Vec<(DestinationId, String)>> {
     let local: Vec<(DestinationId, Arc<dyn StorageBackend>)> = guests
         .local_destinations()
@@ -1772,6 +1966,12 @@ pub async fn copy_to_local_destinations<G: HostGuests>(
             // this run's cleanup. An unreadable probe counts as present,
             // so a failure leaves the file rather than risk another's.
             let existed = destination.exists(key).await.unwrap_or(true);
+            // Recorded first, so a key another title holds is refused
+            // rather than overwritten, and a crash mid-copy is found on
+            // the next start (#314).
+            if let Some(attempt) = attempt {
+                attempt.claim(id, key).await?;
+            }
             if let Err(err) = destination.put_file(key, &primary.join(key), meta).await {
                 tracing::warn!(book_uuid, %key, error = %err, "could not copy a title to this host's own destination");
                 anyhow::bail!("this host's own destination did not take {key:?}: {err}");
@@ -1844,6 +2044,7 @@ async fn upload_title<G: HostGuests>(
     outbox: &Path,
     acquired: &AcquiredTitle,
     copied: Option<&std::sync::Mutex<Vec<LocalCopy>>>,
+    attempt: Option<&CopyAttempt>,
     commit_unsettled: &AtomicBool,
 ) -> anyhow::Result<()> {
     let book_uuid = title.holding_id.as_str();
@@ -1856,12 +2057,12 @@ async fn upload_title<G: HostGuests>(
     .await?;
     let placed = match copied {
         Some(copied) => {
-            copy_to_local_destinations(guests, book_uuid, outbox, acquired, copied).await?
+            copy_to_local_destinations(guests, book_uuid, outbox, acquired, copied, attempt).await?
         }
         None => Vec::new(),
     };
     let (files, paths): (Vec<UploadFile>, Vec<PathBuf>) = manifest.into_iter().unzip();
-    let upload = with_retries(|| {
+    let upload = match with_retries(|| {
         host.grant_upload(
             &title.holding_id,
             &acquired.primary_key,
@@ -1870,7 +2071,25 @@ async fn upload_title<G: HostGuests>(
         )
     })
     .await
-    .map_err(|err| owner_error("the upload", &err))?;
+    {
+        Ok(upload) => upload,
+        Err(OwnerCallError::Refused(reason)) if reason == "edition_acquired" => {
+            // Another account's title of the same edition was committed
+            // since the plan: the library shares those files with this
+            // title, so it is done, not failed (#689). A copy kept here is
+            // the edition's too.
+            tracing::info!(
+                job_id = %host.job.job.id,
+                book_uuid,
+                "another title of this edition reached the library first; sharing its files"
+            );
+            if let Some(attempt) = attempt {
+                attempt.keep().await;
+            }
+            return Ok(());
+        }
+        Err(err) => return Err(owner_error("the upload", &err)),
+    };
     for (index, (file, path)) in files.iter().zip(&paths).enumerate() {
         // Each attempt resumes where the owner stands with the file.
         let source = LocalFileSource(path.clone());
@@ -1895,6 +2114,9 @@ async fn upload_title<G: HostGuests>(
         commit_unsettled.store(false, Ordering::SeqCst);
     }
     committed.map_err(|err| owner_error("the title's commit", &err))?;
+    if let Some(attempt) = attempt {
+        attempt.keep().await;
+    }
     tracing::info!(
         job_id = %host.job.job.id,
         book_uuid,

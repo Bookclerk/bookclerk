@@ -590,6 +590,68 @@ pub(super) fn manifest_problem(req: &UploadGrantRequest<'_>) -> Option<&'static 
     None
 }
 
+/// What the sender states about `file`'s audio ([`UploadFile::probe`] and
+/// its media type), as the library stores a probe; `None` when it states
+/// nothing usable.
+fn stated_probe(file: &UploadFile) -> Option<FileProbe> {
+    let (stated, content_type) = (file.probe.as_ref()?, file.content_type.as_ref()?);
+    let probe = FileProbe {
+        content_type: content_type.clone(),
+        bitrate_kbps: stated.bitrate_kbps,
+        lossless: stated.lossless,
+        source_store: stated.source_store.clone(),
+    };
+    probe.is_well_formed().then_some(probe)
+}
+
+/// True when the upload replaces the library's copy of `edition_id` with a
+/// better one (#300): its primary audio key on the primary destination is
+/// already a recorded file of that edition, the library knows what that
+/// copy is (its probe), and the upload states a probe that is better
+/// ([`FileProbe::is_better_than`]: lossless over lossy, then the higher
+/// bitrate). The upload may then take over every key of the edition,
+/// whoever wrote it; an equal or worse copy, or one the library cannot
+/// compare, leaves the edition's files to their writers.
+///
+/// The replacement is in place, under the copy's own primary key, so the
+/// edition's acquisition record still names its audio. The stated probe is
+/// trusted as the protocol trusts it ([`bookclerk_node_proto::UploadProbe`]):
+/// the sender is a node trusted with the title, and the probe decides only
+/// which of two copies of one edition is kept.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub(super) async fn upload_upgrades_edition(
+    store: &LibraryStore,
+    edition_id: &str,
+    req: &UploadGrantRequest<'_>,
+) -> Result<bool> {
+    let Some(primary) = req.destinations.first() else {
+        return Ok(false);
+    };
+    let Some(stated) = req
+        .files
+        .iter()
+        .find(|file| {
+            file.copies
+                .iter()
+                .any(|copy| copy.destination == primary.id && copy.key == req.primary_key)
+        })
+        .and_then(stated_probe)
+    else {
+        return Ok(false);
+    };
+    let held = store.edition_file(&primary.id, req.primary_key).await?;
+    if !held.is_some_and(|held| held.owner == FileOwner::Edition(edition_id.to_string())) {
+        return Ok(false);
+    }
+    Ok(store
+        .edition_file_probe(&primary.id, req.primary_key)
+        .await?
+        .is_some_and(|recorded| stated.is_better_than(&recorded)))
+}
+
 /// Key probes per read of [`claims_another_titles_key`]: each binds once on
 /// both key columns, well under the smallest guest bind cap.
 const KEY_PROBES_PER_READ: usize = 32;
@@ -602,6 +664,10 @@ pub(super) struct OwnTitle<'a> {
     pub edition_id: &'a str,
     /// The account holding (`holdings.id`).
     pub holding_id: &'a str,
+    /// True when the upload replaces the edition's copy with a better one
+    /// ([`upload_upgrades_edition`]): every key of the edition is then its
+    /// own to replace, whichever holding or acquire wrote it (#300).
+    pub upgrade: bool,
 }
 
 /// True when a copy of `files` would land on a file another library title
@@ -617,7 +683,8 @@ pub(super) struct OwnTitle<'a> {
 /// `own` is the title whose keys are the uploader's own: its edition's
 /// audio or PDF key counts as its own only while that holding is the one
 /// that acquired it (another account's holding of the same edition shares
-/// its files but is not this node's to replace). A catalog upload passes
+/// its files but is not this node's to replace), or when the upload is a
+/// better copy of the edition ([`OwnTitle::upgrade`]). A catalog upload passes
 /// `None`: every recorded key is another title's.
 ///
 /// Only the keys that could match are read, so the read stays small (and
@@ -665,7 +732,9 @@ pub(super) async fn claims_another_titles_key(
         }))
         .collect();
     let mine = |edition: &str, holding: Option<&str>| {
-        own.is_some_and(|own| own.edition_id == edition && holding == Some(own.holding_id))
+        own.is_some_and(|own| {
+            own.edition_id == edition && (own.upgrade || holding == Some(own.holding_id))
+        })
     };
     let mut exact = BTreeSet::new();
     let mut stems = BTreeSet::new();
@@ -746,6 +815,10 @@ struct UploadClaim<'a> {
     owner: &'a FileOwner,
     /// Whether this is a branch's catalog upload rather than a job's.
     catalog: bool,
+    /// Whether the upload replaces the edition's copy with a better one
+    /// ([`upload_upgrades_edition`]), so it may take over any key of its
+    /// edition, whoever wrote it.
+    upgrade: bool,
     /// The upload's primary audio key, which gives each file its role.
     primary: &'a str,
     /// The upload recorded as each claimed key's writer.
@@ -781,6 +854,7 @@ async fn claim_upload_keys<'a>(
         holding_id,
         owner,
         catalog,
+        upgrade,
         primary,
         upload_id,
     } = *upload;
@@ -814,6 +888,7 @@ async fn claim_upload_keys<'a>(
                     prior.as_ref(),
                     holding_id,
                     catalog,
+                    upgrade,
                 )
                 .await?
             {
@@ -851,18 +926,9 @@ async fn store_committed_probes(store: &LibraryStore, upload_id: &str) -> Result
         return Ok(());
     };
     for file in &session.files {
-        let (Some(stated), Some(content_type)) = (&file.probe, &file.content_type) else {
+        let Some(probe) = stated_probe(file) else {
             continue;
         };
-        let probe = FileProbe {
-            content_type: content_type.clone(),
-            bitrate_kbps: stated.bitrate_kbps,
-            lossless: stated.lossless,
-            source_store: stated.source_store.clone(),
-        };
-        if !probe.is_well_formed() {
-            continue;
-        }
         for copy in &file.copies {
             match FileRole::for_key(&copy.key, Some(&session.primary_key)) {
                 FileRole::Audio | FileRole::Part | FileRole::Chapter => {}
@@ -1085,13 +1151,34 @@ pub async fn grant_upload(
         }
         // Only the title's own keys: the edition's files another account's
         // holding acquired are not this node's to replace.
+        let upgrade = upload_upgrades_edition(store, &title.edition_id, req).await?;
+        // Another account's title of the edition was committed since the
+        // plan (two hosts, or two plans, raced for one edition): the files
+        // are in the library already, so the host counts this title as
+        // shared instead of failing it on the edition's keys (#689). A
+        // better copy still replaces them.
+        if title.status == AcquireStatus::Acquired && !title.acquired_here() && !upgrade {
+            return Ok(UploadGrant::Refused("edition_acquired"));
+        }
         let own = OwnTitle {
             edition_id: &title.edition_id,
             holding_id: &title.holding_id,
+            upgrade,
         };
         if claims_another_titles_key(store, Some(own), req.files).await? {
             return Ok(UploadGrant::Refused("key_of_another_title"));
         }
+        return open_upload_session(
+            store,
+            node_id,
+            job_id,
+            generation,
+            receiving_node_id,
+            req,
+            None,
+            upgrade,
+        )
+        .await;
     }
     open_upload_session(
         store,
@@ -1101,6 +1188,7 @@ pub async fn grant_upload(
         receiving_node_id,
         req,
         None,
+        false,
     )
     .await
 }
@@ -1121,6 +1209,7 @@ pub(super) async fn open_upload_session(
     receiving_node_id: &str,
     req: &UploadGrantRequest<'_>,
     catalog_digest: Option<&str>,
+    upgrade: bool,
 ) -> Result<UploadGrant> {
     if let Some(reason) = manifest_problem(req) {
         return Ok(UploadGrant::Refused(reason));
@@ -1195,6 +1284,7 @@ pub(super) async fn open_upload_session(
                 holding_id: req.holding_id,
                 owner,
                 catalog,
+                upgrade,
                 primary: req.primary_key,
                 upload_id: &upload_id,
             },
@@ -1261,6 +1351,7 @@ pub(super) async fn open_upload_session(
                 holding_id: req.holding_id,
                 owner,
                 catalog,
+                upgrade,
                 primary: req.primary_key,
                 upload_id: &upload_id,
             },

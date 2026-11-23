@@ -2587,9 +2587,10 @@ async fn an_upload_records_its_pdf_on_the_edition() {
     assert_eq!(state.pdf_holding_id.as_deref(), Some(holding_id.as_str()));
 }
 
-/// A title's upload acquires the title but leaves its edition with the
-/// sibling title that acquired it first, while that title is still in the
-/// library.
+/// A title whose edition a sibling title acquired first is answered
+/// `edition_acquired` rather than uploaded again (#689): it already reads
+/// acquired through its edition, which stays with the sibling while that
+/// title is still in the library.
 #[tokio::test]
 async fn an_upload_keeps_the_edition_with_the_title_that_acquired_it() {
     let _guard = master_key_test_lock_async().await;
@@ -2629,7 +2630,10 @@ async fn an_upload_keeps_the_edition_with_the_title_that_acquired_it() {
         .await
         .unwrap();
     let fence = claim(&w.store).await.unwrap().job.lease_generation;
-    upload_title(&w.store, &job_id, fence, &book_uuid, &files).await;
+    assert!(matches!(
+        grant_title(&w.store, &job_id, fence, &book_uuid, &files).await,
+        UploadGrant::Refused("edition_acquired")
+    ));
     let book = w
         .store
         .acquire_title_of_holding(&book_uuid)
@@ -4229,6 +4233,132 @@ async fn grant_title(
     )
     .await
     .unwrap()
+}
+
+/// A title whose edition another account's title acquired since the plan
+/// (two hosts raced for one edition) is answered `edition_acquired`, so
+/// the host counts it as shared instead of failing it on the edition's
+/// keys (#689).
+#[tokio::test]
+async fn an_upload_of_an_edition_another_title_acquired_is_answered_shared() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, files) = riley_title(&w.store).await;
+    let sibling = w
+        .store
+        .scope(PLUGIN, "test")
+        .upsert_book(&crate::store::NewBook {
+            ..scanned("sam-acct", "t1")
+        })
+        .await
+        .unwrap();
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    record_for_book(
+        &w.store,
+        "local",
+        "Author/Title/Title.m4b",
+        &sibling.holding_id,
+    )
+    .await
+    .unwrap();
+    w.store
+        .set_holding_acquire_status(
+            &sibling.holding_id,
+            crate::models::AcquireStatus::Acquired,
+            Some("Author/Title/Title.m4b"),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        grant_title(&w.store, &job_id, fence, &book_uuid, &files).await,
+        UploadGrant::Refused("edition_acquired")
+    ));
+}
+
+/// A better copy of an edition replaces the one the library holds (#300):
+/// an upload of the edition's own audio key that states a better probe
+/// than the recorded copy (lossless over lossy, then a higher bitrate) may
+/// take over every key of the edition another account wrote, sidecars
+/// included; an equal or worse copy, or one stating no probe, is refused.
+#[tokio::test]
+async fn a_better_copy_replaces_its_editions_files_and_a_worse_one_does_not() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, files) = riley_title(&w.store).await;
+    let sibling = w
+        .store
+        .scope(PLUGIN, "test")
+        .upsert_book(&crate::store::NewBook {
+            ..scanned("sam-acct", "t1")
+        })
+        .await
+        .unwrap();
+    let owner = owner_of(&w.store, &book_uuid).await;
+    for key in ["Author/Title/Title.m4b", "Author/Title/cover.jpg"] {
+        record_for_book(&w.store, "local", key, &sibling.holding_id)
+            .await
+            .unwrap();
+    }
+    assert!(w
+        .store
+        .set_edition_file_probe(
+            "local",
+            "Author/Title/Title.m4b",
+            &owner,
+            &crate::FileProbe {
+                content_type: "audio/mp4".into(),
+                bitrate_kbps: Some(64),
+                lossless: false,
+                source_store: Some("audible".into()),
+            },
+        )
+        .await
+        .unwrap());
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    let stating = |bitrate: Option<u32>, lossless: bool| {
+        let mut files = with_local_file(&files, "Author/Title/cover.jpg");
+        files[0].probe = bitrate.map(|kbps| bookclerk_node_proto::UploadProbe {
+            bitrate_kbps: Some(kbps),
+            lossless,
+            source_store: Some("libro".into()),
+        });
+        files
+    };
+    for (bitrate, lossless) in [(None, false), (Some(64), false), (Some(32), false)] {
+        assert!(
+            matches!(
+                grant_title(
+                    &w.store,
+                    &job_id,
+                    fence,
+                    &book_uuid,
+                    &stating(bitrate, lossless)
+                )
+                .await,
+                UploadGrant::Refused("key_of_another_title")
+            ),
+            "{bitrate:?} {lossless}"
+        );
+    }
+    let UploadGrant::Granted { upload_id, .. } = grant_title(
+        &w.store,
+        &job_id,
+        fence,
+        &book_uuid,
+        &stating(Some(128), false),
+    )
+    .await
+    else {
+        panic!("a better copy is granted");
+    };
+    for key in ["Author/Title/Title.m4b", "Author/Title/cover.jpg"] {
+        let held = w.store.edition_file("local", key).await.unwrap().unwrap();
+        assert_eq!(held.writer, upload_id, "{key}");
+        assert_eq!(held.owner, owner, "{key}");
+    }
 }
 
 /// The account rows of one edition share its files, but one account's

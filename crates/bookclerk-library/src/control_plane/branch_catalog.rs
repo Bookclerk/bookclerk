@@ -1192,6 +1192,7 @@ pub async fn grant_catalog_upload(
         receiving_node_id,
         &request,
         Some(&digest),
+        false,
     )
     .await
 }

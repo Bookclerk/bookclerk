@@ -1,0 +1,161 @@
+//! Tests for the record of a branch's own copies (#314).
+
+use super::*;
+use crate::store::{FileRole, NewBook};
+use crate::test_support::Profile;
+
+/// An empty store that behaves like one on an external plugin advertising
+/// `profile`.
+async fn kit(profile: Profile) -> LibraryStore {
+    crate::test_support::sqlite::memory(profile)
+        .await
+        .into_store()
+}
+
+/// An attempt of the title `title_ref` for library `lib-a`.
+fn attempt<'a>(title_ref: &'a str, writer: &'a str) -> LinkCopyAttempt<'a> {
+    LinkCopyAttempt {
+        library_id: "lib-a",
+        title_ref,
+        writer,
+    }
+}
+
+/// The record of `key` on `local`, if any.
+async fn record(store: &LibraryStore, key: &str) -> Option<link_copy_files::Model> {
+    link_copy_files::Entity::find_by_id(("local".to_string(), key.to_string()))
+        .one(store.db())
+        .await
+        .unwrap()
+}
+
+/// A key is claimed fresh, taken over by a later attempt of the same title
+/// (and kept again when that attempt fails), and refused to another title.
+#[tokio::test]
+async fn a_copy_holds_its_key_against_another_title() {
+    for profile in Profile::ALL {
+        let store = kit(profile).await;
+        let name = profile.name();
+        let one = link_copy_title_ref(Some("aaaa1111"), "h1");
+        let two = link_copy_title_ref(Some("bbbb2222"), "h2");
+        assert_eq!(
+            claim_link_copy(&store, attempt(&one, "n/i/1"), "local", "A/T.m4b")
+                .await
+                .unwrap(),
+            LinkCopyClaim::Fresh,
+            "{name}"
+        );
+        assert_eq!(
+            claim_link_copy(&store, attempt(&two, "n/i/2"), "local", "A/T.m4b")
+                .await
+                .unwrap(),
+            LinkCopyClaim::HeldByAnotherTitle,
+            "{name}"
+        );
+        keep_link_copies(&store, "n/i/1").await.unwrap();
+        assert_eq!(record(&store, "A/T.m4b").await.unwrap().state, "kept");
+        assert_eq!(
+            claim_link_copy(&store, attempt(&one, "n/i/3"), "local", "A/T.m4b")
+                .await
+                .unwrap(),
+            LinkCopyClaim::Replaced,
+            "{name}"
+        );
+        // The later attempt fails: the earlier kept copy stays recorded.
+        release_link_copies(&store, "n/i/3").await.unwrap();
+        let kept = record(&store, "A/T.m4b").await.unwrap();
+        assert_eq!(kept.state, "kept", "{name}");
+        assert_eq!(kept.writer, "n/i/3", "{name}");
+        // A fresh claim that fails is forgotten.
+        claim_link_copy(&store, attempt(&two, "n/i/4"), "local", "B/U.m4b")
+            .await
+            .unwrap();
+        release_link_copies(&store, "n/i/4").await.unwrap();
+        assert!(record(&store, "B/U.m4b").await.is_none(), "{name}");
+    }
+}
+
+/// A key this install's own library recorded for another edition is
+/// refused; one recorded for the title's own edition (same call number)
+/// is not.
+#[tokio::test]
+async fn a_copy_refuses_a_file_another_edition_here_holds() {
+    for profile in Profile::ALL {
+        let store = kit(profile).await;
+        let name = profile.name();
+        store
+            .upsert_account("audible", "acct", "us", Some("acct"), true, "audible")
+            .await
+            .unwrap();
+        let other = store
+            .upsert_book(&NewBook::minimal("OTHER", "acct", "us", "Other"))
+            .await
+            .unwrap();
+        let owner = store
+            .file_owner_of_holding(&other.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(store
+            .record_edition_file("local", "Other.m4b", &owner, FileRole::Audio)
+            .await
+            .unwrap());
+        let FileOwner::Edition(edition) = &owner;
+        let same = link_copy_title_ref(call_number(edition).as_deref(), "h1");
+        let different = link_copy_title_ref(Some("zzzz9999"), "h2");
+        assert_eq!(
+            claim_link_copy(&store, attempt(&different, "n/i/1"), "local", "Other.m4b")
+                .await
+                .unwrap(),
+            LinkCopyClaim::HeldByAnotherTitle,
+            "{name}"
+        );
+        assert_eq!(
+            claim_link_copy(&store, attempt(&same, "n/i/2"), "local", "Other.m4b")
+                .await
+                .unwrap(),
+            LinkCopyClaim::Fresh,
+            "{name}"
+        );
+    }
+}
+
+/// Only this node's copies of an earlier incarnation, old enough and still
+/// copying, are stale.
+#[tokio::test]
+async fn only_an_earlier_processs_unfinished_copies_are_stale() {
+    for profile in Profile::ALL {
+        let store = kit(profile).await;
+        let name = profile.name();
+        let title = link_copy_title_ref(None, "h1");
+        for (key, writer) in [
+            ("old.m4b", "node-a/old/1"),
+            ("live.m4b", "node-a/now/2"),
+            ("other.m4b", "node-b/old/3"),
+            ("kept.m4b", "node-a/old/4"),
+        ] {
+            claim_link_copy(&store, attempt(&title, writer), "local", key)
+                .await
+                .unwrap();
+        }
+        keep_link_copies(&store, "node-a/old/4").await.unwrap();
+        let later = Utc::now() + Duration::seconds(STALE_LINK_COPY_AGE_SECS + 60);
+        assert!(stale_link_copies(&store, "node-a", "now", Utc::now())
+            .await
+            .unwrap()
+            .is_empty());
+        let stale = stale_link_copies(&store, "node-a", "now", later)
+            .await
+            .unwrap();
+        assert_eq!(
+            stale,
+            vec![StaleLinkCopy {
+                destination: "local".into(),
+                key: "old.m4b".into(),
+                writer: "node-a/old/1".into(),
+                replaced: false,
+            }],
+            "{name}"
+        );
+    }
+}

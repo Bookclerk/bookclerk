@@ -103,8 +103,9 @@ use axum::Json;
 use bookclerk_config::{DestinationFilter, PlacementFacts};
 use bookclerk_library::control_plane::{
     abort_job_uploads, abort_upload, authorize_upload, commit_upload, destination_filters,
-    load_or_create_node_identity, load_upload, record_upload_file, upload_fence_live,
-    upload_owns_key, JobClaimLimits, UploadCommit, UploadFinish, UploadSession,
+    load_or_create_node_identity, load_upload, mark_discarded, record_upload_file,
+    upload_fence_live, upload_owns_key, uploads_to_sweep, JobClaimLimits, UploadCommit,
+    UploadFinish, UploadSession,
 };
 use bookclerk_library::{AcquireTitle, LibraryStore};
 use bookclerk_node_proto::{
@@ -207,19 +208,29 @@ mod test_destinations {
             .insert(files_dir.to_path_buf(), destinations);
     }
 
-    /// A stand-in's configuration revision: derived from its root, so a
-    /// test that moves a destination's root sees a new revision, as a
-    /// guest reopened with a changed document would report.
-    pub(super) fn revision(root: &Path) -> i64 {
-        // FNV-1a over the path's bytes, folded into the positive range.
-        let hash = root
-            .as_os_str()
-            .as_encoded_bytes()
-            .iter()
-            .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
-                (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
-            });
-        i64::try_from(hash >> 1).unwrap_or(i64::MAX)
+    /// Configuration revisions set by tests, by files dir and id.
+    static REVISIONS: LazyLock<Mutex<HashMap<(PathBuf, String), i64>>> =
+        LazyLock::new(Default::default);
+
+    /// Makes `revision` the configuration revision of the stand-in `id` at
+    /// `files_dir`, as a guest reopened with a changed instance document
+    /// would report it.
+    pub(crate) fn set_revision(files_dir: &Path, id: &str, revision: i64) {
+        REVISIONS
+            .lock()
+            .unwrap()
+            .insert((files_dir.to_path_buf(), id.to_string()), revision);
+    }
+
+    /// The configuration revision of the stand-in `id` at `files_dir`; 0
+    /// until a test sets one.
+    pub(super) fn revision(files_dir: &Path, id: &str) -> i64 {
+        REVISIONS
+            .lock()
+            .unwrap()
+            .get(&(files_dir.to_path_buf(), id.to_string()))
+            .copied()
+            .unwrap_or_default()
     }
 
     /// The stand-ins of the owner at `files_dir`.
@@ -259,7 +270,7 @@ mod test_destinations {
 #[cfg(test)]
 pub(crate) use test_destinations::{
     intake as test_intake, set as set_test_destination, set_intake as set_test_intake,
-    set_many as set_test_destinations, TestDestination,
+    set_many as set_test_destinations, set_revision as set_test_revision, TestDestination,
 };
 
 /// Every output destination deployed on this node, the primary first.
@@ -275,7 +286,10 @@ pub(crate) async fn owner_destinations(state: &AppState) -> anyhow::Result<Vec<O
         for stand_in in stand_ins {
             out.push(OwnerDestination {
                 id: stand_in.id.to_string(),
-                config_revision: test_destinations::revision(&stand_in.root),
+                config_revision: test_destinations::revision(
+                    &cfg.paths().files_dir,
+                    stand_in.id.as_str(),
+                ),
                 backend: Box::new(bookclerk_storage::LocalFsBackend::new(stand_in.root)?),
                 options: DownloadOptions::for_destination(&cfg, &stand_in.naming, ""),
             });
@@ -546,21 +560,40 @@ pub(crate) async fn discard_received(
     if session.received.is_empty() {
         return;
     }
+    if discard_received_here(state, library, session).await {
+        if let Err(err) = mark_discarded(library, &session.upload_id).await {
+            tracing::warn!(upload_id = %session.upload_id, error = %err, "could not mark an aborted upload's files deleted; the next sweep retries");
+        }
+    }
+}
+
+/// Deletes what `session` received from this node's destinations
+/// ([`discard_received`]). Answers true once nothing more can be done here:
+/// every copy this node still has was deleted or left on purpose (written
+/// again since, or on a destination no longer deployed). Answers false,
+/// leaving the upload `discarding`, when another shared node received it
+/// (that node's sweep deletes its copies) or this node's destinations could
+/// not be opened (the next sweep retries).
+async fn discard_received_here(
+    state: &AppState,
+    library: &LibraryStore,
+    session: &UploadSession,
+) -> bool {
     let files_dir = state.config.read().await.paths().files_dir.clone();
     if this_node(&files_dir).as_deref() != Some(session.receiving_node_id.as_str()) {
         tracing::warn!(
             upload_id = %session.upload_id,
             job_id = %session.job_id,
             receiving_node_id = %session.receiving_node_id,
-            "an aborted upload was received by another shared node; its files stay there"
+            "an aborted upload was received by another shared node; that node's sweep deletes its files"
         );
-        return;
+        return false;
     }
     let destinations = match owner_destinations(state).await {
         Ok(destinations) => destinations,
         Err(err) => {
-            tracing::warn!(upload_id = %session.upload_id, error = %err, "could not open this node's destinations to delete an aborted upload's files");
-            return;
+            tracing::warn!(upload_id = %session.upload_id, error = %err, "could not open this node's destinations to delete an aborted upload's files; the next sweep retries");
+            return false;
         }
     };
     for index in &session.received {
@@ -572,6 +605,7 @@ pub(crate) async fn discard_received(
         files = session.received.len(),
         "deleted an aborted upload's files"
     );
+    true
 }
 
 /// Aborts `upload_id` and deletes what it had received.
@@ -583,6 +617,60 @@ async fn abort_and_discard(state: &AppState, library: &LibraryStore, upload_id: 
             tracing::warn!(upload_id, error = %err, "could not abort an upload");
         }
     }
+}
+
+/// How often each shared node sweeps the uploads it receives (#292).
+const UPLOAD_SWEEP_EVERY: Duration = Duration::from_secs(5 * 60);
+
+/// Starts this node's upload sweep: every [`UPLOAD_SWEEP_EVERY`] it aborts
+/// each open upload it receives whose fence is no longer live (the Host
+/// vanished mid-title, so no further file, commit, renewal or finish will
+/// come) and deletes what each received, and deletes the files of uploads
+/// aborted on another node that this node received ([`sweep_uploads_once`]).
+pub(crate) fn spawn_upload_sweep(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval_at(
+            tokio::time::Instant::now() + UPLOAD_SWEEP_EVERY,
+            UPLOAD_SWEEP_EVERY,
+        );
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            if let Err(err) = sweep_uploads_once(&state).await {
+                tracing::warn!(error = %err, "upload sweep failed");
+            }
+        }
+    });
+}
+
+/// One pass of the upload sweep ([`spawn_upload_sweep`]).
+///
+/// # Returns
+///
+/// How many uploads it settled (aborted, or whose files it deleted).
+///
+/// # Errors
+///
+/// Returns an error when this node's identity or the uploads to sweep
+/// cannot be read.
+pub(crate) async fn sweep_uploads_once(state: &AppState) -> anyhow::Result<usize> {
+    let library = state.library_snapshot().await;
+    let files_dir = state.config.read().await.paths().files_dir.clone();
+    let node_id = load_or_create_node_identity(&files_dir)?.node_id;
+    let sessions = uploads_to_sweep(&library, &node_id).await?;
+    let settled = sessions.len();
+    for session in sessions {
+        if session.state == "open" {
+            tracing::info!(upload_id = %session.upload_id, job_id = %session.job_id, "an upload's fence is no longer live; aborting it");
+            abort_and_discard(state, &library, &session.upload_id).await;
+        } else if session.received.is_empty() {
+            // Nothing of it reached this node after all.
+            mark_discarded(&library, &session.upload_id).await?;
+        } else {
+            discard_received(state, &library, &session).await;
+        }
+    }
+    Ok(settled)
 }
 
 /// Aborts every open upload `node_id` holds under the job's lease

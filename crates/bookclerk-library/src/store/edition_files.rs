@@ -688,6 +688,9 @@ impl LibraryStore {
     ///   catalog upload wrote (`catalog` false), as an acquire on this node
     ///   would replace a delivered copy with its own.
     /// * `catalog` - True for a catalog upload's claim.
+    /// * `upgrade` - True when the upload is a better copy of `owner`'s
+    ///   edition than the library holds: it takes over any key of that
+    ///   edition, whoever wrote it, though still never another edition's.
     ///
     /// # Errors
     ///
@@ -704,6 +707,7 @@ impl LibraryStore {
         expected: Option<&EditionFile>,
         title: &str,
         catalog: bool,
+        upgrade: bool,
     ) -> Result<bool> {
         let now = now_str();
         // Only a key read as unrecorded is inserted: a claim expecting a
@@ -791,6 +795,11 @@ impl LibraryStore {
             writers = writers.add(uploads_for(Condition::all().add(
                 node_upload_sessions::Column::JobId.eq(bookclerk_node_proto::CATALOG_ITEM),
             )));
+        }
+        if upgrade {
+            // A better copy of the edition replaces its files, whoever
+            // wrote them (`writer` is never null, so this takes any).
+            writers = writers.add(edition_files::Column::Writer.is_not_null());
         }
         let mine = Condition::all()
             .add(edition_files::Column::OwnerKind.eq(owner.kind()))

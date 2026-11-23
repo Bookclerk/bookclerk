@@ -1367,6 +1367,7 @@ async fn a_shared_titles_keys_stay_its_own() {
                     held.as_ref(),
                     title,
                     catalog,
+                    false,
                 )
                 .await
                 .unwrap(),
@@ -1385,6 +1386,7 @@ async fn a_shared_titles_keys_stay_its_own() {
                 None,
                 held.as_ref(),
                 same.as_str(),
+                false,
                 false,
             )
             .await
