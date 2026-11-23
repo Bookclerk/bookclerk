@@ -6,7 +6,7 @@
 //! |---|---|
 //! | `accounts.add {sealed}` | `accounts.added {added, already_here, taken, failed, not_allowed}` or `error {code: "refused"}` |
 //! | `accounts.remove {plugin_key, account_id}` | `ok` or `error {code: "refused"}` |
-//! | `accounts.update {sealed, revision}` | `accounts.updated {outcome}` or `error {code: "refused"}` |
+//! | `accounts.update {sealed, revision, keeps_own?}` | `accounts.updated {outcome, sealed?}` or `error {code: "refused"}` |
 //!
 //! The branch is this connection's authenticated node, and the person is
 //! the user its node row names as owner; nothing in a frame names another
@@ -22,7 +22,11 @@
 //! fresh for the person ([`bookclerk_library::control_plane::apply_keeper_update`]):
 //! it replaces this library's copy only for an account of a storefront
 //! that is not shareable, linked to the branch's owner, shared with this
-//! branch, and only above the last revision applied from it.
+//! branch, and only above the last revision applied from it. The branch's
+//! first push is answered `reconcile`, with this library's own sign-in
+//! sealed to the branch, when this library refreshed the account after it
+//! sent it there ([`bookclerk_library::control_plane::keeper_reconcile`]),
+//! unless the branch says it keeps its own (`keeps_own`).
 //!
 //! Both frames run one at a time on this shared node ([`ACCOUNTS_GATE`]),
 //! and each is refused unless the connection it came on is still the
@@ -33,12 +37,13 @@
 //! superseded.
 
 use bookclerk_library::control_plane::{
-    apply_keeper_update, import_offered_accounts, keeping_branch, load_library_row, load_node,
-    withdraw_person_account, KeeperUpdate,
+    apply_keeper_update, import_offered_accounts, keeper_reconcile, keeping_branch,
+    load_library_row, load_node, withdraw_person_account, KeeperUpdate,
 };
 use bookclerk_library::{LibraryStore, UserStatus};
 use bookclerk_node_proto::{
-    open_account_offer, Body, CarriedAccount, Frame, KeeperOutcome, MAX_CARRIED_ACCOUNT_ID_BYTES,
+    open_account_offer, seal_account_reconcile, AccountBundle, Body, CarriedAccount, Frame,
+    KeeperOutcome, ACCOUNT_BUNDLE_VERSION, MAX_CARRIED_ACCOUNT_ID_BYTES,
     MAX_CARRIED_PLUGIN_KEY_BYTES,
 };
 use bookclerk_plugin_host::CredentialSharing;
@@ -211,7 +216,9 @@ pub(super) async fn remove(
 
 /// `accounts.update`: the branch's newest sign-in of one single-keeper
 /// account it keeps for its owner; applied when newer than the last one
-/// applied from it.
+/// applied from it, or, for a first push that would replace a refresh
+/// this library saved since it sent the account, answered with that
+/// refresh instead (unless `keeps_own`).
 ///
 /// # Errors
 ///
@@ -222,6 +229,7 @@ pub(super) async fn update(
     id: String,
     sealed: &str,
     revision: i64,
+    keeps_own: bool,
 ) -> bookclerk_library::Result<Frame> {
     if revision <= 0 {
         return Ok(error(id, "refused", "invalid_revision"));
@@ -263,6 +271,11 @@ pub(super) async fn update(
     {
         KeeperOutcome::NotShared
     } else {
+        if !keeps_own {
+            if let Some(own) = keeper_reconcile(library, user_id, &host.node_id, account).await? {
+                return Ok(reconcile_answer(host, &identity.library_id, id, own));
+            }
+        }
         match apply_keeper_update(library, user_id, &host.node_id, account, revision).await {
             Ok(KeeperUpdate::Applied) => KeeperOutcome::Applied,
             Ok(KeeperUpdate::Stale) => KeeperOutcome::Stale,
@@ -290,7 +303,49 @@ pub(super) async fn update(
             tracing::warn!(node_id = %host.node_id, error = %err, "could not audit a branch's pushed sign-in");
         }
     }
-    Ok(Frame::new(id, Body::AccountsUpdated { outcome }))
+    Ok(Frame::new(
+        id,
+        Body::AccountsUpdated {
+            outcome,
+            sealed: None,
+        },
+    ))
+}
+
+/// The `reconcile` answer to a keeper's first push: this library's own
+/// sign-in `own`, sealed to the branch's box key, or a refusal when it
+/// cannot be sealed.
+fn reconcile_answer(
+    host: &HostContext,
+    library_id: &str,
+    id: String,
+    own: CarriedAccount,
+) -> Frame {
+    use rand::RngCore as _;
+    let bundle = AccountBundle {
+        v: ACCOUNT_BUNDLE_VERSION,
+        library_id: library_id.to_owned(),
+        node_id: host.node_id.clone(),
+        accounts: vec![own],
+    };
+    let mut ephemeral = zeroize::Zeroizing::new([0u8; 32]);
+    rand::rngs::OsRng.fill_bytes(ephemeral.as_mut_slice());
+    match seal_account_reconcile(&host.box_public_key, &ephemeral, &bundle) {
+        Ok(sealed) => {
+            tracing::info!(node_id = %host.node_id, "answered a branch's first pushed sign-in with this library's newer one");
+            Frame::new(
+                id,
+                Body::AccountsUpdated {
+                    outcome: KeeperOutcome::Reconcile,
+                    sealed: Some(sealed),
+                },
+            )
+        }
+        Err(err) => {
+            tracing::warn!(node_id = %host.node_id, error = %err, "could not seal this library's sign-in for a branch");
+            error(id, "refused", "seal_failed")
+        }
+    }
 }
 
 /// The branch that keeps `account` for this library, if one does.

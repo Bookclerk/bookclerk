@@ -242,6 +242,90 @@ impl PatronScope {
     }
 }
 
+/// Opaque version of a scope as one read saw it, which a write names so
+/// that it goes through only while the scope is still what was read.
+///
+/// The token is 32 lowercase hex digits taken from a SHA-256 over what the
+/// scope is: for a patron, whether they have their own scope and, if so,
+/// its stored JSON; for the library's default, its JSON. Equal content
+/// gives an equal version, so a scope changed and changed back does not
+/// refuse a write made from the first reading, which would leave the same
+/// result.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, utoipa::ToSchema)]
+#[serde(transparent)]
+#[schema(value_type = String, example = "3f2a9c41d07e5b18a6c2f09e4d71b3a5")]
+pub struct ScopeVersion(String);
+
+impl ScopeVersion {
+    /// Length of a version token, in hex digits.
+    pub const LEN: usize = 32;
+
+    /// The version of content described by `parts`, hashed in order with
+    /// a separator so that two different splits cannot collide.
+    fn of(parts: &[&str]) -> Self {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        for part in parts {
+            hasher.update(part.as_bytes());
+            hasher.update([0u8]);
+        }
+        let mut hex = hex::encode(hasher.finalize());
+        hex.truncate(Self::LEN);
+        Self(hex)
+    }
+
+    /// The version of a patron who follows the library's default.
+    fn following_default() -> Self {
+        Self::of(&["patron", "default"])
+    }
+
+    /// The version of a patron's own scope, stored as `scope_json`.
+    fn own(scope_json: &str) -> Self {
+        Self::of(&["patron", "own", scope_json])
+    }
+
+    /// The version of the library's default scope `scope`, as
+    /// `GET /api/users/default-scope` reports it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Invalid`] if the scope cannot be written as
+    /// JSON.
+    pub fn of_default(scope: &PatronScope) -> Result<Self> {
+        Ok(Self::of(&["library", &to_json(scope)?]))
+    }
+
+    /// Reads a token as a client sent it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Invalid`] for anything but
+    /// [`Self::LEN`] lowercase hex digits.
+    pub fn parse(raw: &str) -> Result<Self> {
+        if raw.len() == Self::LEN
+            && raw
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            Ok(Self(raw.to_owned()))
+        } else {
+            Err(invalid("expected_version is not a scope version"))
+        }
+    }
+
+    /// The token as sent on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ScopeVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// `PUT /api/users/{id}/scope` body.
 // Read by a strict hand-written reader (module `strict`); the serde
 // attribute here shapes the schema and matches what that reader takes.
@@ -251,24 +335,46 @@ pub struct PutUserScope {
     /// The patron's own scope, or `null` to return them to the library's
     /// default.
     pub scope: Option<PatronScope>,
+    /// The `version` the caller read the patron's scope at; the write is
+    /// refused with a conflict when the scope has changed since.
+    #[schema(value_type = String, example = "3f2a9c41d07e5b18a6c2f09e4d71b3a5")]
+    pub expected_version: ScopeVersion,
+}
+
+/// `PUT /api/users/default-scope` body.
+// Read by a strict hand-written reader (module `strict`); the serde
+// attribute here shapes the schema and matches what that reader takes.
+#[derive(Debug, Clone, PartialEq, Eq, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PutDefaultScope {
+    /// The new default scope.
+    pub scope: PatronScope,
+    /// The `version` the caller read the default at; the write is refused
+    /// with a conflict when the default has changed since.
+    #[schema(value_type = String, example = "3f2a9c41d07e5b18a6c2f09e4d71b3a5")]
+    pub expected_version: ScopeVersion,
 }
 
 /// Parses the body of `PUT /api/users/default-scope` from its raw bytes,
-/// sans IO, the way the route reads it: JSON into [`PatronScope`], then
-/// trimmed ([`PatronScope::normalized`]) and checked
+/// sans IO, the way the route reads it: JSON into [`PutDefaultScope`],
+/// then the scope trimmed ([`PatronScope::normalized`]) and checked
 /// ([`PatronScope::validate`]) as [`set_default_patron_scope`] does.
 ///
 /// # Errors
 ///
-/// Returns [`LibraryError::Invalid`] for bytes that are not the scope's JSON
-/// shape (unknown or repeated fields, wrong types, a missing rule field) or
-/// a scope that fails [`PatronScope::validate`].
-pub fn parse_patron_scope(body: &[u8]) -> Result<PatronScope> {
-    let scope = serde_json::from_slice::<PatronScope>(body)
-        .map_err(|err| invalid(&format!("scope body: {err}")))?
-        .normalized();
+/// Returns [`LibraryError::Invalid`] for bytes that are not the body's JSON
+/// shape (unknown, repeated or missing fields, wrong types, a missing rule
+/// field, a malformed version) or a scope that fails
+/// [`PatronScope::validate`].
+pub fn parse_default_scope_request(body: &[u8]) -> Result<PutDefaultScope> {
+    let body = serde_json::from_slice::<PutDefaultScope>(body)
+        .map_err(|err| invalid(&format!("default scope body: {err}")))?;
+    let scope = body.scope.normalized();
     scope.validate()?;
-    Ok(scope)
+    Ok(PutDefaultScope {
+        scope,
+        expected_version: body.expected_version,
+    })
 }
 
 /// Parses the body of `PUT /api/users/{id}/scope` from its raw bytes, sans
@@ -278,22 +384,27 @@ pub fn parse_patron_scope(body: &[u8]) -> Result<PatronScope> {
 ///
 /// # Returns
 ///
-/// The patron's own scope, or `None` (`"scope": null`, or no `scope` key)
-/// to return them to the default.
+/// The body, with the patron's own scope or `None` (`"scope": null`, or no
+/// `scope` key) to return them to the default.
 ///
 /// # Errors
 ///
 /// Returns [`LibraryError::Invalid`] for bytes that are not the body's JSON
 /// shape or a scope that fails [`PatronScope::validate`].
-pub fn parse_user_scope_request(body: &[u8]) -> Result<Option<PatronScope>> {
+pub fn parse_user_scope_request(body: &[u8]) -> Result<PutUserScope> {
     let body = serde_json::from_slice::<PutUserScope>(body)
         .map_err(|err| invalid(&format!("user scope body: {err}")))?;
-    body.scope
+    let scope = body
+        .scope
         .map(|scope| {
             let scope = scope.normalized();
             scope.validate().map(|()| scope)
         })
-        .transpose()
+        .transpose()?;
+    Ok(PutUserScope {
+        scope,
+        expected_version: body.expected_version,
+    })
 }
 
 /// Strict JSON readers for the scope types.
@@ -311,7 +422,10 @@ mod strict {
     use serde::de::{self, Deserializer, MapAccess, Visitor};
     use serde::Deserialize;
 
-    use super::{ExplicitContent, PatronScope, PutUserScope, RuleEffect, ScopeField, ScopeRule};
+    use super::{
+        ExplicitContent, PatronScope, PutDefaultScope, PutUserScope, RuleEffect, ScopeField,
+        ScopeRule, ScopeVersion,
+    };
 
     /// Reads one of the names of a unit enum from a JSON string.
     struct Name<T: 'static> {
@@ -463,6 +577,28 @@ mod strict {
         }
     }
 
+    /// Reads a [`ScopeVersion`] from a JSON string of its form.
+    struct VersionVisitor;
+
+    impl Visitor<'_> for VersionVisitor {
+        type Value = ScopeVersion;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a scope version")
+        }
+
+        fn visit_str<E: de::Error>(self, value: &str) -> Result<ScopeVersion, E> {
+            ScopeVersion::parse(value)
+                .map_err(|_| E::invalid_value(de::Unexpected::Str(value), &self))
+        }
+    }
+
+    impl<'de> Deserialize<'de> for ScopeVersion {
+        fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+            de.deserialize_str(VersionVisitor)
+        }
+    }
+
     /// Reads a [`PutUserScope`] from an object.
     struct PutVisitor;
 
@@ -470,19 +606,24 @@ mod strict {
         type Value = PutUserScope;
 
         fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("an object with an optional `scope`")
+            f.write_str("an object with an optional `scope` and an `expected_version`")
         }
 
         fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<PutUserScope, A::Error> {
+            const KEYS: &[&str] = &["scope", "expected_version"];
             let mut scope: Option<Option<PatronScope>> = None;
+            let mut version = None;
             while let Some(key) = map.next_key::<String>()? {
                 match key.as_str() {
                     "scope" => once(&mut map, &mut scope, "scope")?,
-                    other => return Err(de::Error::unknown_field(other, &["scope"])),
+                    "expected_version" => once(&mut map, &mut version, "expected_version")?,
+                    other => return Err(de::Error::unknown_field(other, KEYS)),
                 }
             }
             Ok(PutUserScope {
                 scope: scope.flatten(),
+                expected_version: version
+                    .ok_or_else(|| de::Error::missing_field("expected_version"))?,
             })
         }
     }
@@ -490,6 +631,40 @@ mod strict {
     impl<'de> Deserialize<'de> for PutUserScope {
         fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
             de.deserialize_map(PutVisitor)
+        }
+    }
+
+    /// Reads a [`PutDefaultScope`] from an object.
+    struct PutDefaultVisitor;
+
+    impl<'de> Visitor<'de> for PutDefaultVisitor {
+        type Value = PutDefaultScope;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("an object with a `scope` and an `expected_version`")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<PutDefaultScope, A::Error> {
+            const KEYS: &[&str] = &["scope", "expected_version"];
+            let (mut scope, mut version) = (None, None);
+            while let Some(key) = map.next_key::<String>()? {
+                match key.as_str() {
+                    "scope" => once(&mut map, &mut scope, "scope")?,
+                    "expected_version" => once(&mut map, &mut version, "expected_version")?,
+                    other => return Err(de::Error::unknown_field(other, KEYS)),
+                }
+            }
+            Ok(PutDefaultScope {
+                scope: scope.ok_or_else(|| de::Error::missing_field("scope"))?,
+                expected_version: version
+                    .ok_or_else(|| de::Error::missing_field("expected_version"))?,
+            })
+        }
+    }
+
+    impl<'de> Deserialize<'de> for PutDefaultScope {
+        fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+            de.deserialize_map(PutDefaultVisitor)
         }
     }
 }
@@ -502,6 +677,11 @@ pub struct AssignedScope {
     /// True when an Administrator gave the patron this scope; false when the
     /// patron follows the library's default.
     pub own: bool,
+    /// The version of the patron's scope, which a write names in
+    /// `expected_version` ([`replace_patron_scope`]). It covers only the
+    /// patron's own record: a patron who follows the default keeps one
+    /// version whatever the default says.
+    pub version: ScopeVersion,
 }
 
 /// Whether a role is ever scoped: Members are patrons, while
@@ -668,10 +848,12 @@ pub async fn assigned_patron_scope(store: &LibraryStore, user_id: i64) -> Result
         Some(row) => Ok(AssignedScope {
             scope: parse_row(&row)?,
             own: true,
+            version: ScopeVersion::own(&row.scope_json),
         }),
         None => Ok(AssignedScope {
             scope: default_patron_scope(store).await?,
             own: false,
+            version: ScopeVersion::following_default(),
         }),
     }
 }
@@ -789,6 +971,173 @@ pub async fn set_patron_scope(
     store
         .execute_host_batch(batch::request(&operation_id, statements))
         .await?;
+    assigned_patron_scope(store, user_id).await
+}
+
+/// Replaces the library's default scope, only while it is still at
+/// `expected` (the version the caller read it at).
+///
+/// Each attempt reads the default, refuses when its version is not
+/// `expected`, and writes under compare-and-swap on the document's
+/// revision; a concurrent write between the read and the swap makes the
+/// next attempt see the new version and refuse.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Conflict`] when the default is no longer at
+/// `expected` (nothing was written), [`LibraryError::Invalid`] for a scope
+/// that fails [`PatronScope::validate`], an error when the actor may not
+/// write, or the read or write error.
+pub async fn replace_default_patron_scope(
+    store: &LibraryStore,
+    actor: &ConfigActor,
+    scope: PatronScope,
+    expected: &ScopeVersion,
+) -> Result<ConfigurationDocument<PatronScope>> {
+    let scope = scope.normalized();
+    scope.validate()?;
+    let key = DocumentKey::library(PATRON_SCOPE_NAMESPACE);
+    let moved = || {
+        LibraryError::Conflict("the default scope changed since it was read; read it again".into())
+    };
+    for attempt in 0..4 {
+        let current = match load_default_patron_scope(store).await? {
+            Some(document) => document,
+            None => parse_default(
+                import_if_absent(
+                    store,
+                    actor,
+                    &key,
+                    PATRON_SCOPE_SCHEMA_VERSION,
+                    &to_json(&PatronScope::unrestricted())?,
+                    "core-patron-scope-default",
+                )
+                .await?,
+            )?,
+        };
+        if ScopeVersion::of_default(&current.body)? != *expected {
+            return Err(moved());
+        }
+        if current.body == scope {
+            return Ok(current);
+        }
+        let operation_id = format!(
+            "core-patron-scope-{}-{attempt}-{}",
+            current.revision,
+            uuid::Uuid::new_v4().simple()
+        );
+        match replace_document(
+            store,
+            actor,
+            &key,
+            PATRON_SCOPE_SCHEMA_VERSION,
+            current.revision,
+            &to_json(&scope)?,
+            &operation_id,
+        )
+        .await?
+        {
+            ReplaceOutcome::Applied(stored) => {
+                store
+                    .bump_live_topic(crate::control_plane::LiveTopic::Library)
+                    .await?;
+                return parse_default(stored);
+            }
+            ReplaceOutcome::Conflict { .. } | ReplaceOutcome::Replayed { .. } => {}
+        }
+    }
+    Err(moved())
+}
+
+/// Gives a user their own scope, or with `None` returns them to the
+/// library's default, only while their scope is still at `expected` (the
+/// version the caller read it at).
+///
+/// The caller has already checked that the actor may manage the user. One
+/// atomic batch writes the change guarded on the stored row being the one
+/// `expected` names: absent for a patron who followed the default, or the
+/// same JSON for one who had their own scope. A change made by someone
+/// else since the read therefore refuses the write instead of being
+/// overwritten.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Conflict`] when the scope is no longer at
+/// `expected` (nothing was written), [`LibraryError::NotFound`] for an
+/// unknown user, [`LibraryError::Invalid`] for a scope that fails
+/// [`PatronScope::validate`], or the read or write error.
+pub async fn replace_patron_scope(
+    store: &LibraryStore,
+    user_id: i64,
+    scope: Option<PatronScope>,
+    expected: &ScopeVersion,
+) -> Result<AssignedScope> {
+    let scope = scope
+        .map(|scope| {
+            let scope = scope.normalized();
+            scope.validate().map(|()| scope)
+        })
+        .transpose()?;
+    if store.get_user(user_id).await?.is_none() {
+        return Err(LibraryError::not_found(EntityKind::User, user_id));
+    }
+    let moved = || {
+        LibraryError::Conflict(format!(
+            "the scope of user {user_id} changed since it was read; read it again"
+        ))
+    };
+    let row = patron_scopes::Entity::find_by_id(user_id)
+        .one(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    let version = row
+        .as_ref()
+        .map_or_else(ScopeVersion::following_default, |row| {
+            ScopeVersion::own(&row.scope_json)
+        });
+    if version != *expected {
+        return Err(moved());
+    }
+    let now = Utc::now().to_rfc3339();
+    let statement = match (&row, &scope) {
+        (None, None) => None,
+        (None, Some(scope)) => Some(batch::exec(
+            "INSERT OR IGNORE INTO patron_scopes (user_id, scope_json, updated_at) \
+             VALUES (?, ?, ?)",
+            vec![int(user_id), text(&to_json(scope)?), text(&now)],
+        )),
+        (Some(old), Some(scope)) => Some(batch::exec(
+            "UPDATE patron_scopes SET scope_json = ?, updated_at = ? \
+             WHERE user_id = ? AND scope_json = ?",
+            vec![
+                text(&to_json(scope)?),
+                text(&now),
+                int(user_id),
+                text(&old.scope_json),
+            ],
+        )),
+        (Some(old), None) => Some(batch::exec(
+            "DELETE FROM patron_scopes WHERE user_id = ? AND scope_json = ?",
+            vec![int(user_id), text(&old.scope_json)],
+        )),
+    };
+    if let Some(statement) = statement {
+        let operation_id = format!("patron-scope-{user_id}-{}", uuid::Uuid::new_v4().simple());
+        // The patron's open Library pages reload to show the new scope (a
+        // refused write only makes them reload to the same one).
+        let reply = store
+            .execute_host_batch(batch::request(
+                &operation_id,
+                vec![
+                    statement,
+                    crate::control_plane::bump(crate::control_plane::LiveTopic::Library),
+                ],
+            ))
+            .await?;
+        if batch::rows_affected(&reply, 0) != 1 {
+            return Err(moved());
+        }
+    }
     assigned_patron_scope(store, user_id).await
 }
 
@@ -928,6 +1277,110 @@ mod tests {
         last.value.push_str(&"x".repeat(bytes - short));
         assert_eq!(serde_json::to_vec(&scope).unwrap().len(), bytes);
         scope
+    }
+
+    #[tokio::test]
+    async fn a_scope_write_from_a_stale_read_is_refused_under_every_profile() {
+        use crate::test_support::{sqlite, Profile};
+        for profile in Profile::ALL {
+            let name = profile.name();
+            let kit = sqlite::memory(profile).await;
+            let store = kit.store();
+            let sam = store
+                .create_user(UserRole::Member, Some("Sam"), None)
+                .await
+                .unwrap();
+            let admin = store
+                .create_user(UserRole::Administrator, Some("Ada"), None)
+                .await
+                .unwrap();
+            let actor = verify_patron_administrator(store, admin.id).await.unwrap();
+            let kids = PatronScope {
+                rules: vec![rule(ScopeField::Genre, "Kids", RuleEffect::Include)],
+                ..PatronScope::default()
+            };
+            let scary = PatronScope {
+                rules: vec![rule(ScopeField::Tag, "Scary", RuleEffect::Exclude)],
+                ..PatronScope::default()
+            };
+
+            // Two Administrators read Sam following the default; the first
+            // write lands, the second is refused instead of replacing it.
+            let read = assigned_patron_scope(store, sam.id).await.unwrap();
+            assert!(!read.own, "{name}");
+            let first = replace_patron_scope(store, sam.id, Some(kids.clone()), &read.version)
+                .await
+                .unwrap();
+            assert!(first.own, "{name}");
+            assert_ne!(first.version, read.version, "{name}");
+            let err = replace_patron_scope(store, sam.id, Some(scary.clone()), &read.version)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, LibraryError::Conflict(_)), "{name}: {err:?}");
+            assert_eq!(
+                assigned_patron_scope(store, sam.id).await.unwrap().scope,
+                kids,
+                "{name}"
+            );
+            // From the fresh version the update, then the return to the
+            // default, go through; a stale return is refused too.
+            let second = replace_patron_scope(store, sam.id, Some(scary.clone()), &first.version)
+                .await
+                .unwrap();
+            assert_eq!(second.scope, scary, "{name}");
+            let err = replace_patron_scope(store, sam.id, None, &first.version)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, LibraryError::Conflict(_)), "{name}: {err:?}");
+            let back = replace_patron_scope(store, sam.id, None, &second.version)
+                .await
+                .unwrap();
+            assert!(!back.own, "{name}");
+            // Equal content, equal version: changed and changed back, the
+            // first reading still writes.
+            assert_eq!(back.version, read.version, "{name}");
+            // The patron's version does not follow the default.
+            set_default_patron_scope(store, &actor, kids.clone())
+                .await
+                .unwrap();
+            let now = assigned_patron_scope(store, sam.id).await.unwrap();
+            assert_eq!(now.version, read.version, "{name}");
+            assert_eq!(now.scope, kids, "{name}");
+
+            // The library's default the same way.
+            let default = load_default_patron_scope(store).await.unwrap().unwrap();
+            let version = ScopeVersion::of_default(&default.body).unwrap();
+            let next = replace_default_patron_scope(store, &actor, scary.clone(), &version)
+                .await
+                .unwrap();
+            assert_eq!(next.body, scary, "{name}");
+            let err = replace_default_patron_scope(store, &actor, kids.clone(), &version)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, LibraryError::Conflict(_)), "{name}: {err:?}");
+            assert_eq!(default_patron_scope(store).await.unwrap(), scary, "{name}");
+            // A library with no stored default has the unrestricted one's
+            // version.
+            let fresh_kit = sqlite::memory(profile).await;
+            let fresh = fresh_kit.store();
+            let fresh_admin = fresh
+                .create_user(UserRole::Administrator, Some("Ada"), None)
+                .await
+                .unwrap();
+            let fresh_actor = verify_patron_administrator(fresh, fresh_admin.id)
+                .await
+                .unwrap();
+            let unrestricted = ScopeVersion::of_default(&PatronScope::unrestricted()).unwrap();
+            replace_default_patron_scope(fresh, &fresh_actor, kids.clone(), &unrestricted)
+                .await
+                .unwrap();
+            assert_eq!(default_patron_scope(fresh).await.unwrap(), kids, "{name}");
+
+            let err = replace_patron_scope(store, 987_654, None, &read.version)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, LibraryError::NotFound(_)), "{name}: {err:?}");
+        }
     }
 
     #[tokio::test]
@@ -1147,14 +1600,29 @@ mod tests {
         }
     }
 
+    /// A well-formed version token for request bodies.
+    const VERSION: &str = "0123456789abcdef0123456789abcdef";
+
+    /// Reads `scope` as the scope of a default-scope body, the way the
+    /// route reads it.
+    fn parse_default_scope(scope: &[u8]) -> Result<PatronScope> {
+        let mut body = br#"{"expected_version":""#.to_vec();
+        body.extend_from_slice(VERSION.as_bytes());
+        body.extend_from_slice(br#"","scope":"#);
+        body.extend_from_slice(scope);
+        body.push(b'}');
+        parse_default_scope_request(&body).map(|body| body.scope)
+    }
+
     #[test]
     fn scopes_read_only_from_the_documented_shape() {
-        assert!(parse_patron_scope(b"{}").unwrap().rules.is_empty());
+        assert!(parse_default_scope(b"{}").unwrap().rules.is_empty());
         let rule = br#"{"rules":[{"field":"genre","value":" Kids ","effect":"include"}]}"#;
-        assert_eq!(parse_patron_scope(rule).unwrap().rules[0].value, "Kids");
+        assert_eq!(parse_default_scope(rule).unwrap().rules[0].value, "Kids");
         for refused in [
             &b"[]"[..],
             br#"[[]]"#,
+            br#"null"#,
             br#"{"rules":[["genre","Kids","include"]]}"#,
             br#"{"rules":[{"field":{"genre":null},"value":"Kids","effect":"include"}]}"#,
             br#"{"rules":null}"#,
@@ -1166,32 +1634,64 @@ mod tests {
             br#"{"explicit":"hide","explicit":"hide"}"#,
         ] {
             assert!(
-                matches!(parse_patron_scope(refused), Err(LibraryError::Invalid(_))),
+                matches!(parse_default_scope(refused), Err(LibraryError::Invalid(_))),
                 "{}",
                 String::from_utf8_lossy(refused)
             );
         }
-        assert_eq!(parse_user_scope_request(b"{}").unwrap(), None);
-        assert_eq!(
-            parse_user_scope_request(br#"{"scope":null}"#).unwrap(),
-            None
-        );
-        assert!(parse_user_scope_request(br#"[null]"#).is_err());
-        assert!(parse_user_scope_request(br#"{"scope":null,"scope":null}"#).is_err());
+        let user = |body: &str| parse_user_scope_request(body.as_bytes());
+        let version = ScopeVersion::parse(VERSION).unwrap();
+        let read = user(&format!(r#"{{"expected_version":"{VERSION}"}}"#)).unwrap();
+        assert_eq!((read.scope, read.expected_version), (None, version.clone()));
+        let read = user(&format!(
+            r#"{{"scope":null,"expected_version":"{VERSION}"}}"#
+        ))
+        .unwrap();
+        assert_eq!(read.scope, None);
+        for refused in [
+            "[null]".to_owned(),
+            "{}".to_owned(),
+            r#"{"scope":null}"#.to_owned(),
+            r#"{"scope":null,"expected_version":null}"#.to_owned(),
+            r#"{"scope":null,"expected_version":"ABCDEF0123456789ABCDEF0123456789"}"#.to_owned(),
+            r#"{"scope":null,"expected_version":"0123"}"#.to_owned(),
+            format!(r#"{{"scope":null,"scope":null,"expected_version":"{VERSION}"}}"#),
+            format!(
+                r#"{{"expected_version":"{VERSION}","expected_version":"{VERSION}","scope":null}}"#
+            ),
+        ] {
+            assert!(
+                matches!(user(&refused), Err(LibraryError::Invalid(_))),
+                "{refused}"
+            );
+        }
+        for refused in [
+            "{}".to_owned(),
+            format!(r#"{{"expected_version":"{VERSION}"}}"#),
+            r#"{"scope":{}}"#.to_owned(),
+        ] {
+            assert!(
+                matches!(
+                    parse_default_scope_request(refused.as_bytes()),
+                    Err(LibraryError::Invalid(_))
+                ),
+                "{refused}"
+            );
+        }
         // What the reader takes, the writer gives back.
-        let scope = parse_patron_scope(rule).unwrap();
+        let scope = parse_default_scope(rule).unwrap();
         let json = serde_json::to_vec(&scope).unwrap();
-        assert_eq!(parse_patron_scope(&json).unwrap(), scope);
+        assert_eq!(parse_default_scope(&json).unwrap(), scope);
         assert!(
             !json.windows(8).any(|w| w == b"explicit"),
             "allow is left out"
         );
-        let hide = parse_patron_scope(br#"{"explicit":"hide"}"#).unwrap();
+        let hide = parse_default_scope(br#"{"explicit":"hide"}"#).unwrap();
         assert_eq!(hide.explicit, ExplicitContent::Hide);
         let json = serde_json::to_vec(&hide).unwrap();
-        assert_eq!(parse_patron_scope(&json).unwrap(), hide);
+        assert_eq!(parse_default_scope(&json).unwrap(), hide);
         assert_eq!(
-            parse_patron_scope(br#"{"explicit":"allow"}"#).unwrap(),
+            parse_default_scope(br#"{"explicit":"allow"}"#).unwrap(),
             PatronScope::unrestricted()
         );
     }

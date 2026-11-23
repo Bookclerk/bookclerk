@@ -5,7 +5,7 @@
 //!
 //! Reads and writes the library database directly, like `nodes`. The web
 //! app's Settings → Users, `GET`/`PUT /api/users/{id}/scope` and
-//! `GET`/`PUT /api/users/{id}/controls` and
+//! `GET`/`PATCH /api/users/{id}/controls` and
 //! `GET`/`PATCH /api/users/{id}/admin-controls` change the same records.
 
 use bookclerk_config::Config;
@@ -15,11 +15,12 @@ use bookclerk_library::control_plane::{
     DefaultSwitchChanges, OverrideSwitchChanges,
 };
 use bookclerk_library::control_plane::{
-    assigned_member_controls, assigned_patron_scope, default_member_controls, default_patron_scope,
-    member_control_overrides, role_follows_default_controls, role_has_controls, role_is_scoped,
-    set_default_member_controls, set_default_patron_scope, set_member_control_overrides,
-    set_patron_scope, AssignedControls, ConfigActor, ExplicitContent, MemberControl,
-    MemberControls, PatronScope, RuleEffect, ScopeField, ScopeRule,
+    assigned_member_controls, assigned_patron_scope, change_default_member_controls,
+    change_member_control_overrides_for, default_member_controls, default_patron_scope,
+    role_follows_default_controls, role_has_controls, role_is_scoped, set_default_patron_scope,
+    set_patron_scope, AssignedControls, ConfigActor, ControlChanges, ControlChoice,
+    ControlOverrides, ExplicitContent, MemberControl, MemberControls, PatronScope, RuleEffect,
+    ScopeField, ScopeRule,
 };
 use bookclerk_library::{UserRecord, UserRole};
 use clap::Subcommand;
@@ -279,23 +280,27 @@ async fn run_controls(
             if changes.is_empty() {
                 anyhow::bail!("name a control with --allow, --deny or --follow-default");
             }
+            // Only the named controls change, each against what is stored
+            // as the write runs, so a concurrent edit of another control
+            // is kept.
             match (user, default) {
                 (_, true) => {
-                    let mut controls = default_member_controls(store).await?;
+                    let mut named = ControlOverrides::default();
                     for (control, value) in changes {
-                        controls.set(control, value.unwrap_or(true));
+                        named.set(control, Some(value.unwrap_or(true)));
                     }
                     let actor = ConfigActor::Operator { id: "cli".into() };
-                    let stored = set_default_member_controls(store, &actor, controls).await?;
+                    let stored = change_default_member_controls(store, &actor, &named).await?;
                     print_default_controls(format, &stored.body)
                 }
                 (Some(user), false) => {
                     let user = resolve_user(store, &user).await?;
-                    let mut overrides = member_control_overrides(store, user.id).await?;
+                    let mut named = ControlChanges::default();
                     for (control, value) in changes {
-                        overrides.set(control, value);
+                        named.set(control, Some(ControlChoice::of(value)));
                     }
-                    let assigned = set_member_control_overrides(store, user.id, overrides).await?;
+                    let (user, assigned) =
+                        change_member_control_overrides_for(store, &user, &named).await?;
                     print_user_controls(format, &user, &assigned)
                 }
                 (None, false) => anyhow::bail!("name a user or pass --default"),
@@ -676,7 +681,7 @@ async fn resolve_user(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bookclerk_library::control_plane::admin_control_overrides;
+    use bookclerk_library::control_plane::{admin_control_overrides, member_control_overrides};
 
     #[test]
     fn admin_switches_parse_by_wire_name() {

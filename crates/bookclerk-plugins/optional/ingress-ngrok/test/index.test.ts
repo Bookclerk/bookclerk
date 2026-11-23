@@ -78,6 +78,8 @@ const {
   agentHealth,
   handleClose,
   handleMessage,
+  ioFor,
+  liveOf,
   sessionOf,
   settingsOf,
   startAgent,
@@ -125,6 +127,10 @@ interface World {
   settle: () => Promise<void>;
   /** Raw bytes written per socket id. */
   written: Map<string, Uint8Array[]>;
+  /** Messages sent per library socket id. */
+  liveSent: Map<string, Array<string | ArrayBuffer>>;
+  /** Every `ORIGIN.connect` call's options. */
+  upgrades: Array<{ clientAddress?: string; attachment?: unknown }>;
 }
 
 /**
@@ -148,6 +154,8 @@ function world(partial: Partial<Behaviour> = {}, refuse = false): World {
   const connects: World["connects"] = [];
   const seen: Request[] = [];
   const written = new Map<string, Uint8Array[]>();
+  const liveSent = new Map<string, Array<string | ArrayBuffer>>();
+  const upgrades: World["upgrades"] = [];
   let minted = 0;
   let queue = Promise.resolve();
   const env = {
@@ -159,7 +167,12 @@ function world(partial: Partial<Behaviour> = {}, refuse = false): World {
         seen.push(request);
         return Promise.resolve(new Response("library says hi"));
       },
-      connect: () => Promise.reject(new Error("no upgrades")),
+      connect: (_request: Request, options?: { clientAddress?: string; attachment?: unknown }) => {
+        upgrades.push(options ?? {});
+        const ws = liveSocket(options?.attachment ?? null);
+        open.push(ws);
+        return Promise.resolve({ socket: ws });
+      },
     } satisfies OriginBinding,
   } as unknown as World["env"];
   /**
@@ -198,6 +211,37 @@ function world(partial: Partial<Behaviour> = {}, refuse = false): World {
         written.get(id)?.push(chunk);
         if (behaviour.silent) return Promise.resolve();
         for (const frame of reader.push(chunk)) answer(ws, kinds, frame);
+        return Promise.resolve();
+      },
+      close: (code?: number) => {
+        ws.closedWith = code ?? 1000;
+        const index = open.indexOf(ws);
+        if (index >= 0) open.splice(index, 1);
+        return Promise.resolve();
+      },
+      serializeAttachment: () => Promise.resolve(),
+      deserializeAttachment: () => attachment,
+    };
+    return ws;
+  };
+  /**
+   * Makes a socket to the library that records what it is sent.
+   *
+   * @param attachment - Its attachment.
+   * @returns The socket.
+   */
+  const liveSocket = (attachment: unknown): FakeSocket => {
+    const id = `live${minted++}`;
+    const sent: Array<string | ArrayBuffer> = [];
+    liveSent.set(id, sent);
+    const ws: FakeSocket = {
+      id,
+      url: "wss://library/",
+      protocol: "",
+      closedWith: null,
+      send: (message) => {
+        if (ws.closedWith !== null) return Promise.reject(new PluginError("not_found", "closed"));
+        sent.push(typeof message === "string" ? message : (message as ArrayBuffer));
         return Promise.resolve();
       },
       close: (code?: number) => {
@@ -276,6 +320,8 @@ function world(partial: Partial<Behaviour> = {}, refuse = false): World {
     env,
     seen,
     written,
+    liveSent,
+    upgrades,
     settle: async () => {
       for (let i = 0; i < 20; i++) {
         await queue;
@@ -492,6 +538,113 @@ test("a session that ngrok ends or that breaks the protocol is closed to reconne
   assert.equal(third.closedWith, CLOSE_FAILED);
 });
 
+/**
+ * What the plugin wrote on one muxado stream of an agent socket, as Latin-1.
+ *
+ * @param w - The world.
+ * @param ws - The agent's socket.
+ * @param stream - The stream.
+ * @returns The bytes as text, and whether FIN was among them.
+ */
+function streamText(w: World, ws: FakeSocket, stream: number): { text: string; fin: boolean } {
+  const reader = new FrameReader();
+  let out = "";
+  let fin = false;
+  for (const frame of w.written.get(ws.id)!.flatMap((chunk) => reader.push(chunk))) {
+    if (frame.kind === "data" && frame.stream === stream) {
+      out += String.fromCharCode(...frame.data);
+      fin ||= frame.fin;
+    }
+  }
+  return { text: out, fin };
+}
+
+/** A WebSocket upgrade request. */
+const UPGRADE =
+  "GET /api/live HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n";
+
+test("an upgrade opens a library socket that carries the client's stream both ways", async () => {
+  const w = world();
+  await startAgent(ctxOf(w));
+  const agent = w.open[0]!;
+  await handleMessage(w.env, agent, proxy(2, UPGRADE).slice().buffer);
+  assert.deepEqual(w.upgrades, [
+    { attachment: { agent: agent.id, stream: 2 }, clientAddress: "203.0.113.9" },
+  ]);
+  const live = w.open.find((ws) => ws.id.startsWith("live"))!;
+  assert.deepEqual(liveOf(live), { agent: agent.id, stream: 2 });
+  assert.equal(liveOf(agent), null);
+  assert.match(streamText(w, agent, 2).text, /^HTTP\/1\.1 101 Switching Protocols\r\n/);
+
+  // A masked "hi" from the client reaches the library.
+  await handleMessage(
+    w.env,
+    agent,
+    encodeData(2, new Uint8Array([0x81, 0x82, 1, 2, 3, 4, 0x68 ^ 1, 0x69 ^ 2])).slice().buffer,
+  );
+  assert.deepEqual(w.liveSent.get(live.id), ["hi"]);
+
+  // The library's message and close reach the client.
+  await handleMessage(w.env, live, "news");
+  assert.ok(streamText(w, agent, 2).text.endsWith("\x81\x04news"));
+  await handleClose(w.env, live, 1000, "done");
+  const end = streamText(w, agent, 2);
+  assert.ok(end.text.endsWith("\x88\x06\x03\xe8done"));
+  assert.ok(end.fin);
+  assert.equal(w.connects.length, 1, "a library socket's close does not reconnect");
+
+  // A message for a stream that ended closes the library socket.
+  await handleMessage(w.env, live, "late");
+  assert.equal(live.closedWith, 1001);
+});
+
+test("library sockets close with their session, and health sweeps orphans", async () => {
+  const w = world();
+  await startAgent(ctxOf(w));
+  const agent = w.open[0]!;
+  await handleMessage(w.env, agent, proxy(2, UPGRADE).slice().buffer);
+  const live = w.open.find((ws) => ws.id.startsWith("live"))!;
+  // One whose session this isolate never held (it restarted).
+  const orphan = (await w.env.ORIGIN!.connect(new Request("https://x/"), {
+    attachment: { agent: "gone", stream: 4 },
+  })) as { socket: FakeSocket };
+  assert.deepEqual(await agentHealth(ctxOf(w)), { serving: true });
+  assert.equal(orphan.socket.closedWith, 1001);
+  assert.equal(live.closedWith, null, "the held session's socket is kept");
+  // Its messages and close find no session either.
+  const stray = (await w.env.ORIGIN!.connect(new Request("https://x/"), {
+    attachment: { agent: "gone", stream: 6 },
+  })) as { socket: FakeSocket };
+  await handleMessage(w.env, stray.socket, "x");
+  assert.equal(stray.socket.closedWith, 1001);
+  await handleClose(w.env, stray.socket, 1000, "");
+
+  // ngrok ending the agent's stream closes the library sockets it carried.
+  await handleClose(w.env, agent, 1000);
+  assert.equal(live.closedWith, 1001);
+  assert.equal(w.connects.length, 2);
+
+  // So does a session that breaks the protocol.
+  await w.settle();
+  const next = w.open.find((ws) => !ws.id.startsWith("live") && ws !== agent)!;
+  await handleMessage(w.env, next, proxy(2, UPGRADE).slice().buffer);
+  const second = w.open.find((ws) => ws.id.startsWith("live"))!;
+  await handleMessage(w.env, next, encodeGoAway(0, 0, "bye").slice().buffer);
+  assert.equal(second.closedWith, 1001);
+});
+
+test("without ORIGIN, requests and upgrades are answered 502", async () => {
+  const w = world();
+  await startAgent(ctxOf(w));
+  const agent = w.open[0]!;
+  delete (w.env as { ORIGIN?: unknown }).ORIGIN;
+  await handleMessage(w.env, agent, proxy(2, "GET / HTTP/1.1\r\n\r\n").slice().buffer);
+  await handleMessage(w.env, agent, proxy(4, UPGRADE).slice().buffer);
+  assert.match(streamText(w, agent, 2).text, /^HTTP\/1\.1 502 /);
+  assert.match(streamText(w, agent, 4).text, /^HTTP\/1\.1 502 /);
+  assert.equal(ioFor(w.env, agent).library.socket("unknown"), null);
+});
+
 test("the entrypoint classes call the lifecycle", async () => {
   const w = world();
   const ingress = new Ingress({} as never, w.env as never);
@@ -502,7 +655,7 @@ test("the entrypoint classes call the lifecycle", async () => {
   assert.deepEqual(await plugin.webSocketMessage(ws, "ignored"), {});
   await ingress.stop();
   assert.equal(ws.closedWith, CLOSE_STOPPED);
-  await plugin.webSocketClose(ws, CLOSE_STOPPED);
+  await plugin.webSocketClose(ws, CLOSE_STOPPED, "ingress stopped");
   assert.equal(w.connects.length, 1);
 });
 

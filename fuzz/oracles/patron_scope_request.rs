@@ -3,7 +3,7 @@
 //! (`docs/adr/untrusted-input-fuzzing.md`).
 //!
 //! The boundary is a patron scope an Owner or Administrator sends: the body
-//! of `PUT /api/users/default-scope` ([`parse_patron_scope`]) and of
+//! of `PUT /api/users/default-scope` ([`parse_default_scope_request`]) and of
 //! `PUT /api/users/{id}/scope` ([`parse_user_scope_request`]). The first
 //! input byte picks the body (`d` for the default scope, `u` for a user's);
 //! the rest is the body.
@@ -21,17 +21,23 @@
 //!   lowercase value, and the rules with trimmed values (plus
 //!   `"explicit":"hide"` when hiding) come to at most 1,024 bytes as
 //!   compact JSON.
-//! - A user's body is one object with no repeated keys and at most the key
-//!   `scope`, which is `null` (or missing) or such a scope.
+//! - Both bodies carry `expected_version`, a string of 32 lowercase hex
+//!   digits.
+//! - The default body is one object with no repeated keys and exactly the
+//!   keys `scope`, such a scope, and `expected_version`.
+//! - A user's body is one object with no repeated keys, the key
+//!   `expected_version` and at most the key `scope` beside it, which is
+//!   `null` (or missing) or such a scope.
 //!
 //! An accepted body yields the rules in order with trimmed values and the
-//! explicit choice (or no scope); a refused one is `Invalid`, never another error.
+//! explicit choice (or no scope), and the version as sent; a refused one is
+//! `Invalid`, never another error.
 
 use std::collections::BTreeSet;
 
 use bookclerk_library::control_plane::{
-    parse_patron_scope, parse_user_scope_request, ExplicitContent, PatronScope, RuleEffect,
-    ScopeField,
+    parse_default_scope_request, parse_user_scope_request, ExplicitContent, PatronScope,
+    RuleEffect, ScopeField,
 };
 use bookclerk_library::LibraryError;
 use serde::de::{Deserializer as _, MapAccess, SeqAccess, Visitor};
@@ -61,9 +67,9 @@ type Scope = (Vec<Rule>, ExplicitContent);
 enum Expected {
     /// Refused as `Invalid`.
     Refused,
-    /// Accepted with this scope, or no scope at all for a user's body
-    /// that returns them to the default.
-    Accepted(Option<Scope>),
+    /// Accepted with this scope (or no scope at all for a user's body
+    /// that returns them to the default) and this expected version.
+    Accepted(Option<Scope>, String),
 }
 
 /// Runs the oracle on one input.
@@ -87,8 +93,16 @@ pub fn check(data: &[u8]) -> bool {
         return false;
     };
     let (got, expected) = match selector {
-        b'd' => (parse_patron_scope(body).map(Some), expected_default(body)),
-        b'u' => (parse_user_scope_request(body), expected_user(body)),
+        b'd' => (
+            parse_default_scope_request(body)
+                .map(|body| (Some(body.scope), body.expected_version.as_str().to_owned())),
+            expected_default(body),
+        ),
+        b'u' => (
+            parse_user_scope_request(body)
+                .map(|body| (body.scope, body.expected_version.as_str().to_owned())),
+            expected_user(body),
+        ),
         _ => return false,
     };
     match expected {
@@ -100,11 +114,13 @@ pub fn check(data: &[u8]) -> bool {
             );
             false
         }
-        Expected::Accepted(expected) => {
-            let scope = got.unwrap_or_else(|err| {
+        Expected::Accepted(expected, version) => {
+            let (scope, got_version) = got.unwrap_or_else(|err| {
                 panic!("{:?} refused: {err:?}", String::from_utf8_lossy(data))
             });
-            assert_eq!(scope.as_ref().map(scope_of), expected);
+            let scope: Option<Scope> = scope.as_ref().map(scope_of);
+            assert_eq!(scope, expected, "{:?}", String::from_utf8_lossy(data));
+            assert_eq!(got_version, version, "{:?}", String::from_utf8_lossy(data));
             true
         }
     }
@@ -130,9 +146,21 @@ fn expected_default(body: &[u8]) -> Expected {
     let Ok(Value::Object(fields)) = serde_json::from_slice::<Value>(body) else {
         return Expected::Refused;
     };
-    match scope_rules(&fields) {
-        Some(scope) => Expected::Accepted(Some(scope)),
-        None => Expected::Refused,
+    if fields
+        .keys()
+        .any(|key| key != "scope" && key != "expected_version")
+    {
+        return Expected::Refused;
+    }
+    let Some(version) = expected_version(&fields) else {
+        return Expected::Refused;
+    };
+    match fields.get("scope") {
+        Some(Value::Object(scope)) => match scope_rules(scope) {
+            Some(scope) => Expected::Accepted(Some(scope), version),
+            None => Expected::Refused,
+        },
+        _ => Expected::Refused,
     }
 }
 
@@ -144,16 +172,38 @@ fn expected_user(body: &[u8]) -> Expected {
     let Ok(Value::Object(fields)) = serde_json::from_slice::<Value>(body) else {
         return Expected::Refused;
     };
-    if fields.keys().any(|key| key != "scope") {
+    if fields
+        .keys()
+        .any(|key| key != "scope" && key != "expected_version")
+    {
         return Expected::Refused;
     }
+    let Some(version) = expected_version(&fields) else {
+        return Expected::Refused;
+    };
     match fields.get("scope") {
-        None | Some(Value::Null) => Expected::Accepted(None),
+        None | Some(Value::Null) => Expected::Accepted(None, version),
         Some(Value::Object(scope)) => match scope_rules(scope) {
-            Some(scope) => Expected::Accepted(Some(scope)),
+            Some(scope) => Expected::Accepted(Some(scope), version),
             None => Expected::Refused,
         },
         Some(_) => Expected::Refused,
+    }
+}
+
+/// The body's `expected_version` when it is the documented 32 lowercase
+/// hex digits, or `None`.
+fn expected_version(fields: &Map<String, Value>) -> Option<String> {
+    match fields.get("expected_version")? {
+        Value::String(version)
+            if version.len() == 32
+                && version
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)) =>
+        {
+            Some(version.clone())
+        }
+        _ => None,
     }
 }
 

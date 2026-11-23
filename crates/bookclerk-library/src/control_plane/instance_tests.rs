@@ -1626,3 +1626,86 @@ async fn missing_configuration_rows_name_their_kind() {
         EntityKind::PluginInstance,
     );
 }
+
+/// Every deployment and observation listing reads each row once in key
+/// order, in keyset pages of one row as under the minimum database
+/// profile's result limit.
+#[tokio::test]
+async fn deployment_listings_read_every_row_in_pages() {
+    let _guard = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = file_store(dir.path().join("library.db").as_path())
+        .await
+        .with_db_capabilities(bookclerk_plugin_abi::DbCapabilities::host_minimum());
+    let session = bootstrap(&store, dir.path()).await;
+    let instance = create_plugin_instance(&store, &operator(), "platform:bookclerk/fixture", "")
+        .await
+        .unwrap();
+    let mut nodes = vec![session.node.node_id.clone()];
+    nodes.extend((0..3).map(|_| Uuid::new_v4().hyphenated().to_string()));
+    let mut ids = Vec::new();
+    for node in &nodes {
+        let deployment = ensure_plugin_deployment(
+            &store,
+            &ConfigActor::Bootstrap,
+            &instance.id,
+            node,
+            DesiredState::Present,
+        )
+        .await
+        .unwrap();
+        upsert_observation(
+            &store,
+            &DeploymentObservation {
+                deployment_id: deployment.deployment_id.clone(),
+                node_id: node.clone(),
+                incarnation: "inc-1".into(),
+                status: DeploymentStatus::Healthy,
+                detail: String::new(),
+                applied_config_revision: Some(1),
+                observed_at: "2026-01-01T00:00:00Z".into(),
+            },
+        )
+        .await
+        .unwrap();
+        ids.push(deployment.deployment_id);
+    }
+    let all: Vec<String> = list_all_deployments(&store)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|d| d.deployment_id)
+        .collect();
+    let mut sorted = ids.clone();
+    sorted.sort();
+    assert!(sorted.iter().all(|id| all.contains(id)));
+    let mut ordered = all.clone();
+    ordered.sort();
+    assert_eq!(all, ordered, "by deployment id");
+
+    let mut by_node: Vec<String> = list_deployments_for_instance(&store, &instance.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|d| d.node_id)
+        .collect();
+    let mut expected = nodes.clone();
+    expected.sort();
+    assert_eq!(by_node, expected, "by node id");
+    by_node.dedup();
+    assert_eq!(by_node.len(), nodes.len());
+
+    for (node, id) in nodes.iter().zip(&ids) {
+        let listed = list_deployments_for_node(&store, node).await.unwrap();
+        assert!(listed.iter().any(|d| &d.deployment_id == id));
+        let present = list_present_deployments_for_node(&store, node)
+            .await
+            .unwrap();
+        assert!(present.iter().any(|d| &d.deployment_id == id));
+        let observed = list_observations_for_deployment(&store, id).await.unwrap();
+        assert_eq!(observed.len(), 1);
+        assert_eq!(&observed[0].node_id, node);
+    }
+    let instances = list_all_plugin_instances(&store).await.unwrap();
+    assert!(instances.iter().any(|i| i.id == instance.id));
+}

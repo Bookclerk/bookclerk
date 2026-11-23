@@ -51,6 +51,9 @@ export function PatronScopeEditor({ target, disabled = false }: PatronScopeEdito
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  // The version the scope was read at; a save sends it back so that
+  // another Administrator's change since is refused rather than replaced.
+  const [version, setVersion] = useState("");
   const userId = target.kind === "user" ? target.userId : null;
 
   const load = useCallback(async () => {
@@ -60,10 +63,12 @@ export function PatronScopeEditor({ target, disabled = false }: PatronScopeEdito
       if (userId === null) {
         const res = await getDefaultScope();
         setDraft(res.scope);
+        setVersion(res.version);
         setOwn(true);
       } else {
         const res = await getUserScope(userId);
         setDraft(res.scope);
+        setVersion(res.version);
         setOwn(res.own);
         setApplies(res.applies);
       }
@@ -93,17 +98,25 @@ export function PatronScopeEditor({ target, disabled = false }: PatronScopeEdito
     setError(null);
     try {
       if (userId === null) {
-        const res = await putDefaultScope(next ?? { rules: [] });
+        const res = await putDefaultScope(next ?? { rules: [] }, version);
         setDraft(res.scope);
+        setVersion(res.version);
       } else {
-        const res = await putUserScope(userId, next);
+        const res = await putUserScope(userId, next, version);
         setDraft(res.scope);
+        setVersion(res.version);
         setOwn(res.own);
       }
       setDirty(false);
       setSaved(true);
     } catch (err) {
-      setError(isApiError(err) ? err.message : "The scope could not be saved.");
+      setError(
+        isApiError(err) && err.status === 409
+          ? "Someone else changed this scope since it was opened, so nothing was saved. Open it again to see their change."
+          : isApiError(err)
+            ? err.message
+            : "The scope could not be saved.",
+      );
     } finally {
       setSaving(false);
     }

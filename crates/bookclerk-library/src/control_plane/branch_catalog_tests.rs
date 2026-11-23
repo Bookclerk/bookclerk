@@ -2357,3 +2357,91 @@ async fn a_replaced_holding_stops_being_shared_in_the_replacing_batch() {
     assert_eq!(shared, 1, "only the replacing holding is shared");
     assert_eq!(list_branch_titles(&store, None, 10).await.unwrap().len(), 1);
 }
+
+/// A full batch from a branch (one statement per title, more than the
+/// host minimum's 40) is recorded whole under every database profile:
+/// every batch the library sends fits the profile's `maxStatements`, and
+/// the cursor moves only with the last one.
+#[tokio::test]
+async fn a_full_catalog_batch_fits_every_profiles_statement_limit() {
+    let _lock = master_key_test_lock_async().await;
+    for profile in crate::test_support::Profile::ALL {
+        let name = profile.name();
+        let dir = tempfile::tempdir().unwrap();
+        crate::configure_master_key(dir.path()).expect("master key");
+        let kit = crate::test_support::sqlite::memory(profile).await;
+        let store = kit.store();
+        let member = store
+            .create_user(UserRole::Member, Some("Riley"), None)
+            .await
+            .unwrap();
+        add_node(store, BRANCH, "branch", Some(member.id)).await;
+        let session = open(store, true, true).await;
+        let titles: Vec<CatalogTitle> = (0..MAX_CATALOG_BATCH_TITLES)
+            .map(|n| title(&format!("p{n:03}"), 1))
+            .collect();
+        let before = kit.batch_sizes().len();
+        let (upserted, skipped, _) = accepted(store, session.fence, "c1", false, &titles).await;
+        assert_eq!(
+            (upserted, skipped),
+            (u64::try_from(MAX_CATALOG_BATCH_TITLES).unwrap(), 0),
+            "{name}"
+        );
+        let max = usize::try_from(kit.capabilities().max_statements).unwrap();
+        let sizes = kit.batch_sizes();
+        assert!(
+            sizes[before..].iter().all(|size| *size <= max),
+            "{name}: batches {:?} over {max}",
+            &sizes[before..]
+        );
+        let shared = holdings::Entity::find()
+            .filter(holdings::Column::NodeId.eq(BRANCH))
+            .filter(holdings::Column::ShareDigest.is_not_null())
+            .count(store.db())
+            .await
+            .unwrap();
+        assert_eq!(
+            shared,
+            u64::try_from(MAX_CATALOG_BATCH_TITLES).unwrap(),
+            "{name}"
+        );
+        assert_eq!(open(store, true, true).await.cursor, "c1", "{name}");
+    }
+}
+
+/// A batch written in parts whose gate fails before the last part moves
+/// no cursor: the parts already written stand, the batch is lost, and the
+/// branch sends those titles again.
+#[tokio::test]
+async fn a_split_catalog_batch_moves_no_cursor_when_its_gate_fails() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    crate::configure_master_key(dir.path()).expect("master key");
+    let kit = crate::test_support::sqlite::memory(crate::test_support::Profile::Minimum).await;
+    let store = kit.store();
+    let member = store
+        .create_user(UserRole::Member, Some("Riley"), None)
+        .await
+        .unwrap();
+    add_node(store, BRANCH, "branch", Some(member.id)).await;
+    let session = open(store, true, true).await;
+    let titles: Vec<CatalogTitle> = (0..MAX_CATALOG_BATCH_TITLES)
+        .map(|n| title(&format!("p{n:03}"), 1))
+        .collect();
+    let prepared = match prepare_catalog_batch(store, BRANCH, session.fence, "c1", false, &titles)
+        .await
+        .unwrap()
+    {
+        Ok(prepared) => prepared,
+        Err(other) => panic!("expected a prepared batch: {other:?}"),
+    };
+    // A newer connection raises the fence before the batch is written.
+    open(store, true, true).await;
+    assert_eq!(
+        apply_catalog_batch(store, BRANCH, session.fence, prepared)
+            .await
+            .unwrap(),
+        CatalogAccept::Lost
+    );
+    assert_eq!(open(store, true, true).await.cursor, "");
+}

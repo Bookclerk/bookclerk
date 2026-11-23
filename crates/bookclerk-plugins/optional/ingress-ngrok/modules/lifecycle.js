@@ -12,6 +12,11 @@
  * socket attachment may be. When the isolate starts again while the
  * stream is open, the session is gone, so the plugin closes the stream
  * and opens a new one, which authenticates and binds again.
+ *
+ * A client's WebSocket rides on a socket to the library that
+ * `ORIGIN.connect` opened; its attachment names the agent's socket and the
+ * stream, so the library's messages and close find the session. When the
+ * agent's session ends, those sockets close with it.
  */
 import { PluginError, } from "@bookclerk/plugin-sdk/workerd";
 import { Session } from "./agent.js";
@@ -36,6 +41,8 @@ export const START_WAIT_MS = 20_000;
 export const BEAT_WAIT_MS = 5_000;
 /** Pause between checks while `start` or `health` waits, in milliseconds. */
 const POLL_MS = 100;
+/** Close code for a socket to the library whose client side ended. */
+const CLOSE_GOING_AWAY = 1001;
 /** Sessions by socket id; lost when the isolate starts again. */
 const sessions = new Map();
 /** A DNS name: letters, digits and hyphens in dot-separated labels. */
@@ -76,6 +83,32 @@ export function domainOf(ws) {
     return typeof attachment?.domain === "string" ? attachment.domain : null;
 }
 /**
+ * The client stream a socket to the library carries.
+ *
+ * @param ws - The socket.
+ * @returns Its attachment, or `null` for the agent's own socket.
+ */
+export function liveOf(ws) {
+    const attachment = ws.deserializeAttachment();
+    return typeof attachment?.agent === "string" && Number.isSafeInteger(attachment.stream)
+        ? { agent: attachment.agent, stream: attachment.stream }
+        : null;
+}
+/**
+ * Closes the sockets to the library that an agent socket's session carried.
+ *
+ * @param sockets - The socket binding.
+ * @param agent - The agent socket's id.
+ * @returns Resolves once each close was sent.
+ */
+async function closeLive(sockets, agent) {
+    for (const socket of await sockets.getWebSockets().catch(() => [])) {
+        if (liveOf(socket)?.agent === agent) {
+            await socket.close(CLOSE_GOING_AWAY, "the ngrok session ended").catch(() => { });
+        }
+    }
+}
+/**
  * What a session call reaches through this invocation's bindings.
  *
  * @param env - The plugin's bindings.
@@ -91,6 +124,23 @@ export function ioFor(env, ws) {
                     return Promise.reject(new Error("the library is not reachable through this ingress"));
                 }
                 return env.ORIGIN.fetch(request, clientAddress ? { clientAddress } : undefined);
+            },
+            connect: (request, clientAddress, stream) => {
+                if (!env.ORIGIN) {
+                    return Promise.reject(new Error("the library is not reachable through this ingress"));
+                }
+                return env.ORIGIN.connect(request, {
+                    attachment: { agent: ws.id, stream },
+                    ...(clientAddress ? { clientAddress } : {}),
+                });
+            },
+            socket: (id) => {
+                try {
+                    return env.SOCKETS.getWebSocket(id);
+                }
+                catch {
+                    return null;
+                }
             },
         },
     };
@@ -204,7 +254,10 @@ export async function agentHealth(ctx) {
     }
     let ws;
     let session;
-    for (const socket of await ctx.env.SOCKETS.getWebSockets()) {
+    const all = await ctx.env.SOCKETS.getWebSockets();
+    for (const socket of all) {
+        if (liveOf(socket) !== null)
+            continue;
         const held = sessions.get(socket.id);
         if (held && held.phase === "serving" && domainOf(socket) === settings.domain && !session) {
             ws = socket;
@@ -213,6 +266,13 @@ export async function agentHealth(ctx) {
         }
         sessions.delete(socket.id);
         await socket.close(CLOSE_REPLACED, "replaced").catch(() => { });
+    }
+    for (const socket of all) {
+        // A socket to the library whose session is gone carries nothing now.
+        const live = liveOf(socket);
+        if (live !== null && live.agent !== ws?.id) {
+            await socket.close(CLOSE_GOING_AWAY, "the ngrok session ended").catch(() => { });
+        }
     }
     if (!ws || !session) {
         // The host asks only while the ingress is meant to serve: reconnect.
@@ -286,6 +346,11 @@ export function liveContext(env) {
  * @returns Resolves once every frame they complete was handled.
  */
 export async function handleMessage(env, ws, message) {
+    const live = liveOf(ws);
+    if (live !== null) {
+        await fromLibrary(env, ws, live, message);
+        return;
+    }
     if (typeof message === "string")
         return;
     const session = sessions.get(ws.id);
@@ -301,28 +366,86 @@ export async function handleMessage(env, ws, message) {
         sessions.delete(ws.id);
         const reason = err instanceof MuxError ? "protocol error" : "agent error";
         await ws.close(CLOSE_BROKEN, reason).catch(() => { });
+        await closeLive(env.SOCKETS, ws.id);
         return;
     }
     if (session.phase === "failed") {
         sessions.delete(ws.id);
         await ws.close(CLOSE_FAILED, "endpoint not online").catch(() => { });
+        await closeLive(env.SOCKETS, ws.id);
     }
     else if (session.phase === "closed") {
         sessions.delete(ws.id);
         await ws.close(CLOSE_BROKEN, "session ended").catch(() => { });
+        await closeLive(env.SOCKETS, ws.id);
     }
 }
 /**
- * Handles the agent's socket closing: reconnects unless the plugin
- * stopped it or ngrok refused the session.
+ * The agent socket a socket to the library rides on, with its session.
+ *
+ * @param env - The plugin's bindings.
+ * @param live - The library socket's attachment.
+ * @returns The agent's socket and session, or `null` when this isolate
+ *   holds no session for it.
+ */
+function agentOf(env, live) {
+    const session = sessions.get(live.agent);
+    if (!session)
+        return null;
+    try {
+        return { ws: env.SOCKETS.getWebSocket(live.agent), session };
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * Passes a library message to the client stream its socket carries, or
+ * closes the socket when that stream or its session is gone.
+ *
+ * @param env - The plugin's bindings.
+ * @param ws - The socket to the library.
+ * @param live - Its attachment.
+ * @param message - The message.
+ * @returns Resolves once it was passed on or the socket closed.
+ */
+async function fromLibrary(env, ws, live, message) {
+    const agent = agentOf(env, live);
+    let carried = false;
+    if (agent !== null) {
+        try {
+            carried = await agent.session.fromLibrary(ioFor(env, agent.ws), live.stream, message);
+        }
+        catch {
+            // The write to ngrok failed; the agent socket's own close follows.
+        }
+    }
+    if (!carried)
+        await ws.close(CLOSE_GOING_AWAY, "the client went away").catch(() => { });
+}
+/**
+ * Handles a socket closing. A socket to the library passes its close to
+ * the client. The agent's socket closes the library sockets it carried
+ * and reconnects unless the plugin stopped it or ngrok refused the
+ * session.
  *
  * @param env - The plugin's bindings.
  * @param ws - The closed socket.
  * @param code - The close code (1000 when ngrok ended the stream).
- * @returns Resolves once a new connection was opened, or not.
+ * @param reason - The close reason.
+ * @returns Resolves once handled.
  */
-export async function handleClose(env, ws, code) {
+export async function handleClose(env, ws, code, reason = "") {
+    const live = liveOf(ws);
+    if (live !== null) {
+        const agent = agentOf(env, live);
+        await agent?.session
+            .libraryClosed(ioFor(env, agent.ws), live.stream, code, reason)
+            .catch(() => { });
+        return;
+    }
     sessions.delete(ws.id);
+    await closeLive(env.SOCKETS, ws.id);
     if (code === CLOSE_STOPPED || code === CLOSE_FAILED || code === CLOSE_REPLACED)
         return;
     if (domainOf(ws) === null)

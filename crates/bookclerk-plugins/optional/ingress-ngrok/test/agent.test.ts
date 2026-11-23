@@ -7,7 +7,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { MAX_SESSION_BYTES, MAX_STREAMS, MAX_WRITE_BATCH, Session } from "../src/agent.ts";
+import {
+  MAX_SESSION_BYTES,
+  MAX_SOCKET_BACKLOG,
+  MAX_SOCKET_MESSAGE,
+  MAX_STREAMS,
+  MAX_WRITE_BATCH,
+  Session,
+} from "../src/agent.ts";
 import { StreamType, typePrefix } from "../src/messages.ts";
 import {
   ErrorCode,
@@ -22,10 +29,13 @@ import {
   type Frame,
 } from "../src/mux.ts";
 import { MAX_BUFFERED_RESPONSE, MAX_REQUEST_BODY } from "../src/serve.ts";
+import { Opcode } from "../src/ws.ts";
 import {
   FakeLibrary,
   FakeNgrok,
   bytes,
+  clientFrame,
+  serverFrames,
   grant,
   opened,
   proxy,
@@ -209,15 +219,347 @@ test("bad requests get an error answer without reaching the library", async () =
   assert.equal(library.seen.length, 0);
 });
 
-test("a WebSocket upgrade is answered 501 for now", async () => {
+/** The RFC 6455 sample key. */
+const KEY = "dGhlIHNhbXBsZSBub25jZQ==";
+
+/** The accept value for {@link KEY}. */
+const ACCEPT = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=";
+
+/**
+ * A WebSocket upgrade request.
+ *
+ * @param extra - More header lines, each ending in CRLF.
+ * @param fields - Handshake lines to use instead of the valid ones.
+ * @returns The request text.
+ */
+function upgradeRequest(
+  extra = "",
+  fields = `Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${KEY}\r\n`,
+): string {
+  return `GET /api/live?x=1 HTTP/1.1\r\nHost: shelf.ngrok-free.app\r\nConnection: keep-alive, Upgrade\r\n${fields}Sec-WebSocket-Extensions: permessage-deflate\r\nSec-WebSocket-Protocol: bookclerk.v1, other\r\nCookie: s=1\r\n${extra}\r\n`;
+}
+
+/**
+ * Splits a stream's bytes into the response head and the frames after it.
+ *
+ * @param data - The stream's bytes.
+ * @returns The head text and the decoded frames.
+ */
+function headAndFrames(data: Uint8Array): {
+  head: string;
+  frames: ReturnType<typeof serverFrames>;
+} {
+  const raw = text(data);
+  const end = raw.indexOf("\r\n\r\n");
+  const headBytes = bytes(raw.slice(0, end + 4)).length;
+  return { head: raw.slice(0, end + 4), frames: serverFrames(data.subarray(headBytes)) };
+}
+
+/**
+ * A session with one WebSocket open on stream 2.
+ *
+ * @returns The session, the fake server and the library.
+ */
+async function socketOpen(): Promise<{
+  session: Session;
+  ngrok: FakeNgrok;
+  library: FakeLibrary;
+}> {
   const library = plain();
+  library.upgrades = () => ({ protocol: "bookclerk.v1" });
   const { session, ngrok } = await serving(library);
+  await session.receive(ngrok.io, proxy(2, upgradeRequest()));
+  const { head } = headAndFrames(streamBytes(ngrok.take(), 2).bytes);
+  assert.match(head, /^HTTP\/1\.1 101 /);
+  return { session, ngrok, library };
+}
+
+test("an accepted upgrade answers 101 and carries frames both ways", async () => {
+  const library = plain();
+  library.upgrades = () => ({ protocol: "bookclerk.v1" });
+  const { session, ngrok } = await serving(library);
+  // The client's first frame may ride with the handshake.
   await session.receive(
     ngrok.io,
-    proxy(2, "GET /api/live HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"),
+    proxy(2, concat(bytes(upgradeRequest()), clientFrame(Opcode.Text, "hello"))),
   );
-  assert.match(text(streamBytes(ngrok.take(), 2).bytes), /^HTTP\/1\.1 501 /);
-  assert.equal(library.seen.length, 0);
+  assert.equal(library.upgraded.length, 1);
+  const seen = library.upgraded[0]!;
+  assert.equal(seen.method, "GET");
+  assert.equal(seen.url, `https://${DOMAIN}/api/live?x=1`);
+  assert.equal(seen.clientAddress, "203.0.113.9");
+  assert.equal(seen.headers.get("sec-websocket-protocol"), "bookclerk.v1, other");
+  assert.equal(seen.headers.get("cookie"), "s=1");
+  for (const name of [
+    "sec-websocket-key",
+    "sec-websocket-version",
+    "sec-websocket-extensions",
+    "upgrade",
+    "connection",
+  ]) {
+    assert.equal(seen.headers.get(name), null, name);
+  }
+  const socket = library.sockets.get("live0")!;
+  assert.equal(socket.stream, 2);
+  assert.deepEqual(socket.sent, ["hello"]);
+  const out = streamBytes(ngrok.take(), 2);
+  assert.ok(!out.fin);
+  const { head, frames } = headAndFrames(out.bytes);
+  assert.equal(
+    head,
+    `HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\nsec-websocket-accept: ${ACCEPT}\r\nsec-websocket-protocol: bookclerk.v1\r\n\r\n`,
+  );
+  assert.equal(frames.length, 0);
+
+  // Binary, fragmented text and a ping in pieces; the ping is answered here.
+  const ping = clientFrame(Opcode.Ping, "p1");
+  await session.receive(
+    ngrok.io,
+    encodeData(
+      2,
+      concat(
+        clientFrame(Opcode.Binary, new Uint8Array([1, 2, 3])),
+        clientFrame(Opcode.Text, "fra", false),
+        ping.subarray(0, 3),
+      ),
+    ),
+  );
+  await session.receive(
+    ngrok.io,
+    encodeData(2, concat(ping.subarray(3), clientFrame(Opcode.Continuation, "gment"))),
+  );
+  assert.deepEqual(socket.sent, ["hello", new Uint8Array([1, 2, 3]), "fragment"]);
+  let reply = serverFrames(streamBytes(ngrok.take(), 2).bytes);
+  assert.deepEqual(reply, [{ opcode: Opcode.Pong, payload: bytes("p1") }]);
+  await session.receive(ngrok.io, encodeData(2, clientFrame(Opcode.Pong, "")));
+  assert.equal(socket.sent.length, 3);
+
+  // The library's messages go out as unmasked frames.
+  assert.ok(await session.fromLibrary(ngrok.io, 2, "hi there"));
+  assert.ok(await session.fromLibrary(ngrok.io, 2, new Uint8Array([9, 8]).buffer));
+  const big = "x".repeat(70_000);
+  assert.ok(await session.fromLibrary(ngrok.io, 2, big));
+  reply = serverFrames(streamBytes(ngrok.take(), 2).bytes);
+  assert.deepEqual(
+    reply.map((f) => f.opcode),
+    [Opcode.Text, Opcode.Binary, Opcode.Text],
+  );
+  assert.equal(text(reply[0]!.payload), "hi there");
+  assert.deepEqual(reply[1]!.payload, new Uint8Array([9, 8]));
+  assert.equal(text(reply[2]!.payload), big);
+
+  // The client's close is echoed, passed to the library and ends the stream.
+  const close = new Uint8Array([0x0f, 0xa0, ...bytes("bye")]);
+  await session.receive(ngrok.io, encodeData(2, clientFrame(Opcode.Close, close)));
+  assert.deepEqual(socket.closed, { code: 4000, reason: "bye" });
+  const end = streamBytes(ngrok.take(), 2);
+  assert.ok(end.fin);
+  assert.deepEqual(serverFrames(end.bytes), [{ opcode: Opcode.Close, payload: close }]);
+  assert.equal(session.streamCount, 0);
+  assert.equal(await session.fromLibrary(ngrok.io, 2, "late"), false);
+});
+
+test("the library's close reaches the client; a close without a code stays without one", async () => {
+  const { session, ngrok, library } = await socketOpen();
+  await session.libraryClosed(ngrok.io, 2, 1001, "restarting");
+  const out = streamBytes(ngrok.take(), 2);
+  assert.ok(out.fin);
+  const [frame] = serverFrames(out.bytes);
+  assert.equal(frame!.opcode, Opcode.Close);
+  assert.deepEqual(frame!.payload, new Uint8Array([0x03, 0xe9, ...bytes("restarting")]));
+  assert.equal(library.sockets.get("live0")!.closed, null, "a closed socket is not closed again");
+  // A later close or message for the stream does nothing.
+  await session.libraryClosed(ngrok.io, 2, 1000, "");
+  assert.equal(ngrok.take().length, 0);
+
+  for (const [code, payload] of [
+    [1005, new Uint8Array()],
+    [1006, new Uint8Array([0x03, 0xf3, ...bytes("the library connection failed")])],
+  ] as const) {
+    const again = await socketOpen();
+    await again.session.libraryClosed(again.ngrok.io, 2, code, "");
+    const [sent] = serverFrames(streamBytes(again.ngrok.take(), 2).bytes);
+    assert.deepEqual(sent!.payload, payload, String(code));
+  }
+
+  // A client close without a code closes the library with 1000.
+  const plainClose = await socketOpen();
+  await plainClose.session.receive(
+    plainClose.ngrok.io,
+    encodeData(2, clientFrame(Opcode.Close, new Uint8Array())),
+  );
+  assert.deepEqual(plainClose.library.sockets.get("live0")!.closed, { code: 1000, reason: "" });
+});
+
+test("the library's refusal and bad handshakes are answered without a socket", async () => {
+  const library = plain();
+  library.upgrades = (request) =>
+    request.url.includes("/denied")
+      ? new Response("sign in first", { status: 401, headers: { "www-authenticate": "Bearer" } })
+      : { protocol: "" };
+  const { session, ngrok } = await serving(library);
+  await session.receive(ngrok.io, proxy(2, upgradeRequest().replace("/api/live", "/denied")));
+  let out = streamBytes(ngrok.take(), 2);
+  assert.ok(out.fin);
+  assert.match(
+    text(out.bytes),
+    /^HTTP\/1\.1 401 [^]*www-authenticate: Bearer\r\n[^]*\r\n\r\nsign in first$/,
+  );
+  assert.equal(library.sockets.size, 0);
+
+  const cases: Array<[string, number]> = [
+    [upgradeRequest("", "Upgrade: h2c\r\n"), 501],
+    [
+      upgradeRequest(
+        "",
+        `Upgrade: websocket\r\nSec-WebSocket-Version: 8\r\nSec-WebSocket-Key: ${KEY}\r\n`,
+      ),
+      426,
+    ],
+    [
+      upgradeRequest(
+        "",
+        "Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: short\r\n",
+      ),
+      400,
+    ],
+    [upgradeRequest("", "Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n"), 400],
+    [upgradeRequest().replace("GET ", "POST "), 400],
+    [upgradeRequest("Content-Length: 2\r\n") + "xy", 400],
+  ];
+  let stream = 4;
+  for (const [request, status] of cases) {
+    await session.receive(ngrok.io, proxy(stream, request));
+    out = streamBytes(ngrok.take(), stream);
+    assert.ok(out.fin, request);
+    assert.match(text(out.bytes), new RegExp(`^HTTP/1\\.1 ${status} `), request);
+    if (status === 426) assert.match(text(out.bytes), /sec-websocket-version: 13\r\n/);
+    stream += 2;
+  }
+  assert.equal(library.upgraded.length, 1);
+
+  library.upgrades = () => {
+    throw new Error("down");
+  };
+  await session.receive(ngrok.io, proxy(stream, upgradeRequest()));
+  assert.match(text(streamBytes(ngrok.take(), stream).bytes), /^HTTP\/1\.1 502 /);
+  // A client that ends its side with the handshake gets no socket.
+  await session.receive(ngrok.io, proxy(stream + 2, upgradeRequest(), undefined, true));
+  assert.ok(ngrok.take().some((f) => f.kind === "rst" && f.stream === stream + 2));
+  assert.equal(library.upgraded.length, 2);
+});
+
+test("broken client frames close both sides with the protocol's code", async () => {
+  const cases: Array<[Uint8Array, number]> = [
+    [new Uint8Array([0x81, 0x02, 0x68, 0x69]), 1002], // unmasked
+    [clientFrame(Opcode.Text, new Uint8Array([0xff])), 1007],
+    [clientFrame(Opcode.Binary, new Uint8Array(MAX_SOCKET_MESSAGE + 1)).subarray(0, 14), 1009],
+    [clientFrame(3, "x"), 1002],
+  ];
+  for (const [frame, code] of cases) {
+    const { session, ngrok, library } = await socketOpen();
+    await session.receive(ngrok.io, encodeData(2, frame));
+    const socket = library.sockets.get("live0")!;
+    assert.equal(socket.closed?.code, code);
+    const out = streamBytes(ngrok.take(), 2);
+    assert.ok(out.fin);
+    const [close] = serverFrames(out.bytes);
+    assert.equal(close!.opcode, Opcode.Close);
+    assert.equal((close!.payload[0]! << 8) | close!.payload[1]!, code);
+    assert.equal(socket.sent.length, 0);
+  }
+});
+
+test("a client that goes away, or a stream ngrok resets, closes the library's socket", async () => {
+  const gone = await socketOpen();
+  await gone.session.receive(gone.ngrok.io, encodeData(2, new Uint8Array(), FLAG_FIN));
+  assert.deepEqual(gone.library.sockets.get("live0")!.closed, {
+    code: 1001,
+    reason: "the client went away",
+  });
+  assert.ok(streamBytes(gone.ngrok.take(), 2).fin);
+  assert.equal(gone.session.streamCount, 0);
+
+  const reset = await socketOpen();
+  await reset.session.receive(reset.ngrok.io, encodeRst(2, ErrorCode.StreamCancelled));
+  assert.equal(reset.library.sockets.get("live0")!.closed?.code, 1001);
+  assert.equal(reset.session.streamCount, 0);
+
+  // A library socket that can no longer be written ends the client's side.
+  const failing = await socketOpen();
+  failing.library.sockets.get("live0")!.failing = true;
+  await failing.session.receive(failing.ngrok.io, encodeData(2, clientFrame(Opcode.Text, "x")));
+  const [close] = serverFrames(streamBytes(failing.ngrok.take(), 2).bytes);
+  assert.equal((close!.payload[0]! << 8) | close!.payload[1]!, 1001);
+});
+
+test("a client that stops reading is closed once its backlog passes the cap", async () => {
+  const { session, ngrok, library } = await socketOpen();
+  const message = new Uint8Array(MAX_SOCKET_MESSAGE - 16);
+  let sent = 0;
+  while (library.sockets.get("live0")!.closed === null) {
+    assert.ok(await session.fromLibrary(ngrok.io, 2, message.slice().buffer));
+    sent += message.length;
+    assert.ok(sent < MAX_SOCKET_BACKLOG + INITIAL_WINDOW + 2 * message.length);
+  }
+  assert.deepEqual(library.sockets.get("live0")!.closed, {
+    code: 1008,
+    reason: "the client is not reading",
+  });
+  // The backlog and the close go out as the window opens, then FIN.
+  await session.receive(ngrok.io, grant(2, 64 * 1024 * 1024));
+  const out = streamBytes(ngrok.take(), 2);
+  assert.ok(out.fin);
+  const frames = serverFrames(out.bytes);
+  assert.equal(frames.at(-1)!.opcode, Opcode.Close);
+  assert.equal(frames.length, sent / message.length + 1);
+});
+
+test("a client that sends pings but never reads is closed", async () => {
+  const { session, ngrok, library } = await socketOpen();
+  const ping = clientFrame(Opcode.Ping, new Uint8Array(125));
+  const batch = concat(...Array.from({ length: 1000 }, () => ping));
+  for (let i = 0; i < 60 && library.sockets.get("live0")!.closed === null; i++) {
+    await session.receive(ngrok.io, encodeData(2, batch));
+  }
+  assert.deepEqual(library.sockets.get("live0")!.closed, {
+    code: 1008,
+    reason: "the client is not reading",
+  });
+});
+
+test("library messages that arrive before its accept are held for the client", async () => {
+  const library = plain();
+  let session!: Session;
+  let ngrok!: FakeNgrok;
+  library.upgrades = async (_request, stream) => {
+    assert.ok(await session.fromLibrary(ngrok.io, stream, "early"));
+    assert.equal(
+      await session.fromLibrary(ngrok.io, stream, new Uint8Array(MAX_SOCKET_BACKLOG + 1).buffer),
+      false,
+    );
+    return { protocol: "" };
+  };
+  ({ session, ngrok } = await serving(library));
+  await session.receive(ngrok.io, proxy(2, upgradeRequest()));
+  const { head, frames } = headAndFrames(streamBytes(ngrok.take(), 2).bytes);
+  assert.match(head, /^HTTP\/1\.1 101 /);
+  assert.doesNotMatch(head, /sec-websocket-protocol/);
+  assert.deepEqual(frames, [{ opcode: Opcode.Text, payload: bytes("early") }]);
+});
+
+test("a socket the library accepts after its stream was reset is closed", async () => {
+  const library = plain();
+  let session!: Session;
+  let ngrok!: FakeNgrok;
+  library.upgrades = async () => {
+    // The session ends while the library answers.
+    await session.receive(ngrok.io, encodeGoAway(0, ErrorCode.NoError, "bye"));
+    return { protocol: "" };
+  };
+  ({ session, ngrok } = await serving(library));
+  await session.receive(ngrok.io, proxy(2, upgradeRequest()));
+  assert.equal(library.sockets.get("live0")!.closed?.code, 1001);
 });
 
 test("a library failure is a 502, HEAD and 304 carry no body", async () => {

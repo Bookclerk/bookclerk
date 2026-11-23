@@ -74,22 +74,3 @@ export function overrideChoice(
   if (value === undefined) return "default";
   return value ? "on" : "off";
 }
-
-/**
- * The overrides with one control set to `choice`.
- *
- * @param overrides - The patron's overrides.
- * @param control - The control to change.
- * @param choice - Follow the default, or set it on or off.
- * @returns New overrides; `overrides` is not changed.
- */
-export function withOverride(
-  overrides: ControlOverrides,
-  control: MemberControl,
-  choice: OverrideChoice,
-): ControlOverrides {
-  const next: ControlOverrides = { ...overrides };
-  if (choice === "default") delete next[control];
-  else next[control] = choice === "on";
-  return next;
-}

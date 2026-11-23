@@ -64,6 +64,7 @@ use crate::error::{LibraryError, Result};
 use crate::models::UserStatus;
 use crate::store::edition_files::like_escaped;
 use crate::store::holdings::{find_holdings, share_title_of};
+use crate::store::write_batches::WriteBatches;
 use crate::store::{LibraryStore, NewBook, NodeHoldingSelection};
 
 /// Removal reason: the branch turned "Share this branch's books" off.
@@ -564,6 +565,9 @@ struct PreparedCatalogBatch {
     statements: Vec<TypedDbStatement>,
     /// Title statements in `statements` (after the cursor move).
     titles: usize,
+    /// `seen_pass` statements in `statements`, after the titles'; the
+    /// statements after them retire replaced holdings' share state.
+    held: usize,
     /// Titles skipped because this library already holds them, or because
     /// they formed no valid listing.
     skipped: u64,
@@ -583,7 +587,9 @@ struct PreparedCatalogBatch {
 /// this library already holds for the branch's owner is skipped. Each
 /// other title is resolved into the library model and held by the branch
 /// (`holding_added` when new), and the holding's share state is written
-/// in one transaction with the cursor, each statement gated on the fence
+/// with the cursor (in one transaction when the database plugin's
+/// statement limit allows, else in parts with the cursor last), each
+/// statement gated on the fence
 /// still being live, the branch still sharing and its credential live. A
 /// holding is stamped with the pass under way, and with `done` (the last
 /// batch of a pass) while a pass from the start is under way, the
@@ -729,6 +735,7 @@ async fn prepare_catalog_batch(
         }
     }
     let recorded = statements.len() - 1;
+    let held = held_seen.len();
     statements.extend(held_seen);
     let replaced = replaced_holdings(store, node_id, &linked).await?;
     // A replaced holding stops being shared in the batch that advances the
@@ -759,6 +766,7 @@ async fn prepare_catalog_batch(
         operation_id: format!("catalog-batch:{node_id}:{fence}:{now}"),
         statements,
         titles: recorded,
+        held,
         skipped,
         wanted,
         ends_pass: pass.filter(|_| done),
@@ -826,8 +834,98 @@ async fn replaced_holdings(
     Ok(replaced)
 }
 
-/// Writes a prepared batch in one transaction ([`CatalogAccept::Lost`],
-/// nothing recorded, when its gate no longer holds), then, when it ends a
+/// Writes a prepared batch's statements: titles recorded, or `None` when
+/// the batch's gate no longer holds.
+///
+/// A batch that fits one transaction under the database plugin's
+/// `maxStatements` and request size is written as one. A larger one (a
+/// full batch from the branch is about one statement per title, more than
+/// the host minimum's 40) goes in several: first the title and `seen_pass`
+/// statements, each part ending with a gated probe that shows whether the
+/// gate still held, then the cursor move with the share-state retirements,
+/// so the cursor only moves once every title before it is written. A part
+/// written before the gate failed leaves the cursor where it was, and the
+/// branch sends those titles again; each statement sets the same values
+/// again, so writing it twice changes nothing.
+///
+/// # Errors
+///
+/// Returns the write error, or an error when a statement alone is larger
+/// than one request may carry.
+async fn write_catalog_statements(
+    store: &LibraryStore,
+    node_id: &str,
+    fence: i64,
+    prepared: &PreparedCatalogBatch,
+) -> Result<Option<u64>> {
+    let caps = store.db_capabilities();
+    let statements = &prepared.statements;
+    let mut whole = WriteBatches::new(caps, "catalog batch");
+    let mut parts = 0usize;
+    for stmt in statements {
+        if whole.push(stmt.clone())?.is_some() {
+            parts += 1;
+        }
+    }
+    if parts == 0 {
+        let reply =
+            batch::execute_host_batch(store, request(&prepared.operation_id, statements.clone()))
+                .await?;
+        return Ok((batch::rows_affected(&reply, 0) == 1).then(|| {
+            (1..=prepared.titles)
+                .map(|index| batch::rows_affected(&reply, index))
+                .sum()
+        }));
+    }
+    let body_end = 1 + prepared.titles + prepared.held;
+    let mut binds = vec![text(&stamp()), text(node_id)];
+    binds.extend(live_catalog_binds(node_id, fence));
+    let probe = exec(
+        &format!(
+            "UPDATE nodes SET catalog_synced_at = ? WHERE node_id = ? AND {LIVE_CATALOG_GATE}"
+        ),
+        binds,
+    );
+    let mut cut = WriteBatches::new(caps, "catalog batch").with_trailer(probe)?;
+    // Each part with how many of its statements (from its start) record
+    // titles: the titles come before the `seen_pass` stamps.
+    let mut parts = Vec::new();
+    for stmt in &statements[1..body_end] {
+        parts.extend(cut.push(stmt.clone())?);
+    }
+    parts.extend(cut.finish());
+    let mut titles_left = prepared.titles;
+    let body: Vec<(Vec<TypedDbStatement>, usize)> = parts
+        .into_iter()
+        .map(|part| {
+            let titles = titles_left.min(part.len().saturating_sub(1));
+            titles_left -= titles;
+            (part, titles)
+        })
+        .collect();
+    let mut upserted = 0u64;
+    for (index, (part, titles)) in body.into_iter().enumerate() {
+        let probe_at = part.len() - 1;
+        let reply = batch::execute_host_batch(
+            store,
+            request(&format!("{}:part-{index}", prepared.operation_id), part),
+        )
+        .await?;
+        if batch::rows_affected(&reply, probe_at) != 1 {
+            return Ok(None);
+        }
+        upserted += (0..titles)
+            .map(|at| batch::rows_affected(&reply, at))
+            .sum::<u64>();
+    }
+    let mut last = vec![statements[0].clone()];
+    last.extend(statements[body_end..].iter().cloned());
+    let reply = batch::execute_host_batch(store, request(&prepared.operation_id, last)).await?;
+    Ok((batch::rows_affected(&reply, 0) == 1).then_some(upserted))
+}
+
+/// Writes a prepared batch ([`write_catalog_statements`];
+/// [`CatalogAccept::Lost`] when its gate no longer holds), then, when it ends a
 /// full pass, removes the branch's holdings the pass did not name and
 /// ends the pass.
 async fn apply_catalog_batch(
@@ -836,15 +934,9 @@ async fn apply_catalog_batch(
     fence: i64,
     prepared: PreparedCatalogBatch,
 ) -> Result<CatalogAccept> {
-    let reply =
-        batch::execute_host_batch(store, request(&prepared.operation_id, prepared.statements))
-            .await?;
-    if batch::rows_affected(&reply, 0) != 1 {
+    let Some(upserted) = write_catalog_statements(store, node_id, fence, &prepared).await? else {
         return Ok(CatalogAccept::Lost);
-    }
-    let upserted = (1..=prepared.titles)
-        .map(|index| batch::rows_affected(&reply, index))
-        .sum();
+    };
     if !prepared.replaced.is_empty() {
         store
             .remove_node_holdings(

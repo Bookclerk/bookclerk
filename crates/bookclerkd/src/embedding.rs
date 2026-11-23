@@ -414,15 +414,20 @@ async fn rerank_every_feed(state: &AppState, library: &LibraryStore) -> usize {
     queued
 }
 
-/// Starts the task that queues a `discover_embed` job when the models
-/// served on this node change: a model was installed, which is when the
-/// library can first be embedded with it.
+/// Starts the task that queues a `discover_embed` job at start and when
+/// the models served on this node change: a model was installed, which is
+/// when the library can first be embedded with it. A job that finds every
+/// work embedded writes nothing.
 ///
 /// # Arguments
 ///
 /// * `state` - The daemon.
 pub(crate) fn spawn_model_watcher(state: Arc<AppState>) {
     let mut changes = state.deployment_runtime().ai.changes();
+    // Look once at start as well: a model that was already on disk may
+    // have been listed before this task subscribed, and nothing would
+    // report it again.
+    changes.mark_changed();
     tokio::spawn(async move {
         while changes.changed().await.is_ok() {
             let router = Arc::clone(&state.deployment_runtime().ai);
@@ -776,8 +781,25 @@ mod tests {
         let (state, library) = daemon(&files, &["Dune"], Some(&model)).await;
         spawn_model_watcher(Arc::clone(&state));
         state.deployment_runtime().ai.forget_listings().await;
+        wait_for_embed_job(&library).await;
+    }
+
+    #[tokio::test]
+    async fn a_model_already_there_at_start_queues_the_embedding() {
+        let files = tempfile::tempdir().unwrap();
+        let model = FakeModel::new();
+        let (state, library) = daemon(&files, &["Dune"], Some(&model)).await;
+        // Listed, and its change reported, before anything watches.
+        state.deployment_runtime().ai.forget_listings().await;
+        spawn_model_watcher(Arc::clone(&state));
+        wait_for_embed_job(&library).await;
+    }
+
+    /// Waits until one `discover_embed` job is pending; panics when none
+    /// comes.
+    async fn wait_for_embed_job(library: &LibraryStore) {
         for _ in 0..200 {
-            if pending(&library, JobKind::DiscoverEmbed).await == 1 {
+            if pending(library, JobKind::DiscoverEmbed).await == 1 {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(25)).await;

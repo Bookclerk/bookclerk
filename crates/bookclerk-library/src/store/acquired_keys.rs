@@ -192,20 +192,26 @@ impl LibraryStore {
             });
         }
         let edition_ids: Vec<String> = acquired.iter().map(|row| row.edition_id.clone()).collect();
-        let listings =
-            find_chunked_paged::<store_listings::Entity, _>(self, &edition_ids, |part| {
-                listing_identities()
-                    .filter(store_listings::Column::EditionId.is_in(part.to_vec()))
-                    .order_by_asc(store_listings::Column::Id)
-            })
-            .await?;
+        let listings = find_chunked_paged::<store_listings::Entity, _>(
+            self,
+            &edition_ids,
+            &[store_listings::Column::Id],
+            |part| {
+                listing_identities().filter(store_listings::Column::EditionId.is_in(part.to_vec()))
+            },
+        )
+        .await?;
         let listing_ids: Vec<String> = listings.iter().map(|l| l.id.clone()).collect();
-        let holdings = find_chunked_paged::<holdings::Entity, _>(self, &listing_ids, |part| {
-            super::holdings::find_holdings()
-                .filter(holdings::Column::HolderKind.eq("account"))
-                .filter(holdings::Column::ListingId.is_in(part.to_vec()))
-                .order_by_asc(holdings::Column::Id)
-        })
+        let holdings = find_chunked_paged::<holdings::Entity, _>(
+            self,
+            &listing_ids,
+            &[holdings::Column::Id],
+            |part| {
+                super::holdings::find_holdings()
+                    .filter(holdings::Column::HolderKind.eq("account"))
+                    .filter(holdings::Column::ListingId.is_in(part.to_vec()))
+            },
+        )
         .await?;
         let mut account_ids: Vec<String> = holdings
             .iter()
@@ -216,10 +222,9 @@ impl LibraryStore {
         let sources: std::collections::BTreeMap<(String, String), String> =
             // The same account id on two stores is two rows, so the accounts
             // are read in pages.
-            find_chunked_paged::<accounts::Entity, _>(self, &account_ids, |part| {
+            find_chunked_paged::<accounts::Entity, _>(self, &account_ids, &[accounts::Column::Id], |part| {
                 accounts::Entity::find()
                     .filter(accounts::Column::AccountId.is_in(part.to_vec()))
-                    .order_by_asc(accounts::Column::Id)
             })
             .await?
             .into_iter()

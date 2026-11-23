@@ -8,7 +8,7 @@ use super::node_queue::NodeMessage;
 use crate::EntityKind;
 use chrono::{Duration, Utc};
 use sea_orm::sea_query::OnConflict;
-use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -18,6 +18,7 @@ use super::documents::ConfigActor;
 use super::instances::{load_plugin_instance, PluginInstanceId};
 use crate::entities::{bookclerk_receipts, plugin_deployment_observations, plugin_deployments};
 use crate::error::{LibraryError, Result};
+use crate::store::keyset::read_keyset;
 use crate::store::LibraryStore;
 
 /// What a deployment row asks its node to do, and who decided it.
@@ -490,7 +491,7 @@ pub async fn list_present_deployments_for_node(
     store: &LibraryStore,
     node_id: &str,
 ) -> Result<Vec<PluginDeployment>> {
-    let rows = plugin_deployments::Entity::find()
+    let select = plugin_deployments::Entity::find()
         .filter(plugin_deployments::Column::NodeId.eq(node_id))
         .filter(
             plugin_deployments::Column::Desired.is_in(
@@ -499,11 +500,8 @@ pub async fn list_present_deployments_for_node(
                     .filter(|state| state.runs())
                     .map(DesiredState::as_str),
             ),
-        )
-        .order_by_asc(plugin_deployments::Column::DeploymentId)
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+        );
+    let rows = read_keyset(store, select, &[plugin_deployments::Column::DeploymentId]).await?;
     rows.into_iter().map(deployment_from_model).collect()
 }
 
@@ -516,12 +514,9 @@ pub async fn list_deployments_for_node(
     store: &LibraryStore,
     node_id: &str,
 ) -> Result<Vec<PluginDeployment>> {
-    let rows = plugin_deployments::Entity::find()
-        .filter(plugin_deployments::Column::NodeId.eq(node_id))
-        .order_by_asc(plugin_deployments::Column::DeploymentId)
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+    let select =
+        plugin_deployments::Entity::find().filter(plugin_deployments::Column::NodeId.eq(node_id));
+    let rows = read_keyset(store, select, &[plugin_deployments::Column::DeploymentId]).await?;
     rows.into_iter().map(deployment_from_model).collect()
 }
 
@@ -531,11 +526,8 @@ pub async fn list_deployments_for_node(
 ///
 /// Returns an error when the read fails.
 pub async fn list_all_deployments(store: &LibraryStore) -> Result<Vec<PluginDeployment>> {
-    let rows = plugin_deployments::Entity::find()
-        .order_by_asc(plugin_deployments::Column::DeploymentId)
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+    let select = plugin_deployments::Entity::find();
+    let rows = read_keyset(store, select, &[plugin_deployments::Column::DeploymentId]).await?;
     rows.into_iter().map(deployment_from_model).collect()
 }
 
@@ -548,12 +540,17 @@ pub async fn list_deployments_for_instance(
     store: &LibraryStore,
     instance_id: &PluginInstanceId,
 ) -> Result<Vec<PluginDeployment>> {
-    let rows = plugin_deployments::Entity::find()
-        .filter(plugin_deployments::Column::PluginInstanceId.eq(instance_id.as_str()))
-        .order_by_asc(plugin_deployments::Column::NodeId)
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+    let select = plugin_deployments::Entity::find()
+        .filter(plugin_deployments::Column::PluginInstanceId.eq(instance_id.as_str()));
+    let rows = read_keyset(
+        store,
+        select,
+        &[
+            plugin_deployments::Column::NodeId,
+            plugin_deployments::Column::DeploymentId,
+        ],
+    )
+    .await?;
     rows.into_iter().map(deployment_from_model).collect()
 }
 
@@ -566,12 +563,14 @@ pub async fn list_observations_for_deployment(
     store: &LibraryStore,
     deployment_id: &str,
 ) -> Result<Vec<DeploymentObservation>> {
-    let rows = plugin_deployment_observations::Entity::find()
-        .filter(plugin_deployment_observations::Column::DeploymentId.eq(deployment_id))
-        .order_by_asc(plugin_deployment_observations::Column::NodeId)
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+    let select = plugin_deployment_observations::Entity::find()
+        .filter(plugin_deployment_observations::Column::DeploymentId.eq(deployment_id));
+    let rows = read_keyset(
+        store,
+        select,
+        &[plugin_deployment_observations::Column::NodeId],
+    )
+    .await?;
     rows.into_iter().map(observation_from_model).collect()
 }
 

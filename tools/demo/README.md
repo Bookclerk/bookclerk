@@ -30,7 +30,14 @@ commit, never raw SQL, and its test runs against a fresh database in CI, so
 a schema change that breaks it fails there.
 
 The bake then runs `bookclerkd` once, with a throwaway operator token kept
-in its environment, until it has stored Sam's Discover shelves.
+in its environment. It downloads the default embedding model as any host
+does (verified against the digests pinned in the plugin package), embeds
+the library with it, and runs until Sam's Discover shelves are stored,
+ranked on those vectors. A container never downloads a model, so the
+image ships it: the bake moves the model's files out of the template, the
+image holds them under `/opt/bookclerk/models` as a layer of their own,
+and a seed refresh starts from them without downloading again. The build
+fails when the model was not installed or the library was not embedded.
 
 Next it bakes the covers a new session shows first, so a container does
 not download and decode them while the visitor waits on a quarter of a
@@ -60,7 +67,9 @@ deployments are keyed by the node id.
 A fresh container's entrypoint (`packaging/demo/boot.sh`) copies that
 template into its files dir through a staging dir, so a failed copy leaves
 the dir as it was, and execs `bookclerkd`, which mints and wraps the
-container's own `master.key` with the Worker's password. Without a
+container's own `master.key` with the Worker's password. It also copies
+the embedding model into the embedder's data dir, so Discover ranks with
+the model from the first page. Without a
 template, or when the copy fails, it seeds live as before; if that fails
 too, `bookclerkd` starts with an empty library. A `.demo-seeded` marker
 records that the library holds the sample data, so a boot after a failed

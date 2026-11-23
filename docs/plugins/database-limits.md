@@ -293,6 +293,37 @@ since a `FromQueryResult` struct works on any connection. Adapters and the
 engine executor read their own engine rows, which keep `SELECT` order, so
 they may still read a single cell by index.
 
+## Paging reads in host code
+
+The host's own proxy reads do not stream: a read that returns more rows
+than the plugin's `maxResultRows`, or more bytes than its
+`maxResultBytes`, is refused with `limit_exceeded`. Host code that can
+read an unbounded number of rows reads them in pages, using the helpers in
+`bookclerk-library`'s `store::keyset`:
+
+- `read_keyset` reads every row of an unordered select in keyset pages of
+  at most one result page, ordered by columns that are unique together and
+  `NOT NULL`. A composite key is compared as an `OR` of prefix matches,
+  since row-value comparisons are outside SQL v1.
+- `find_chunked_paged` reads a one-to-many lookup (the credits of many
+  works, the listings of many editions) in chunks of ids that fit the
+  bind and size limits, and each chunk in keyset pages by such a key.
+
+Both halve a page the plugin refuses as too large and keep the smaller
+size. They page by key, never by `OFFSET`: a row deleted between two page
+reads would shift the later rows, and the next offset would skip one.
+
+A value wider than one cell or statement is stored in pieces: a new
+version's pieces go in first, then the owning row names that version, so a
+reader never sees a version whose pieces are not all in. Plugin artifacts,
+window books and the stored Discover feed are kept this way.
+
+A host write of many statements is cut into batches no larger than the
+plugin's `maxStatements` and request size (`store::write_batches`). When
+the statements must commit together with a marker, such as a branch's
+catalog cursor, the marker goes in the last batch, after every statement
+it covers, and each earlier batch is safe to apply twice.
+
 ## Testing against the limits
 
 A plain in-memory SQLite connection accepts `begin()` and never hits a cap,
@@ -540,6 +571,7 @@ mocked HTTP API.
   and D1's are smaller than sqlite's.
 - Test under every `bookclerk-db-testkit` profile, and keep
   `refused_begins()` at zero.
-- In host code, read columns by name, never by position.
+- In host code, read columns by name, never by position, and page any read
+  that can return more than one result page by key.
 - Writing an adapter: pass `bookclerk_db_testkit::assert_adapter_conforms`
   on an empty unit.

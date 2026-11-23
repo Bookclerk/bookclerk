@@ -295,6 +295,7 @@ export class ChunkedDecoder {
 /** Reason phrases for the statuses the agent writes most; others get none. */
 const REASONS: Record<number, string> = {
   100: "Continue",
+  101: "Switching Protocols",
   200: "OK",
   201: "Created",
   204: "No Content",
@@ -314,6 +315,7 @@ const REASONS: Record<number, string> = {
   413: "Content Too Large",
   414: "URI Too Long",
   416: "Range Not Satisfiable",
+  426: "Upgrade Required",
   429: "Too Many Requests",
   431: "Request Header Fields Too Large",
   500: "Internal Server Error",
@@ -367,17 +369,43 @@ export function encodeResponseHead(
 }
 
 /**
+ * Serializes the head that accepts a WebSocket upgrade.
+ *
+ * @param accept - The `Sec-WebSocket-Accept` value.
+ * @param protocol - The subprotocol the library chose, or `""`; one that
+ *   is not a token is left out.
+ * @returns The head's bytes.
+ */
+export function encodeSwitchingHead(accept: string, protocol: string): Uint8Array {
+  let head =
+    "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: Upgrade\r\n" +
+    `sec-websocket-accept: ${accept}\r\n`;
+  if (protocol && TOKEN.test(protocol)) head += `sec-websocket-protocol: ${protocol}\r\n`;
+  head += "\r\n";
+  return new TextEncoder().encode(head);
+}
+
+/**
  * A plain error response, whole.
  *
  * @param status - HTTP status.
  * @param message - What happened, shown to the client.
+ * @param extra - More response fields.
  * @returns Head and body bytes.
  */
-export function errorResponse(status: number, message: string): Uint8Array {
+export function errorResponse(
+  status: number,
+  message: string,
+  extra: Array<[string, string]> = [],
+): Uint8Array {
   const body = new TextEncoder().encode(
     JSON.stringify({ error: "library_unavailable", message, status }),
   );
-  const head = encodeResponseHead(status, [["content-type", "application/json"]], body.length);
+  const head = encodeResponseHead(
+    status,
+    [["content-type", "application/json"], ...extra],
+    body.length,
+  );
   const out = new Uint8Array(head.length + body.length);
   out.set(head);
   out.set(body, head.length);

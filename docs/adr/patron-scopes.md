@@ -107,6 +107,18 @@ following the default, so a later change of the default still reaches
 them. This differs from the rules, where a Member's own rules replace
 the default rules as a whole. A disabled user may do none of it.
 
+Two Administrators may edit the same patron at once, so neither kind of
+write replaces what the other just saved unseen. A change to the
+controls names only the switches it changes (`PATCH`, like the
+Administrator switches), and each write applies it to the stored row or
+document as it finds it. A scope is one value that is replaced as a
+whole, so a read reports an opaque `version` (a hash of what the patron
+has stored, or of the default's rules) and a write must send it back as
+`expected_version`; a write from an older reading is refused with `409`
+and changes nothing. A patron's version covers only their own record,
+so a change to the default does not refuse a write to a patron who
+follows it.
+
 An Owner or the operator can also set single switches for an
 Administrator (an Administrator manages Members alone, so never another
 Administrator's switches). The default is for patrons: it never limits

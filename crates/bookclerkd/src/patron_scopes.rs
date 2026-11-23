@@ -14,11 +14,13 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use bookclerk_library::control_plane::AdminControl;
 use bookclerk_library::control_plane::{
-    assigned_member_controls, assigned_patron_scope, default_member_controls, default_patron_scope,
-    role_follows_default_controls, role_has_controls, role_is_scoped, set_default_member_controls,
-    set_default_patron_scope, set_member_control_overrides_for, set_patron_scope,
-    verify_patron_administrator, AssignedControls, AssignedScope, ConfigActor, ControlOverrides,
-    MemberControl, MemberControls, PatronScope, PutUserControls, PutUserScope,
+    assigned_member_controls, assigned_patron_scope, change_default_member_controls,
+    change_member_control_overrides_for, default_member_controls, load_default_patron_scope,
+    replace_default_patron_scope, replace_patron_scope, role_follows_default_controls,
+    role_has_controls, role_is_scoped, verify_patron_administrator, AssignedControls,
+    AssignedScope, ConfigActor, ControlOverrides, MemberControl, MemberControls,
+    PatchDefaultControls, PatchUserControls, PatronScope, PutDefaultScope, PutUserScope,
+    ScopeVersion,
 };
 use bookclerk_library::LibraryError;
 use serde::Serialize;
@@ -50,6 +52,10 @@ pub(crate) struct UserScopeJson {
     /// Administrator, who always see the whole library.
     #[schema(example = true)]
     applies: bool,
+    /// The version of the patron's scope, which a write sends back as
+    /// `expected_version`. It changes only with the patron's own record,
+    /// not with the library's default.
+    version: ScopeVersion,
 }
 
 /// The library's default scope as the scope routes report it.
@@ -57,6 +63,9 @@ pub(crate) struct UserScopeJson {
 pub(crate) struct DefaultScopeJson {
     /// The scope patrons without their own follow.
     scope: PatronScope,
+    /// The version of the default, which a write sends back as
+    /// `expected_version`.
+    version: ScopeVersion,
 }
 
 /// The 500 answer for a failed read or write, logged with its route.
@@ -76,12 +85,14 @@ fn refused(status: StatusCode, message: impl std::fmt::Display) -> Refusal {
 }
 
 /// Maps a library error to the route's answer: 400 for a scope outside its
-/// bounds, 404 for an unknown user, 403 for a refused write, 500 otherwise.
+/// bounds, 404 for an unknown user, 403 for a refused write, 409 for a
+/// write refused because what it was made from changed, 500 otherwise.
 fn library_error(route: &str, err: LibraryError) -> Refusal {
     match err {
         LibraryError::Invalid(message) => refused(StatusCode::BAD_REQUEST, message),
         LibraryError::NotFound(missing) => refused(StatusCode::NOT_FOUND, missing),
         LibraryError::Forbidden(message) => refused(StatusCode::FORBIDDEN, message),
+        LibraryError::Conflict(message) => refused(StatusCode::CONFLICT, message),
         other => failed(route, &other),
     }
 }
@@ -164,6 +175,7 @@ fn user_scope_json(user: &bookclerk_library::UserRecord, assigned: AssignedScope
         scope: assigned.scope,
         own: assigned.own,
         applies: role_is_scoped(user.role),
+        version: assigned.version,
     }
 }
 
@@ -198,7 +210,10 @@ pub(crate) async fn get_user_scope(
 }
 
 /// Gives a patron their own scope, or returns them to the library's
-/// default with `"scope": null`.
+/// default with `"scope": null`, if their scope is still at the
+/// `expected_version` the caller read; otherwise nothing is written and
+/// the answer is 409, so two Administrators editing one patron never undo
+/// each other unseen.
 ///
 /// Nobody sets their own scope. Owners and Administrators always see the
 /// whole library, so a scope stored for one only applies if their role
@@ -215,6 +230,7 @@ pub(crate) async fn get_user_scope(
         (status = 401, description = "The caller is not signed in.", body = ErrorMessage, example = json!({"error": "unauthorized"})),
         (status = 403, description = "The caller may not manage this user, or tried to set their own scope.", body = ErrorMessage, example = json!({"error": "you may not set your own scope"})),
         (status = 404, description = "No such user.", body = ErrorMessage, example = json!({"error": "user 7 not found"})),
+        (status = 409, description = "The patron's scope changed since `expected_version` was read; nothing was written. Read it again.", body = ErrorMessage, example = json!({"error": "the scope of user 7 changed since it was read; read it again"})),
         (status = 500, description = "The scope could not be written.", body = ErrorMessage, example = json!({"error": "the patron's scope or controls could not be read or written"})),
         (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
@@ -234,7 +250,7 @@ pub(crate) async fn put_user_scope(
         return Err(refused(StatusCode::FORBIDDEN, "you may not set your own scope").into());
     }
     let own = body.scope.is_some();
-    let assigned = set_patron_scope(&library, user_id, body.scope)
+    let assigned = replace_patron_scope(&library, user_id, body.scope, &body.expected_version)
         .await
         .map_err(|err| library_error(ROUTE, err))?;
     let rules = assigned.scope.rules.len();
@@ -271,25 +287,35 @@ pub(crate) async fn get_default_scope(
     const ROUTE: &str = "GET /api/users/default-scope";
     provisioner(&state, &headers).await?;
     let library = state.library_snapshot().await;
-    let scope = default_patron_scope(&library)
+    let scope = load_default_patron_scope(&library)
         .await
-        .map_err(|err| library_error(ROUTE, err))?;
-    Ok(Json(DefaultScopeJson { scope }))
+        .map_err(|err| library_error(ROUTE, err))?
+        .map(|document| document.body)
+        .unwrap_or_default();
+    default_scope_json(scope).map_err(|err| library_error(ROUTE, err).into())
 }
 
-/// Replaces the library's default scope. Every patron without their own
-/// scope follows the change at once.
+/// The wire form of the library's default scope, with its version.
+fn default_scope_json(scope: PatronScope) -> Result<Json<DefaultScopeJson>, LibraryError> {
+    let version = ScopeVersion::of_default(&scope)?;
+    Ok(Json(DefaultScopeJson { scope, version }))
+}
+
+/// Replaces the library's default scope, if it is still at the
+/// `expected_version` the caller read; otherwise nothing is written and the
+/// answer is 409. Every patron without their own scope follows the change
+/// at once.
 #[utoipa::path(
     put,
     path = "/api/users/default-scope",
-    request_body = PatronScope,
+    request_body = PutDefaultScope,
     security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 200, description = "The default scope after the change.", body = DefaultScopeJson),
         (status = 400, description = "The scope is invalid.", body = ErrorMessage, example = json!({"error": "invalid patron scope: a scope holds at most 64 rules"})),
         (status = 401, description = "The caller is not signed in.", body = ErrorMessage, example = json!({"error": "unauthorized"})),
         (status = 403, description = "The caller is not an Owner or Administrator.", body = ErrorMessage, example = json!({"error": "forbidden"})),
-        (status = 409, description = "The default kept changing underneath the write; retry.", body = ErrorMessage, example = json!({"error": "core.patron_scope kept changing; retry"})),
+        (status = 409, description = "The default changed since `expected_version` was read; nothing was written. Read it again.", body = ErrorMessage, example = json!({"error": "the default scope changed since it was read; read it again"})),
         (status = 500, description = "The scope could not be written.", body = ErrorMessage, example = json!({"error": "the patron's scope or controls could not be read or written"})),
         (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
@@ -297,7 +323,7 @@ pub(crate) async fn get_default_scope(
 pub(crate) async fn put_default_scope(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(scope): Json<PatronScope>,
+    Json(body): Json<PutDefaultScope>,
 ) -> Result<Json<DefaultScopeJson>, ScopeError> {
     const ROUTE: &str = "PUT /api/users/default-scope";
     let actor = provisioner(&state, &headers).await?;
@@ -311,12 +337,10 @@ pub(crate) async fn put_default_scope(
             .await
             .map_err(|err| library_error(ROUTE, err))?,
     };
-    let stored = set_default_patron_scope(&library, &config_actor, scope)
-        .await
-        .map_err(|err| match err {
-            LibraryError::Conflict(message) => refused(StatusCode::CONFLICT, message),
-            other => library_error(ROUTE, other),
-        })?;
+    let stored =
+        replace_default_patron_scope(&library, &config_actor, body.scope, &body.expected_version)
+            .await
+            .map_err(|err| library_error(ROUTE, err))?;
     let rules = stored.body.rules.len();
     let _ = library
         .insert_security_audit_event(
@@ -325,7 +349,7 @@ pub(crate) async fn put_default_scope(
             Some(&format!(r#"{{"rules":{rules}}}"#)),
         )
         .await;
-    Ok(Json(DefaultScopeJson { scope: stored.body }))
+    default_scope_json(stored.body).map_err(|err| library_error(ROUTE, err).into())
 }
 
 /// A patron's member controls as the control routes report them.
@@ -422,19 +446,20 @@ pub(crate) async fn get_user_controls(
     Ok(Json(user_controls_json(&user, assigned)))
 }
 
-/// Sets the controls that differ for one patron; every other control
-/// follows the library's default for a Member and is allowed for an
-/// Administrator.
+/// Changes the controls named in `changes` for one patron: `on` or `off`
+/// for them alone, or `default` to follow the library's default again
+/// (for an Administrator: allowed). Controls left out keep what they had,
+/// so two Administrators changing different controls keep both changes.
 ///
 /// Nobody sets their own. An Owner may always do everything, so
 /// overrides stored for one only apply if their role changes. An
 /// Administrator's overrides limit them while they stay an Administrator;
 /// only an Owner or the operator sets those.
 #[utoipa::path(
-    put,
+    patch,
     path = "/api/users/{id}/controls",
     params(("id" = i64, Path, description = "User id.")),
-    request_body = PutUserControls,
+    request_body = PatchUserControls,
     security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 200, description = "The patron's controls after the change.", body = UserControlsJson),
@@ -442,18 +467,18 @@ pub(crate) async fn get_user_controls(
         (status = 401, description = "The caller is not signed in.", body = ErrorMessage, example = json!({"error": "unauthorized"})),
         (status = 403, description = "The caller may not manage this user, or tried to set their own controls.", body = ErrorMessage, example = json!({"error": "you may not set your own controls"})),
         (status = 404, description = "No such user.", body = ErrorMessage, example = json!({"error": "user 7 not found"})),
-        (status = 409, description = "The user's role changed since the caller was authorized for them; nothing was written.", body = ErrorMessage, example = json!({"error": "user 7 became administrator while their controls were being set; read them again"})),
+        (status = 409, description = "The user's role changed since the caller was authorized for them, or their controls kept changing underneath the write; nothing was written.", body = ErrorMessage, example = json!({"error": "user 7 is no longer member as their controls were read; read them again"})),
         (status = 500, description = "The controls could not be written.", body = ErrorMessage, example = json!({"error": "the patron's scope or controls could not be read or written"})),
         (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
-pub(crate) async fn put_user_controls(
+pub(crate) async fn patch_user_controls(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(user_id): Path<i64>,
-    Json(body): Json<PutUserControls>,
+    Json(body): Json<PatchUserControls>,
 ) -> Result<Json<UserControlsJson>, ScopeError> {
-    const ROUTE: &str = "PUT /api/users/{id}/controls";
+    const ROUTE: &str = "PATCH /api/users/{id}/controls";
     let actor = provisioner(&state, &headers).await?;
     let library = state.library_snapshot().await;
     may_set_limits(&library, actor).await?;
@@ -463,12 +488,9 @@ pub(crate) async fn put_user_controls(
     }
     // Guarded on the role the authorization above read, so a promotion
     // since then stops the write.
-    let (current, assigned) = set_member_control_overrides_for(&library, &user, body.overrides)
+    let (current, assigned) = change_member_control_overrides_for(&library, &user, &body.changes)
         .await
-        .map_err(|err| match err {
-            LibraryError::Conflict(message) => refused(StatusCode::CONFLICT, message),
-            other => library_error(ROUTE, other),
-        })?;
+        .map_err(|err| library_error(ROUTE, err))?;
     let _ = library
         .insert_security_audit_event(
             &actor.audit_actor(),
@@ -511,13 +533,14 @@ pub(crate) async fn get_default_controls(
     Ok(Json(DefaultControlsJson { controls }))
 }
 
-/// Replaces the library's default member controls. Every Member follows
-/// the change at once, except in the controls set for them alone;
+/// Changes the library's default for the controls named in `changes`;
+/// controls left out keep their stored value. Every Member follows the
+/// change at once, except in the controls set for them alone;
 /// Administrators do not follow the default.
 #[utoipa::path(
-    put,
+    patch,
     path = "/api/users/default-controls",
-    request_body = MemberControls,
+    request_body = PatchDefaultControls,
     security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
     responses(
         (status = 200, description = "The default controls after the change.", body = DefaultControlsJson),
@@ -529,12 +552,12 @@ pub(crate) async fn get_default_controls(
         (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
     ),
 )]
-pub(crate) async fn put_default_controls(
+pub(crate) async fn patch_default_controls(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(controls): Json<MemberControls>,
+    Json(body): Json<PatchDefaultControls>,
 ) -> Result<Json<DefaultControlsJson>, ScopeError> {
-    const ROUTE: &str = "PUT /api/users/default-controls";
+    const ROUTE: &str = "PATCH /api/users/default-controls";
     let actor = provisioner(&state, &headers).await?;
     let library = state.library_snapshot().await;
     may_set_limits(&library, actor).await?;
@@ -546,12 +569,9 @@ pub(crate) async fn put_default_controls(
             .await
             .map_err(|err| library_error(ROUTE, err))?,
     };
-    let stored = set_default_member_controls(&library, &config_actor, controls)
+    let stored = change_default_member_controls(&library, &config_actor, &body.changes)
         .await
-        .map_err(|err| match err {
-            LibraryError::Conflict(message) => refused(StatusCode::CONFLICT, message),
-            other => library_error(ROUTE, other),
-        })?;
+        .map_err(|err| library_error(ROUTE, err))?;
     let _ = library
         .insert_security_audit_event(
             &actor.audit_actor(),

@@ -370,8 +370,16 @@ and restart. The host accepts a directory only when its `model.json` is
 the pinned one and every listed file has the listed size, and the plugin
 checks every file's SHA-256 before it loads the model.
 
-The hosted demo never downloads: a visitor's container lives for
-minutes.
+The hosted demo's containers never download: a visitor's container lives
+for minutes. The demo image is built with the default model in it
+instead. The image build lets `bookclerkd` download and verify the model
+as any host does, embeds the sample library with it, and ships the model
+under `/opt/bookclerk/models` and the vectors in the seeded library; a
+container copies the model into the plugin's data directory when it
+starts (`packaging/demo/bake-seed.sh` and `boot.sh`). Measured at a
+container's limits (a quarter of a CPU, 1 GiB), the plugin's code takes
+211 MiB at its peak, loads the model in about 1.4 s, and embeds a book
+description in about 0.25 s and a search query in about 0.1 s.
 
 A model takes 141 to 217 MB of the plugin's data directory, whose
 budget is 512 MiB by default. While a library changes from one model to

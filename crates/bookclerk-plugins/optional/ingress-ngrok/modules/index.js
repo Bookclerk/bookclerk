@@ -6,7 +6,8 @@
  * and returns `https://<domain>`. ngrok then opens a stream inside that
  * connection for each public request; the plugin reads the HTTP/1.1
  * request, hands it to the library through `env.ORIGIN` and writes the
- * answer back (see `agent.ts`). `health` checks the session with a
+ * answer back (see `agent.ts`); an upgrade becomes a WebSocket to the
+ * library through `env.ORIGIN.connect`. `health` checks the session with a
  * heartbeat and reconnects a session that ended.
  */
 import { BookclerkEntrypoint, IngressEntrypoint, } from "@bookclerk/plugin-sdk/workerd";
@@ -43,10 +44,10 @@ export class Ingress extends IngressEntrypoint {
 /** Default entrypoint: the agent connection's handlers. */
 export default class NgrokAgent extends BookclerkEntrypoint {
     /**
-     * Handles bytes ngrok sent: session replies, heartbeats and proxied
-     * requests.
+     * Handles bytes ngrok sent (session replies, heartbeats and proxied
+     * requests) and messages from the library's WebSockets.
      *
-     * @param ws - The agent's socket.
+     * @param ws - The agent's socket, or a socket to the library.
      * @param message - The bytes.
      * @returns Nothing for the host to do.
      */
@@ -55,13 +56,15 @@ export default class NgrokAgent extends BookclerkEntrypoint {
         return {};
     }
     /**
-     * Reconnects when the connection ended unless the plugin closed it.
+     * Passes a library socket's close to its client, or reconnects when the
+     * connection to ngrok ended unless the plugin closed it.
      *
      * @param ws - The closed socket.
      * @param code - The close code.
+     * @param reason - The close reason.
      * @returns Resolves once handled.
      */
-    async webSocketClose(ws, code) {
-        await handleClose(this.env, ws, code);
+    async webSocketClose(ws, code, reason) {
+        await handleClose(this.env, ws, code, reason);
     }
 }
