@@ -50,6 +50,7 @@ extending its base:
 | `entrypoints = ["metadataFiles"]` | `MetadataFiles` | `MetadataFilesEntrypoint` |
 | `entrypoints = ["notifier"]` | `Notifier` | `NotifierEntrypoint` |
 | `entrypoints = ["ingress"]` | `Ingress` | `IngressEntrypoint` |
+| `entrypoints = ["provisioning"]` | `Provisioning` | `ProvisioningEntrypoint` |
 | `entrypoints = ["ai"]` | `Ai` | `AiEntrypoint` |
 
 ```ts

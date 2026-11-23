@@ -29,7 +29,10 @@ A native guest implements `PluginWorker` (`describe`, and
 stdin and stdout Cap'n Proto runner. The entrypoints it returns are the
 same named entrypoints the other SDKs export as classes: storefront,
 storage, remote library, database adapter, CLI, OIDC, metadata, covers,
-metadata files, notifier and model plugin (`ai`). The
+metadata files, notifier, guided setup (`provisioning`) and model plugin
+(`ai`). In a guided setup run, `invocation.purpose` is `Provision` and
+`open` returns only `provisioning`; see
+[Guided setup](../../abi.md#guided-setup-provisioning). The
 crate root re-exports the DTOs and helpers a guest needs; prefer
 `use bookclerk_plugin_sdk::…` over reaching into submodules.
 

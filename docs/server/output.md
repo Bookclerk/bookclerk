@@ -319,7 +319,32 @@ the bucket's changes through a Cloudflare Queue instead of Amazon SQS.
 | `access_key_id`, `secret_access_key` | none | Required secrets: an R2 API token's S3 keys |
 | `queue_api_token` | none | Secret: a Cloudflare API token, needed only with a queue |
 
-### Set up an R2 bucket
+### Set up an R2 bucket with the guided setup
+
+The guided setup creates the bucket (or uses yours, if you already own
+one of that name) and an API token that can read and write that one
+bucket's files and nothing else. It fills in the account, bucket and keys.
+
+1. In the Cloudflare dashboard, create an account API token with
+   **Workers R2 Storage: Edit** and **Account API Tokens: Edit**. The
+   setup uses it once and does not store it; you can delete it afterwards.
+2. In **Settings**, open the R2 instance, choose a bucket name (and a
+   jurisdiction, if you need one), paste the token and select **Run guided
+   setup**. Leave the account ID empty when the token can see only one
+   account.
+3. Approve the plugin's network access and deploy it, as in steps 4 and 5
+   below.
+
+Running the setup again creates a fresh bucket token and deletes the old
+one. Before you delete the instance, **Remove what setup created** deletes
+the bucket token; it needs a token like the one in step 1. It never deletes
+the bucket or your books.
+
+> [!NOTE]
+> The guided setup runs under the plugin's normal network grant: it calls
+> `api.cloudflare.com`, which the plugin already lists for the queue.
+
+### Set up an R2 bucket by hand
 
 1. In the Cloudflare dashboard, create an R2 API token with **Object Read
    & Write** on the bucket, and note its access key ID and secret access
