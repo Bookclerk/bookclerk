@@ -2037,7 +2037,10 @@ fn notifier_reply_deliverability_seeds_are_current() {
     };
     let report = NotifyDeliverabilityReport {
         checks: vec![
-            check("mail-tester.com", Some("https://www.mail-tester.com/acct-1")),
+            check(
+                "mail-tester.com",
+                Some("https://www.mail-tester.com/acct-1"),
+            ),
             check("Spoof", Some("https://user@evil.example/")),
             check("Plain", Some("http://example.com/")),
         ],

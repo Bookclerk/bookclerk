@@ -5543,7 +5543,7 @@ var NotificationFieldCodec = {
 };
 var NotificationMessageCodec = {
   dataWords: 1,
-  pointerCount: 10,
+  pointerCount: 11,
   write(s, v, caps) {
     s.setText(0, v.notificationId ?? "");
     s.setText(1, v.notificationType ?? "");
@@ -5574,6 +5574,9 @@ var NotificationMessageCodec = {
       s.setText(9, v.alertKey ?? "");
     }
     s.setBool(32, v.sensitive ?? false);
+    if (v.libraryOrigin !== void 0) {
+      s.setText(10, v.libraryOrigin ?? "");
+    }
   },
   read(s, caps) {
     const out = {
@@ -5606,6 +5609,10 @@ var NotificationMessageCodec = {
     if (!(alertKeyValue === "")) {
       out.alertKey = alertKeyValue;
     }
+    const libraryOriginValue = s.getText(10);
+    if (!(libraryOriginValue === "")) {
+      out.libraryOrigin = libraryOriginValue;
+    }
     return out;
   }
 };
@@ -5632,7 +5639,7 @@ var NotifySendParamsCodec = {
   pointerCount: 2,
   write(s, v, caps) {
     if (v.message != null) {
-      NotificationMessageCodec.write(s.initStruct(0, 1, 10), v.message, caps);
+      NotificationMessageCodec.write(s.initStruct(0, 1, 11), v.message, caps);
     }
     if (v.destination != null) {
       NotifyDestinationCodec.write(s.initStruct(1, 1, 2), v.destination, caps);
@@ -5640,7 +5647,7 @@ var NotifySendParamsCodec = {
   },
   read(s, caps) {
     return {
-      message: NotificationMessageCodec.read(s.getStruct(0, 1, 10), caps),
+      message: NotificationMessageCodec.read(s.getStruct(0, 1, 11), caps),
       destination: NotifyDestinationCodec.read(s.getStruct(1, 1, 2), caps)
     };
   }
@@ -5771,12 +5778,12 @@ var NotifyDeliverabilityParamsCodec = {
   pointerCount: 1,
   write(s, v, caps) {
     if (v.message != null) {
-      NotificationMessageCodec.write(s.initStruct(0, 1, 10), v.message, caps);
+      NotificationMessageCodec.write(s.initStruct(0, 1, 11), v.message, caps);
     }
   },
   read(s, caps) {
     return {
-      message: NotificationMessageCodec.read(s.getStruct(0, 1, 10), caps)
+      message: NotificationMessageCodec.read(s.getStruct(0, 1, 11), caps)
     };
   }
 };
