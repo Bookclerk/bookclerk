@@ -72,7 +72,9 @@ of its tracks.
 - **Tracks** are the edition's primary audio file and its parts.
   Per-chapter files, covers and documents are not tracks.
 - **Finished** means the position reached the last 1 percent of the
-  runtime, or its last 30 seconds for a recording over a minute.
+  runtime, or its last 30 seconds for a recording over a minute. A report
+  without a runtime uses the one already stored, including one another
+  report stored a moment before.
 - **A session stops streaming** when it is closed, when it has not
   reported for 24 hours, when the caller may no longer see the edition,
   or when the edition's files change. Stream requests to a session that

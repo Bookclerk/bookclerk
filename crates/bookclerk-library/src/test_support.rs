@@ -466,6 +466,28 @@ impl ProfileStore {
     }
 }
 
+/// Registers `node_id` as a shared node of the library in `store`, as a
+/// daemon does at startup, so a test can record its heartbeats (which are
+/// written only for a registered node).
+///
+/// # Panics
+///
+/// Panics when the insert fails.
+pub async fn register_test_node(store: &LibraryStore, node_id: &str) {
+    use sea_orm::ConnectionTrait;
+    store
+        .db()
+        .execute_unprepared(&format!(
+            "INSERT OR IGNORE INTO nodes (node_id, library_id, created_at, incarnation, \
+             heartbeat_at, software_version, schema_state, compatible) \
+             VALUES ('{}', 'test-library', '2026-01-01T00:00:00Z', 'test', \
+             '2026-01-01T00:00:00Z', 'test', 'test', 1)",
+            node_id.replace('\'', "''")
+        ))
+        .await
+        .expect("register a test node");
+}
+
 /// In-memory and file-backed SQLite profile stores for this crate's own
 /// tests. Sibling crates open theirs through `bookclerk-db-testkit`.
 #[cfg(test)]
