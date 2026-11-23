@@ -136,31 +136,67 @@ async fn requests_ending_together_leave_no_lock_behind() {
 }
 
 /// A request cancelled while its sample is being written leaves no lock
-/// behind once the write finishes.
+/// behind once the write finishes: the write is held at publication, the
+/// request is cancelled, the lock stays while the write is pending, and
+/// goes once the write is released and done.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_request_cancelled_during_the_write_leaves_no_lock_behind() {
     let dir = tempfile::tempdir().unwrap();
-    let service = Arc::new(SampleService::open(dir.path().join("samples")).unwrap());
-    for round in 0..20 {
-        let request = {
-            let service = Arc::clone(&service);
-            tokio::spawn(async move {
-                let key = format!("edition\n{round}");
-                service.sample(&key, || async { Ok(vec![2; 4096]) }).await
-            })
-        };
-        tokio::task::yield_now().await;
-        request.abort();
-        let _ = request.await;
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !service.flights.lock().unwrap().is_empty() {
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "a lock outlived its write"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
+    let samples = dir.path().join("samples");
+    let service = Arc::new(SampleService::open(samples.clone()).unwrap());
+    // Hold publication on another thread, so the write stops after staging.
+    let (hold_tx, hold_rx) = std::sync::mpsc::channel::<()>();
+    let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+    let publishing = Arc::clone(&service.publishing);
+    let holder = std::thread::spawn(move || {
+        let _held = publishing.lock().unwrap();
+        held_tx.send(()).unwrap();
+        hold_rx.recv().unwrap();
+    });
+    held_rx.recv().unwrap();
+    let request = {
+        let service = Arc::clone(&service);
+        tokio::spawn(async move {
+            service
+                .sample("edition\nheld", || async { Ok(vec![2; 4096]) })
+                .await
+        })
+    };
+    let staged = || {
+        std::fs::read_dir(&samples)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().starts_with('.'))
+    };
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !staged() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the write never staged"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
+    request.abort();
+    assert!(request.await.unwrap_err().is_cancelled());
+    assert_eq!(
+        service.flights.lock().unwrap().len(),
+        1,
+        "the pending write still holds the lock"
+    );
+    hold_tx.send(()).unwrap();
+    holder.join().unwrap();
+    while !service.flights.lock().unwrap().is_empty() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "a lock outlived its write"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    let kept = std::fs::read_dir(&samples)
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some(SAMPLE_EXTENSION));
+    assert!(kept, "the cancelled request's sample was still kept");
 }
 
 #[tokio::test]
