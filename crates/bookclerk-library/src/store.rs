@@ -915,6 +915,7 @@ impl LibraryStore {
             last_seen_at: Set(None),
             avatar_source: Set(None),
             totp_enabled: Set(0),
+            email_verified_at: Set(None),
         };
         let id = self
             .insert_bumped(users::Entity::insert(am), LiveTopic::Users)
@@ -1555,6 +1556,9 @@ impl LibraryStore {
 
     /// Set contact email (unique when set); does not bump security_version.
     ///
+    /// A different address is no longer verified, and the old address's
+    /// pending verification link stops working.
+    ///
     /// # Errors
     ///
     /// Returns an error when the operation fails.
@@ -1564,8 +1568,13 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?
             .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))?;
+        let email = crate::email::normalize_user_email(email)?;
+        let changed = model.email != email;
         let mut am: users::ActiveModel = model.into();
-        am.email = Set(crate::email::normalize_user_email(email)?);
+        am.email = Set(email);
+        if changed {
+            am.email_verified_at = Set(None);
+        }
         am.updated_at = Set(now_str());
         self.update_user_bumped(am, id).await
     }
@@ -2099,6 +2108,7 @@ impl LibraryStore {
             redeemed_at: Set(None),
             created_by: Set(created_by.to_string()),
             created_at: Set(now_str()),
+            emailed_to: Set(None),
         };
         let model = am.insert(&self.db).await.map_err(LibraryError::Orm)?;
         Ok(map_claim_ticket(model))
@@ -6760,6 +6770,7 @@ fn map_user(m: users::Model) -> UserRecord {
         last_seen_at: parse_dt_opt(m.last_seen_at.as_deref()),
         avatar_source: m.avatar_source,
         totp_enabled: m.totp_enabled != 0,
+        email_verified: m.email_verified_at.is_some(),
     }
 }
 
@@ -6788,6 +6799,7 @@ fn map_claim_ticket(m: claim_tickets::Model) -> crate::models::ClaimTicketRecord
         redeemed_at: parse_dt_opt(m.redeemed_at.as_deref()),
         created_by: m.created_by,
         created_at: parse_dt(&m.created_at),
+        emailed_to: m.emailed_to,
     }
 }
 
@@ -7127,6 +7139,7 @@ impl LibraryStore {
     }
 }
 
+pub(crate) mod account_mail;
 pub(crate) mod acquire_title;
 pub(crate) mod acquired_keys;
 pub(crate) mod catalog_listings;
@@ -7197,6 +7210,8 @@ mod lock_retry;
 mod result_cap;
 pub use acquired_keys::{AcquiredTitleKey, AcquiredTitleKeyPage, ACQUIRED_KEYS_MAX_PAGE};
 
+#[cfg(test)]
+mod account_mail_tests;
 #[cfg(test)]
 mod notifications_tests;
 #[cfg(test)]

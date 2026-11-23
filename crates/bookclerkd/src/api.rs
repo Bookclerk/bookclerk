@@ -1532,6 +1532,12 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(crate::notifications_api::get_offers))
         .routes(routes!(crate::notifications_api::put_offers))
         .routes(routes!(crate::notifications_api::list_deliveries))
+        .routes(routes!(
+            crate::account_mail::get_account_mail,
+            crate::account_mail::put_account_mail
+        ))
+        .routes(routes!(crate::account_mail::post_account_mail_test))
+        .routes(routes!(crate::account_mail::post_my_email_verification))
         // A user's own notification settings and inbox.
         .routes(routes!(crate::notifications_api::get_my_settings))
         .routes(routes!(
@@ -1753,6 +1759,8 @@ fn public_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(auth::elevate))
         .routes(routes!(auth::bootstrap))
         .routes(routes!(auth::password_login, auth::set_password))
+        // The link's token is the proof; no sign-in is needed.
+        .routes(routes!(crate::account_mail::post_verify_email))
         .routes(routes!(auth::list_users, auth::create_user))
         .routes(routes!(auth::patch_user, auth::delete_user))
         .routes(routes!(
@@ -1780,6 +1788,7 @@ fn public_routes() -> OpenApiRouter<Arc<AppState>> {
             crate::admin_controls::patch_user_admin_controls
         ))
         .routes(routes!(auth::create_user_claim_ticket))
+        .routes(routes!(auth::post_user_invite_email))
         .routes(routes!(auth::reset_user_password))
 }
 
@@ -1968,6 +1977,8 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
                 "/clerk/callback",
                 // A player app's browser sign-in: the consent page.
                 "/apps/approve",
+                // A mailed link that verifies an email address.
+                "/verify-email",
             ];
             let spa_index = axum::routing::get_service(ServeFile::new(index.clone()))
                 .layer(middleware::from_fn(spa_document_csp));
@@ -8111,6 +8122,7 @@ mod tests {
             redeemed_at: None,
             created_by: "test".into(),
             created_at: now,
+            emailed_to: None,
         };
         assert_eq!(
             invite_link_error(None, None, now),

@@ -376,6 +376,7 @@ pub async fn patch_profile(
     }
 
     if let Some(raw) = body.email.as_deref() {
+        let before = user.email.clone();
         user = match library.set_user_email(user_id, Some(raw)).await {
             Ok(u) => u,
             Err(bookclerk_library::LibraryError::InvalidEmail) => {
@@ -394,6 +395,14 @@ pub async fn patch_profile(
             }
             Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR.into()),
         };
+        // A new address is unverified until a link mailed to it is used.
+        if let Some(address) = user
+            .email
+            .as_deref()
+            .filter(|now| before.as_deref() != Some(*now))
+        {
+            crate::account_mail::queue_verification_if_ready(&state, user_id, address).await;
+        }
     }
 
     if let Some(raw) = body.avatar_source.as_deref() {

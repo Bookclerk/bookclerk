@@ -487,6 +487,7 @@ The web app keeps the address bar in step with the screen:
 | `/accounts` | Accounts |
 | `/settings` | Settings |
 | `/invite` | Claim an invite (`?ticket=`) |
+| `/verify-email` | Verify an email address from a mailed link (`?token=`; see [Account mail](notifications.md#account-mail)) |
 | `/clerk/approve` | Give a clerk a library card (see [Library cards](#library-cards)) |
 | `/clerk/callback` | Finish this install's library card sign-in (see [Signing in with a library card](#signing-in-with-a-library-card)) |
 
@@ -617,7 +618,10 @@ own address, so the browser never contacts Gravatar or the provider (see
 
 The operator adds the first Owner. The operator, Owners and Administrators
 create users with an invite link, change role and status, send a new invite, and
-reset passwords.
+reset passwords. Once [account mail](notifications.md#account-mail) is set
+up, a new user with an email address gets their invite by email instead of
+a link, **Email invite** mails a new one, and each row shows whether the
+user's address is verified.
 
 Who can grant which role:
 

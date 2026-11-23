@@ -193,6 +193,11 @@ pub async fn redeem_ticket_to_session_with_client(
     let session = bookclerk_library::derive_claim_session_token(&dek, raw_ticket, nonce);
     let session_hash = hash_token(&session);
     let expires = Utc::now() + Duration::hours(integrations.portal_session_ttl_hours as i64);
+    // An invite mailed to an address proves the address once it is used.
+    let emailed_to = library
+        .get_claim_ticket_by_hash(&hash)
+        .await?
+        .and_then(|ticket| ticket.emailed_to);
     let identity = library
         .redeem_claim_ticket_to_session(
             &hash,
@@ -203,6 +208,13 @@ pub async fn redeem_ticket_to_session_with_client(
             password_fingerprint,
         )
         .await?;
+    if let (Some(email), Some(user_id)) = (emailed_to.as_deref(), identity.user_id) {
+        // The sign-in already succeeded; a failed mark leaves the address
+        // unverified, and the patron can verify it from their profile.
+        if let Err(err) = library.verify_user_email_if(user_id, email).await {
+            tracing::warn!(error = %err, user_id, "could not mark an invited address verified");
+        }
+    }
     Ok((session, identity))
 }
 

@@ -644,6 +644,13 @@ input_from = "signed-in user"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.account_mail_request]
+crate = "bookclerk-library"
+boundary = "Account mail's notifier from PUT /api/notifications/account-mail, and the token of a verification link from POST /api/auth/verify-email"
+input_from = "Administrator, Owner or operator (settings); anyone who can reach the library (verify)"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.window_policy]
 crate = "bookclerk-window-policy"
 boundary = "Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, the URLs the window is asked to open, and which pages may start the window's live updates"

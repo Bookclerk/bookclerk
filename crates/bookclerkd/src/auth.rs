@@ -554,6 +554,9 @@ pub struct AuthMeUser {
     /// True when a local password hash is stored (invite users may be false).
     #[schema(example = true)]
     pub has_password: bool,
+    /// True when the email address was proven by a link mailed to it.
+    #[schema(example = false)]
+    pub email_verified: bool,
     /// True when a JPEG avatar is stored under `files_dir/avatars/{id}.*`.
     #[schema(example = false)]
     pub has_avatar: bool,
@@ -2234,6 +2237,7 @@ pub(crate) fn auth_me_user(user: &bookclerk_library::UserRecord) -> AuthMeUser {
         display_name: user.display_name.clone(),
         email: user.email.clone(),
         has_password: user.has_password,
+        email_verified: user.email_verified,
         has_avatar: false,
         avatar_source: crate::profile::avatar_source_wire(user.avatar_source.as_deref()),
         gravatar_hash: crate::profile::gravatar_hash_for(user.email.as_deref()),
@@ -3553,6 +3557,7 @@ pub async fn patch_user(
     }
 
     if let Some(email) = body.email.as_deref() {
+        let before = user.email.clone();
         user = match library.set_user_email(user_id, Some(email)).await {
             Ok(u) => u,
             Err(LibraryError::InvalidEmail) => {
@@ -3567,6 +3572,14 @@ pub async fn patch_user(
             }
             Err(_) => return Err(StatusCode::CONFLICT.into()),
         };
+        // A new address is unverified until a link mailed to it is used.
+        if let Some(address) = user
+            .email
+            .as_deref()
+            .filter(|now| before.as_deref() != Some(*now))
+        {
+            crate::account_mail::queue_verification_if_ready(&state, user.id, address).await;
+        }
     }
 
     let _ = library
@@ -3642,6 +3655,58 @@ pub async fn create_user_claim_ticket(
         claim_ticket: claim,
         invite_url,
     }))
+}
+
+/// Mails a user a new invite through account mail. The invite's ticket is
+/// minted when the mail is sent and voids the user's other unredeemed
+/// tickets, so only the newest invite works.
+#[utoipa::path(
+    post,
+    path = "/api/users/{id}/invite-email",
+    params(("id" = i64, Path, description = "User id.")),
+    security(("operatorToken" = []), ("operatorSession" = []), ("portalSession" = [])),
+    responses(
+        (status = 202, description = "The invite is queued.", body = crate::account_mail::AccountMailQueued),
+        (status = 401, description = "The caller is not signed in."),
+        (status = 403, description = "The caller may not do this, or the user is disabled."),
+        (status = 404, description = "No such user."),
+        (status = 409, description = "The user has no email address, or account mail is not set up.", body = crate::http_error::ErrorMessage, example = json!({"error": "the user has no email address"})),
+        (status = 503, description = "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds."),
+    ),
+)]
+pub async fn post_user_invite_email(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Path(user_id): axum::extract::Path<i64>,
+) -> Result<Response, CallerRefusal> {
+    let auth = state.auth_snapshot().await;
+    let library = state.library_snapshot().await;
+    let actor = authorize_provisioner(&state, &auth, &headers, &library).await?;
+    let user = library
+        .get_user(user_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    if !actor.can_provision_target(user.role, user_id) {
+        return Err(StatusCode::FORBIDDEN.into());
+    }
+    require_admin_control(&library, actor, AdminControl::ManageMembers).await?;
+    if matches!(user.status, UserStatus::Disabled) {
+        return Err(StatusCode::FORBIDDEN.into());
+    }
+    let queued =
+        match crate::account_mail::queue_invite(&state, user_id, user.email.as_deref()).await {
+            Ok(queued) => queued,
+            Err(answer) => return Ok(Result::<Response, _>::Err(answer).into_response()),
+        };
+    let _ = library
+        .insert_security_audit_event(
+            &actor.audit_actor(),
+            "user_invite_email",
+            Some(&format!(r#"{{"user_id":{user_id}}}"#)),
+        )
+        .await;
+    Ok((StatusCode::ACCEPTED, Json(queued)).into_response())
 }
 
 /// Invalidate a user's password, revoke sessions, and mint a claim ticket for reset.
@@ -3950,7 +4015,9 @@ pub struct CreateUserRequest {
     /// Optional password; hashed before persist. Empty or omitted leaves the user passwordless.
     #[schema(example = "correct horse battery staple")]
     pub password: Option<String>,
-    /// When true (default), also mint an invite/claim ticket.
+    /// When true (default), also invite the user: by mail when account mail
+    /// is ready and an email is given, otherwise as a claim ticket and link
+    /// in the answer.
     #[serde(default = "default_true")]
     #[schema(example = true)]
     pub mint_invite: bool,
@@ -4030,7 +4097,15 @@ pub async fn create_user(
         .ensure_local_portal_identity(user.id, display)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let claim = if body.mint_invite {
+    // With account mail ready, the invite goes to the user's address and
+    // its ticket is minted when it is sent, so no link is handed back.
+    let invite_emailed = match (body.mint_invite, user.email.as_deref()) {
+        (true, Some(address)) => {
+            crate::account_mail::queue_invite_if_ready(&state, user.id, address).await
+        }
+        _ => false,
+    };
+    let claim = if body.mint_invite && !invite_emailed {
         Some(mint_local_claim(&library, identity.id, &actor_s).await?)
     } else {
         None
@@ -4054,6 +4129,7 @@ pub async fn create_user(
         user: UserSummary::from_record(&user),
         claim_ticket: claim,
         invite_url,
+        invite_emailed,
     }))
 }
 
@@ -4551,6 +4627,9 @@ pub struct UserSummary {
     /// Whether a local password is stored for the user.
     #[schema(example = true)]
     pub has_password: bool,
+    /// Whether the email address was proven by a link mailed to it.
+    #[schema(example = false)]
+    pub email_verified: bool,
 }
 
 impl UserSummary {
@@ -4568,6 +4647,7 @@ impl UserSummary {
             login_name: user.login_name.clone(),
             email: user.email.clone(),
             has_password: user.has_password,
+            email_verified: user.email_verified,
         }
     }
 }
@@ -4723,6 +4803,12 @@ pub struct UserCreatedResponse {
     /// Invite link that redeems the claim ticket, when one was minted.
     #[schema(example = "https://books.example.com/invite?ticket=7Qf3kZp0wL2mN9xT1cRb8vHd")]
     pub invite_url: Option<String>,
+    /// True when the invite was mailed to the user's address instead of
+    /// returned: account mail is ready and the user has an email address.
+    /// The ticket is minted when the mail is sent, so `claim_ticket` and
+    /// `invite_url` are then empty.
+    #[schema(example = false)]
+    pub invite_emailed: bool,
 }
 
 /// Body of `POST /api/users/{id}/claim-ticket`.

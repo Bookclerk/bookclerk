@@ -520,6 +520,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "account_mail_request"
+path = "fuzz_targets/account_mail_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "pace_request"
 path = "fuzz_targets/pace_request.rs"
 test = false
