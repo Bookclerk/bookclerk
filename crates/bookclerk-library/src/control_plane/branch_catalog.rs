@@ -83,18 +83,34 @@ pub fn branch_provenance(node_id: &str) -> String {
     resolve::Holder::Node(node_id.to_string()).stored()
 }
 
-/// The `holdings.share_ref` of a title: `store:product_id` as the branch
-/// named it (store ids carry no `:`).
-fn share_ref(store: &str, product_id: &str) -> String {
-    format!("{store}:{product_id}")
+/// The `holdings.share_ref` of a title as the branch named it:
+/// `store:product_id`, or `store@marketplace:product_id` when it names a
+/// marketplace. Store ids and marketplaces carry neither `:` nor `@`
+/// ([`bookclerk_node_proto::is_store_id`],
+/// [`bookclerk_node_proto::is_marketplace`]), so the first `:` ends the
+/// store part whatever the product id holds.
+fn share_ref(reference: &CatalogRef) -> String {
+    let CatalogRef {
+        store,
+        product_id,
+        marketplace,
+    } = reference;
+    if marketplace.is_empty() {
+        format!("{store}:{product_id}")
+    } else {
+        format!("{store}@{marketplace}:{product_id}")
+    }
 }
 
-/// The store and product id of a `share_ref`.
-fn split_share_ref(share_ref: &str) -> (String, String) {
-    share_ref.split_once(':').map_or_else(
-        || (String::new(), share_ref.to_string()),
-        |(store, product)| (store.to_string(), product.to_string()),
-    )
+/// The catalog reference a `share_ref` names ([`share_ref`]).
+fn split_share_ref(share_ref: &str) -> CatalogRef {
+    let (head, product_id) = share_ref.split_once(':').unwrap_or(("", share_ref));
+    let (store, marketplace) = head.split_once('@').unwrap_or((head, ""));
+    CatalogRef {
+        store: store.to_string(),
+        product_id: product_id.to_string(),
+        marketplace: marketplace.to_string(),
+    }
 }
 
 /// How long a branch's catalog sync resumes incrementally before the
@@ -576,8 +592,8 @@ struct PreparedCatalogBatch {
     /// The full pass this batch ends, when it is the last batch of one.
     ends_pass: Option<String>,
     /// The branch's other holdings of titles this batch linked: a title
-    /// that now resolves to another listing (its listing plugin or
-    /// marketplace changed) leaves its earlier holding behind, which goes
+    /// that now resolves to another listing (its store's listings are
+    /// filed under another plugin) leaves its earlier holding behind, which goes
     /// once the batch is written.
     replaced: Vec<String>,
 }
@@ -658,13 +674,19 @@ async fn prepare_catalog_batch(
     let mut held_seen = Vec::new();
     let mut linked: BTreeMap<String, String> = BTreeMap::new();
     for title in titles {
-        let reference = share_ref(&title.store, &title.product_id);
+        let reference = share_ref(&title.reference());
         if held_here(store, &owned, title).await? {
             skipped += 1;
             if let Some(pass) = &pass {
+                // A holding recorded before references named a marketplace
+                // carries the reference without one; it is the same title.
+                let unmarked = share_ref(&CatalogRef {
+                    marketplace: String::new(),
+                    ..title.reference()
+                });
                 held_seen.push(gated(
-                    "UPDATE holdings SET seen_pass = ? WHERE node_id = ? AND share_ref = ?",
-                    vec![text(pass), text(node_id), text(&reference)],
+                    "UPDATE holdings SET seen_pass = ? WHERE node_id = ? AND share_ref IN (?, ?)",
+                    vec![text(pass), text(node_id), text(&reference), text(&unmarked)],
                 ));
             }
             continue;
@@ -1119,11 +1141,7 @@ pub async fn pending_deliveries(
                     continue;
                 }
             }
-            let (store_id, product_id) = split_share_ref(reference);
-            out.push(CatalogRef {
-                store: store_id,
-                product_id,
-            });
+            out.push(split_share_ref(reference));
         }
         if !full {
             break;
@@ -1133,17 +1151,16 @@ pub async fn pending_deliveries(
 }
 
 /// The node holding through which `node_id` shares the title it names
-/// `store_id`/`product_id`, with its edition and the title as shared.
+/// `reference`, with its edition and the title as shared.
 async fn shared_holding(
     store: &LibraryStore,
     node_id: &str,
-    store_id: &str,
-    product_id: &str,
+    reference: &CatalogRef,
 ) -> Result<Option<(holdings::Model, String, CatalogTitle)>> {
     let Some(row) = find_holdings()
         .filter(holdings::Column::HolderKind.eq("node"))
         .filter(holdings::Column::NodeId.eq(node_id))
-        .filter(holdings::Column::ShareRef.eq(share_ref(store_id, product_id)))
+        .filter(holdings::Column::ShareRef.eq(share_ref(reference)))
         .filter(holdings::Column::ShareDigest.is_not_null())
         .order_by_asc(holdings::Column::Id)
         .one(store.db())
@@ -1195,17 +1212,17 @@ pub async fn grant_catalog_upload(
     node_id: &str,
     fence: i64,
     receiving_node_id: &str,
-    store_id: &str,
-    product_id: &str,
+    reference: &CatalogRef,
     files: &[UploadFile],
     destinations: &[String],
 ) -> Result<UploadGrant> {
     if live_catalog(store, node_id, fence).await?.is_none() {
         return Ok(UploadGrant::Lost);
     }
-    let Some((row, edition_id, shared)) =
-        shared_holding(store, node_id, store_id, product_id).await?
-    else {
+    if !reference.is_well_formed() {
+        return Ok(UploadGrant::Refused("unknown_title"));
+    }
+    let Some((row, edition_id, shared)) = shared_holding(store, node_id, reference).await? else {
         return Ok(UploadGrant::Refused("unknown_title"));
     };
     let declared: BTreeMap<&str, u64> = shared
@@ -1822,15 +1839,15 @@ pub async fn list_branch_titles(
             None => None,
         }
         .and_then(|text| serde_json::from_str(&text).ok());
-        let (store_id, product_id) = split_share_ref(row.share_ref.as_deref().unwrap_or_default());
+        let reference = split_share_ref(row.share_ref.as_deref().unwrap_or_default());
         out.push(BranchTitle {
             delivered: row.delivered_digest.is_some() && row.delivered_digest == row.share_digest,
             uuid: row.id,
             provenance: row.holder,
             node_id: node,
             owner_user_id: owner,
-            store: store_id,
-            product_id,
+            store: reference.store,
+            product_id: reference.product_id,
             title: shared
                 .as_ref()
                 .map(|t| t.metadata.title.clone())
@@ -1865,7 +1882,7 @@ pub struct BranchTitleCounts {
 struct RefRow {
     /// `holdings.id`.
     id: String,
-    /// `holdings.share_ref`: the title as `store:product_id`.
+    /// `holdings.share_ref`: the title as the branch named it ([`share_ref`]).
     share_ref: Option<String>,
 }
 
@@ -1916,10 +1933,9 @@ pub const FORWARDABLE_KEYS_MAX_PAGE: u64 = 256;
 pub struct ForwardableBranchKey {
     /// The node holding's id; the keyset cursor of the page reader.
     pub id: String,
-    /// Store id (`audible`, `libro`, ...).
-    pub store: String,
-    /// Store product id.
-    pub product_id: String,
+    /// The title as the branch named it: store id (`audible`, `libro`,
+    /// ...), product id and marketplace.
+    pub reference: CatalogRef,
     /// RFC 3339 last change, as stored.
     pub updated_at: String,
     /// The files of the current manifest arrived here, so the title may be
@@ -1936,7 +1952,7 @@ pub struct ForwardableBranchKey {
 struct BranchKeyRow {
     /// Holding id.
     id: String,
-    /// `store:product_id` as the branch named it.
+    /// The title as the branch named it ([`share_ref`]).
     share_ref: Option<String>,
     /// RFC 3339 last change.
     updated_at: String,
@@ -1992,17 +2008,11 @@ pub async fn forwardable_branch_title_keys_page(
         .map_err(LibraryError::Orm)?;
     Ok(rows
         .into_iter()
-        .map(|row| {
-            let (store_id, product_id) =
-                split_share_ref(row.share_ref.as_deref().unwrap_or_default());
-            ForwardableBranchKey {
-                delivered: row.delivered_digest.is_some()
-                    && row.delivered_digest == row.share_digest,
-                id: row.id,
-                store: store_id,
-                product_id,
-                updated_at: row.updated_at,
-            }
+        .map(|row| ForwardableBranchKey {
+            delivered: row.delivered_digest.is_some() && row.delivered_digest == row.share_digest,
+            id: row.id,
+            reference: split_share_ref(row.share_ref.as_deref().unwrap_or_default()),
+            updated_at: row.updated_at,
         })
         .collect())
 }

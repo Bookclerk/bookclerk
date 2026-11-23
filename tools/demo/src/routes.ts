@@ -191,6 +191,10 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["GET", "/api/config/plugin-instances/{id}/intake", "allow"],
   ["PUT", "/api/config/plugin-instances/{id}/intake", "deny"],
   ["DELETE", "/api/config/plugin-instances/{id}/intake", "deny"],
+  // Guided setup calls out to the provider with a pasted token.
+  ["GET", "/api/config/plugin-instances/{id}/provisioning", "allow"],
+  ["POST", "/api/config/plugin-instances/{id}/provision", "deny"],
+  ["POST", "/api/config/plugin-instances/{id}/deprovision", "deny"],
   ["PUT", "/api/config/plugin-instances/{id}/placement", "deny"],
   ["DELETE", "/api/config/plugin-instances/{id}/placement", "deny"],
   ["GET", "/api/config/plugins", "allow"],

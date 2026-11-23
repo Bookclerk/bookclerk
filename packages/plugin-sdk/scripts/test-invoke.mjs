@@ -41,6 +41,8 @@ const {
   MAX_BATCH_KEYS,
   MetadataFilesEntrypoint,
   AiEntrypoint,
+  ProvisioningEntrypoint,
+  provisioned,
   NotifierEntrypoint,
   packEmbeddingVectors,
   unpackEmbeddingVectors,
@@ -448,6 +450,27 @@ class MetadataFiles extends MetadataFilesEntrypoint {
   }
 }
 
+class Provisioning extends ProvisioningEntrypoint {
+  async provision(request) {
+    calls.provision = {
+      kind: request.grant.kind,
+      token: request.grant.token,
+      inputs: JSON.parse(request.inputsJson),
+      bucketBefore: this.env.CONFIG?.greeting,
+    };
+    if (request.grant.token === "bad") throw new PluginError("forbidden", "token cannot");
+    if (request.grant.token === "bare") return { settingsJson: undefined };
+    return provisioned({
+      settings: { bucket: "books", port: 443, tls: true },
+      secrets: { access_key_id: "id-1234" },
+      summary: ["Created bucket books"],
+    });
+  }
+  async deprovision(request) {
+    calls.deprovision = request.grant.kind;
+  }
+}
+
 class Ai extends AiEntrypoint {
   async models() {
     if (this.env.CONFIG?.aiBroken) return {};
@@ -838,6 +861,7 @@ const env = {
   PLUGIN_METADATA_FILES: new MetadataFiles({}, {}),
   PLUGIN_NOTIFIER: new Notifier({}, {}),
   PLUGIN_AI: new Ai({}, {}),
+  PLUGIN_PROVISIONING: new Provisioning({}, {}),
   GRANTED: granted,
   BRIDGE_TOKEN: "t",
 };
@@ -2092,6 +2116,47 @@ const jobParams = (commandType) => ({
 
   assert.throws(() => packEmbeddingVectors([[1, 2], [3]]), /differ in length/);
   assert.throws(() => unpackEmbeddingVectors(new Uint8Array(6), 2), /whole vectors/);
+}
+
+// --- Provisioning ---------------------------------------------------------
+
+{
+  const provision = async (token) =>
+    decodeReply(
+      await invoke("Provisioning", "provision", W.ProvisioningProvisionParamsCodec, {
+        request: { grant: { kind: "apiToken", token }, inputsJson: '{"bucket":"books"}' },
+      }),
+      W.ProvisioningProvisionResultsCodec,
+    );
+  const done = await provision("tok");
+  assert.deepEqual(calls.provision, {
+    kind: "apiToken",
+    token: "tok",
+    inputs: { bucket: "books" },
+    bucketBefore: "hi",
+  });
+  assert.deepEqual(done, {
+    kind: "ok",
+    value: {
+      settingsJson: '{"bucket":"books","port":443,"tls":true}',
+      secrets: [{ key: "access_key_id", value: "id-1234" }],
+      summary: ["Created bucket books"],
+    },
+  });
+  const bare = await provision("bare");
+  assert.deepEqual(bare.value, { settingsJson: "{}", secrets: [], summary: [] });
+  const refused = await provision("bad");
+  assert.equal(refused.kind, "err");
+  assert.equal(refused.value.code, "forbidden");
+
+  const gone = decodeReply(
+    await invoke("Provisioning", "deprovision", W.ProvisioningDeprovisionParamsCodec, {
+      request: { grant: { kind: "none" } },
+    }),
+    W.ProvisioningDeprovisionResultsCodec,
+  );
+  assert.deepEqual(gone, { kind: "ok" });
+  assert.equal(calls.deprovision, "none");
 }
 
 // --- Notifier -------------------------------------------------------------

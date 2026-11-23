@@ -24,6 +24,7 @@ pub mod b2_events;
 mod b2_feed;
 /// Bounded scalar reads, ranges, and digest helpers.
 mod bounded;
+pub mod cloudflare_api;
 /// Error types returned by destination storage backends.
 mod error;
 mod fanout;

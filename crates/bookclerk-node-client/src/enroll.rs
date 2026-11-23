@@ -141,17 +141,7 @@ pub async fn check_join_ancestry(
 /// Returns [`JoinError::Cycle`], [`JoinError::AncestryTooDeep`] or
 /// [`JoinError::Record`].
 pub async fn refuse_cycle(store: &LibraryStore, ancestry: &[String]) -> Result<(), JoinError> {
-    if !bookclerk_node_proto::is_ancestry(ancestry) {
-        return Err(JoinError::Record("malformed library ancestry".into()));
-    }
-    match join_cycle(store, ancestry).await {
-        Ok(None) => {}
-        Ok(Some(own)) => {
-            tracing::warn!(library_id = %own, "refused to join a library whose ancestry names this one");
-            return Err(JoinError::Cycle);
-        }
-        Err(err) => return Err(JoinError::Record(err.to_string())),
-    }
+    refuse_loop(store, ancestry).await?;
     match join_overflows_ancestry(store, ancestry).await {
         Ok(false) => Ok(()),
         Ok(true) => {
@@ -160,6 +150,32 @@ pub async fn refuse_cycle(store: &LibraryStore, ancestry: &[String]) -> Result<(
                 "refused to join a library too deep to check for a loop"
             );
             Err(JoinError::AncestryTooDeep)
+        }
+        Err(err) => Err(JoinError::Record(err.to_string())),
+    }
+}
+
+/// Refuses `ancestry` when it names this install's own library id or is
+/// malformed, without the depth check of [`refuse_cycle`].
+///
+/// For the join steps that come before the operator's choice between a
+/// branch and a shared branch, and for a shared branch join: a shared
+/// branch shares its library's database and ancestry, so it adds no depth
+/// to the tree, and a branch join is checked in full when its code is
+/// redeemed ([`crate::redeem_branch_code`]).
+///
+/// # Errors
+///
+/// Returns [`JoinError::Cycle`] or [`JoinError::Record`].
+pub async fn refuse_loop(store: &LibraryStore, ancestry: &[String]) -> Result<(), JoinError> {
+    if !bookclerk_node_proto::is_ancestry(ancestry) {
+        return Err(JoinError::Record("malformed library ancestry".into()));
+    }
+    match join_cycle(store, ancestry).await {
+        Ok(None) => Ok(()),
+        Ok(Some(own)) => {
+            tracing::warn!(library_id = %own, "refused to join a library whose ancestry names this one");
+            Err(JoinError::Cycle)
         }
         Err(err) => Err(JoinError::Record(err.to_string())),
     }

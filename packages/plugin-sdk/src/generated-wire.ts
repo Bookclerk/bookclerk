@@ -865,6 +865,42 @@ export interface IngressStopResults {
 }
 
 /**
+ * Params envelope of `Provisioning.provision`.
+ *
+ * @internal
+ */
+export interface ProvisioningProvisionParams {
+  request: T.ProvisionRequest;
+}
+
+/**
+ * Results envelope of `Provisioning.provision`.
+ *
+ * @internal
+ */
+export interface ProvisioningProvisionResults {
+  result: T.ProvisionReply;
+}
+
+/**
+ * Params envelope of `Provisioning.deprovision`.
+ *
+ * @internal
+ */
+export interface ProvisioningDeprovisionParams {
+  request: T.DeprovisionRequest;
+}
+
+/**
+ * Results envelope of `Provisioning.deprovision`.
+ *
+ * @internal
+ */
+export interface ProvisioningDeprovisionResults {
+  result: T.EmptyReply;
+}
+
+/**
  * Params envelope of `Webhooks.url`.
  *
  * @internal
@@ -3082,13 +3118,13 @@ export const SettingNetworkGrantCodec: StructCodec<T.SettingNetworkGrant> = {
 };
 
 /**
- * Wire codec for `Entrypoints` (0 data words, 18 pointers).
+ * Wire codec for `Entrypoints` (0 data words, 19 pointers).
  *
  * @internal
  */
 export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
   dataWords: 0,
-  pointerCount: 18,
+  pointerCount: 19,
   write(s, v, caps) {
     if (v.eventConsumer != null) {
       s.setCap(0, caps.exportCap(v.eventConsumer));
@@ -3143,6 +3179,9 @@ export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
     }
     if (v.webhookHandler != null) {
       s.setCap(17, caps.exportCap(v.webhookHandler));
+    }
+    if (v.provisioning != null) {
+      s.setCap(18, caps.exportCap(v.provisioning));
     }
   },
   read(s, caps) {
@@ -3220,6 +3259,10 @@ export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
     if (!(webhookHandlerValue == null)) {
       out.webhookHandler = webhookHandlerValue;
     }
+    const provisioningValue = caps.importCap(s.getCapIndex(18)) as T.Provisioning;
+    if (!(provisioningValue == null)) {
+      out.provisioning = provisioningValue;
+    }
     return out;
   },
 };
@@ -3237,7 +3280,7 @@ export const EntrypointsReplyCodec: StructCodec<T.EntrypointsReply> = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          EntrypointsCodec.write(s.initStruct(0, 0, 18), v.value, caps);
+          EntrypointsCodec.write(s.initStruct(0, 0, 19), v.value, caps);
         }
         break;
       case "err":
@@ -3254,7 +3297,7 @@ export const EntrypointsReplyCodec: StructCodec<T.EntrypointsReply> = {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: EntrypointsCodec.read(s.getStruct(0, 0, 18), caps) };
+        return { kind: "ok", value: EntrypointsCodec.read(s.getStruct(0, 0, 19), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
@@ -7840,12 +7883,12 @@ export const PublishReplyCodec: StructCodec<T.PublishReply> = {
 };
 
 /**
- * Wire codec for `Invocation` (1 data words, 4 pointers).
+ * Wire codec for `Invocation` (2 data words, 4 pointers).
  *
  * @internal
  */
 export const InvocationCodec: StructCodec<T.Invocation> = {
-  dataWords: 1,
+  dataWords: 2,
   pointerCount: 4,
   write(s, v, caps) {
     void caps;
@@ -7854,6 +7897,7 @@ export const InvocationCodec: StructCodec<T.Invocation> = {
     s.setUint64(0, BigInt(v.deadlineUnixMs ?? 0));
     s.setText(2, v.correlationId ?? "");
     s.setText(3, v.causationId ?? "");
+    s.setUint16(4, ord(A.INVOCATION_PURPOSES, v.purpose ?? A.INVOCATION_PURPOSES[0]!, "InvocationPurpose"));
   },
   read(s, caps) {
     void caps;
@@ -7863,6 +7907,7 @@ export const InvocationCodec: StructCodec<T.Invocation> = {
       deadlineUnixMs: Number(s.getUint64(0)),
       correlationId: s.getText(2),
       causationId: s.getText(3),
+      purpose: fromOrd(A.INVOCATION_PURPOSES, s.getUint16(4), "InvocationPurpose"),
     };
   },
 };
@@ -11064,6 +11109,172 @@ export const WebhookDeliveredCodec: StructCodec<T.WebhookDelivered> = {
 };
 
 /**
+ * Wire codec for `ProvisionGrant` (2 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const ProvisionGrantCodec: StructCodec<T.ProvisionGrant> = {
+  dataWords: 2,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setUint16(0, ord(A.PROVISION_GRANT_KINDS, v.kind ?? A.PROVISION_GRANT_KINDS[0]!, "ProvisionGrantKind"));
+    if (v.token !== undefined) {
+      s.setText(0, v.token ?? "");
+    }
+    if (v.expiresAtUnixMs !== undefined) {
+      s.setUint64(1, BigInt(v.expiresAtUnixMs ?? 0));
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const out: T.ProvisionGrant = {
+      kind: fromOrd(A.PROVISION_GRANT_KINDS, s.getUint16(0), "ProvisionGrantKind"),
+    };
+    const tokenValue = s.getText(0);
+    if (!(tokenValue === "")) {
+      out.token = tokenValue;
+    }
+    const expiresAtUnixMsValue = Number(s.getUint64(1));
+    if (!(expiresAtUnixMsValue === 0)) {
+      out.expiresAtUnixMs = expiresAtUnixMsValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `ProvisionRequest` (0 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const ProvisionRequestCodec: StructCodec<T.ProvisionRequest> = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    if (v.grant != null) {
+      ProvisionGrantCodec.write(s.initStruct(0, 2, 1), v.grant, caps);
+    }
+    s.setText(1, v.inputsJson ?? "");
+  },
+  read(s, caps) {
+    return {
+      grant: ProvisionGrantCodec.read(s.getStruct(0, 2, 1), caps),
+      inputsJson: s.getText(1),
+    };
+  },
+};
+
+/**
+ * Wire codec for `ProvisionedSecret` (0 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const ProvisionedSecretCodec: StructCodec<T.ProvisionedSecret> = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.key ?? "");
+    s.setText(1, v.value ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      key: s.getText(0),
+      value: s.getText(1),
+    };
+  },
+};
+
+/**
+ * Wire codec for `Provisioned` (0 data words, 3 pointers).
+ *
+ * @internal
+ */
+export const ProvisionedCodec: StructCodec<T.Provisioned> = {
+  dataWords: 0,
+  pointerCount: 3,
+  write(s, v, caps) {
+    s.setText(0, v.settingsJson ?? "");
+    {
+      const list = v.secrets ?? [];
+      const items = s.initStructList(1, list.length, 0, 2);
+      for (let i = 0; i < items.length; i++) {
+        ProvisionedSecretCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    s.setTextList(2, v.summary ?? []);
+  },
+  read(s, caps) {
+    return {
+      settingsJson: s.getText(0),
+      secrets: s.getStructList(1, 0, 2).map((item) => ProvisionedSecretCodec.read(item, caps)),
+      summary: s.getTextList(2),
+    };
+  },
+};
+
+/**
+ * Wire codec for `ProvisionReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const ProvisionReplyCodec: StructCodec<T.ProvisionReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          ProvisionedCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("ProvisionReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: ProvisionedCodec.read(s.getStruct(0, 0, 3), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("ProvisionReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `DeprovisionRequest` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const DeprovisionRequestCodec: StructCodec<T.DeprovisionRequest> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.grant != null) {
+      ProvisionGrantCodec.write(s.initStruct(0, 2, 1), v.grant, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      grant: ProvisionGrantCodec.read(s.getStruct(0, 2, 1), caps),
+    };
+  },
+};
+
+/**
  * Wire codec for `DbValue` (2 data words, 1 pointers).
  *
  * @internal
@@ -14197,6 +14408,86 @@ export const IngressStopResultsCodec: StructCodec<IngressStopResults> = {
 };
 
 /**
+ * Wire codec for the `Provisioning.provision` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const ProvisioningProvisionParamsCodec: StructCodec<ProvisioningProvisionParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.request != null) {
+      ProvisionRequestCodec.write(s.initStruct(0, 0, 2), v.request, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      request: ProvisionRequestCodec.read(s.getStruct(0, 0, 2), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Provisioning.provision` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const ProvisioningProvisionResultsCodec: StructCodec<ProvisioningProvisionResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      ProvisionReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: ProvisionReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Provisioning.deprovision` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const ProvisioningDeprovisionParamsCodec: StructCodec<ProvisioningDeprovisionParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.request != null) {
+      DeprovisionRequestCodec.write(s.initStruct(0, 0, 1), v.request, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      request: DeprovisionRequestCodec.read(s.getStruct(0, 0, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Provisioning.deprovision` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const ProvisioningDeprovisionResultsCodec: StructCodec<ProvisioningDeprovisionResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
  * Wire codec for the `Webhooks.url` params envelope (0 data words, 1 pointers).
  *
  * @internal
@@ -16858,7 +17149,7 @@ export const PluginWorkerOpenParamsCodec: StructCodec<PluginWorkerOpenParams> = 
   pointerCount: 2,
   write(s, v, caps) {
     if (v.invocation != null) {
-      InvocationCodec.write(s.initStruct(0, 1, 4), v.invocation, caps);
+      InvocationCodec.write(s.initStruct(0, 2, 4), v.invocation, caps);
     }
     if (v.bindings != null) {
       BindingsCodec.write(s.initStruct(1, 0, 15), v.bindings, caps);
@@ -16866,7 +17157,7 @@ export const PluginWorkerOpenParamsCodec: StructCodec<PluginWorkerOpenParams> = 
   },
   read(s, caps) {
     return {
-      invocation: InvocationCodec.read(s.getStruct(0, 1, 4), caps),
+      invocation: InvocationCodec.read(s.getStruct(0, 2, 4), caps),
       bindings: BindingsCodec.read(s.getStruct(1, 0, 15), caps),
     };
   },

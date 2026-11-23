@@ -38,9 +38,10 @@ implementations. Each SDK must accept the `valid-*` trees and reject
 | `invalid-producer-host-event/` | `check` fails (`[[events.producers]] type = "book_acquired"` is host-emitted) |
 | `valid-queues/` | `check` ok (`[[queues.producers]]` send binding plus a `[[queues.consumers]]` trigger with a dead-letter queue) |
 | `fmt-full/` | `fmt` rewrites `plugin.toml` (every manifest section, keys out of order) to exactly `plugin.fmt.toml`, the Rust formatter's output; `fmt --check` accepts the gold and refuses the source |
+| `fmt-corpus/` | Every first-party `plugin.toml` (under `crates/bookclerk-plugins/` and `examples/`) as the Rust formatter writes it, one `<directory with / as __>.fmt.toml` per source; `index.json` maps each file to its source. `fmt` in every SDK must write the same bytes. `UPDATE_FMT_CORPUS=1 cargo test -p bookclerk-plugin-manifest --test fmt_corpus` regenerates it, and that test fails when a file is stale, missing or left over |
 | `logo-cases.json` | `logo` values with the classification (`remote` / `embedded` and the normalized value) or the exact error every SDK's checker must give |
 | `compat-date-cases.json` | `workerd.compatibility_date` values every SDK must accept (`valid`) or refuse (`invalid`) |
-| `manifest-cases.json` | Manifest validation cases, each breaking at most one rule: `prelude` + (`top` or the case's own) + (`base_tables` or the case's own) + the case's `tables` is the manifest, and `error` is the exact message every SDK's checker gives (`null` when it is accepted) |
+| `manifest-cases.json` | Manifest validation cases, most breaking one rule and the `two rules:` cases breaking two, so the checkers must also run the rules in the host's order: `prelude` + (`top` or the case's own) + (`base_tables` or the case's own) + the case's `tables` is the manifest, and `error` is the exact message every SDK's checker gives (`null` when it is accepted) |
 | `main-module-cases.json` | workerd main-module sources (`language` `js` or `python`, the manifest's `entrypoints`) with the exact error every SDK's author-model check gives (`null` when accepted); the module is named `index.js` or `main.py` in the message |
 
 Language-specific helpers (`sync-embed`, Python workerd flags) are covered in

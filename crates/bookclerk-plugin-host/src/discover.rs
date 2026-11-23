@@ -244,7 +244,8 @@ pub fn is_first_party_local_output(plugin: &DiscoveredPlugin) -> bool {
 /// This is the key half of [`is_first_party_local_output`]: it does not see
 /// an install, so it cannot check provenance. Use it only where matching
 /// more plugins than the verified one is safe, such as routing acquires to
-/// the nodes that hold their output disks when discovery is unavailable.
+/// the nodes that hold their output disks, which reads deployed instances'
+/// plugin keys rather than installs.
 ///
 /// # Arguments
 ///

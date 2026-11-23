@@ -1,0 +1,46 @@
+api_version = 3
+id = "audnexus"
+name = "Audnexus"
+version = "0.1.0"
+runtime = "workerd"
+entrypoints = ["metadata"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[workerd.limits]
+cpu_ms = 10000
+subrequests = 10
+
+[[modules]]
+name = "index.js"
+path = "index.js"
+type = "js"
+
+[[modules]]
+name = "client.js"
+path = "client.js"
+type = "js"
+
+[[modules]]
+name = "audnexus.js"
+path = "audnexus.js"
+type = "js"
+
+[[modules]]
+name = "version.js"
+path = "version.js"
+type = "js"
+
+[vars]
+
+[media]
+works = ["book"]
+lists = ["audio"]
+
+[capabilities.network]
+mode = "outbound"
+domains = ["api.audnex.us"]

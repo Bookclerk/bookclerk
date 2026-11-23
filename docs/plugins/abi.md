@@ -1939,6 +1939,51 @@ Every `ORIGIN` request is the `tunnel` transport: the operator's own
 paths and credentials are refused, and the operator's exposure choice
 decides the rest (see [Public address](../server/ingress.md)).
 
+### Guided setup (`provisioning`)
+
+A plugin that declares [`[provisioning]`](manifest.md#provisioning-guided-setup)
+exports `provisioning` with two methods:
+
+- `provision(request) -> ProvisionReply`: `request.grant` holds the
+  operator's token (`kind = apiToken`), used for this run only, and
+  `request.inputsJson` the operator's choices. The reply is the settings
+  to store (`settingsJson`, a JSON object), credentials (`secrets`, key
+  and value pairs) and a few summary lines for the screen.
+- `deprovision(request)`: removes what `provision` created. Without a
+  grant the plugin uses its stored credentials; when they cannot do it,
+  it refuses with `unauthorized` and the operator retries with a token.
+  The default answers `unsupported`.
+
+The host opens a short-lived guest for each run with
+`Invocation.purpose = provision`. `CONFIG` holds the stored settings with
+the inputs laid over them and `SECRETS` the stored secrets, so a second
+run sees the first run's results and can rotate rather than duplicate.
+Required settings may still be missing, and the host calls only
+`provisioning`, so `open` should return that entrypoint alone for this
+purpose. The run gets the instance's normal network grant; there is no
+egress only for provisioning.
+
+The host checks the reply before it stores anything, against the
+manifest's `outputs`:
+
+- settings are declared non-secret keys with string (single line, within
+  the setting cap), number or boolean values, at most 16 KiB of JSON;
+- credentials are declared secret keys, each once, non-empty, single
+  line, trimmed and at most 1,024 bytes, at most 16 of them;
+- the summary is at most 8 lines of 200 bytes;
+- no credential, and not the grant token, appears in a setting or the
+  summary.
+
+The token is dropped unless the plugin returns it as a credential. The
+host seals the credentials, then writes the inputs and settings as one
+revision, which restarts a running instance with them. The reply is read
+by `bookclerk-plugin-abi::provision`, a fuzzed boundary.
+
+In TypeScript, extend `ProvisioningEntrypoint` and return `provisioned({
+settings, secrets, summary })`; in Python, `ProvisioningEntrypoint` and
+`provisioned(...)`; in Rust, implement `Provisioning` and return it from
+`open` when `invocation.purpose` is `InvocationPurpose::Provision`.
+
 ### Model plugins
 
 Export `ai` to serve models: the plugin loads them, the host and other

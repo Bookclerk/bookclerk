@@ -242,6 +242,27 @@ export const MAX_WEBHOOK_NAME_BYTES = 32 as const;
 /** Longest kept request header value, in bytes. */
 export const MAX_WEBHOOK_HEADER_VALUE_BYTES = 8192 as const;
 
+/** Longest `ProvisionGrant.token`, in bytes. */
+export const MAX_PROVISION_TOKEN_BYTES = 4096 as const;
+
+/** Longest `ProvisionedSecret.value`, in bytes. */
+export const MAX_PROVISION_SECRET_BYTES = 1024 as const;
+
+/** Most credentials one `Provisioned` returns. */
+export const MAX_PROVISION_SECRETS = 16 as const;
+
+/**
+ * Largest `Provisioned.settingsJson` and `ProvisionRequest.inputsJson`, in
+ * bytes.
+ */
+export const MAX_PROVISION_SETTINGS_BYTES = 16384 as const;
+
+/** Most lines in `Provisioned.summary`. */
+export const MAX_PROVISION_SUMMARY_LINES = 8 as const;
+
+/** Longest line of `Provisioned.summary`, in bytes. */
+export const MAX_PROVISION_SUMMARY_LINE_BYTES = 200 as const;
+
 /** Largest `KvNamespace` metadata JSON text in bytes. */
 export const MAX_KV_METADATA_BYTES = 1024 as const;
 
@@ -349,7 +370,7 @@ export type PluginErrorCode = (typeof PLUGIN_ERROR_CODES)[number];
  *
  * Ordinal-ordered `Entrypoint` wire names (index = Cap'n Proto ordinal).
  */
-export const ENTRYPOINTS = ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles", "notifier", "ingress", "ai"] as const;
+export const ENTRYPOINTS = ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles", "notifier", "ingress", "ai", "provisioning"] as const;
 
 /** Union of `ENTRYPOINTS` wire names. */
 export type Entrypoint = (typeof ENTRYPOINTS)[number];
@@ -538,6 +559,16 @@ export const OFFERED_AAC_PROFILES = ["unknown", "lc", "he", "heV2", "xhe"] as co
 export type OfferedAacProfile = (typeof OFFERED_AAC_PROFILES)[number];
 
 /**
+ * Why the host opens a plugin's entrypoints (`Invocation.purpose`).
+ *
+ * Ordinal-ordered `InvocationPurpose` wire names (index = Cap'n Proto ordinal).
+ */
+export const INVOCATION_PURPOSES = ["serve", "provision"] as const;
+
+/** Union of `INVOCATION_PURPOSES` wire names. */
+export type InvocationPurpose = (typeof INVOCATION_PURPOSES)[number];
+
+/**
  * The kind of public media `CoverFetcher.fetchCovers` downloads.
  *
  * Ordinal-ordered `RemoteMedia` wire names (index = Cap'n Proto ordinal).
@@ -622,6 +653,16 @@ export const AI_TEXT_ROLES = ["document", "query"] as const;
 
 /** Union of `AI_TEXT_ROLES` wire names. */
 export type AiTextRole = (typeof AI_TEXT_ROLES)[number];
+
+/**
+ * What kind of grant the operator gave a guided setup (`ProvisionGrant`).
+ *
+ * Ordinal-ordered `ProvisionGrantKind` wire names (index = Cap'n Proto ordinal).
+ */
+export const PROVISION_GRANT_KINDS = ["none", "apiToken", "oauthAccessToken"] as const;
+
+/** Union of `PROVISION_GRANT_KINDS` wire names. */
+export type ProvisionGrantKind = (typeof PROVISION_GRANT_KINDS)[number];
 
 /**
  * Universal database cell/parameter domain. Engine-native arrays, enums,

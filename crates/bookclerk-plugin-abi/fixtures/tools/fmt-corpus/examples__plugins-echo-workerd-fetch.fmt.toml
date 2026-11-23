@@ -1,0 +1,34 @@
+api_version = 3
+id = "echo_workerd_fetch"
+name = "Echo Fetch (workerd)"
+version = "1.0.0"
+logo = "assets/logo.svg"
+runtime = "workerd"
+entrypoints = ["cli"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[workerd.limits]
+cpu_ms = 30000
+subrequests = 50
+
+[[modules]]
+name = "index.js"
+path = "index.js"
+type = "js"
+
+[[events.consumers]]
+type = "book_acquired"
+schema_versions = [1]
+supports_suspend = false
+resource_class = "network"
+
+[vars]
+
+[capabilities.network]
+mode = "outbound"
+domains = ["*.example.com"]

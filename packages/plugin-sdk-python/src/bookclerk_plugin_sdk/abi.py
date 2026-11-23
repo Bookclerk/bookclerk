@@ -58,6 +58,7 @@ Entrypoint = Literal[
     "notifier",
     "ingress",
     "ai",
+    "provisioning",
 ]
 """Named entrypoint a plugin exports (Cloudflare Workers named-entrypoint
 analogue). Each value is a capability the host calls over RPC; triggers on
@@ -162,6 +163,9 @@ the host's probed codecs are, so an offer compares with a held file.
 OfferedAacProfile = Literal["unknown", "lc", "he", "heV2", "xhe"]
 """AAC profile of an offered AAC stream (`QualityOffer.aacProfile`)."""
 
+InvocationPurpose = Literal["serve", "provision"]
+"""Why the host opens a plugin's entrypoints (`Invocation.purpose`)."""
+
 RemoteMedia = Literal["image", "audio"]
 """The kind of public media `CoverFetcher.fetchCovers` downloads."""
 
@@ -213,6 +217,9 @@ AiTextRole = Literal["document", "query"]
 """What a text is to an embedding model. Some models embed a search query
 differently from the documents it is matched against.
 """
+
+ProvisionGrantKind = Literal["none", "apiToken", "oauthAccessToken"]
+"""What kind of grant the operator gave a guided setup (`ProvisionGrant`)."""
 
 DbType = Literal["unspecified", "bool", "int64", "float64", "text", "bytes"]
 """Universal database cell/parameter domain. Engine-native arrays, enums,
@@ -931,6 +938,8 @@ class Entrypoints(TypedDict):
         ai: `ai` entrypoint. Null when the guest does not export this capability.
         webhookHandler: `[[webhooks]]` handler: called after the host stores deliveries.
             Null when the guest does not export this capability.
+        provisioning: `provisioning` entrypoint: guided setup. Null when the guest does
+            not export this capability.
     """
 
     eventConsumer: NotRequired[EventConsumer | None]
@@ -951,6 +960,7 @@ class Entrypoints(TypedDict):
     ingress: NotRequired[Ingress | None]
     ai: NotRequired[AiModels | None]
     webhookHandler: NotRequired[WebhookHandler | None]
+    provisioning: NotRequired[Provisioning | None]
 
 
 class EntrypointsReplyOk(TypedDict):
@@ -2910,6 +2920,41 @@ class Ingress(Protocol):
 
     async def stop(self) -> EmptyReply:
         """Take the public address down; stopping a stopped one is not an error.
+
+        Returns:
+            ``EmptyReply``
+        """
+        ...
+
+
+class Provisioning(Protocol):
+    """Guided setup (`Entrypoints.provisioning`). The host collects a
+    short-lived grant from the operator (a pasted API token, or an OAuth access
+    token), opens the instance with `Invocation.purpose = provision` and hands
+    the grant over. The plugin creates what it needs at the provider and
+    returns settings and narrowly scoped credentials; the host checks them
+    against `[provisioning] outputs` and the pinned settings schema, writes the
+    settings, seals the credentials and drops the grant.
+    """
+
+    async def provision(self, request: ProvisionRequest) -> ProvisionReply:
+        """Create (or, when `CONFIG` holds earlier outputs, update or rotate) what
+        the instance needs.
+
+        Args:
+            request: The grant and the operator's choices.
+
+        Returns:
+            ``ProvisionReply``
+        """
+        ...
+
+    async def deprovision(self, request: DeprovisionRequest) -> EmptyReply:
+        """Remove what `provision` created. Removing what is already gone is not an
+        error.
+
+        Args:
+            request: A grant, or none to use stored secrets.
 
         Returns:
             ``EmptyReply``
@@ -5365,6 +5410,10 @@ class Invocation(TypedDict):
         correlationId: Trace correlation id; empty when none.
         causationId: Id of the event or command that caused this invocation; empty when
             none.
+        purpose: What the host opens the entrypoints for. `provision` opens an instance
+            that may not be configured yet: `CONFIG` and `SECRETS` hold what is stored
+            so far, required settings may be missing, and the host calls only
+            `Entrypoints.provisioning`.
     """
 
     id: str
@@ -5372,6 +5421,7 @@ class Invocation(TypedDict):
     deadlineUnixMs: int
     correlationId: str
     causationId: str
+    purpose: InvocationPurpose
 
 
 class QueueMessage(TypedDict):
@@ -7503,6 +7553,113 @@ class WebhookDelivered(TypedDict):
     waiting: int
 
 
+class ProvisionGrant(TypedDict):
+    """A short-lived credential for one guided setup run. The host never stores
+    or logs it; the plugin uses it only during the call.
+
+    Attributes:
+        kind: Kind of grant.
+        token: The token; empty for `none`. At most `maxProvisionTokenBytes`. Omitted
+            when absent (wire zero value).
+        expiresAtUnixMs: When the token expires (UTC Unix milliseconds); zero when
+            unknown or it does not expire. Omitted when absent (wire zero value).
+    """
+
+    kind: ProvisionGrantKind
+    token: NotRequired[str]
+    expiresAtUnixMs: NotRequired[int]
+
+
+class ProvisionRequest(TypedDict):
+    """Arguments of `Provisioning.provision`.
+
+    Attributes:
+        grant: The operator's grant; never `none`.
+        inputsJson: The operator's choices as a JSON object keyed by `[provisioning]
+            inputs` setting keys (`{"bucket": "books"}`); `{}` when none were asked for.
+    """
+
+    grant: ProvisionGrant
+    inputsJson: str
+
+
+class ProvisionedSecret(TypedDict):
+    """One credential a guided setup returns for the host to seal.
+
+    Attributes:
+        key: A `secret` setting key listed in `[provisioning] outputs`.
+        value: The credential, at most `maxProvisionSecretBytes`.
+    """
+
+    key: str
+    value: str
+
+
+class Provisioned(TypedDict):
+    """Success payload of `Provisioning.provision`.
+
+    Attributes:
+        settingsJson: Non-secret settings to store, as a JSON object keyed by setting
+            keys listed in `[provisioning] outputs`; at most
+            `maxProvisionSettingsBytes`.
+        secrets: Credentials to seal; each key at most once.
+        summary: Short lines for the setup screen ("Created bucket books"), at most
+            `maxProvisionSummaryLines` of `maxProvisionSummaryLineBytes`. Never a
+            credential.
+    """
+
+    settingsJson: str
+    secrets: list[ProvisionedSecret]
+    summary: list[str]
+
+
+class ProvisionReplyOk(TypedDict):
+    """``ProvisionReply`` member ``ok``.
+
+    Success: what to store.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: Success: what to store.
+    """
+
+    kind: Literal["ok"]
+    value: Provisioned
+
+
+class ProvisionReplyErr(TypedDict):
+    """``ProvisionReply`` member ``err``.
+
+    Typed failure: `invalid_params` for a refused choice, `unauthorized`
+    or `forbidden` when the grant cannot do what is needed.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure: `invalid_params` for a refused choice, `unauthorized` or
+            `forbidden` when the grant cannot do what is needed.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+ProvisionReply = Union[
+    ProvisionReplyOk,
+    ProvisionReplyErr,
+]
+"""Result union of `Provisioning.provision`."""
+
+
+class DeprovisionRequest(TypedDict):
+    """Arguments of `Provisioning.deprovision`.
+
+    Attributes:
+        grant: The operator's grant, or kind `none` to use the stored secrets.
+    """
+
+    grant: ProvisionGrant
+
+
 class DbValueNull(TypedDict):
     """``DbValue`` member ``null``.
 
@@ -8867,6 +9024,7 @@ __all__ = [
     "Explicitness",
     "OfferedCodec",
     "OfferedAacProfile",
+    "InvocationPurpose",
     "RemoteMedia",
     "MetadataField",
     "NotificationSeverity",
@@ -8875,6 +9033,7 @@ __all__ = [
     "NotifyDestinationKind",
     "AiTask",
     "AiTextRole",
+    "ProvisionGrantKind",
     "DbType",
     "DbStatementKind",
     "DbResultSelection",
@@ -9040,6 +9199,7 @@ __all__ = [
     "SocketHandler",
     "Origin",
     "Ingress",
+    "Provisioning",
     "Webhooks",
     "WebhookHandler",
     "ContentSource",
@@ -9314,6 +9474,14 @@ __all__ = [
     "IngressHealthReply",
     "WebhookAckRequest",
     "WebhookDelivered",
+    "ProvisionGrant",
+    "ProvisionRequest",
+    "ProvisionedSecret",
+    "Provisioned",
+    "ProvisionReplyOk",
+    "ProvisionReplyErr",
+    "ProvisionReply",
+    "DeprovisionRequest",
     "DbValueNull",
     "DbValueBoolean",
     "DbValueInt64",
