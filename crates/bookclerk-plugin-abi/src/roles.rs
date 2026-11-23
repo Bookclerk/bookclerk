@@ -8,13 +8,13 @@ use tokio::io::AsyncRead;
 use crate::generated::{
     AiModelList, AiRunOk, AiRunParams, AuthenticateUserParams, CatalogDetailParams, CatalogHit,
     CliInvokeParams, CliInvokeResult, CliSchema, CoverFetchParams, CoverImage,
-    DatabaseAdapterConfig, ExpandCandidatesParams, ExternalUser, FetchTitleParams, IngressHealth,
+    DatabaseAdapterConfig, DeprovisionRequest, ExpandCandidatesParams, ExternalUser, FetchTitleParams, IngressHealth,
     Invocation, ListDealsParams, ListeningProgress, LoginCompleteParams, LoginParams, LoginResult,
     LoginStartResult, MetadataChapters, MetadataChaptersParams, MetadataFileParseParams,
     MetadataFileParsed, MetadataFileRenderParams, MetadataFileRendered, MetadataLookupParams,
     MetadataRecord, MetadataSearchParams, NotifyRaiseParams, NotifyRaised, NotifySendParams,
     NotifySent, NotifyValidateParams, NotifyValidated, OriginHeader, PlainFetch, PluginEvent,
-    PublishOk, PurchaseHint, PurchaseHintParams, PurchaseHintResult, PurchaseHintsParams,
+    ProvisionRequest, Provisioned, PublishOk, PurchaseHint, PurchaseHintParams, PurchaseHintResult, PurchaseHintsParams,
     QualityOffersParams, QualityOffersResult, RevokeAccountParams, ScanLibraryParams, ScanPage,
     ScanParams, SearchCatalogParams, SocketClosed, SocketConnectRequest, SocketFrame, SocketInfo,
     SocketMessage, SocketMessageOk, SourceAccount, WebhookAckRequest, WebhookDelivered,
@@ -612,6 +612,35 @@ pub trait Ingress {
     /// Takes the public address down; stopping a stopped one is not an
     /// error.
     async fn stop(&self) -> Result<()>;
+}
+
+/// `provisioning` entrypoint: guided setup at a cloud provider.
+///
+/// The host opens the instance with
+/// [`InvocationPurpose::Provision`](crate::InvocationPurpose::Provision):
+/// `CONFIG` and `SECRETS` hold what is stored so far, and required settings
+/// may be missing. The host checks what [`Provisioning::provision`] returns
+/// ([`crate::provision::check_provisioned`]) against the manifest's
+/// `[provisioning] outputs` and the pinned settings schema before it writes
+/// the settings and seals the credentials. The grant is dropped after the
+/// call; a plugin that needs a lasting credential returns one it created.
+#[async_trait::async_trait(?Send)]
+pub trait Provisioning {
+    /// Creates what the instance needs with `request.grant`, or updates and
+    /// rotates what an earlier run created (its outputs are in `CONFIG` and
+    /// `SECRETS`). `invalid_params` for a refused choice in
+    /// `request.inputs_json`; `unauthorized` or `forbidden` when the grant
+    /// cannot do what is needed.
+    async fn provision(&self, request: ProvisionRequest) -> Result<Provisioned>;
+
+    /// Removes what [`Self::provision`] created, with `request.grant` or,
+    /// when its kind is `none`, the stored secrets. Removing what is already
+    /// gone is not an error; `unauthorized` when no usable credential is at
+    /// hand.
+    async fn deprovision(&self, request: DeprovisionRequest) -> Result<()> {
+        let _ = request;
+        Err(crate::PluginError::unsupported("deprovision"))
+    }
 }
 
 /// Host-served inbound webhooks granted on [`Bindings::webhooks`].
@@ -1373,6 +1402,8 @@ pub struct Entrypoints {
     pub ingress: Option<Box<dyn Ingress>>,
     /// `ai` entrypoint.
     pub ai: Option<Box<dyn AiModels>>,
+    /// `provisioning` entrypoint.
+    pub provisioning: Option<Box<dyn Provisioning>>,
 }
 
 /// Root `PluginWorker` capability (`describe` / `open` / `shutdown`).

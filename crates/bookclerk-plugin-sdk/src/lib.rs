@@ -103,6 +103,13 @@ pub use sockets::{
 };
 
 pub use bookclerk_plugin_abi::ai;
+pub use bookclerk_plugin_abi::provision;
+pub use bookclerk_plugin_abi::{
+    DeprovisionRequest, InvocationPurpose, ProvisionGrant, ProvisionGrantKind, ProvisionRequest,
+    Provisioned, ProvisionedSecret, Provisioning, ProvisioningClient, MAX_PROVISION_SECRETS,
+    MAX_PROVISION_SECRET_BYTES, MAX_PROVISION_SETTINGS_BYTES, MAX_PROVISION_SUMMARY_LINES,
+    MAX_PROVISION_SUMMARY_LINE_BYTES, MAX_PROVISION_TOKEN_BYTES,
+};
 pub use bookclerk_plugin_abi::{
     byte_source_from_async_read, canonical_execute_request_hash, connect_plugin,
     database_adapter_config_from_bindings, decode_db_value_bytes, decode_execute_request_bytes,

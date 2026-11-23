@@ -39,6 +39,8 @@ import type {
   OidcClientTemplate,
   PluginError as WirePluginError,
   PluginMigration as WirePluginMigration,
+  Provisioned,
+  ProvisionedSecret,
   PurchaseHint,
   PurchaseHintResult,
   QueueResult,
@@ -349,6 +351,19 @@ const okAiModels = (value: unknown) => {
  * @throws {PluginError} `internal` when `value` has no text-embedding output
  *   with `vectors` bytes.
  */
+// A guided setup's answer, with absent lists and settings filled in.
+const okProvisioned = (value: unknown) => {
+  const out = (value ?? {}) as Partial<Provisioned>;
+  return okValue({
+    settingsJson: typeof out.settingsJson === "string" ? out.settingsJson : "{}",
+    secrets: asList<ProvisionedSecret>(out.secrets).map((secret) => ({
+      key: String(secret.key ?? ""),
+      value: String(secret.value ?? ""),
+    })),
+    summary: asList<string>(out.summary).map(String),
+  });
+};
+
 const okAiRun = (value: unknown) => {
   const out = ((value ?? {}) as { output?: { textEmbeddings?: AiTextEmbeddingsOutput } }).output
     ?.textEmbeddings;
@@ -1151,6 +1166,26 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       okAiModels,
     ),
     run: withParams("ai", "run", W.AiModelsRunParamsCodec, W.AiModelsRunResultsCodec, okAiRun),
+  },
+  Provisioning: {
+    provision: spec<W.ProvisioningProvisionParams, W.ProvisioningProvisionResults["result"]>({
+      params: W.ProvisioningProvisionParamsCodec,
+      results: W.ProvisioningProvisionResultsCodec,
+      stub: "provisioning",
+      call: (s, p, cx) =>
+        named(s, cx.host.bindContext(cx.ctx), "provision", [p.request ?? {}]),
+      ok: okProvisioned,
+    }),
+    deprovision: spec<W.ProvisioningDeprovisionParams, W.ProvisioningDeprovisionResults["result"]>(
+      {
+        params: W.ProvisioningDeprovisionParamsCodec,
+        results: W.ProvisioningDeprovisionResultsCodec,
+        stub: "provisioning",
+        call: (s, p, cx) =>
+          named(s, cx.host.bindContext(cx.ctx), "deprovision", [p.request ?? {}]),
+        ok: okEmpty,
+      },
+    ),
   },
   Notifier: {
     health: withoutParams(

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 
 /// Every entrypoint in declaration order (mirrors the Cap'n Proto enum).
-pub const ALL_ENTRYPOINTS: [Entrypoint; 12] = [
+pub const ALL_ENTRYPOINTS: [Entrypoint; 13] = [
     Entrypoint::Storefront,
     Entrypoint::Storage,
     Entrypoint::DatabaseAdapter,
@@ -27,6 +27,7 @@ pub const ALL_ENTRYPOINTS: [Entrypoint; 12] = [
     Entrypoint::Notifier,
     Entrypoint::Ingress,
     Entrypoint::Ai,
+    Entrypoint::Provisioning,
 ];
 
 /// Entrypoints the host loads into their own registry (sources,
@@ -61,7 +62,8 @@ pub fn entrypoint_family(entrypoint: Entrypoint) -> PluginFamily {
         | Entrypoint::Covers
         | Entrypoint::MetadataFiles
         | Entrypoint::Notifier
-        | Entrypoint::Ai => PluginFamily::Integration,
+        | Entrypoint::Ai
+        | Entrypoint::Provisioning => PluginFamily::Integration,
     }
 }
 
@@ -330,6 +332,67 @@ impl IngressKind {
         match self {
             Self::Relay => "relay",
             Self::Direct => "direct",
+        }
+    }
+}
+
+/// Longest `[provisioning].token_url`, in bytes.
+pub const MAX_PROVISIONING_TOKEN_URL_BYTES: usize = 2048;
+
+/// Most `[provisioning].token_permissions` lines.
+pub const MAX_PROVISIONING_PERMISSIONS: usize = 16;
+
+/// Longest `[provisioning].token_permissions` line, in characters.
+pub const MAX_PROVISIONING_PERMISSION_CHARS: usize = 120;
+
+/// `[provisioning]`: the guided setup a `provisioning` plugin offers.
+/// Required for that entrypoint and forbidden without it.
+///
+/// The setup screen is built from this table alone: what to ask the
+/// operator (`inputs`), which grant to collect (`grants`, with
+/// `token_url` and `token_permissions` for a pasted token), and which
+/// settings the plugin may write back (`outputs`). The host refuses any
+/// other key in the plugin's answer.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvisioningManifest {
+    /// The provider the grant is for, lowercase (`cloudflare`); the shared
+    /// account-linking screen groups plugins by it.
+    pub provider: String,
+    /// The grants the plugin accepts; never empty.
+    pub grants: Vec<ProvisionGrantType>,
+    /// Where the operator creates a token at the provider (`https://`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_url: Option<String>,
+    /// The permissions a pasted token needs, one line each, shown on the
+    /// setup screen.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub token_permissions: Vec<String>,
+    /// Non-secret setting keys the screen asks for before running.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<String>,
+    /// Setting keys, secret or not, the plugin may write; never empty.
+    pub outputs: Vec<String>,
+    /// Whether the plugin can remove what it created (`deprovision`), which
+    /// the host offers before the instance is deleted.
+    #[serde(default)]
+    pub deprovision: bool,
+}
+
+/// A grant a guided setup accepts (`[provisioning].grants`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProvisionGrantType {
+    /// An API token the operator creates at the provider and pastes.
+    ApiToken,
+}
+
+impl ProvisionGrantType {
+    /// The `plugin.toml` spelling.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ApiToken => "api_token",
         }
     }
 }
@@ -1571,6 +1634,11 @@ pub struct PluginManifest {
     /// every other plugin; see [`IngressManifest`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ingress: Option<IngressManifest>,
+    /// The guided setup the plugin offers (`[provisioning]`): required for
+    /// plugins that export the `provisioning` entrypoint and forbidden for
+    /// every other plugin; see [`ProvisioningManifest`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provisioning: Option<ProvisioningManifest>,
     /// Model tasks the plugin serves and calls (`[ai]`); see
     /// [`AiManifest`].
     #[serde(default, skip_serializing_if = "AiManifest::is_default")]
@@ -2581,6 +2649,145 @@ impl PluginManifest {
         Ok(())
     }
 
+    /// Checks the `[provisioning]` table against the plugin's entrypoints
+    /// and settings.
+    ///
+    /// The same rules, with the same messages, run in the TypeScript and
+    /// Python author tools (`manifest-cases.json`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Message`] when a `provisioning` plugin has no table
+    /// or another plugin has one, or when the provider, grants, token URL,
+    /// token permissions, inputs or outputs break their rules.
+    fn validate_provisioning(&self) -> Result<()> {
+        let exported = self.has_entrypoint(Entrypoint::Provisioning);
+        let table = match (exported, &self.provisioning) {
+            (true, None) => {
+                return Err(Error::message(
+                    "plugin.toml: `[provisioning]` is required for a plugin with the \
+                     `provisioning` entrypoint",
+                ))
+            }
+            (false, Some(_)) => {
+                return Err(Error::message(
+                    "plugin.toml: `[provisioning]` needs the `provisioning` entrypoint",
+                ))
+            }
+            (false, None) => return Ok(()),
+            (true, Some(table)) => table,
+        };
+        let provider = table.provider.as_bytes();
+        let provider_ok = matches!(provider.first(), Some(b'a'..=b'z'))
+            && provider.len() <= 32
+            && provider
+                .iter()
+                .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-'));
+        if !provider_ok {
+            return Err(Error::message(
+                "plugin.toml: `[provisioning].provider` must match ^[a-z][a-z0-9-]{0,31}$",
+            ));
+        }
+        let mut grants = std::collections::BTreeSet::new();
+        if table.grants.is_empty() || !table.grants.iter().all(|grant| grants.insert(*grant)) {
+            return Err(Error::message(
+                "plugin.toml: `[provisioning].grants` must list each grant kind once and not \
+                 be empty",
+            ));
+        }
+        if let Some(url) = &table.token_url {
+            if !url.starts_with("https://")
+                || url.len() > MAX_PROVISIONING_TOKEN_URL_BYTES
+                || url.chars().any(|c| c.is_control() || c.is_whitespace())
+            {
+                return Err(Error::message(
+                    "plugin.toml: `[provisioning].token_url` must be an https:// URL",
+                ));
+            }
+        }
+        let permissions_ok = table.token_permissions.len() <= MAX_PROVISIONING_PERMISSIONS
+            && table.token_permissions.iter().all(|line| {
+                !line.trim().is_empty()
+                    && line.chars().count() <= MAX_PROVISIONING_PERMISSION_CHARS
+                    && !line.chars().any(char::is_control)
+            });
+        if !permissions_ok {
+            return Err(Error::message(format!(
+                "plugin.toml: `[provisioning].token_permissions` takes at most \
+                 {MAX_PROVISIONING_PERMISSIONS} non-empty lines of at most \
+                 {MAX_PROVISIONING_PERMISSION_CHARS} characters"
+            )));
+        }
+        let kind_of = |key: &str| {
+            self.settings
+                .iter()
+                .find(|setting| setting.key == key)
+                .map(|setting| setting.kind)
+        };
+        let mut seen = std::collections::BTreeSet::new();
+        for key in &table.inputs {
+            let usable = matches!(
+                kind_of(key),
+                Some(
+                    bookclerk_plugin_abi::SettingKind::String
+                        | bookclerk_plugin_abi::SettingKind::Bool
+                        | bookclerk_plugin_abi::SettingKind::Integer
+                        | bookclerk_plugin_abi::SettingKind::Enum
+                )
+            );
+            if !usable || !seen.insert(key) {
+                return Err(Error::message(format!(
+                    "plugin.toml: `[provisioning].inputs` entry `{key}` must be a declared \
+                     setting that is not a secret or a table, listed once"
+                )));
+            }
+        }
+        if table.outputs.is_empty() {
+            return Err(Error::message(
+                "plugin.toml: `[provisioning].outputs` must not be empty",
+            ));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for key in &table.outputs {
+            let usable = matches!(
+                kind_of(key),
+                Some(
+                    bookclerk_plugin_abi::SettingKind::String
+                        | bookclerk_plugin_abi::SettingKind::Bool
+                        | bookclerk_plugin_abi::SettingKind::Integer
+                        | bookclerk_plugin_abi::SettingKind::Enum
+                        | bookclerk_plugin_abi::SettingKind::Secret
+                )
+            );
+            if !usable || !seen.insert(key) {
+                return Err(Error::message(format!(
+                    "plugin.toml: `[provisioning].outputs` entry `{key}` must be a declared \
+                     setting that is not a table, listed once"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// The keys the plugin's guided setup may write, split into settings
+    /// and secrets; `None` without `[provisioning]`.
+    #[must_use]
+    pub fn provision_outputs(&self) -> Option<bookclerk_plugin_abi::provision::ProvisionOutputs> {
+        let table = self.provisioning.as_ref()?;
+        let mut outputs = bookclerk_plugin_abi::provision::ProvisionOutputs::default();
+        for key in &table.outputs {
+            let secret = self.settings.iter().any(|setting| {
+                setting.key == *key && setting.kind == bookclerk_plugin_abi::SettingKind::Secret
+            });
+            if secret {
+                outputs.secrets.insert(key.clone());
+            } else {
+                outputs.settings.insert(key.clone());
+            }
+        }
+        Some(outputs)
+    }
+
     /// Checks the `[ai]` table against the plugin's entrypoints.
     ///
     /// The same rules, with the same messages, run in the TypeScript and
@@ -2711,6 +2918,7 @@ impl PluginManifest {
         self.validate_notifier()?;
         self.validate_notification_types()?;
         self.validate_ingress()?;
+        self.validate_provisioning()?;
         self.validate_ai()?;
         if self.credentials.is_some() && !self.has_entrypoint(Entrypoint::Storefront) {
             return Err(Error::message(

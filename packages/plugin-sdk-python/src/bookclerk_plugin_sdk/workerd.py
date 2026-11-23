@@ -152,6 +152,8 @@ __all__ = [
     "CoverEntrypoint",
     "MetadataFilesEntrypoint",
     "IngressEntrypoint",
+    "ProvisioningEntrypoint",
+    "provisioned",
     "MetadataEntrypoint",
     "NamedEntrypoint",
     "AiBinding",
@@ -2942,6 +2944,63 @@ class NotifierEntrypoint(NamedEntrypoint):
         default accepts the address as given.
         """
         return {"addressJson": params["addressJson"]}
+
+
+class ProvisioningEntrypoint(NamedEntrypoint):
+    """``provisioning`` entrypoint: guided setup at a cloud provider.
+
+    The host collects a short-lived grant from the operator (a pasted API
+    token), hands it to :meth:`provision` and stores what it returns: settings
+    listed in ``[provisioning] outputs`` and credentials it seals. The grant is
+    dropped after the call, so return any lasting credential you create. On a
+    re-run ``CONFIG`` and ``SECRETS`` hold the earlier outputs: update or rotate
+    rather than create again.
+    """
+
+    bookclerk_methods = ("provision", "deprovision")
+
+    async def provision(self, request: abi.ProvisionRequest) -> abi.Provisioned:
+        """Create (or update) what the instance needs.
+
+        Args:
+            request: The operator's grant and choices (``inputsJson``, a JSON
+                object keyed by ``[provisioning] inputs``).
+
+        Returns:
+            Settings to store, credentials to seal and summary lines; see
+            :func:`provisioned`.
+        """
+        raise _unsupported("provision")
+
+    async def deprovision(self, request: abi.DeprovisionRequest) -> None:
+        """Remove what :meth:`provision` created; what is already gone is not an error.
+
+        Args:
+            request: The operator's grant, or kind ``none`` to use stored secrets.
+        """
+        raise _unsupported("deprovision")
+
+
+def provisioned(
+    settings: dict[str, str | int | float | bool] | None = None,
+    secrets: dict[str, str] | None = None,
+    summary: list[str] | None = None,
+) -> abi.Provisioned:
+    """Build a ``Provisioned`` answer from plain values.
+
+    Args:
+        settings: Settings to store, by setting key.
+        secrets: Credentials to seal, by ``secret`` setting key.
+        summary: Lines for the setup screen.
+
+    Returns:
+        The wire shape :meth:`ProvisioningEntrypoint.provision` returns.
+    """
+    return {
+        "settingsJson": json.dumps(settings or {}, separators=(",", ":")),
+        "secrets": [{"key": key, "value": value} for key, value in (secrets or {}).items()],
+        "summary": list(summary or []),
+    }
 
 
 class IngressEntrypoint(NamedEntrypoint):

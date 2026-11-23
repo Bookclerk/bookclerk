@@ -37,7 +37,8 @@ use bookclerk_plugin_abi::{
     JobController, JobOutcome, JobRunner, JobRunnerClient, ListOptions, ListPage, MetadataFiles,
     MetadataFilesClient, MetadataProvider, MetadataProviderClient, Notifier, NotifierClient,
     ObjectMetadata, Oidc, OidcClient, OpenedEntrypoints, PluginCapabilities, PluginCli,
-    PluginCliClient, PluginClient, PluginDescribe, PluginMigration, PluginWorker, PutResult,
+    PluginCliClient, PluginClient, PluginDescribe, PluginMigration, PluginWorker, Provisioning,
+    ProvisioningClient, PutResult,
     QueueConsumer, QueueConsumerClient, ReadResult, RemoteLibrary, RemoteLibraryClient,
     ScheduledHandler, ScheduledHandlerClient, SocketHandler, SocketHandlerClient, WebhookHandler,
     WebhookHandlerClient, WriteOptions, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES,
@@ -542,6 +543,9 @@ impl WorkerdRoot {
         if self.exports(Entrypoint::Ai) {
             exported.ai = Some(Box::new(AiModelsClient::new(invoke.typed())));
         }
+        if self.exports(Entrypoint::Provisioning) {
+            exported.provisioning = Some(Box::new(ProvisioningClient::new(invoke.typed())));
+        }
         if self.capabilities.sockets {
             exported.socket_handler = Some(Box::new(SocketHandlerClient::new(invoke.typed())));
         }
@@ -592,6 +596,7 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         notifier,
         ingress,
         ai,
+        provisioning,
     } = opened;
     Entrypoints {
         event_consumer: event_consumer
@@ -648,6 +653,9 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         ai: ai
             .filter(|_| allow(Entrypoint::Ai.wire_name()))
             .map(|c| Box::new(c) as Box<dyn AiModels>),
+        provisioning: provisioning
+            .filter(|_| allow(Entrypoint::Provisioning.wire_name()))
+            .map(|c| Box::new(c) as Box<dyn Provisioning>),
     }
 }
 

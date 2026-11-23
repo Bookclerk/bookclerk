@@ -946,6 +946,122 @@ def _validate_ingress(m: dict[str, Any]) -> None:
         raise ValueError('plugin.toml: `[ingress].kind` must be "relay" or "direct"')
 
 
+_PROVIDER_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}\Z")
+"""``[provisioning].provider`` grammar, mirroring Rust ``validate_provisioning``."""
+
+_PROVISION_GRANTS = ("api_token",)
+"""Grant kinds a ``[provisioning]`` table may list."""
+
+
+def _is_control(text: str) -> bool:
+    """Whether ``text`` holds a control character (Unicode ``Cc``).
+
+    Args:
+        text: Text to check.
+
+    Returns:
+        True when any character is a control character.
+    """
+    return any(unicodedata.category(c) == "Cc" for c in text)
+
+
+def _validate_provisioning(m: dict[str, Any]) -> None:
+    """Check ``[provisioning]`` against the entrypoints and settings with the host's rules.
+
+    Args:
+        m: Manifest dictionary.
+
+    Raises:
+        ValueError: If a ``provisioning`` plugin has no table or another plugin
+            has one, or the provider, grants, token URL, token permissions,
+            inputs or outputs break their rules.
+    """
+    exported = "provisioning" in (m.get("entrypoints") or [])
+    table = m.get("provisioning")
+    if table is None:
+        if exported:
+            raise ValueError(
+                "plugin.toml: `[provisioning]` is required for a plugin with the "
+                "`provisioning` entrypoint"
+            )
+        return
+    if not exported:
+        raise ValueError("plugin.toml: `[provisioning]` needs the `provisioning` entrypoint")
+    known = {
+        "provider",
+        "grants",
+        "token_url",
+        "token_permissions",
+        "inputs",
+        "outputs",
+        "deprovision",
+    }
+    for key in table:
+        if key not in known:
+            raise ValueError(f"plugin.toml: `[provisioning]` has unknown key `{key}`")
+    provider = table.get("provider")
+    if not isinstance(provider, str) or not _PROVIDER_RE.match(provider):
+        raise ValueError("plugin.toml: `[provisioning].provider` must match ^[a-z][a-z0-9-]{0,31}$")
+    grants = table.get("grants")
+    if (
+        not isinstance(grants, list)
+        or not grants
+        or any(g not in _PROVISION_GRANTS for g in grants)
+        or len(set(grants)) != len(grants)
+    ):
+        raise ValueError(
+            "plugin.toml: `[provisioning].grants` must list each grant kind once and not be empty"
+        )
+    url = table.get("token_url")
+    if url is not None and (
+        not isinstance(url, str)
+        or not url.startswith("https://")
+        or len(url.encode("utf-8")) > 2048
+        or any(c.isspace() for c in url)
+        or _is_control(url)
+    ):
+        raise ValueError("plugin.toml: `[provisioning].token_url` must be an https:// URL")
+    permissions = table.get("token_permissions") or []
+    if (
+        not isinstance(permissions, list)
+        or len(permissions) > 16
+        or not all(
+            isinstance(line, str) and line.strip() and len(line) <= 120 and not _is_control(line)
+            for line in permissions
+        )
+    ):
+        raise ValueError(
+            "plugin.toml: `[provisioning].token_permissions` takes at most 16 non-empty "
+            "lines of at most 120 characters"
+        )
+    kinds = {
+        str(s.get("key")): str(s.get("type") or "")
+        for s in (m.get("settings") or [])
+        if isinstance(s, dict)
+    }
+    seen: set[str] = set()
+    for key in table.get("inputs") or []:
+        if kinds.get(key) not in ("string", "bool", "integer", "enum") or key in seen:
+            raise ValueError(
+                f"plugin.toml: `[provisioning].inputs` entry `{key}` must be a declared "
+                "setting that is not a secret or a table, listed once"
+            )
+        seen.add(key)
+    outputs = table.get("outputs") or []
+    if not outputs:
+        raise ValueError("plugin.toml: `[provisioning].outputs` must not be empty")
+    seen = set()
+    for key in outputs:
+        if kinds.get(key) not in ("string", "bool", "integer", "enum", "secret") or key in seen:
+            raise ValueError(
+                f"plugin.toml: `[provisioning].outputs` entry `{key}` must be a declared "
+                "setting that is not a table, listed once"
+            )
+        seen.add(key)
+    if not isinstance(table.get("deprovision", False), bool):
+        raise ValueError("plugin.toml: `[provisioning].deprovision` must be a boolean")
+
+
 def _validate_metadata_files(m: dict[str, Any]) -> None:
     """Check ``[metadata_files]`` against the entrypoints with the host's rules and messages.
 
@@ -1283,6 +1399,7 @@ def validate_manifest(m: dict[str, Any]) -> None:
     _validate_notifier(m)
     _validate_notification_types(m)
     _validate_ingress(m)
+    _validate_provisioning(m)
     _validate_ai(m)
     _validate_surface(m)
     runtime = m.get("runtime") or "native"
@@ -1336,6 +1453,7 @@ ENTRYPOINT_NAMES: tuple[str, ...] = (
     "notifier",
     "ingress",
     "ai",
+    "provisioning",
 )
 """Entrypoint wire names accepted in ``entrypoints``."""
 
@@ -1573,6 +1691,7 @@ ENTRYPOINT_EXPORT_CLASSES: dict[str, str] = {
     "notifier": "Notifier",
     "ingress": "Ingress",
     "ai": "Ai",
+    "provisioning": "Provisioning",
 }
 """Exported class name the launcher binds for each ``entrypoints`` wire name."""
 
