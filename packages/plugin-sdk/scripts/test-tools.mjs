@@ -30,6 +30,7 @@ run(["check", path.join(fixtures, "valid-workerd")], true);
 run(["check", path.join(fixtures, "valid-logo-url")], true);
 run(["check", path.join(fixtures, "valid-logo-path")], true);
 run(["check", path.join(fixtures, "invalid-outbound-no-domains")], false);
+run(["check", path.join(fixtures, "valid-outbound-tcp-only")], true);
 run(["check", path.join(fixtures, "invalid-native-with-domains")], false);
 run(["check", path.join(fixtures, "invalid-logo-javascript")], false);
 run(["check", path.join(fixtures, "invalid-logo-vbscript")], false);

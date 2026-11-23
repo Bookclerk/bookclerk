@@ -72,6 +72,17 @@ fn check_rejects_outbound_without_domains() {
 }
 
 #[test]
+fn check_accepts_outbound_with_only_tcp() {
+    let dir =
+        repo_root().join("crates/bookclerk-plugin-abi/fixtures/tools/valid-outbound-tcp-only");
+    let out = bookclerk_plugin()
+        .args(["check", dir.to_str().unwrap()])
+        .output()
+        .expect("run check");
+    assert!(out.status.success(), "{:?}", out);
+}
+
+#[test]
 fn check_valid_logo_url() {
     let dir = repo_root().join("crates/bookclerk-plugin-abi/fixtures/tools/valid-logo-url");
     let out = bookclerk_plugin()

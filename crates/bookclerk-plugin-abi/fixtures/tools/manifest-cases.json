@@ -464,7 +464,12 @@
     {
       "name": "workerd outbound without domains",
       "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"outbound\"\n",
-      "error": "plugin.toml: capabilities.network.domains is required when runtime = \"workerd\" and mode = \"outbound\""
+      "error": "plugin.toml: capabilities.network.domains or tcp is required when runtime = \"workerd\" and mode = \"outbound\""
+    },
+    {
+      "name": "workerd outbound with only tcp",
+      "base_tables": "[workerd]\ncompatibility_date = \"2026-08-01\"\nmain_module = \"index.js\"\n\n[capabilities.network]\nmode = \"outbound\"\ntcp = [{ host = \"connect.example.com\", ports = [443] }]\n",
+      "error": null
     },
     {
       "name": "workerd outbound with domains",

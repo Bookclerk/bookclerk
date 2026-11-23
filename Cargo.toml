@@ -78,6 +78,7 @@ exclude = [
     "fuzz",
     "crates/bookclerk-plugins/optional/covers",
     "crates/bookclerk-plugins/optional/ingress-cloudflare",
+    "crates/bookclerk-plugins/optional/ingress-ngrok",
     "crates/bookclerk-plugins/optional/integration-audiobookshelf",
     "crates/bookclerk-plugins/optional/metadata-audnexus",
     "crates/bookclerk-plugins/optional/metadata-files",

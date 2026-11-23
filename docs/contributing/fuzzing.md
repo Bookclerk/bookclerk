@@ -2063,6 +2063,43 @@ another run.
   to 4999) with at most 123 bytes of reason. An accepted frame encodes
   back to the same bytes.
 
+### ngrok guest
+
+The `ngrok` guest parses everything on its agent connection: muxado
+frames and RPC replies from ngrok's servers, and, inside each proxied
+stream, the proxy header and the HTTP/1.1 request any internet client
+sends. `crates/bookclerk-plugins/optional/ingress-ngrok/test/fuzz.test.ts`
+replays `fuzz/frame/`, `fuzz/chunked/`, `fuzz/proxy/` and `fuzz/rpc/` (hex
+bytes) and `fuzz/head/` (a JSON string per head), and runs seeded byte and
+text mutations in `npm test` (the `workerd_guests` check); `FUZZ_SEED` and
+`FUZZ_ITERATIONS` pick another run.
+
+- **Frames** (`FrameReader` in `src/mux.ts`). Oracle: an independent
+  decoder of muxado's framing (a 24-bit length up to the 256 KiB window, a
+  type and flag nibble, a 31-bit stream id; RST and WNDINC carry one
+  32-bit word, GOAWAY at least two; no DATA on stream 0; unknown types
+  skipped). The reader gives the same frames and leftover bytes whatever
+  the chunk boundaries.
+- **Request heads** (`parseRequestHead` in `src/http1.ts`). Oracle, written
+  from RFC 9110 and RFC 9112: an accepted head has a token method other
+  than `CONNECT`, an origin-form target, `HTTP/1.1` or `HTTP/1.0`, at most
+  128 lowercase token field names and values without CR, LF, NUL or
+  surrounding spaces; its body framing matches an independent restatement
+  of section 6 (Transfer-Encoding with Content-Length refused, only a lone
+  `chunked` coding, one decimal Content-Length); bytes after the head
+  change nothing.
+- **Chunked bodies** (`ChunkedDecoder`). Oracle: an independent decoder of
+  section 7.1 (hex sizes of at most 8 digits with extensions, CRLF after
+  each chunk, trailers to an empty line). The decoder gives the same body
+  and trailing bytes whatever the chunk boundaries, and never accepts what
+  the oracle refuses.
+- **Proxy headers** (`parseProxyHeader` in `src/messages.ts`). Oracle: an
+  independent little-endian length read (at most 16 KiB, high word zero)
+  and `JSON.parse` of an object; an accepted header survives
+  `encodeProxyHeader` and a second parse.
+- **RPC replies** (`parseRpcObject`). Oracle: `JSON.parse` of the same
+  UTF-8 text, with only JSON's own whitespace around it.
+
 ### Metadata file dialect guests
 
 Two guests read sidecar files from storage the host does not control: the
