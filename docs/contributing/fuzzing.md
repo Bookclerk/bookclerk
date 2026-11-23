@@ -803,7 +803,9 @@ only that. The others check:
   control characters, or a sync token of at most 4096 bytes with no
   control characters. A file of an `upload.grant` or `catalog.upload`
   that passes its validator states a probe only with a bitrate of at most
-  20,000 kbps and a plain store id. A `copy.grant` that passes its
+  20,000 kbps and a plain store id. A file of a `catalog.sync` title that
+  passes its validator carries a content version of at most 128 bytes with
+  no control byte, when it carries one. A `copy.grant` that passes its
   validator names a plain store id, a lowercase marketplace and a product
   id with no control characters or outer whitespace. A `copy.granted`
   that passes its validator carries a lowercase hyphenated UUID as its

@@ -1081,16 +1081,26 @@ C is B's.
 - **Files** stream to A's outputs through the same upload endpoint a
   branch's acquire uses (nothing staged on A), under the keys they have on
   B. A title whose files would land on a key another book in A already
-  uses is recorded, but its files aren't sent. Neither are the files of an
-  edition A already has (acquired there, or delivered by another branch),
-  so each edition arrives once. If A has no output deployed, it records
+  uses is recorded, but its files aren't sent. A asks for them again only
+  after a day or once B's file list for that title changes, not on every
+  sync. The files of an edition A already has aren't sent either (acquired there, or delivered by another branch),
+  so each edition arrives once. If the branch that delivered an edition
+  stops sharing it, its files stay on A, and another branch's title of the
+  same edition counts as delivered by them when they are exactly that
+  title's files: every key the title lists is on record for the edition,
+  every audio key on record is in the title's list, and their media types
+  agree. That title can still be passed on to A's own library. If A has no output deployed, it records
   the titles without files. If a title A already has the files of later
   moves to another edition (an Administrator pins its listing there, or
   the listing is linked again to another edition), those files belong to
   the edition it matched before: A counts the title as not delivered
   again and asks B for its files.
 - **Sync** runs when the branch connects, every 5 minutes, and at once
-  when a setting changes. It is incremental and resumes after a
+  when a setting changes. Each file a title lists carries a content
+  version from B's storage (its change signature, entity tag or
+  modification time), so a file B replaces under the same name and size
+  is sent to A again once B lists the title again (at the latest on the
+  next full pass). It is incremental and resumes after a
   reconnect. A full pass (after a setting changes, and once a day) also
   withdraws titles B no longer has. If B can't list a title's files (its
   destination is briefly unreachable), the pass keeps the title and tries
@@ -1217,9 +1227,12 @@ libraries:
   missing.
 - A keeps an answered edition only when it lands on an edition A already
   has of the asked work. An answer can't add works or editions to A.
-  An edition B names by ISBN only is dropped for now: the resolver places a
-  weak identifier only on an expression with a known language and
-  abridgement, which most store-scanned editions lack.
+  An edition B names by ISBN only (and no ASIN) is kept on the one edition
+  of the asked work that carries that ISBN here, which is an edition A
+  named in its question. If no edition of the work carries it, or several
+  do, the answer is dropped. An ISBN-only answer never goes through the
+  resolver's matching, so it can't create a work or edition, and it adds
+  no identifier to A's edition.
 
 An answer names no store account, user, or other library. A asks only
 branches it still trusts, and records answers only for questions it sent
