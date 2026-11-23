@@ -241,7 +241,7 @@ async fn stop_when_inactive(
             _ = poll.tick() => match load_library_link(&library, &library_id).await {
                 Ok(Some(link)) if link.is_active() && link.remote_node_id == node_id => {
                     if !renew_dial_lease(&library, &lease).await {
-                        tracing::info!(%library_id, "another install sharing this library took its dial lease; stopping this client");
+                        tracing::info!(%library_id, "this install lost the library link's dial lease (a sibling sharing the library may hold it); stopping this client");
                         let _ = stop.send(true);
                         return LinkStop::LeaseLost;
                     }
@@ -269,8 +269,9 @@ async fn stop_when_inactive(
 }
 
 /// Renews the dial lease in `held`: `false` once another install holds
-/// it. A failed write is not a loss (the next poll retries, and a sibling
-/// takes the lease only after it expires); an empty `held` always keeps.
+/// it, or once a failed renewal finds the lease already expired (a sibling
+/// may have taken it). A failed write before then is not a loss: the next
+/// poll retries. An empty `held` always keeps.
 async fn renew_dial_lease(library: &LibraryStore, held: &HeldDialLease) -> bool {
     let lease = held
         .lock()
@@ -292,7 +293,13 @@ async fn renew_dial_lease(library: &LibraryStore, held: &HeldDialLease) -> bool 
         }
         Err(err) => {
             tracing::warn!(lease = %lease.name, error = %err, "could not renew the library link dial lease");
-            true
+            if lease.is_held_at(chrono::Utc::now().timestamp_millis()) {
+                return true;
+            }
+            held.lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .take();
+            false
         }
     }
 }

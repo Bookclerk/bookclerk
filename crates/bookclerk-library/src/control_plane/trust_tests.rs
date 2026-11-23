@@ -1042,6 +1042,33 @@ async fn acquires_are_trusted_and_planned_per_item(owner_db: LibraryStore, host_
             .unwrap();
         assert_eq!(shape(plan), vec![(None, None)]);
     }
+    // Two ids that reach one account (here a label equal to the other id,
+    // ignoring case) would acquire the title twice: it stays unsplit.
+    accounts::Entity::update_many()
+        .col_expr(accounts::Column::Label, Expr::value("A1"))
+        .filter(accounts::Column::AccountId.eq("a2"))
+        .exec(host_db.db())
+        .await
+        .unwrap();
+    let plan = plan_acquire(
+        &host_db,
+        ScanRequester::Operator,
+        None,
+        &titles(&["B0BOTH", "B0SAM"]),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        shape(plan),
+        vec![(None, s("B0BOTH")), (s("a2"), s("B0SAM"))]
+    );
+    accounts::Entity::update_many()
+        .col_expr(accounts::Column::Label, Expr::value(Option::<String>::None))
+        .filter(accounts::Column::AccountId.eq("a2"))
+        .exec(host_db.db())
+        .await
+        .unwrap();
     // A Member: their own titles, accounts, or every account they own.
     let plan = plan_acquire(
         &host_db,
@@ -1427,6 +1454,35 @@ async fn scan_all_respects_per_plugin_flags(owner_db: LibraryStore, host_db: Lib
         .filter(|a| a.starts_with("acct-"))
         .collect();
     assert_eq!(acct, ["acct-a", "acct-b", "acct-c", "acct-d", "acct-e"]);
+
+    // Trust reads an exact job the way it runs: a node of acct-c's owner
+    // may take scan-all's acct-c job although acct-e (someone else's) is
+    // labelled acct-c, but not the id-or-label job of that name.
+    link(&owner_db, riley, OTHER_PLUGIN, "acct-c").await;
+    link(&owner_db, sam, OTHER_PLUGIN, "acct-e").await;
+    let named = |how| JobPayload {
+        account: Some("acct-c".into()),
+        account_match: how,
+        ..Default::default()
+    };
+    let trust = NodeTrust::OwnedBy(riley);
+    let exact = named(bookclerk_storefront::AccountMatch::ExactId);
+    let wide = named(bookclerk_storefront::AccountMatch::IdOrLabel);
+    assert!(
+        job_trusted(&host_db, &trust, &record(JobKind::Scan, exact.clone()))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !job_trusted(&host_db, &trust, &record(JobKind::Scan, wide.clone()))
+            .await
+            .unwrap()
+    );
+    // Nor do the two fold into each other when queued.
+    assert_ne!(
+        JobKind::Scan.dedup_key(&exact),
+        JobKind::Scan.dedup_key(&wide)
+    );
 }
 
 #[tokio::test]

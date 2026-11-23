@@ -1573,6 +1573,12 @@ impl JobKind {
     #[must_use]
     pub fn dedup_key(self, payload: &JobPayload) -> String {
         let account = payload.account.as_deref().unwrap_or("all");
+        // An exact-id job reaches other accounts than an id-or-label one of
+        // the same name, so the two never fold into each other.
+        let account = match payload.account_match {
+            bookclerk_storefront::AccountMatch::IdOrLabel => account.to_owned(),
+            bookclerk_storefront::AccountMatch::ExactId => format!("{account}:match=exact"),
+        };
         match self {
             Self::Scan => match payload
                 .plugin_instance_id

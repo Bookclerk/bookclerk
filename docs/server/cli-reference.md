@@ -62,7 +62,7 @@ Commands:
 - [`bookclerk library status`](#bookclerk-library-status): Show token validity / refresh health across sources
 - [`bookclerk library revoke-account`](#bookclerk-library-revoke-account): Remove store credentials but keep acquired books and account rows
 - [`bookclerk library scan`](#bookclerk-library-scan): Sync the library from the content sources: queues one scan job per account (every scan-enabled account when none is named) for a bookclerkd node to run, and waits for them
-- [`bookclerk library acquire`](#bookclerk-library-acquire): Download + decrypt + store titles: queues one acquire job per title id (or one for every pending title) for a bookclerkd node to run, and waits for them. `--dry-run` only prints planned keys, here
+- [`bookclerk library acquire`](#bookclerk-library-acquire): Download + decrypt + store titles: queues one acquire job per title id and account it is in (or one for every pending title) for a bookclerkd node to run, and waits for them. `--dry-run` only prints planned keys, here
 - [`bookclerk library upload`](#bookclerk-library-upload): Upload files, folders or ZIP / tar archives to a running bookclerkd as one upload, then wait for the ingest job
 - [`bookclerk library set-status`](#bookclerk-library-set-status): Match storage files to library rows and update acquire status
 - [`bookclerk library get-license`](#bookclerk-library-get-license): Fetch a content license for an ASIN
@@ -176,7 +176,7 @@ Options:
 
 ### `bookclerk library acquire`
 
-Download + decrypt + store titles: queues one acquire job per title id (or one for every pending title) for a bookclerkd node to run, and waits for them. `--dry-run` only prints planned keys, here
+Download + decrypt + store titles: queues one acquire job per title id and account it is in (or one for every pending title) for a bookclerkd node to run, and waits for them. `--dry-run` only prints planned keys, here
 
 ```text
 bookclerk library acquire [OPTIONS] [ID]...

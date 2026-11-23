@@ -39,6 +39,7 @@ use sea_orm::sea_query::Query;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 
 use bookclerk_node_proto::ClaimScope;
+use bookclerk_storefront::AccountMatch;
 
 use super::enrollment::load_node_credential;
 use super::instances::{default_instance_for_key, load_plugin_instance, PluginInstanceId};
@@ -173,7 +174,9 @@ pub async fn job_trusted(store: &LibraryStore, trust: &NodeTrust, job: &JobRecor
         NodeTrust::All => Ok(true),
         NodeTrust::Nothing => Ok(false),
         NodeTrust::OwnedBy(user_id) => match owned_job_account(job) {
-            Some(account) => account_owned(store, *user_id, account).await,
+            Some(account) => {
+                account_owned(store, *user_id, account, job.payload.account_match).await
+            }
             None => Ok(false),
         },
         NodeTrust::AllOfOwner(user_id) => {
@@ -184,7 +187,14 @@ pub async fn job_trusted(store: &LibraryStore, trust: &NodeTrust, job: &JobRecor
             // pin this database does not know is no one's.
             match job_pin_plugin(store, job).await? {
                 Some(plugin_key) => {
-                    account_owned_in(store, *user_id, account, plugin_key.as_deref()).await
+                    account_owned_in(
+                        store,
+                        *user_id,
+                        account,
+                        plugin_key.as_deref(),
+                        job.payload.account_match,
+                    )
+                    .await
                 }
                 None => Ok(false),
             }
@@ -225,8 +235,9 @@ pub(super) async fn account_owned(
     store: &LibraryStore,
     user_id: i64,
     account: &str,
+    how: AccountMatch,
 ) -> Result<bool> {
-    account_owned_in(store, user_id, account, None).await
+    account_owned_in(store, user_id, account, None, how).await
 }
 
 /// [`account_owned`] within one plugin when `plugin_key` names one: the
@@ -240,8 +251,9 @@ async fn account_owned_in(
     user_id: i64,
     account: &str,
     plugin_key: Option<&str>,
+    how: AccountMatch,
 ) -> Result<bool> {
-    let touched = accounts_named(store, account, plugin_key).await?;
+    let touched = accounts_named_as(store, account, plugin_key, how).await?;
     if touched.is_empty() {
         return Ok(false);
     }
@@ -333,7 +345,15 @@ pub async fn job_item_accounts(
     let account = job.payload.account.as_deref().filter(|a| !a.is_empty());
     let mut items = BTreeSet::new();
     if let Some(account) = account {
-        items.extend(accounts_named(store, account, plugin_key.as_deref()).await?);
+        items.extend(
+            accounts_named_as(
+                store,
+                account,
+                plugin_key.as_deref(),
+                job.payload.account_match,
+            )
+            .await?,
+        );
     }
     match job.kind {
         JobKind::Scan => Ok(account.map(|_| items)),
@@ -514,7 +534,7 @@ pub async fn remote_node_may_view_job(
             // pin this database does not know falls back to every store's
             // accounts of that name, which is stricter.
             let Some(items) = job_item_accounts(store, job).await? else {
-                return account_owned(store, user_id, account).await;
+                return account_owned(store, user_id, account, job.payload.account_match).await;
             };
             if items.is_empty() {
                 return Ok(false);
@@ -630,6 +650,23 @@ pub(super) async fn accounts_named(
     needle: &str,
     plugin_key: Option<&str>,
 ) -> Result<BTreeSet<AccountKey>> {
+    accounts_named_as(store, needle, plugin_key, AccountMatch::IdOrLabel).await
+}
+
+/// [`accounts_named`] matched the way a job says (`how`, its
+/// `account_match`): an [`AccountMatch::ExactId`] job touches only the
+/// accounts whose id is `needle` exactly, so trust, the secret handoff and
+/// result checks read the same set the executor scans.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub(super) async fn accounts_named_as(
+    store: &LibraryStore,
+    needle: &str,
+    plugin_key: Option<&str>,
+    how: AccountMatch,
+) -> Result<BTreeSet<AccountKey>> {
     let mut query = accounts::Entity::find();
     if let Some(key) = plugin_key {
         query = query.filter(accounts::Column::PluginKey.eq(key));
@@ -637,13 +674,7 @@ pub(super) async fn accounts_named(
     Ok(read_keyset(store, query, &[accounts::Column::Id])
         .await?
         .into_iter()
-        .filter(|row| {
-            row.account_id.eq_ignore_ascii_case(needle)
-                || row
-                    .label
-                    .as_deref()
-                    .is_some_and(|label| label.eq_ignore_ascii_case(needle))
-        })
+        .filter(|row| how.matches(needle, &row.account_id, row.label.as_deref()))
         .map(|row| (row.plugin_key, row.account_id))
         .collect())
 }
@@ -966,8 +997,20 @@ pub async fn plan_acquire(
                 .filter(|held| key.as_deref().is_none_or(|key| key == held.plugin_key))
                 .map(|held| held.account_id)
                 .collect();
-            if ids.is_empty() {
+            // Acquire matches an account by id or label when it runs, so
+            // two of these ids could reach one account (ids differing only
+            // in case, or an id that is another account's label) and
+            // acquire its title twice. Such a title keeps one unsplit job.
+            let mut reached: BTreeSet<AccountKey> = BTreeSet::new();
+            let mut overlap = false;
+            for id in &ids {
+                for account in accounts_named(store, id, key.as_deref()).await? {
+                    overlap |= !reached.insert(account);
+                }
+            }
+            if ids.is_empty() || overlap {
                 out.push(payload(None, Some(title)));
+                continue;
             }
             out.extend(ids.iter().map(|id| payload(Some(id), Some(title))));
         }

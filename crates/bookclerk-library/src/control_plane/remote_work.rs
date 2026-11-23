@@ -47,7 +47,7 @@ use super::semaphore::{
     permits_with_holder_prefix, release_permits, renew_permits, SemaphorePermit,
 };
 use super::trust::{
-    accounts_named, handoff_routed_job, node_may_claim_job, node_may_claim_job_in_scope,
+    accounts_named_as, handoff_routed_job, node_may_claim_job, node_may_claim_job_in_scope,
     node_trust, Claimant, NodeTrust,
 };
 use crate::entities::{encrypted_secrets, job_secret_handoffs};
@@ -423,7 +423,14 @@ async fn job_secret_records(
         return Ok(Vec::new());
     }
     let mut records = Vec::new();
-    for (provider, account_id) in accounts_named(store, account, pinned_key.as_deref()).await? {
+    for (provider, account_id) in accounts_named_as(
+        store,
+        account,
+        pinned_key.as_deref(),
+        job.payload.account_match,
+    )
+    .await?
+    {
         let rows = encrypted_secrets::Entity::find()
             .filter(encrypted_secrets::Column::AccountType.eq(secret_account_type::INTEGRATION))
             .filter(encrypted_secrets::Column::AccountId.eq(account_id.as_str()))
@@ -607,7 +614,13 @@ async fn canonical_account(
     let Some(selector) = job.payload.account.as_deref().filter(|a| !a.is_empty()) else {
         return Ok(None);
     };
-    let named = accounts_named(store, selector, source_plugin_key).await?;
+    let named = accounts_named_as(
+        store,
+        selector,
+        source_plugin_key,
+        job.payload.account_match,
+    )
+    .await?;
     let mut named = named.into_iter();
     Ok(match (named.next(), named.next()) {
         (Some((_, account_id)), None) if account_id != selector => Some(account_id),

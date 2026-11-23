@@ -485,16 +485,20 @@ Every scan and acquire is admitted through a planner, whoever asks:
   ADR, *Per-item trust and the scan planner*). A scan-all job names its
   account by its exact id (`account_match = "exact_id"` in the payload), so
   an account whose label is another account's id is still scanned once, by
-  its own job, and the other account is not scanned twice. An id that
+  its own job, and the other account is not scanned twice. Trust, the
+  secret handoff, result checks, permits and the dedup key read such a job
+  the same exact way. An id that
   exists on two plugins gets one job when every row is scan-enabled, and
   otherwise one job pinned to each enabled row's default instance.
 - **Acquire** (`control_plane::plan_acquire`): each named title id
   (`titles`, UUID, ASIN, ISBN or product id) becomes its own job, so each
   can go to any node trusted with it. Operator authority, an Owner or an
   Administrator acquiring everything gets one unsplit job; a title they name
-  without an account becomes one job per account id it is in (one unsplit
-  job when it is in none), so a branch trusted with that account can take
-  it. Anyone else must
+  without an account becomes one job per account id it is in, so a branch
+  trusted with that account can take it. It stays one unsplit job when it is
+  in no account, or when two of those ids reach one account (ids differing
+  only in case, or an id that is another account's label), which would
+  acquire it twice. Anyone else must
   own the account they name, when they name one, and every account that
   holds a title a named id matches (a listing's product id, an ASIN or ISBN
   of its edition, or a holding id; 403 otherwise). An account is named by
@@ -773,8 +777,11 @@ nothing; the holder's timer picks the change up within 30 s.
 Until the sweep runs, a claim does not trust the stored requirements
 alone. Before a routed claim takes a job, it resolves the job's
 requirements again from the deployments committed now, with the same
-node-bound output keys. If they differ from the stored ones, the claim
-skips the job until the sweep has rewritten them. A deployment committed
+node-bound output keys. If the stored ones are missing any of them, the
+claim skips the job until the sweep has rewritten them. Stored requirements
+that cover the current ones (as during the grace period, when the sweep
+keeps old and new together) still let the job be claimed by a node that
+runs them all. A deployment committed
 on one node while another node holds the sweep lease therefore stops claims
 of queued work on its old requirements at once, instead of after the next
 pass. The daemon's own worker and the node API's branch claims both check

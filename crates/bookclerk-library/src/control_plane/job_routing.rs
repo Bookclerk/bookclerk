@@ -39,6 +39,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use bookclerk_node_proto::ClaimScope;
+use bookclerk_storefront::AccountMatch;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use uuid::Uuid;
 
@@ -50,7 +51,7 @@ use super::semaphore::{
     acquire_permits, release_permits, PermitAcquire, SemaphorePermit, SemaphoreRequest,
 };
 use super::trust::{
-    account_owned, accounts_named, claimant_may_run, job_named_account, job_trusted,
+    account_owned, accounts_named_as, claimant_may_run, job_named_account, job_trusted,
     node_trust_in_scope, owned_job_account, Claimant, NodeTrust,
 };
 use crate::entities::accounts;
@@ -209,7 +210,7 @@ pub async fn job_source_plugin_key(
         return Ok(None);
     };
     // Resolved like the claim filter and the secret handoff (id or label).
-    let keys: BTreeSet<String> = accounts_named(store, account, None)
+    let keys: BTreeSet<String> = accounts_named_as(store, account, None, job.payload.account_match)
         .await?
         .into_iter()
         .map(|(plugin_key, _)| plugin_key)
@@ -262,7 +263,9 @@ pub async fn job_plugin_keys(
         // Resolved like the executor and the trust checks do (id or
         // label, ignoring case), so the set covers every store it touches.
         Some(account) => {
-            let named = accounts_named(store, account, pinned.as_deref()).await?;
+            let named =
+                accounts_named_as(store, account, pinned.as_deref(), job.payload.account_match)
+                    .await?;
             if named.is_empty() {
                 return Ok(None);
             }
@@ -605,10 +608,15 @@ pub async fn job_semaphores(
         // secret handoff resolve them, so two jobs naming one account
         // differently still share its permit.
         let touched: Vec<(String, String)> = match job.payload.account.as_deref() {
-            Some(account) => super::trust::accounts_named(store, account, pinned_key.as_deref())
-                .await?
-                .into_iter()
-                .collect(),
+            Some(account) => super::trust::accounts_named_as(
+                store,
+                account,
+                pinned_key.as_deref(),
+                job.payload.account_match,
+            )
+            .await?
+            .into_iter()
+            .collect(),
             None => {
                 let mut query = accounts::Entity::find();
                 if let Some(key) = pinned_key.as_deref() {
@@ -683,8 +691,11 @@ struct CurrentRequirements {
 }
 
 impl CurrentRequirements {
-    /// True when `job`'s stored requirements are the ones it would be
-    /// given now.
+    /// True when `job`'s stored requirements cover the ones it would be
+    /// given now: a node that meets the stored set (checked before this)
+    /// then meets the current one too. A superset is what the requirements
+    /// sweep keeps while it holds a job unsettled (old and new together),
+    /// so such a job stays claimable through the grace period.
     ///
     /// # Errors
     ///
@@ -718,7 +729,10 @@ impl CurrentRequirements {
         let mut stored = job.payload.requires.clone();
         stored.sort();
         stored.dedup();
-        Ok(self.by_shape.get(&shape) == Some(&stored))
+        Ok(self
+            .by_shape
+            .get(&shape)
+            .is_some_and(|now| now.iter().all(|key| stored.binary_search(key).is_ok())))
     }
 }
 
@@ -764,7 +778,7 @@ pub async fn claim_routed_job(
     let mut runnable: BTreeMap<Vec<String>, bool> = BTreeMap::new();
     // A user's Host is checked against each named account once per call
     // too, rather than reading the accounts and links per candidate.
-    let mut owned_accounts: BTreeMap<String, bool> = BTreeMap::new();
+    let mut owned_accounts: BTreeMap<(String, AccountMatch), bool> = BTreeMap::new();
     // The node-bound keys and each job shape's current requirements, read
     // once per call and only when a candidate gets that far.
     let mut current = CurrentRequirements::default();
@@ -799,14 +813,17 @@ pub async fn claim_routed_job(
             };
             let trusted = match named {
                 Some((_, None)) => false,
-                Some((user_id, Some(account))) => match owned_accounts.get(account) {
-                    Some(known) => *known,
-                    None => {
-                        let known = account_owned(store, user_id, account).await?;
-                        owned_accounts.insert(account.to_owned(), known);
-                        known
+                Some((user_id, Some(account))) => {
+                    let how = job.payload.account_match;
+                    match owned_accounts.get(&(account.to_owned(), how)) {
+                        Some(known) => *known,
+                        None => {
+                            let known = account_owned(store, user_id, account, how).await?;
+                            owned_accounts.insert((account.to_owned(), how), known);
+                            known
+                        }
                     }
-                },
+                }
                 None => job_trusted(store, &trust, &job).await?,
             };
             if !trusted {

@@ -112,7 +112,19 @@ pub enum OAuthProgress {
 }
 
 /// How a scan's account names pick accounts ([`ScanOptions::accounts`]).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum AccountMatch {
     /// A name matches an account's id or its label, ignoring ASCII case:
