@@ -169,8 +169,8 @@ export type Manifest = {
   sockets?: { binding?: string };
   /** `[[webhooks]]` — inbound HTTP endpoints the host receives for the plugin. */
   webhooks?: WebhookToml[];
-  /** Store-account credential kind a storefront connects (`[credentials]`). */
-  credentials?: string;
+  /** How a storefront's store sign-ins may be shared (top-level `credentials`). */
+  credentials?: "shareable" | "single_keeper";
   /** Network policy the operator must consent to. */
   capabilities: {
     /** Egress policy (`deny` / `outbound`, plus hostname domains for workerd). */
@@ -637,7 +637,11 @@ function settingRowsError(entry: SettingEntry, value: unknown): string | null {
     }
     for (const column of columns) {
       const name = String(column.key ?? "");
-      if (column.required === true && column.default === undefined && !(name in fields)) {
+      if (
+        column.required === true &&
+        column.default === undefined &&
+        !Object.hasOwn(fields, name)
+      ) {
         return `setting \`${key}\` row ${number}: column \`${name}\` is required`;
       }
     }
@@ -1432,6 +1436,12 @@ function validateEmbeddedPath(trimmed: string): { kind: "embedded"; value: strin
 export function validateManifest(m: Manifest): void {
   // Checks run in the host's order (`PluginManifest::validate`), so a
   // manifest that breaks two rules gets the same first error everywhere.
+  // The host refuses an unknown `credentials` value while decoding, before
+  // any rule runs.
+  const credentials: unknown = m.credentials;
+  if (credentials != null && credentials !== "shareable" && credentials !== "single_keeper") {
+    throw new Error("plugin.toml: `credentials` must be `shareable` or `single_keeper`");
+  }
   if (!m.id || !String(m.id).trim()) {
     throw new Error("plugin.toml: `id` is required");
   }
@@ -1902,9 +1912,11 @@ function validateBindings(m: Manifest): void {
 function validateTriggers(m: Manifest): void {
   const entrypoints = (m.entrypoints ?? []) as readonly string[];
   const crons = m.triggers?.crons ?? [];
+  // A malformed schedule fails to parse before the host looks at entrypoints.
+  validateCrons(crons);
   if (Array.isArray(crons) && crons.length > 0) {
     // Crons fire only on integration deployments.
-    for (const registry of ["storefront", "storage", "databaseAdapter"]) {
+    for (const registry of ["storefront", "storage", "databaseAdapter", "ingress"]) {
       if (entrypoints.includes(registry)) {
         throw new Error(
           `plugin.toml: \`[triggers].crons\` cannot be combined with the \`${registry}\` entrypoint; put the schedule in a separate integration plugin`,
@@ -1912,7 +1924,6 @@ function validateTriggers(m: Manifest): void {
       }
     }
   }
-  validateCrons(crons);
   for (const [i, job] of (m.triggers?.jobs ?? []).entries()) {
     if (typeof job !== "string" || !EVENT_TYPE_RE.test(job)) {
       throw new Error(
@@ -1939,8 +1950,20 @@ function validateEventTables(m: Manifest): void {
         `plugin.toml: events.consumers[${i}].type \`${type}\` must be snake_case \`[a-z][a-z0-9_]*\``,
       );
     }
-    if (Array.isArray(consumer.schema_versions) && consumer.schema_versions.length === 0) {
-      throw new Error(`plugin.toml: events.consumers[${i}].schema_versions must not be empty`);
+    const versions: unknown = consumer.schema_versions;
+    if (versions !== undefined) {
+      if (!Array.isArray(versions) || versions.length === 0) {
+        throw new Error(`plugin.toml: events.consumers[${i}].schema_versions must not be empty`);
+      }
+      if (
+        versions.some(
+          (v) => !Number.isInteger(v) || (v as number) < 0 || (v as number) > 0xffffffff,
+        )
+      ) {
+        throw new Error(
+          `plugin.toml: events.consumers[${i}].schema_versions entries must be integers from 0 to 4294967295`,
+        );
+      }
     }
     const resourceClass =
       typeof consumer.resource_class === "string" ? consumer.resource_class.trim() : "";
@@ -2145,6 +2168,12 @@ function validateWebhooks(m: Manifest): void {
         `plugin.toml: webhooks[${i}].signature.prefix must be at most ${MAX_WEBHOOK_SIGNATURE_PREFIX_LEN} visible ASCII characters`,
       );
     }
+    const encoding: unknown = signature.encoding;
+    if (encoding !== undefined && encoding !== "hex" && encoding !== "base64") {
+      throw new Error(
+        `plugin.toml: webhooks[${i}].signature.encoding must be \`hex\` or \`base64\``,
+      );
+    }
     const secret = signature.secret_setting ?? "";
     if (!(m.settings ?? []).some((s) => s.key === secret && s.type === "secret")) {
       throw new Error(
@@ -2178,9 +2207,19 @@ function validateNetworkGrants(m: Manifest): void {
         `plugin.toml: capabilities.network.tcp host \`${host}\` is not a valid hostname (\`*\` is a fetch grant only)`,
       );
     }
-    if ((tcp.ports ?? []).length === 0) {
+    const ports: unknown[] = tcp.ports ?? [];
+    if (ports.length === 0) {
       throw new Error(
         `plugin.toml: capabilities.network.tcp host \`${host}\` must declare at least one port`,
+      );
+    }
+    if (
+      ports.some(
+        (port) => !Number.isInteger(port) || (port as number) < 0 || (port as number) > 65535,
+      )
+    ) {
+      throw new Error(
+        `plugin.toml: capabilities.network.tcp host \`${host}\` ports must be integers from 0 to 65535`,
       );
     }
   }

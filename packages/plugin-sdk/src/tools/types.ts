@@ -34,6 +34,20 @@ const RESERVED_BINDINGS: ReadonlySet<string> = new Set([
   "NETWORK",
 ]);
 
+/**
+ * Names a queue producer may never take, as the host checks them. Other
+ * collisions (`SOCKETS`, `ORIGIN`, a KV namespace) count only when that
+ * binding exists, which the duplicate check below catches.
+ */
+const RESERVED_QUEUE_BINDINGS: ReadonlySet<string> = new Set([
+  "CONFIG",
+  "SECRETS",
+  "EVENTS",
+  "WORK_FS",
+  "OAUTH",
+  "NETWORK",
+]);
+
 /** One property of the generated `Env` interface. */
 interface EnvProperty {
   /** Binding name on `env`. */
@@ -218,7 +232,7 @@ export function envPropertiesFor(m: Manifest): EnvProperty[] {
     });
   }
   for (const producer of m.queues?.producers ?? []) {
-    if (RESERVED_BINDINGS.has(producer.binding)) {
+    if (RESERVED_QUEUE_BINDINGS.has(producer.binding)) {
       throw new Error(
         "plugin.toml: [[queues.producers]] binding collides with a Bookclerk binding",
       );

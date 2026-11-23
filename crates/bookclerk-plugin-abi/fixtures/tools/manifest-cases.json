@@ -1197,6 +1197,12 @@
       "name": "two rules: webhook before metadata files",
       "tables": "[[webhooks]]\nname = \"Bad\"\n[webhooks.signature]\nscheme = \"none\"\n[metadata_files]\n[[metadata_files.dialects]]\nid = \"x\"\nname = \"X\"\n",
       "error": "plugin.toml: webhooks[0].name must be `[a-z0-9][a-z0-9-]*` and at most 32 chars"
+    },
+    {
+      "name": "ingress with crons",
+      "top": "runtime = \"workerd\"\nentrypoints = [\"ingress\"]\n",
+      "tables": "[ingress]\nkind = \"direct\"\n[triggers]\ncrons = [\"0 3 * * *\"]\n",
+      "error": "plugin.toml: `[triggers].crons` cannot be combined with the `ingress` entrypoint; put the schedule in a separate integration plugin"
     }
   ]
 }

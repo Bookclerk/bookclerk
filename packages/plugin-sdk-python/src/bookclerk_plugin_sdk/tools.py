@@ -1302,6 +1302,11 @@ def validate_manifest(m: dict[str, Any]) -> None:
         ValueError: If required fields, runtime tables, or network capabilities
             are missing or inconsistent.
     """
+    # The host refuses an unknown `credentials` value while decoding, before
+    # any rule runs.
+    credentials = m.get("credentials")
+    if credentials is not None and credentials not in ("shareable", "single_keeper"):
+        raise ValueError("plugin.toml: `credentials` must be `shareable` or `single_keeper`")
     if not str(m.get("id", "")).strip():
         raise ValueError("plugin.toml: `id` is required")
     try:
@@ -1555,15 +1560,16 @@ def _validate_triggers(m: dict[str, Any]) -> None:
     entrypoints = [str(e) for e in (m.get("entrypoints") or [])]
     triggers = m.get("triggers") or {}
     crons = triggers.get("crons", [])
+    # A malformed schedule fails to parse before the host looks at entrypoints.
+    _validate_crons(crons)
     if crons:
         # Crons fire only on integration deployments.
-        for registry in ("storefront", "storage", "databaseAdapter"):
+        for registry in ("storefront", "storage", "databaseAdapter", "ingress"):
             if registry in entrypoints:
                 raise ValueError(
                     f"plugin.toml: `[triggers].crons` cannot be combined with the `{registry}` "
                     "entrypoint; put the schedule in a separate integration plugin"
                 )
-    _validate_crons(crons)
     for index, job in enumerate(triggers.get("jobs") or []):
         if not isinstance(job, str) or not _EVENT_TYPE_RE.match(job):
             raise ValueError(
@@ -1590,10 +1596,20 @@ def _validate_event_tables(m: dict[str, Any]) -> None:
                 f"plugin.toml: events.consumers[{index}].type `{event_type}` must be "
                 "snake_case `[a-z][a-z0-9_]*`"
             )
-        if consumer.get("schema_versions") == []:
-            raise ValueError(
-                f"plugin.toml: events.consumers[{index}].schema_versions must not be empty"
-            )
+        versions = consumer.get("schema_versions")
+        if versions is not None:
+            if not isinstance(versions, list) or not versions:
+                raise ValueError(
+                    f"plugin.toml: events.consumers[{index}].schema_versions must not be empty"
+                )
+            if any(
+                isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= 0xFFFFFFFF
+                for v in versions
+            ):
+                raise ValueError(
+                    f"plugin.toml: events.consumers[{index}].schema_versions entries must be "
+                    "integers from 0 to 4294967295"
+                )
         resource_class = consumer.get("resource_class")
         resource_class = resource_class.strip() if isinstance(resource_class, str) else ""
         if resource_class and resource_class != "network":
@@ -1735,11 +1751,6 @@ def _validate_webhooks(m: dict[str, Any]) -> None:
     if len(rows) > _MAX_WEBHOOKS:
         raise ValueError(f"plugin.toml: at most {_MAX_WEBHOOKS} [[webhooks]] rows")
     names: set[str] = set()
-    secrets = {
-        s.get("key")
-        for s in (m.get("settings") or [])
-        if isinstance(s, dict) and s.get("type") == "secret"
-    }
     for i, row in enumerate(rows):
         name = row.get("name") if isinstance(row.get("name"), str) else ""
         if not _WEBHOOK_NAME_RE.match(name) or len(name) > MAX_WEBHOOK_NAME_BYTES:
@@ -1805,7 +1816,17 @@ def _validate_webhooks(m: dict[str, Any]) -> None:
                 f"plugin.toml: webhooks[{i}].signature.prefix must be at most "
                 f"{_MAX_WEBHOOK_SIGNATURE_PREFIX_LEN} visible ASCII characters"
             )
-        if signature.get("secret_setting") not in secrets:
+        encoding = signature.get("encoding")
+        if encoding is not None and encoding not in ("hex", "base64"):
+            raise ValueError(
+                f"plugin.toml: webhooks[{i}].signature.encoding must be `hex` or `base64`"
+            )
+        secret = signature.get("secret_setting")
+        settings = m.get("settings")
+        if not isinstance(secret, str) or not any(
+            isinstance(s, dict) and s.get("key") == secret and s.get("type") == "secret"
+            for s in (settings if isinstance(settings, list) else [])
+        ):
             raise ValueError(
                 f"plugin.toml: webhooks[{i}].signature.secret_setting must name a "
                 '`type = "secret"` entry in [[settings]]'
@@ -1834,7 +1855,7 @@ def _canonical_port(text: str) -> int | None:
     Returns:
         The port, or ``None``.
     """
-    if not text or text[0] == "0" or not all("0" <= c <= "9" for c in text):
+    if not text or len(text) > 5 or text[0] == "0" or not all("0" <= c <= "9" for c in text):
         return None
     port = int(text)
     return port if port <= 65535 else None
@@ -1956,12 +1977,20 @@ def _cidr_error(raw: str) -> str | None:
     if not slash:
         return None if _is_ipv4(text) or _is_ipv6(text) else f"invalid IP `{text}`"
     digits = prefix_text[1:] if prefix_text.startswith("+") else prefix_text
-    if not digits or not all("0" <= c <= "9" for c in digits) or int(digits) > 255:
+    # Bound the significant digits before converting (Python caps int() on
+    # very long text); leading zeros parse as they do for the host's `u8`.
+    significant = digits.lstrip("0") or "0"
+    if (
+        not digits
+        or not all("0" <= c <= "9" for c in digits)
+        or len(significant) > 3
+        or int(significant) > 255
+    ):
         return f"invalid CIDR prefix `{prefix_text}`"
     v4 = _is_ipv4(addr)
     if not v4 and not _is_ipv6(addr):
         return f"invalid CIDR address `{addr}`"
-    prefix, limit = int(digits), (32 if v4 else 128)
+    prefix, limit = int(significant), (32 if v4 else 128)
     return f"CIDR prefix {prefix} exceeds {limit}" if prefix > limit else None
 
 
@@ -1989,9 +2018,17 @@ def _validate_network_grants(net: dict[str, Any]) -> None:
                 f"plugin.toml: capabilities.network.tcp host `{host}` is not a valid hostname "
                 "(`*` is a fetch grant only)"
             )
-        if not (tcp.get("ports") or []):
+        ports = tcp.get("ports") or []
+        if not ports:
             raise ValueError(
                 f"plugin.toml: capabilities.network.tcp host `{host}` must declare at least one port"
+            )
+        if not isinstance(ports, list) or any(
+            isinstance(p, bool) or not isinstance(p, int) or not 0 <= p <= 65535 for p in ports
+        ):
+            raise ValueError(
+                f"plugin.toml: capabilities.network.tcp host `{host}` ports must be integers "
+                "from 0 to 65535"
             )
     for cidr in net.get("address_cidrs") or []:
         err = _cidr_error(str(cidr))
@@ -2206,10 +2243,19 @@ def _validate_settings(m: dict[str, Any]) -> None:
         ValueError: When a key, type, value list, column, network grant or
             default is invalid, or the binding a value travels in is missing.
     """
-    settings = [s for s in m.get("settings") or [] if isinstance(s, dict)]
 
     def fail(message: str) -> None:
         raise ValueError(f"plugin.toml: [[settings]] {message}")
+
+    raw = m.get("settings")
+    if raw is None:
+        raw = []
+    if not isinstance(raw, list):
+        fail("must be an array of tables")
+    for index, row in enumerate(raw):
+        if not isinstance(row, dict):
+            fail(f"row {index} must be a table")
+    settings: list[dict[str, Any]] = raw
 
     if len(settings) > _MAX_SETTINGS:
         fail(f"at most {_MAX_SETTINGS} settings may be declared")
@@ -2535,7 +2581,8 @@ def fmt_plugin_toml(path: Path, *, check_only: bool) -> str:
         if norm(text) != norm(formatted):
             raise ValueError(f"would reformat {safe}")
         return f"ok {safe}"
-    safe.write_text(formatted, encoding="utf-8")
+    # LF on every platform, as the Rust formatter writes.
+    safe.write_text(formatted, encoding="utf-8", newline="\n")
     return f"wrote {safe}"
 
 

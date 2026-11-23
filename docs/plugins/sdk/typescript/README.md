@@ -278,7 +278,8 @@ every profile. See
 ```bash
 npx bookclerk-plugin check .
 npx bookclerk-plugin types [dir] [--out <file>]
-npx bookclerk-plugin fmt [--check] plugin.toml
+npx bookclerk-plugin fmt plugin.toml
+npx bookclerk-plugin fmt --check plugin.toml
 npx bookclerk-plugin package --out dist/plugins .
 npx bookclerk-plugin smoke .   # download the pinned workerd, then describe + health
 ```
@@ -286,8 +287,10 @@ npx bookclerk-plugin smoke .   # download the pinned workerd, then describe + he
 `check` enforces the v3 author model: the main module imports the SDK,
 does not reference the removed `BookclerkPlugin` base, and exports one
 class per named entrypoint. It also checks `plugin.toml` with the host's
-rules, in the host's order and with its messages, so a manifest that passes
-`check` loads and one that fails gets the error the host would give first.
+rules, in the host's order and with its messages, so a manifest that fails
+gets the error the host would give first. A native `command` is checked only
+when a `.require-binary` file sits in the plugin folder, so passing `check`
+does not prove a native binary is there (`package` refuses a missing one).
 
 `fmt` writes `plugin.toml` exactly as the Rust `bookclerk-plugin fmt` does:
 every table the manifest declares, in the host's field order, with the

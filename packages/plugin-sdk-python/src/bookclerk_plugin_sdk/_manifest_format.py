@@ -215,6 +215,21 @@ def _non_empty_strings(src: Table, key: str) -> Any:
     return out if out else _SKIP
 
 
+def _cron_strings(triggers: Table) -> Any:
+    """Return cron schedules as the host writes them back.
+
+    Fields are split on whitespace and joined with single spaces.
+
+    Args:
+        triggers: The ``[triggers]`` table.
+
+    Returns:
+        The schedules, or ``_SKIP`` when empty.
+    """
+    crons = _non_empty_strings(triggers, "crons")
+    return _SKIP if crons is _SKIP else [" ".join(c.split()) for c in crons]
+
+
 def _tables(src: Table, key: str, each: Callable[[Table], Table]) -> list[Table]:
     """Return the canonical form of each table in a list.
 
@@ -720,7 +735,7 @@ def canonical_manifest(m: Table) -> Table:
                 _non_empty_table(
                     _table(
                         [
-                            ("crons", _non_empty_strings(triggers, "crons")),
+                            ("crons", _cron_strings(triggers)),
                             ("jobs", _non_empty_strings(triggers, "jobs")),
                         ]
                     )
@@ -822,7 +837,7 @@ def _emit_key(key: str) -> str:
     Returns:
         Bare or quoted key.
     """
-    return key if _BARE_KEY.match(key) else _basic_string(key)
+    return key if _BARE_KEY.fullmatch(key) else _basic_string(key)
 
 
 def _is_section(value: Any) -> bool:
@@ -892,7 +907,9 @@ def _emit_table(out: list[list[str]], path: list[str], body: Table, header: str 
     # `toml` leaves a table implicit when it holds only sections.
     if header is None:
         out.append(lines)
-    elif lines or not sections:
+    elif header.startswith("[[") or lines or not sections:
+        # An array-of-tables element always needs its own `[[...]]` header,
+        # or its child sections would attach to the previous element.
         out.append([header, *lines])
     for key, value in sections:
         child = [*path, _emit_key(key)]

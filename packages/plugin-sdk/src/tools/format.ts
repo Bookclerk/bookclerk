@@ -14,13 +14,41 @@
  * output for every first-party manifest, and the SDK tests compare against it.
  */
 
+import { TomlDate } from "smol-toml";
+
 import type { Manifest } from "./validate.js";
 
-/** A TOML table in emit order (insertion order is the key order). */
-type Table = { [key: string]: TomlValue };
+/**
+ * A TOML table in emit order (insertion order is the key order). A `Map`
+ * keeps integer-like keys (`"10"`, `"2"`) in the order they were inserted
+ * and holds `__proto__` as an ordinary key.
+ */
+type Table = Map<string, TomlValue>;
+
+/**
+ * A free-form TOML float, kept apart from integers so `1.0` is written back
+ * as a float. Only free-form values ({@link anyValue}) carry it, and only
+ * when the source was parsed with integers as `bigint`.
+ */
+class TomlFloat {
+  /**
+   * @param value - The float.
+   */
+  constructor(readonly value: number) {}
+}
 
 /** Any value {@link emitToml} writes. */
-type TomlValue = string | number | bigint | boolean | TomlValue[] | Table;
+type TomlValue = string | number | bigint | boolean | TomlFloat | TomlDate | TomlValue[] | Table;
+
+/** How {@link formatManifest} reads numbers in the parsed manifest. */
+export interface FormatOptions {
+  /**
+   * The manifest was parsed with `integersAsBigInt: true`, so integers are
+   * `bigint` and every `number` is a TOML float. Without it, free-form whole
+   * numbers are written as integers.
+   */
+  integersAsBigInt?: boolean;
+}
 
 /** A parsed manifest table the canonical step reads from. */
 type Source = Record<string, unknown>;
@@ -32,7 +60,13 @@ type Source = Record<string, unknown>;
  * @returns `true` for a non-null, non-array object.
  */
 function isTable(value: unknown): value is Source {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    !(value instanceof TomlDate) &&
+    !(value instanceof Map)
+  );
 }
 
 /**
@@ -67,11 +101,22 @@ function listAt(src: Source, key: string): unknown[] {
  * @returns The table.
  */
 function table(entries: Array<[string, TomlValue | undefined]>): Table {
-  const out: Table = {};
+  const out: Table = new Map();
   for (const [key, value] of entries) {
-    if (value !== undefined) out[key] = value;
+    if (value !== undefined) out.set(key, value);
   }
   return out;
+}
+
+/**
+ * A table, or `undefined` when it holds nothing (a struct the Rust side
+ * skips when empty).
+ *
+ * @param t - Table.
+ * @returns `t`, or `undefined`.
+ */
+function nonEmpty(t: Table | undefined): Table | undefined {
+  return t && t.size > 0 ? t : undefined;
 }
 
 /**
@@ -196,6 +241,18 @@ function nonEmptyStrings(src: Source, key: string): string[] | undefined {
 }
 
 /**
+ * Cron schedules as the host writes them back: fields split on whitespace
+ * and joined with single spaces.
+ *
+ * @param src - Parent table.
+ * @param key - Field name.
+ * @returns The schedules, or `undefined` when empty.
+ */
+function cronStrings(src: Source, key: string): string[] | undefined {
+  return nonEmptyStrings(src, key)?.map((cron) => cron.trim().split(/\s+/).join(" "));
+}
+
+/**
  * A list of canonical tables skipped when empty.
  *
  * @param src - Parent table.
@@ -219,25 +276,28 @@ function nonEmptyTables(
  * it: object keys sorted (`BTreeMap`), everything else as parsed.
  *
  * @param value - Parsed value.
+ * @param floats - Every `number` is a float (integers arrived as `bigint`).
  * @returns The canonical value, or `undefined` for a shape TOML cannot hold.
  */
-function anyValue(value: unknown): TomlValue | undefined {
+function anyValue(value: unknown, floats: boolean): TomlValue | undefined {
   if (typeof value === "string" || typeof value === "boolean") return value;
-  if (typeof value === "number" || typeof value === "bigint") return value;
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number") return floats ? new TomlFloat(value) : value;
+  if (value instanceof TomlDate) return value;
   if (Array.isArray(value)) {
     const out: TomlValue[] = [];
     for (const item of value) {
-      const inner = anyValue(item);
+      const inner = anyValue(item, floats);
       if (inner === undefined) return undefined;
       out.push(inner);
     }
     return out;
   }
   if (isTable(value)) {
-    const out: Table = {};
+    const out: Table = new Map();
     for (const key of Object.keys(value).sort()) {
-      const inner = anyValue(value[key]);
-      if (inner !== undefined) out[key] = inner;
+      const inner = anyValue(value[key], floats);
+      if (inner !== undefined) out.set(key, inner);
     }
     return out;
   }
@@ -258,10 +318,11 @@ function namedBinding(src: Source): Table {
  * Canonical `SettingSpec` (also used for table columns).
  *
  * @param src - Parsed `[[settings]]` entry.
+ * @param floats - Numbers in free-form values are floats (see {@link FormatOptions}).
  * @returns Canonical table.
  */
-function settingSpec(src: Source): Table {
-  const defaultValue = src.default === undefined ? undefined : anyValue(src.default);
+function settingSpec(src: Source, floats: boolean): Table {
+  const defaultValue = src.default === undefined ? undefined : anyValue(src.default, floats);
   return table([
     ["key", str(src, "key")],
     ["label", nonEmptyString(src, "label")],
@@ -278,7 +339,7 @@ function settingSpec(src: Source): Table {
     ["default", defaultValue],
     ["required", trueOnly(src, "required")],
     ["description", optString(src, "description")],
-    ["columns", nonEmptyTables(src, "columns", settingSpec)],
+    ["columns", nonEmptyTables(src, "columns", (c) => settingSpec(c, floats))],
     ["network", optString(src, "network")],
     ["default_port", optInt(src, "default_port")],
   ]);
@@ -318,9 +379,11 @@ function webhook(src: Source): Table {
  * serializes it.
  *
  * @param manifest - Manifest previously accepted by `validateManifest`.
+ * @param options - How numbers were parsed.
  * @returns The canonical table tree {@link emitToml} writes.
  */
-export function canonicalManifest(manifest: Manifest): Table {
+export function canonicalManifest(manifest: Manifest, options: FormatOptions = {}): Table {
+  const floats = options.integersAsBigInt === true;
   const m = manifest as unknown as Source;
   const workerd = tableAt(m, "workerd");
   const limits = workerd ? tableAt(workerd, "limits") : undefined;
@@ -332,7 +395,7 @@ export function canonicalManifest(manifest: Manifest): Table {
     : undefined;
   const triggers = tableAt(m, "triggers") ?? {};
   const triggersTable = table([
-    ["crons", nonEmptyStrings(triggers, "crons")],
+    ["crons", cronStrings(triggers, "crons")],
     ["jobs", nonEmptyStrings(triggers, "jobs")],
   ]);
   const events = tableAt(m, "events") ?? {};
@@ -344,11 +407,11 @@ export function canonicalManifest(manifest: Manifest): Table {
           ["type", str(c, "type")],
           [
             "schema_versions",
-            c.schema_versions === undefined ? [1] : (anyValue(c.schema_versions) ?? []),
+            c.schema_versions === undefined ? [1] : (anyValue(c.schema_versions, false) ?? []),
           ],
           ["supports_suspend", bool(c, "supports_suspend")],
           ["resource_class", str(c, "resource_class", "network")],
-          ["filter", c.filter === undefined ? undefined : anyValue(c.filter)],
+          ["filter", c.filter === undefined ? undefined : anyValue(c.filter, floats)],
           ["max_retries", optInt(c, "max_retries")],
           ["message_retention_period", optInt(c, "message_retention_period")],
         ]),
@@ -366,7 +429,7 @@ export function canonicalManifest(manifest: Manifest): Table {
   ]);
   const vars = tableAt(m, "vars");
   // `vars` is skipped only when absent: an empty `[vars]` is kept.
-  const varsTable = vars ? (anyValue(vars) as Table) : undefined;
+  const varsTable = vars ? (anyValue(vars, floats) as Table) : undefined;
   const queues = tableAt(m, "queues") ?? {};
   const queuesTable = table([
     [
@@ -441,7 +504,7 @@ export function canonicalManifest(manifest: Manifest): Table {
             ["main_module", str(workerd, "main_module")],
             ["modules_dir", str(workerd, "modules_dir", "modules")],
             ["entrypoint", str(workerd, "entrypoint", "default")],
-            ["limits", limitsTable && Object.keys(limitsTable).length ? limitsTable : undefined],
+            ["limits", nonEmpty(limitsTable)],
           ])
         : undefined,
     ],
@@ -455,11 +518,11 @@ export function canonicalManifest(manifest: Manifest): Table {
         ]),
       ),
     ],
-    ["triggers", Object.keys(triggersTable).length ? triggersTable : undefined],
-    ["events", Object.keys(eventsTable).length ? eventsTable : undefined],
+    ["triggers", nonEmpty(triggersTable)],
+    ["events", nonEmpty(eventsTable)],
     ["databases", nonEmptyTables(m, "databases", (d) => table([["binding", str(d, "binding")]]))],
     ["vars", varsTable],
-    ["settings", nonEmptyTables(m, "settings", settingSpec)],
+    ["settings", nonEmptyTables(m, "settings", (row) => settingSpec(row, floats))],
     ["secrets", tableAt(m, "secrets") ? namedBinding(tableAt(m, "secrets") ?? {}) : undefined],
     [
       "kv_namespaces",
@@ -472,7 +535,7 @@ export function canonicalManifest(manifest: Manifest): Table {
         ]),
       ),
     ],
-    ["queues", Object.keys(queuesTable).length ? queuesTable : undefined],
+    ["queues", nonEmpty(queuesTable)],
     ["work_fs", tableAt(m, "work_fs") ? namedBinding(tableAt(m, "work_fs") ?? {}) : undefined],
     ["oauth", tableAt(m, "oauth") ? namedBinding(tableAt(m, "oauth") ?? {}) : undefined],
     ["sockets", tableAt(m, "sockets") ? namedBinding(tableAt(m, "sockets") ?? {}) : undefined],
@@ -561,7 +624,7 @@ export function canonicalManifest(manifest: Manifest): Table {
         : undefined,
     ],
     ["ingress", ingress ? table([["kind", str(ingress, "kind")]]) : undefined],
-    ["ai", Object.keys(aiTable).length ? aiTable : undefined],
+    ["ai", nonEmpty(aiTable)],
     [
       "capabilities",
       table([
@@ -575,7 +638,7 @@ export function canonicalManifest(manifest: Manifest): Table {
               nonEmptyTables(network, "tcp", (t) =>
                 table([
                   ["host", str(t, "host")],
-                  ["ports", listAt(t, "ports").map((p) => anyValue(p) ?? 0)],
+                  ["ports", listAt(t, "ports").map((p) => anyValue(p, false) ?? 0)],
                 ]),
               ),
             ],
@@ -691,8 +754,8 @@ function emitKey(key: string): string {
  * @returns `true` for a table or a non-empty array of tables.
  */
 function isSection(value: TomlValue): boolean {
-  if (isTable(value)) return true;
-  return Array.isArray(value) && value.length > 0 && value.every((item) => isTable(item));
+  if (value instanceof Map) return true;
+  return Array.isArray(value) && value.length > 0 && value.every((item) => item instanceof Map);
 }
 
 /**
@@ -706,6 +769,8 @@ function emitInline(value: TomlValue, inline = false): string {
   if (typeof value === "string") return basicString(value);
   if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "bigint") return value.toString();
+  if (value instanceof TomlFloat) return float(value.value);
+  if (value instanceof TomlDate) return value.toISOString();
   if (typeof value === "number") {
     // The parser hands integers and floats over as numbers; the manifest's
     // numeric fields are integers, so whole numbers are written as such.
@@ -718,7 +783,7 @@ function emitInline(value: TomlValue, inline = false): string {
     if (items.length === 1) return `[${items[0]}]`;
     return `[\n${items.map((item) => `    ${item},`).join("\n")}\n]`;
   }
-  const cells = Object.entries(value).map(([k, v]) => `${emitKey(k)} = ${emitInline(v, true)}`);
+  const cells = [...value.entries()].map(([k, v]) => `${emitKey(k)} = ${emitInline(v, true)}`);
   return cells.length ? `{ ${cells.join(", ")} }` : "{}";
 }
 
@@ -733,13 +798,17 @@ function emitInline(value: TomlValue, inline = false): string {
 function emitTable(out: string[][], path: string[], body: Table, header: string | null): void {
   const lines: string[] = [];
   const sections: Array<[string, TomlValue]> = [];
-  for (const [key, value] of Object.entries(body)) {
+  for (const [key, value] of body.entries()) {
     if (isSection(value)) sections.push([key, value]);
     else lines.push(`${emitKey(key)} = ${emitInline(value)}`);
   }
   // `toml` leaves a table implicit when it holds only sections.
   if (header === null) out.push(lines);
-  else if (lines.length > 0 || sections.length === 0) out.push([header, ...lines]);
+  // An array-of-tables element always needs its own `[[...]]` header, or
+  // its child sections would attach to the previous element.
+  else if (header.startsWith("[[") || lines.length > 0 || sections.length === 0) {
+    out.push([header, ...lines]);
+  }
   for (const [key, value] of sections) {
     const child = [...path, emitKey(key)];
     if (Array.isArray(value)) {
@@ -774,6 +843,9 @@ export function emitToml(root: Table): string {
  * kept, as with the Rust formatter.
  *
  * @param m - Manifest previously accepted by `validateManifest`.
+ * @param options - How numbers were parsed; pass `{ integersAsBigInt: true }`
+ *   when the manifest came from `parse(text, { integersAsBigInt: true })` so
+ *   free-form floats such as `1.0` stay floats.
  * @returns Canonical TOML text ending in a trailing newline.
  *
  * @example
@@ -782,6 +854,6 @@ export function emitToml(root: Table): string {
  * fs.writeFileSync("plugin.toml", text);
  * ```
  */
-export function formatManifest(m: Manifest): string {
-  return emitToml(canonicalManifest(m));
+export function formatManifest(m: Manifest, options: FormatOptions = {}): string {
+  return emitToml(canonicalManifest(m, options));
 }
