@@ -508,5 +508,6 @@ test("the entrypoint classes call the lifecycle", async () => {
 
 test("VERSION matches plugin.toml", () => {
   const manifest = readFileSync(new URL("../plugin.toml", import.meta.url), "utf8");
-  assert.match(manifest, new RegExp(`^version = "${VERSION.replace(/\./g, "\\.")}"$`, "m"));
+  // Compared as text: no regular expression built from the version.
+  assert.ok(manifest.split("\n").includes(`version = "${VERSION}"`));
 });
