@@ -290,6 +290,7 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["DELETE", "/api/notifications/channels/{id}", "deny"],
   ["POST", "/api/notifications/channels/{id}/resume", "deny"],
   ["POST", "/api/notifications/channels/{id}/test", "deny"],
+  ["POST", "/api/notifications/notifiers/{id}/deliverability", "deny"],
   ["GET", "/api/notifications/routes", "allow"],
   ["PUT", "/api/notifications/routes/{type}", "allow"],
   ["GET", "/api/notifications/offers", "allow"],
