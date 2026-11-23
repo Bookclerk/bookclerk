@@ -6459,6 +6459,7 @@ struct CatalogSearchQuery {
     max_length_minutes: Option<i64>,
     /// How a page sorted by relevance is ordered: `meaning` (default) or
     /// `store`.
+    #[param(inline)]
     rank: Option<CatalogRank>,
 }
 
