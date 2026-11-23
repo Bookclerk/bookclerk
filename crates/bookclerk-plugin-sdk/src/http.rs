@@ -1008,6 +1008,42 @@ pub async fn connect_tls(address: SocketAddress) -> Result<TlsStream<crate::net:
     .await
 }
 
+/// Upgrades a stream to TLS for a protocol that is not HTTP: SMTP after
+/// `STARTTLS` or on an implicit-TLS port, IMAP, LDAP and the like.
+///
+/// Pass the stream from [`crate::net::PluginSocket::into_stream`] (after a
+/// `connect` with [`SecureTransport::StartTls`] once the server agreed to
+/// the upgrade, or straight away for TLS from the first byte). The server's
+/// certificate is verified for `hostname` against Mozilla's root
+/// certificates, as for HTTPS, and no ALPN protocol is offered.
+///
+/// # Errors
+///
+/// Returns when `hostname` is not a valid TLS server name or the handshake
+/// fails (including a certificate that does not verify).
+pub async fn start_tls<S>(hostname: &str, stream: S) -> Result<TlsStream<S>>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    static CELL: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
+    let config = Arc::clone(CELL.get_or_init(|| {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let mut roots = rustls::RootCertStore::empty();
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        )
+    }));
+    let server_name = rustls::pki_types::ServerName::try_from(hostname.to_string())
+        .map_err(|err| SdkError::message(format!("tls server name `{hostname}`: {err}")))?;
+    tokio_rustls::TlsConnector::from(config)
+        .connect(server_name, stream)
+        .await
+        .map_err(|err| SdkError::message(format!("tls handshake {hostname}: {err}")))
+}
+
 /// The host's user-agent rule, read once from [`USER_AGENT_ENV`] and
 /// [`OWN_USER_AGENT_HOSTS_ENV`]; `None` when the host did not set it (crate
 /// tests, host-owned clients), which leaves agents as the caller set them.

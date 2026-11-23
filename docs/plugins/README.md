@@ -367,7 +367,9 @@ providers, the `covers` fetcher, the `metadata_files` reader, the
 **workerd TypeScript** guests in the same tree
 (`crates/bookclerk-plugins/optional/integration-audiobookshelf`,
 `metadata-openlibrary`, `metadata-audnexus`, `covers`, `metadata-files`,
-`ingress-cloudflare` and `notifier-webhook`). They have no Cargo package:
+`ingress-cloudflare` and `notifier-webhook`). The `email` notifier
+(`notifier-email`) is a native Rust guest instead, because a workerd
+socket cannot start TLS. The workerd guests have no Cargo package:
 
 - Their source is in `src/`. `npm run build` compiles it with TypeScript
   into the `modules/` that ships, and both are committed. CI's

@@ -587,6 +587,7 @@ dependencies = [
  "bookclerk-plugin-catalog",
  "bookclerk-plugin-database-sqlite",
  "bookclerk-plugin-manifest",
+ "bookclerk-plugin-notifier-email",
  "bookclerk-plugin-sdk",
  "bookclerk-plugin-source-graphicaudio",
  "bookclerk-plugin-source-libro",
@@ -850,6 +851,18 @@ dependencies = [
  "thiserror",
  "toml",
  "url",
+]
+
+[[package]]
+name = "bookclerk-plugin-notifier-email"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "bookclerk-plugin-sdk",
+ "serde_json",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

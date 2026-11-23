@@ -90,6 +90,7 @@ boundary extends it.
 | `download_resume` | A store CDN's `Content-Range` and status when a guest resumes an interrupted download, which decide whether the body is appended to the bytes already on disk | `bookclerk-plugin-sdk::resume` (`parse_content_range`, `next_step`) |
 | `throttle_reason` | A store's refusal text, which the `audible` guest reads from a refused license request to tell throttling (which pauses the whole account) from a plain refusal | `bookclerk-storefront::is_throttle_reason` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
+| `smtp_session` | What the `email` guest reads from the operator's mail server (replies, multiline replies, EHLO capabilities, the STARTTLS answer) and the address documents and `to` setting it sends to | `bookclerk-plugin-notifier-email::smtp` (`read_reply`, `Session`, `parse_address`, `parse_recipients`) |
 | `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their branch), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
 | `clerk_authorization` | A clerk's library card, the `Authorization: Bookclerk-Clerk <token>` header value that signs a request in as a person | `bookclerk-node-proto::parse_clerk_authorization` |
 | `clerk_authorize` | A clerk's authorization request, the `/oidc/authorize` query that decides whether the library shows its library card consent page and where it sends the code | `bookclerk-node-proto::parse_clerk_query`, `clerk_request_problem` |
@@ -1152,6 +1153,20 @@ only that. The others check:
   Seeds named after a step (`append-*`, `replace-*`, `complete-*`,
   `startover-*`, `retry-*`, `fail-*`) must take it. The shared oracle is
   `fuzz/oracles/download_resume.rs`, replayed from `bookclerk-plugin-sdk`.
+- **`smtp_session`**: byte 0 picks the case. A server's byte stream is
+  read reply by reply against the oracle's own line splitter, which must
+  agree on every prefix (incomplete, refused, or the same code, lines and
+  length), and each reply drives a session in one of the three security
+  modes. Every write is ASCII ending in CRLF with no bare CR or LF in a
+  command; only `EHLO` and `STARTTLS` go out before TLS when the mode
+  needs it; `AUTH` and the password go out only over TLS; `MAIL`, `RCPT`
+  and `DATA` keep the protocol's order; the payload is the dot-stuffed
+  message; and the session ends at most once. An address document is
+  accepted exactly when the oracle's own address rules accept its one
+  `email` field, and the saved document parses back unchanged; the `to`
+  setting yields at most 10 valid addresses without repeats. The shared
+  oracle is `fuzz/oracles/smtp_session.rs`, replayed from
+  `bookclerk-plugin-notifier-email`.
 - **`throttle_reason`**: restates the throttle words byte by byte. Refusal
   text is a throttle exactly when it contains `throttl`, `rate limit`,
   `rate-limit`, `ratelimit`, `too many requests` or `429`, ignoring ASCII

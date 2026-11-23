@@ -45,6 +45,7 @@ on:
       - "crates/bookclerk-model-pack/**"
       - "crates/bookclerk-plugin-catalog/**"
       - "crates/bookclerk-player-api/**"
+      - "crates/bookclerk-plugins/optional/notifier-email/**"
       - ".clusterfuzzlite/**"
       - ".github/workflows/cflite-*.yml"
   workflow_dispatch:

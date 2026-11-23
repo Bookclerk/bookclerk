@@ -161,6 +161,9 @@ pub use bookclerk_plugin_abi::{
     MAX_AI_LANGUAGES, MAX_AI_MODELS, MAX_AI_MODEL_NAME_BYTES,
 };
 pub use bookclerk_plugin_abi::{
+    NetworkGrant, SettingGrantState, SettingNetwork, SettingNetworkGrant, MAX_NETWORK_GRANT_ENTRIES,
+};
+pub use bookclerk_plugin_abi::{
     WebhookAckRequest, WebhookDelivered, WebhookDelivery, WebhookHandler, WebhookHeader,
     WebhookPullPage, WebhookPullRequest, Webhooks, MAX_WEBHOOK_PULL_BATCH,
     MAX_WEBHOOK_VISIBILITY_MS,
