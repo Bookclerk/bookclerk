@@ -51,7 +51,7 @@ boundary extends it.
 | `abi_roundtrip` | Every generated Cap'n Proto `read_*` / `write_*` codec pair | `bookclerk-plugin-abi` |
 | `scan_page` | One page of a storefront's library scan: its size caps, the cursor it hands back, the account it names, the media kinds of its titles and the refreshed credentials it carries | `bookclerk-plugin-abi::validate_scan_page` |
 | `quality_offers` | A storefront's `qualityOffers` reply: how many titles it answers, the stream bounds of each offer and the refreshed credentials it carries | `bookclerk-plugin-abi::validate_quality_offers` |
-| `plain_fetch` | A storefront's `fetchTitle` reply: the carrier it fetched and the files it lists by role | `bookclerk-plugin-abi::validate_plain_fetch` |
+| `plain_fetch` | A storefront's `fetchTitle` reply: the carrier it fetched, the files it lists by role, and whether each lies inside the fetch's cache directory | `bookclerk-plugin-abi::validate_plain_fetch`, `validate_fetched_paths` |
 | `metadata_file_record` | A metadata-file dialect's `parse` answer about a sidecar file: the fields it says the file states, their values and size caps, credit roles, dates and chapter order, and the dialect's declared fields | `bookclerk-plugin-abi::validate_metadata_file_record` |
 | `notifier_reply` | A notifier's `send` reply (delivered, retried after a capped wait, or failed, with a cut reason) and the address documents a `validateDestination` answer or a patron's form carries | `bookclerk-plugin-abi::notifications` |
 | `notify_raise` | A plugin's `NOTIFY.raise`: the `/notify/raise` JSON body and the Cap'n Proto raise, their type id, fields, patron id, link path, group key and alert | `bookclerk-plugin-abi::notifications::check_raise_params` |
@@ -478,9 +478,12 @@ only that. The others check:
 - **`plain_fetch`**: the input is a `PlainFetch` message. The host accepts
   it exactly when an independent check agrees, against a fixed declaration
   that fetches audio: the carrier is audio, every file has a role and a
-  non-blank path, there is at most one `whole` file and one `cover`, and
-  the reply lists `part`s or a `whole` file but not both. An accepted
-  reply round-trips through the codec and is accepted again. The shared
+  non-blank path, there is at most one `whole` file, `cover`,
+  `catalogRecord` and `annotations` file, and the reply lists `part`s or a
+  `whole` file but not both. The path check accepts the reply exactly when
+  every path, with repeated slashes folded, lies below the fixed cache
+  directory `/c` and has no `.` or `..` segment. An accepted reply
+  round-trips through the codec and is accepted again. The shared
   oracle is `fuzz/oracles/plain_fetch.rs`, replayed from
   `bookclerk-plugin-abi`.
 - **`metadata_file_record`**: the input is a `MetadataFileRecord` message.

@@ -95,7 +95,6 @@ pub const OUTPUT_SETTING_KEYS: &[&str] = &[
     "output.strip_unabridged",
     "output.strip_audible_brand_audio",
     "output.download_clips_bookmarks",
-    "output.retain_aax_file",
     "output.download_speed_limit_kbps",
     "output.lame.target",
     "output.lame.vbr_quality",
@@ -229,9 +228,11 @@ pub struct OutputSettingsV1 {
     /// Download Audible clips/bookmarks sidecars.
     #[schema(example = false)]
     pub download_clips_bookmarks: bool,
-    /// Keep the encrypted download.
-    #[schema(example = false)]
-    pub retain_aax_file: bool,
+    /// The retired `RetainAaxFile` setting. Read, so a document written
+    /// before it was removed still loads, and never written or used.
+    #[serde(default, rename = "retain_aax_file", skip_serializing)]
+    #[schema(ignore)]
+    pub retired_retain_aax_file: Option<bool>,
     /// Fetch speed cap in KB/s (`0` = unlimited).
     #[schema(example = 0)]
     pub download_speed_limit_kbps: u32,
@@ -523,7 +524,7 @@ impl OutputSettingsV1 {
             strip_unabridged: config.strip_unabridged,
             strip_audible_brand_audio: config.strip_audible_brand_audio,
             download_clips_bookmarks: config.download_clips_bookmarks,
-            retain_aax_file: config.retain_aax_file,
+            retired_retain_aax_file: None,
             download_speed_limit_kbps: config.download_speed_limit_kbps,
             lame: config.lame.clone(),
             max_sample_rate: config.max_sample_rate,
@@ -576,7 +577,6 @@ impl OutputSettingsV1 {
         config.strip_unabridged = self.strip_unabridged;
         config.strip_audible_brand_audio = self.strip_audible_brand_audio;
         config.download_clips_bookmarks = self.download_clips_bookmarks;
-        config.retain_aax_file = self.retain_aax_file;
         config.download_speed_limit_kbps = self.download_speed_limit_kbps;
         config.lame = self.lame.clone();
         config.max_sample_rate = self.max_sample_rate;
@@ -760,7 +760,6 @@ impl OutputSettingsV1 {
             "output.strip_unabridged" => self.strip_unabridged.to_string(),
             "output.strip_audible_brand_audio" => self.strip_audible_brand_audio.to_string(),
             "output.download_clips_bookmarks" => self.download_clips_bookmarks.to_string(),
-            "output.retain_aax_file" => self.retain_aax_file.to_string(),
             "output.download_speed_limit_kbps" => self.download_speed_limit_kbps.to_string(),
             "output.lame.target" => self.lame.target.clone(),
             "output.lame.vbr_quality" => self.lame.vbr_quality.to_string(),
@@ -911,7 +910,6 @@ impl OutputSettingsV1 {
             "output.download_clips_bookmarks" => {
                 self.download_clips_bookmarks = bool_value(key, v)?;
             }
-            "output.retain_aax_file" => self.retain_aax_file = bool_value(key, v)?,
             "output.download_speed_limit_kbps" => {
                 self.download_speed_limit_kbps = number(key, v)?;
             }
@@ -1228,6 +1226,19 @@ mod tests {
         let mut value = serde_json::to_value(OutputSettingsV1::default()).unwrap();
         value["in_progress"] = serde_json::json!("/scratch");
         assert!(serde_json::from_value::<OutputSettingsV1>(value).is_err());
+    }
+
+    #[test]
+    fn a_document_with_the_retired_retain_aax_setting_still_loads() {
+        let mut value = serde_json::to_value(OutputSettingsV1::default()).unwrap();
+        assert!(value.get("retain_aax_file").is_none(), "never written");
+        value["retain_aax_file"] = serde_json::json!(true);
+        let back = serde_json::from_value::<OutputSettingsV1>(value).unwrap();
+        let written = serde_json::to_value(&back).unwrap();
+        assert!(
+            written.get("retain_aax_file").is_none(),
+            "dropped on the next write"
+        );
     }
 
     #[test]

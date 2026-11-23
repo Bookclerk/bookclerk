@@ -394,7 +394,7 @@ a guest sets this only when a credit departs from it.
 Ordinal-ordered ``CreditLevel`` wire names (index = Cap'n Proto ordinal).
 """
 
-FETCHED_FILE_ROLES: tuple[str, ...] = ("unspecified", "part", "whole", "cover")
+FETCHED_FILE_ROLES: tuple[str, ...] = ("unspecified", "part", "whole", "cover", "catalogRecord", "annotations")
 """What one fetched file is to the edition it belongs to.
 
 Ordinal-ordered ``FetchedFileRole`` wire names (index = Cap'n Proto ordinal).

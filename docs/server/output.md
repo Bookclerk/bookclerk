@@ -974,7 +974,17 @@ fixup_metadata = true
 save_chapter_json = true
 cover_size = "500"        # 500 | 1215 | native
 chapter_layout = "tree"   # tree | flat
+save_metadata_json = false
+download_clips_bookmarks = false
 ```
+
+`save_metadata_json` stores the store's catalog record of the book beside
+its audio as `<name>.metadata.json`, and `download_clips_bookmarks`
+stores your clips, notes and bookmarks for it as `<name>.clips.json`.
+Bookclerk stores each file as the store plugin hands it back and never
+reads it. Only a store plugin that keeps such records sends them; today
+that is Audible, whose catalog record is the library item Libation saves
+under the same name.
 
 > [!NOTE]
 > These `[output]` settings live in the library database, as the
@@ -987,6 +997,12 @@ Every host applies a new revision at its next configuration wakeup. See
 [Configuration](configuration.md#output-shared).
 
 If a sidecar file fails, Bookclerk logs it and still keeps the audio.
+
+> [!NOTE]
+> Bookclerk never keeps the encrypted file a store sends. Audible's
+> downloads play only with their keys, which Bookclerk does not store, so
+> there is no setting for it, and a Libation `RetainAaxFile` setting is
+> not imported.
 
 ### Keeping unusual audio in M4B
 

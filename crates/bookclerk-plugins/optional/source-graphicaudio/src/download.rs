@@ -193,6 +193,7 @@ async fn fetch_access_app(
         chapters: Vec::new(),
         chapter_kind: bookclerk_storefront::ChapterKind::Unknown,
         pdf_url: None,
+        store_records: bookclerk_storefront::StoreRecords::default(),
     })
 }
 
@@ -210,6 +211,7 @@ fn plain_from_audio_path(path: PathBuf) -> PlainFetch {
             chapters: Vec::new(),
             chapter_kind: bookclerk_storefront::ChapterKind::Unknown,
             pdf_url: None,
+            store_records: bookclerk_storefront::StoreRecords::default(),
         }
     } else {
         PlainFetch {
@@ -223,6 +225,7 @@ fn plain_from_audio_path(path: PathBuf) -> PlainFetch {
             chapters: Vec::new(),
             chapter_kind: bookclerk_storefront::ChapterKind::Unknown,
             pdf_url: None,
+            store_records: bookclerk_storefront::StoreRecords::default(),
         }
     }
 }

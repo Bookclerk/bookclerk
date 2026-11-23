@@ -2883,6 +2883,8 @@ async fn replace_with_better_copy(
         better.cover_path = own.cover_path;
     }
     better.pdf_url = own.pdf_url;
+    // The store's records describe the title, whichever audio is kept.
+    better.store_records = own.store_records;
     Compared::Library(better)
 }
 
@@ -2954,6 +2956,7 @@ async fn store_plain_fetch(
                 chapters: plain.chapters,
                 chapter_kind: bookclerk_source::ChapterKind::Unknown,
                 pdf_url: plain.pdf_url,
+                store_records: plain.store_records,
             },
             library_pdf,
         )
@@ -3297,6 +3300,15 @@ async fn store_plain_fetch(
         }
     }
 
+    store_record_sidecars(
+        library,
+        destinations,
+        req,
+        &stored_keys,
+        &plain.store_records,
+    )
+    .await;
+
     // Flat sidecars for players/tools that ignore embedded Nero/QuickTime chapters;
     // also persist the provider's nested chapter tree (timestamp-adjusted) when available.
     for stored in &stored_keys.keys {
@@ -3362,6 +3374,63 @@ async fn store_plain_fetch(
     })
 }
 
+/// Stores the store's own records of the title beside the audio on each
+/// destination that asked for them: the catalog record as
+/// `<name>.metadata.json` (`save_metadata_json`) and the account's clips and
+/// bookmarks as `<name>.clips.json` (`download_clips_bookmarks`).
+///
+/// The files are stored as the guest wrote them, never parsed. A failed
+/// write is logged and never fails the acquire, as for the cover.
+///
+/// # Arguments
+///
+/// * `library` - The library, for the object's ASIN.
+/// * `destinations` - Where the audio went.
+/// * `req` - The acquire.
+/// * `stored_keys` - The audio's key on each destination.
+/// * `records` - The files the guest handed back.
+async fn store_record_sidecars(
+    library: &LibraryStore,
+    destinations: &AcquireDestinations,
+    req: &AcquireRequest,
+    stored_keys: &StoredKeys,
+    records: &bookclerk_source::StoreRecords,
+) {
+    if records.catalog_record.is_none() && records.annotations.is_none() {
+        return;
+    }
+    for stored in &stored_keys.keys {
+        let Some(dest) = destinations.destination(&stored.id) else {
+            continue;
+        };
+        let dest_req = request_for_destination(req, dest);
+        let wanted = [
+            (
+                records.catalog_record.as_deref(),
+                dest_req.options.save_metadata_json,
+                "metadata.json",
+            ),
+            (
+                records.annotations.as_deref(),
+                dest_req.options.download_clips_bookmarks,
+                "clips.json",
+            ),
+        ];
+        for (path, on, suffix) in wanted {
+            let Some(path) = path.filter(|_| on) else {
+                continue;
+            };
+            let key = sidecar_key(&stored.key, suffix);
+            let asin_str = object_asin_for(library, &dest_req).await;
+            let meta =
+                sidecar_meta(asin_str.as_str(), &dest_req.title, "application/json", path).await;
+            if let Err(err) = dest.backend.put_file(&key, path, meta).await {
+                tracing::warn!(id = %status_key(req), key, error = %err, "store record sidecar failed");
+            }
+        }
+    }
+}
+
 /// Stores a multi-part plain fetch as separate files and optional cover sidecars.
 async fn store_plain_parts(
     library: &LibraryStore,
@@ -3415,6 +3484,15 @@ async fn store_plain_parts(
             }
         }
     }
+
+    store_record_sidecars(
+        library,
+        destinations,
+        req,
+        &stored_keys,
+        &plain.store_records,
+    )
+    .await;
 
     let mut written_keys = stored_keys.all_keys();
     written_keys.extend(
@@ -5439,6 +5517,7 @@ mod tests {
                 chapters: Vec::new(),
                 chapter_kind: bookclerk_source::ChapterKind::Unknown,
                 pdf_url: None,
+                store_records: Default::default(),
             })
         }
     }
@@ -5700,6 +5779,7 @@ mod tests {
                 chapters: vec![("Crash".into(), 0)],
                 chapter_kind: bookclerk_source::ChapterKind::Tracks,
                 pdf_url: self.pdf_url.clone(),
+                store_records: Default::default(),
             })
         }
     }
@@ -6118,6 +6198,7 @@ mod tests {
                 chapters: Vec::new(),
                 chapter_kind: bookclerk_source::ChapterKind::Unknown,
                 pdf_url: Some("https://store.example/twin.pdf".into()),
+                store_records: Default::default(),
             }
         };
         // What the library says of its copy, and the file it sends.
@@ -6787,6 +6868,18 @@ mod tests {
             real_m4b(&m4b);
             let cover = opts.cache_dir.join("store.jpg");
             tokio::fs::write(&cover, b"store jpeg").await?;
+            // Like a storefront, hand back the store's records only when asked.
+            let mut store_records = bookclerk_source::StoreRecords::default();
+            if opts.download.save_metadata_json {
+                let path = opts.cache_dir.join("store.metadata.json");
+                tokio::fs::write(&path, br#"{"asin":"store"}"#).await?;
+                store_records.catalog_record = Some(path);
+            }
+            if opts.download.download_clips_bookmarks {
+                let path = opts.cache_dir.join("store.clips.json");
+                tokio::fs::write(&path, br#"{"records":[]}"#).await?;
+                store_records.annotations = Some(path);
+            }
             let (m4b_path, parts) = if self.mp3 {
                 let mp3 = opts.cache_dir.join("store.mp3");
                 let lame = bookclerk_config::LameConfig {
@@ -6815,6 +6908,7 @@ mod tests {
                 chapters: self.chapters.clone(),
                 chapter_kind: bookclerk_source::ChapterKind::Unknown,
                 pdf_url: self.pdf_url.clone(),
+                store_records,
             })
         }
     }
@@ -6958,6 +7052,52 @@ mod tests {
             .map(|dir| dir.map(|entry| entry.unwrap().path()).collect())
             .unwrap_or_default();
         assert!(scratch.is_empty(), "scratch was cleaned: {scratch:?}");
+    }
+
+    /// The store's catalog record and the account's clips are stored beside
+    /// the audio as `<name>.metadata.json` and `<name>.clips.json`, each only
+    /// on a destination that asked for it.
+    #[tokio::test]
+    async fn the_store_records_are_stored_beside_the_audio_when_asked() {
+        media_in_process();
+        let store = test_store().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let dest = tmp.path().join("dest");
+        let mut destinations = title_named_destinations(&dest, puts);
+        for item in &mut destinations.items {
+            item.options.format = bookclerk_config::OutputFormat::EnrichedM4b;
+            item.options.save_metadata_json = true;
+            item.options.download_clips_bookmarks = false;
+        }
+        let source = RealAudioSource {
+            fetches: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            pdf_url: None,
+            mp3: false,
+            chapters: Vec::new(),
+        };
+        let job = job_id(&store).await;
+        edition_book(&store, "B00REC", "user-1", "Records", None).await;
+        let mut req = edition_req(&cache, job, "B00REC", "user-1");
+        req.options = destinations.primary_destination().options.clone();
+        // The guest is asked for both; the destination keeps only the record.
+        req.options.download_clips_bookmarks = true;
+
+        let result = acquire_book(&store, &destinations, req, &source)
+            .await
+            .unwrap();
+        let stem = result
+            .storage_key
+            .rsplit_once('.')
+            .map(|(stem, _)| stem)
+            .unwrap();
+        assert_eq!(
+            std::fs::read(dest.join(format!("{stem}.metadata.json"))).unwrap(),
+            br#"{"asin":"store"}"#
+        );
+        assert!(!dest.join(format!("{stem}.clips.json")).exists());
     }
 
     /// A library's copy from another store that beats the store's download
@@ -7560,6 +7700,7 @@ mod tests {
             chapters: Vec::new(),
             chapter_kind: bookclerk_source::ChapterKind::Unknown,
             pdf_url: None,
+            store_records: Default::default(),
         };
         let err = store_copies(&store, &copies, &req, tmp.path(), fetch, None)
             .await
@@ -7631,6 +7772,7 @@ mod tests {
             chapters: Vec::new(),
             chapter_kind: bookclerk_source::ChapterKind::Unknown,
             pdf_url: Some(serve_http_body_loop(b"%PDF-1.4 companion".to_vec(), hits.clone()).await),
+            store_records: Default::default(),
         };
 
         let result = store_copies(&store, &copies, &req, &work_dir, fetch, None)
@@ -7681,6 +7823,7 @@ mod tests {
             chapters: Vec::new(),
             chapter_kind: bookclerk_source::ChapterKind::Unknown,
             pdf_url: Some(url),
+            store_records: Default::default(),
         };
         store_copies(&store, &copies, &req, &work_dir, fetch, None)
             .await
@@ -8111,6 +8254,7 @@ mod tests {
             chapters: Vec::new(),
             chapter_kind: bookclerk_source::ChapterKind::Unknown,
             pdf_url: None,
+            store_records: Default::default(),
         };
 
         let result = store_copies(&store, &copies, &req, &work_dir, fetch, None)
@@ -8257,6 +8401,7 @@ mod tests {
             chapters: Vec::new(),
             chapter_kind: bookclerk_source::ChapterKind::Unknown,
             pdf_url: None,
+            store_records: Default::default(),
         };
 
         let result = store_copies(&store, &copies, &req, &work_dir, fetch, None)

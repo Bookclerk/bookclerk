@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 
 use audible_rs::api::client::Client;
 use audible_rs::downloader::{self, Quality};
+use audible_rs::library_sync::DEFAULT_RESPONSE_GROUPS;
+use bookclerk_plugin_sdk::http::Method;
 
 use crate::error::{AudibleError, Result};
 use crate::options::Bitrate;
@@ -68,6 +70,88 @@ pub async fn download_cover_jpeg(
     .await
     .map_err(|err| AudibleError::Download(err.to_string()))?;
     Ok(Some(path))
+}
+
+/// Writes the account's library record of `asin` (the item Libation saves as
+/// `<book>.metadata.json`) to `dest` as JSON.
+///
+/// # Arguments
+///
+/// * `client` - The account's client.
+/// * `marketplace` - The account's country code.
+/// * `asin` - The title.
+/// * `dest` - Where to write the record.
+///
+/// # Returns
+///
+/// `dest` once written; `None` when the library answers without an item.
+///
+/// # Errors
+///
+/// Returns an error when the request or the write fails.
+pub async fn save_catalog_record(
+    client: &Client,
+    marketplace: &str,
+    asin: &str,
+    dest: &Path,
+) -> Result<Option<PathBuf>> {
+    let response = client
+        .request(Method::GET, format!("/1.0/library/{asin}"))
+        .country_code(marketplace)
+        .query("response_groups", DEFAULT_RESPONSE_GROUPS)
+        .query("image_sizes", "500,1215")
+        .send()
+        .await
+        .map_err(AudibleError::from)?;
+    let payload: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|err| AudibleError::Other(anyhow::anyhow!("library record: {err}")))?;
+    let Some(item) = payload.get("item").filter(|item| item.is_object()) else {
+        return Ok(None);
+    };
+    write_json(item, dest).await.map(Some)
+}
+
+/// Writes the account's clips, notes and bookmarks for `asin` to `dest` as
+/// JSON.
+///
+/// # Arguments
+///
+/// * `client` - The account's client.
+/// * `asin` - The title.
+/// * `dest` - Where to write them.
+///
+/// # Returns
+///
+/// `dest` once written; `None` when the title has no annotations.
+///
+/// # Errors
+///
+/// Returns an error when the request or the write fails.
+pub async fn save_annotations(client: &Client, asin: &str, dest: &Path) -> Result<Option<PathBuf>> {
+    let Some(doc) = downloader::request_annotations(client, asin, None, None, None)
+        .await
+        .map_err(AudibleError::from)?
+    else {
+        return Ok(None);
+    };
+    write_json(&doc, dest).await.map(Some)
+}
+
+/// Writes `value` to `dest` as pretty JSON, creating its directory.
+///
+/// # Errors
+///
+/// Returns an error when the directory or the file cannot be written.
+async fn write_json(value: &serde_json::Value, dest: &Path) -> Result<PathBuf> {
+    if let Some(parent) = dest.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let bytes = serde_json::to_vec_pretty(value)
+        .map_err(|err| AudibleError::Other(anyhow::anyhow!("encode JSON: {err}")))?;
+    tokio::fs::write(dest, bytes).await?;
+    Ok(dest.to_path_buf())
 }
 
 /// Picks a cover URL for `size` (`500`, `native`, …), rewriting an anchor size when needed.

@@ -165,9 +165,6 @@ pub fn apply_settings_json(config: &mut Config, settings: &Value) -> ClassicPlug
     if let Some(v) = bool_at(settings, "DownloadClipsBookmarks") {
         config.output.download_clips_bookmarks = v;
     }
-    if let Some(v) = bool_at(settings, "RetainAaxFile") {
-        config.output.retain_aax_file = v;
-    }
     if let Some(v) = settings.get("DownloadSpeedLimit").and_then(Value::as_i64) {
         config.output.download_speed_limit_kbps = v as u32;
     }
@@ -356,7 +353,6 @@ pub fn config_to_settings_json(config: &Config, plugin_settings: &ClassicPluginS
         "DownloadClipsBookmarks".into(),
         json!(config.output.download_clips_bookmarks),
     );
-    map.insert("RetainAaxFile".into(), json!(config.output.retain_aax_file));
     map.insert(
         "DownloadSpeedLimit".into(),
         json!(config.output.download_speed_limit_kbps),

@@ -1309,6 +1309,30 @@ fn plain_fetch_seeds_are_current() {
                 ..audio(vec![file("/c/book.epub", FetchedFileRole::Whole)])
             },
         ),
+        (
+            "companions.bin",
+            audio(vec![
+                file("/c/B0/book.m4b", FetchedFileRole::Whole),
+                file("/c/B0/book.metadata.json", FetchedFileRole::CatalogRecord),
+                file("/c/B0/book.clips.json", FetchedFileRole::Annotations),
+            ]),
+        ),
+        (
+            "second_catalog_record.bin",
+            audio(vec![
+                file("/c/book.m4b", FetchedFileRole::Whole),
+                file("/c/a.json", FetchedFileRole::CatalogRecord),
+                file("/c/b.json", FetchedFileRole::CatalogRecord),
+            ]),
+        ),
+        (
+            "outside_cache_dir.bin",
+            audio(vec![
+                file("/c/book.m4b", FetchedFileRole::Whole),
+                file("/c/../etc/passwd", FetchedFileRole::Annotations),
+                file("/etc/shadow", FetchedFileRole::Cover),
+            ]),
+        ),
     ];
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/plain_fetch");
     for (name, fetch) in seeds {

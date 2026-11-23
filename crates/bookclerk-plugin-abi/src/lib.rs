@@ -289,7 +289,8 @@ pub use limits::{
 };
 pub use media::{
     check_record_kinds, decode_plain_fetch_bytes, encode_plain_fetch_bytes, media_support_is_empty,
-    same_media_support, validate_media_support, validate_plain_fetch, FetchError, MediaError,
+    same_media_support, validate_fetched_paths, validate_media_support, validate_plain_fetch,
+    FetchError, MediaError,
 };
 pub use metadata_files::{
     check_parse_params, check_record_against_dialect, check_render_against_dialect,

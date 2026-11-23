@@ -2666,13 +2666,16 @@ struct FetchOptions {
   chapterLayout @7 :Text;
   # When true, trim Audible brand intro/outro from the remux window.
   stripAudibleBrandAudio @8 :Bool;
-  # When true, download clips/bookmarks sidecars when offered.
+  # When true, hand back the account's clips and bookmarks for the title as
+  # an `annotations` file when the store keeps them.
   downloadClipsBookmarks @9 :Bool;
-  # When true, keep the encrypted download in storage.
+  # Retired: hosts always send false and guests ignore it. A kept encrypted
+  # download plays only with its keys, which the host does not store.
   retainAaxFile @10 :Bool;
   # Fetch speed cap in KB/s (`0` = unlimited).
   downloadSpeedLimitKbps @11 :UInt32;
-  # When true, persist raw catalog API JSON as `metadata.json`.
+  # When true, hand back the store's catalog record of the title as a
+  # `catalogRecord` file.
   saveMetadataJson @12 :Bool;
 }
 
@@ -2707,6 +2710,14 @@ enum FetchedFileRole {
   whole @2;
   # The edition's cover image.
   cover @3;
+  # The store's own catalog record of the title, as JSON, when the host asked
+  # for it (`FetchOptions.saveMetadataJson`). The host stores it beside the
+  # audio as `<name>.metadata.json` and never parses it.
+  catalogRecord @4;
+  # The account's clips, notes and bookmarks for the title, as JSON, when the
+  # host asked for them (`FetchOptions.downloadClipsBookmarks`). The host
+  # stores it beside the audio as `<name>.clips.json` and never parses it.
+  annotations @5;
 }
 
 # One file `fetchTitle` wrote under the cache directory.

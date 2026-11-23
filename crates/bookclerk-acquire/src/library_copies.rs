@@ -428,6 +428,7 @@ pub(crate) async fn fetch_library_copy(
         chapters: Vec::new(),
         chapter_kind: bookclerk_source::ChapterKind::Unknown,
         pdf_url: None,
+        store_records: Default::default(),
     };
     let mut pdf = None;
     let mut codec = None;

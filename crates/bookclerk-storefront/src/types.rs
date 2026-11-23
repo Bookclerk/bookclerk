@@ -259,6 +259,21 @@ pub struct PlainFetch {
     pub chapter_kind: ChapterKind,
     /// Companion PDF download URL when the store exposes one.
     pub pdf_url: Option<String>,
+    /// The store's own records of the title the guest handed back, stored
+    /// beside the audio as they are.
+    pub store_records: StoreRecords,
+}
+
+/// Store-side files about a fetched title that the host stores beside the
+/// audio without parsing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StoreRecords {
+    /// The store's catalog record of the title, as JSON
+    /// (`<name>.metadata.json`), when it was asked for.
+    pub catalog_record: Option<PathBuf>,
+    /// The account's clips, notes and bookmarks for the title, as JSON
+    /// (`<name>.clips.json`), when they were asked for.
+    pub annotations: Option<PathBuf>,
 }
 
 /// Result of fetching a title for acquire (always clear media).

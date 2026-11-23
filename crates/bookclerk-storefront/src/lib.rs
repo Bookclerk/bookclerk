@@ -46,5 +46,5 @@ pub use types::{
     CatalogSortDir, ChapterKind, ConfigOptionValue, ExpandSeed, ImportCredentialsOptions,
     LoginOptions, OAuthProgress, PlainAudioPart, PlainFetch, PriceLookup, PricedAnswer,
     PricedListing, PurchaseHintOpts, ScanOptions, ScanSummary, SourceAccount, SourceConfigOption,
-    SourceFetch, SourcePurchaseHint, DEFAULT_CATALOG_SEARCH_LIMIT,
+    SourceFetch, SourcePurchaseHint, StoreRecords, DEFAULT_CATALOG_SEARCH_LIMIT,
 };

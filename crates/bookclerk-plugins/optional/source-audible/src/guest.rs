@@ -36,7 +36,9 @@ use serde_json::{json, Value};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-use crate::artifacts::{download_cover_jpeg, fetch_chapter_info};
+use crate::artifacts::{
+    download_cover_jpeg, fetch_chapter_info, save_annotations, save_catalog_record,
+};
 use crate::auth::{
     export_authfile_plain_bytes, login_defaults, login_server_url, session_from_authenticator,
 };
@@ -703,6 +705,7 @@ pub async fn guest_fetch_title(
             ..FetchedFile::default()
         });
     }
+    files.extend(fetch_store_records(&account, title_id, &options, &work_dir).await?);
     Ok(PlainFetch {
         media_kind: bookclerk_plugin_sdk::MediaKind::Audio,
         files,
@@ -777,6 +780,59 @@ async fn fetch_companions(
         }
     };
     Ok((chapter_info, cover_path))
+}
+
+/// Fetches the store records the host asked for: the account's library
+/// record of the title (`save_metadata_json`) and its clips and bookmarks
+/// (`download_clips_bookmarks`), each written as JSON under `work_dir`.
+///
+/// Either failing is logged and leaves that file out; the audio is the
+/// fetch, and neither record is worth failing it for.
+///
+/// # Errors
+///
+/// Returns an error only when a file name cannot be joined to `work_dir`
+/// (an invalid `title_id`).
+async fn fetch_store_records(
+    account: &AccountClient,
+    title_id: &str,
+    options: &DownloadOptions,
+    work_dir: &Path,
+) -> Result<Vec<FetchedFile>> {
+    let mut files = Vec::new();
+    if options.save_metadata_json {
+        let dest = join_cache_component(work_dir, &format!("{title_id}.metadata.json"))
+            .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
+        match save_catalog_record(&account.client, &account.marketplace, title_id, &dest).await {
+            Ok(Some(path)) => files.push(json_file(&path, FetchedFileRole::CatalogRecord)),
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(asin = %title_id, error = %err, "guest catalog record fetch failed");
+            }
+        }
+    }
+    if options.download_clips_bookmarks {
+        let dest = join_cache_component(work_dir, &format!("{title_id}.clips.json"))
+            .map_err(|e| AudibleError::Other(anyhow::anyhow!("{e}")))?;
+        match save_annotations(&account.client, title_id, &dest).await {
+            Ok(Some(path)) => files.push(json_file(&path, FetchedFileRole::Annotations)),
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(asin = %title_id, error = %err, "guest clips and bookmarks fetch failed");
+            }
+        }
+    }
+    Ok(files)
+}
+
+/// A JSON file of the fetch, listed under `role`.
+fn json_file(path: &Path, role: FetchedFileRole) -> FetchedFile {
+    FetchedFile {
+        path: path.display().to_string(),
+        role,
+        content_type: Some("application/json".into()),
+        ..FetchedFile::default()
+    }
 }
 
 /// Copies a clear (not encrypted) MP4 download from `from` to `to` without
@@ -1169,6 +1225,62 @@ mod tests {
             [("One".to_string(), 0)]
         );
         assert!(cover.is_none());
+    }
+
+    #[tokio::test]
+    async fn the_library_record_is_handed_back_only_when_asked() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/1.0/library/B0BOOK0001"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "item": {"asin": "B0BOOK0001", "title": "A Book"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let account = account_for(&server);
+        let none = fetch_store_records(
+            &account,
+            "B0BOOK0001",
+            &DownloadOptions::default(),
+            dir.path(),
+        )
+        .await
+        .unwrap();
+        assert!(none.is_empty(), "nothing asked, nothing fetched");
+
+        let asked = DownloadOptions {
+            save_metadata_json: true,
+            ..DownloadOptions::default()
+        };
+        let files = fetch_store_records(&account, "B0BOOK0001", &asked, dir.path())
+            .await
+            .unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].role, FetchedFileRole::CatalogRecord);
+        let written: Value =
+            serde_json::from_slice(&std::fs::read(&files[0].path).unwrap()).unwrap();
+        assert_eq!(written, json!({"asin": "B0BOOK0001", "title": "A Book"}));
+    }
+
+    #[tokio::test]
+    async fn a_failed_library_record_leaves_the_fetch_alone() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/1.0/library/B0BOOK0001"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let asked = DownloadOptions {
+            save_metadata_json: true,
+            ..DownloadOptions::default()
+        };
+        let files = fetch_store_records(&account_for(&server), "B0BOOK0001", &asked, dir.path())
+            .await
+            .unwrap();
+        assert!(files.is_empty());
     }
 
     #[tokio::test]
