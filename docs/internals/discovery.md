@@ -551,7 +551,14 @@ title is **not** in the household library.
   named. `POST /api/discover/title-meta/batch` answers every title within
   6 s: a title still being looked up then answers with what it has and is
   flagged in the response's `incomplete` list, so the page shows it but
-  does not cache it, and the log names the lookup it was waiting on. After multi-store
+  does not cache it, and the log names the lookup it was waiting on. An
+  answer is cached six hours (a miss included) only when it settled: every
+  metadata provider answered, and every planned store answered or the first
+  one had a record. After a provider or store error, a store fill that ran
+  out of time, or a failed rating fetch, the answer is still shown but kept
+  only one minute and flagged `incomplete` too, so a transient failure is
+  retried soon without asking a failing store more than once a minute per
+  title. After multi-store
   search ranks a page, Discover asks the same stores to fill lean rows, by
   ISBN or by their own product id (bounded timeout), so list cards get
   genres/runtime without N+1 product fetches inside each store’s
