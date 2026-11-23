@@ -83,6 +83,9 @@ jobs:
   # A visual approval commit (only ui/visual/baselines.lock changed since a
   # parent whose run of this workflow succeeded) carries that run over
   # instead of running again (docs/contributing/ci.md#visual-approval-commits).
+  # It is skipped outside pull requests, and a skipped ancestor skips every
+  # later job whose `if` has no status function, so each job after it starts
+  # with `!cancelled()` or `always()` and checks its needs' results itself.
   carry:
     name: Look for a visual approval commit
     if: github.event_name == 'pull_request' && !github.event.pull_request.draft && github.event.pull_request.head.repo.full_name != ''
@@ -308,7 +311,8 @@ jobs:
     # From main only, and only from the repository the pins name: a fork
     # builds and checks but has nowhere pinned to publish to.
     if: >-
-      github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+      !cancelled() && needs.build.result == 'success'
+      && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
       && github.repository == 'bookclerk/bookclerk'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -362,6 +366,8 @@ jobs:
   attest:
     name: attest ${{ matrix.model }}
     needs: [build, publish]
+    if: >-
+      !cancelled() && needs.build.result == 'success' && needs.publish.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
