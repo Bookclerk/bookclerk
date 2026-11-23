@@ -18,8 +18,8 @@ runtime = "workerd"
 
 [capabilities.network]
 mode = "outbound"
-domains = ["api.example.com", "www.example.com"]   # required; isolate fetch allowlist
-tcp = [{ host = "db.example.com", ports = [5432] }]  # optional; fetch does not imply TCP
+domains = ["api.example.com", "www.example.com"]   # isolate fetch allowlist
+tcp = [{ host = "db.example.com", ports = [5432] }]  # TCP and tls:// streams; fetch does not imply TCP
 # allow_undeclared_public_redirects = true           # operator-visible; never grants private ranges
 address_cidrs = ["10.0.60.100/32"]                   # optional; default is public Internet only
 ```
@@ -48,7 +48,9 @@ tcp = [{ host = "api.example.com", ports = [443] }]
   only). An entry is `host` or `host:port` (`*.host` and `*.host:port`
   too). An entry without a port grants ports 80 and 443 only; name any
   other port explicitly, as in `abs.example.com:13378`. Raw TCP is
-  `capabilities.network.tcp` (`host` + `ports`).
+  `capabilities.network.tcp` (`host` + `ports`). A workerd plugin with
+  `mode = "outbound"` declares at least one of the two; one that only
+  holds a `tls://` stream needs just `tcp`.
 - A bare `*` in `domains` grants **any public website**: every public
   hostname, but never an IP literal. Loopback names such as `localhost`
   and private, loopback, link-local and metadata addresses stay denied,

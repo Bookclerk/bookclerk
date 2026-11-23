@@ -376,7 +376,7 @@ async fn start_host_client<T: JobTransport + 'static>(
             files_dir: host_files.to_path_buf(),
             handle: handle.clone(),
             catalog,
-            platform_payloads: Default::default(),
+            platform_installs: Default::default(),
         }
         .run(shutdown.clone()),
     );
@@ -1484,6 +1484,10 @@ mod results_and_uploads {
         latest_seen: Arc<Mutex<Vec<Option<Vec<u8>>>>>,
         /// This install's own copies of accounts it keeps.
         keeper: Option<Arc<dyn super::super::host_jobs::LocalKeeper>>,
+        /// File keys another edition in this install's own library holds.
+        held_keys: Vec<String>,
+        /// Whether reading this install's own library for held keys fails.
+        key_check_fails: bool,
     }
 
     /// A [`super::super::host_jobs::LocalKeeper`] that keeps every account,
@@ -1653,6 +1657,18 @@ mod results_and_uploads {
                 .lock()
                 .unwrap()
                 .push((copy.holding_id.to_owned(), copy.files.to_vec()));
+        }
+
+        async fn local_key_held_elsewhere(
+            &self,
+            _book: &NewBook,
+            _destination: &bookclerk_config::DestinationId,
+            key: &str,
+        ) -> anyhow::Result<bool> {
+            if self.key_check_fails {
+                anyhow::bail!("library unreadable");
+            }
+            Ok(self.held_keys.iter().any(|held| held == key))
         }
 
         fn work_dir(&self) -> PathBuf {
@@ -2801,7 +2817,11 @@ mod results_and_uploads {
         let fence = claim_acquire(&world, 60).await;
         let (handle, _stop) = start(&world, StubGuests::default()).await;
         let answer = handle
-            .request(Body::AcquirePlan { job_id, fence })
+            .request(Body::AcquirePlan {
+                job_id,
+                fence,
+                after: None,
+            })
             .await
             .expect("the owner answers");
         let Body::AcquireTargets {
@@ -4392,7 +4412,6 @@ mod results_and_uploads {
                 job_id: job_id.clone(),
                 fence,
                 reason: "awaiting_host_consent".into(),
-                resumed: false,
             })
             .await
             .expect("the owner answers");
@@ -4812,6 +4831,7 @@ mod results_and_uploads {
             .request(Body::AcquirePlan {
                 job_id: job_id.clone(),
                 fence,
+                after: None,
             })
             .await
             .expect("the owner answers");
@@ -4823,6 +4843,56 @@ mod results_and_uploads {
             planned,
             vec![holding_of(&world.owner, &fresh.holding_id).await.as_str()]
         );
+    }
+
+    /// `acquire.plan` lists titles in holding-id order and, with `after`,
+    /// only those past it: a run's titles that already failed never fill
+    /// the plan ahead of ones not tried yet.
+    #[tokio::test]
+    async fn the_plan_moves_past_the_titles_a_run_already_tried() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        for product in ["t1", "t2", "t3"] {
+            world
+                .owner
+                .scope(PLUGIN, "test")
+                .upsert_book(&owner_book("riley-acct", product))
+                .await
+                .unwrap();
+        }
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 60).await;
+        let (handle, _stop) = start(&world, StubGuests::default()).await;
+        let plan = |after: Option<String>| {
+            let handle = handle.clone();
+            let job_id = job_id.clone();
+            async move {
+                let answer = handle
+                    .request(Body::AcquirePlan {
+                        job_id,
+                        fence,
+                        after,
+                    })
+                    .await
+                    .expect("the owner answers");
+                let Body::AcquireTargets { targets, .. } = answer.body else {
+                    panic!("expected targets: {answer:?}");
+                };
+                targets
+                    .into_iter()
+                    .map(|t| t.holding_id)
+                    .collect::<Vec<_>>()
+            }
+        };
+        let all = plan(None).await;
+        assert_eq!(all.len(), 3);
+        let mut sorted = all.clone();
+        sorted.sort();
+        assert_eq!(all, sorted, "holding-id order");
+        assert_eq!(plan(Some(all[0].clone())).await, all[1..]);
+        assert!(plan(Some(all[2].clone())).await.is_empty());
     }
 
     /// `acquire.plan` sends an episode's podcast parent row with it, so a
@@ -4860,6 +4930,7 @@ mod results_and_uploads {
             .request(Body::AcquirePlan {
                 job_id: job_id.clone(),
                 fence,
+                after: None,
             })
             .await
             .expect("the owner answers");
@@ -4995,6 +5066,7 @@ mod results_and_uploads {
             ..StubGuests::default()
         };
         let outbox = work.path().join("t1");
+        let book = owner_book("riley-acct", "P1");
         let key = "Author/Title/Title.m4b".to_string();
         let source = destination_outbox(&outbox, 0).join(&key);
         tokio::fs::create_dir_all(source.parent().unwrap())
@@ -5007,7 +5079,7 @@ mod results_and_uploads {
             keys: vec![vec![key.clone()]],
         };
         let copied = Mutex::new(Vec::new());
-        let placed = copy_to_local_destinations(&guests, "t1", &outbox, &acquired, &copied)
+        let placed = copy_to_local_destinations(&guests, &book, "t1", &outbox, &acquired, &copied)
             .await
             .unwrap();
         assert_eq!(
@@ -5034,7 +5106,7 @@ mod results_and_uploads {
             .unwrap();
         tokio::fs::write(&copy, b"earlier").await.unwrap();
         let copied = Mutex::new(Vec::new());
-        copy_to_local_destinations(&guests, "t1", &outbox, &acquired, &copied)
+        copy_to_local_destinations(&guests, &book, "t1", &outbox, &acquired, &copied)
             .await
             .unwrap();
         let copies = copied.into_inner().unwrap();
@@ -5043,6 +5115,66 @@ mod results_and_uploads {
         assert!(
             copy.is_file(),
             "the rollback leaves a key it did not create"
+        );
+    }
+
+    /// A key another edition in this host's own library holds is never
+    /// overwritten, and neither is one whose holder cannot be told: the
+    /// host keeps no copy of the title at all.
+    #[tokio::test]
+    async fn local_copy_skips_a_key_another_edition_holds() {
+        let key = "Author/Title/Title.m4b".to_string();
+        local_copy_keeps_nothing(|local| StubGuests {
+            local: Some(local),
+            held_keys: vec![key.clone()],
+            ..StubGuests::default()
+        })
+        .await;
+        local_copy_keeps_nothing(|local| StubGuests {
+            local: Some(local),
+            key_check_fails: true,
+            ..StubGuests::default()
+        })
+        .await;
+    }
+
+    /// Copies a title whose key already holds another file to this host's
+    /// own destination through the guests `stub` builds over it, and
+    /// asserts nothing is kept and the file there is untouched.
+    async fn local_copy_keeps_nothing(stub: impl FnOnce(PathBuf) -> StubGuests) {
+        use super::super::host_jobs::copy_to_local_destinations;
+
+        let host_local = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let key = "Author/Title/Title.m4b".to_string();
+        let guests = stub(host_local.path().to_path_buf());
+        let book = owner_book("riley-acct", "P1");
+        let outbox = work.path().join("t1");
+        let source = destination_outbox(&outbox, 0).join(&key);
+        tokio::fs::create_dir_all(source.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&source, b"audio").await.unwrap();
+        let theirs = host_local.path().join(&key);
+        tokio::fs::create_dir_all(theirs.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&theirs, b"another edition").await.unwrap();
+        let acquired = AcquiredTitle {
+            primary_key: key.clone(),
+            pdf_key: None,
+            keys: vec![vec![key.clone()]],
+        };
+        let copied = Mutex::new(Vec::new());
+        let placed = copy_to_local_destinations(&guests, &book, "t1", &outbox, &acquired, &copied)
+            .await
+            .unwrap();
+        assert!(placed.is_empty(), "no copy is kept here");
+        assert!(copied.into_inner().unwrap().is_empty());
+        assert_eq!(
+            tokio::fs::read(&theirs).await.unwrap(),
+            b"another edition",
+            "the other edition's file is untouched"
         );
     }
     /// One GET of a copy's file on the owner's listener: the status line

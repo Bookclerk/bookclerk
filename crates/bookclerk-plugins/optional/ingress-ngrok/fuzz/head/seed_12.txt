@@ -1,0 +1,1 @@
+"GET / HTTP/1.1\r\nBad Name: x\r\n\r\n"

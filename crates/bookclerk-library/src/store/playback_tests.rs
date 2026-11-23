@@ -328,6 +328,159 @@ async fn overlapping_reports_add_up_and_a_late_one_finishes_nothing_under_every_
     }
 }
 
+/// The finished rule the batches write in SQL agrees with
+/// [`reaches_end`] on every edge of it, for progress set outright with the
+/// runtime only on the row, under every profile.
+#[tokio::test]
+async fn the_finished_rule_in_sql_matches_reaches_end_under_every_profile() {
+    let cases: &[(u64, u64)] = &[
+        (0, 0),
+        (5, 0),
+        (39_599, 40_000),
+        (39_600, 40_000),
+        (20_000, 40_000),
+        (60_000, 60_000),
+        (30_000, 60_001),
+        (30_001, 60_001),
+        (1_769_999, 1_800_000),
+        (1_770_000, 1_800_000),
+        (35_639_999, 36_000_000),
+        (35_640_000, 36_000_000),
+        (MAX_PLAYBACK_MS, MAX_PLAYBACK_MS),
+        (MAX_PLAYBACK_MS - 30_000, MAX_PLAYBACK_MS),
+    ];
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = memory(profile).await.into_store();
+        let (user, edition, _work) = listener(&store, "B0PLAY0009").await;
+        for &(position, duration) in cases {
+            store
+                .delete_playback_progress(user, &edition)
+                .await
+                .unwrap();
+            // The runtime goes in first, so the finishing edit decides
+            // from the row's runtime alone.
+            let runtime = store
+                .set_playback_progress(
+                    user,
+                    &edition,
+                    None,
+                    &PlaybackProgressEdit {
+                        position: Some(PlaybackMs::ZERO),
+                        duration: Some(ms(duration)),
+                        finished: None,
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(!runtime.became_finished, "{name}: {duration} at 0");
+            let change = store
+                .set_playback_progress(
+                    user,
+                    &edition,
+                    None,
+                    &PlaybackProgressEdit {
+                        position: Some(ms(position)),
+                        duration: None,
+                        finished: None,
+                    },
+                )
+                .await
+                .unwrap();
+            let expected = reaches_end(ms(position), ms(duration));
+            assert_eq!(
+                change.became_finished, expected,
+                "{name}: {position} of {duration}"
+            );
+            assert_eq!(change.progress.is_finished, expected, "{name}");
+            assert_eq!(change.progress.finished_at.is_some(), expected, "{name}");
+        }
+    }
+}
+
+/// A report that read its session before an overlapping report stored the
+/// runtime still finishes the edition and its work from the runtime the
+/// row holds when its batch runs, and finishing twice reports one
+/// transition, under every profile.
+#[tokio::test]
+async fn a_report_finishes_from_the_runtime_another_report_stored_under_every_profile() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = memory(profile).await.into_store();
+        let (user, edition, work) = listener(&store, "B0PLAY0010").await;
+        let read_once = open(&store, user, &edition).await;
+        let hour = ms(3_600_000);
+        // The first report knows the runtime; the second, sent before the
+        // player learned it, does not.
+        store
+            .sync_playback_session(
+                &read_once,
+                Some(&work),
+                &PlaybackSync {
+                    position: ms(1_000),
+                    listened: ms(1_000),
+                    duration: Some(hour),
+                    close: false,
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let before = live_revisions(&store).await.unwrap();
+        let at_end = PlaybackSync {
+            position: ms(3_590_000),
+            listened: ms(1_000),
+            duration: None,
+            close: false,
+        };
+        let change = store
+            .sync_playback_session(&read_once, Some(&work), &at_end)
+            .await
+            .unwrap()
+            .expect("an open session syncs");
+        assert!(change.became_finished, "{name}");
+        assert!(change.progress.is_finished, "{name}");
+        assert!(
+            store
+                .user_title_state(user, &work)
+                .await
+                .unwrap()
+                .is_some_and(|state| state.is_finished),
+            "{name}: the work is finished with the edition"
+        );
+        assert_eq!(
+            changed_topics(&before, &live_revisions(&store).await.unwrap()),
+            vec![LiveTopic::Playback],
+            "{name}: finishing reloads open pages"
+        );
+        let again = store
+            .sync_playback_session(&read_once, Some(&work), &at_end)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!again.became_finished, "{name}: finished once");
+        let quiet = live_revisions(&store).await.unwrap();
+        store
+            .sync_playback_session(
+                &read_once,
+                Some(&work),
+                &PlaybackSync {
+                    position: ms(3_595_000),
+                    listened: ms(1_000),
+                    duration: Some(hour),
+                    close: false,
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            changed_topics(&quiet, &live_revisions(&store).await.unwrap()).is_empty(),
+            "{name}: a plain report does not reload open pages"
+        );
+    }
+}
+
 /// Progress set outright creates the row, decides finished from the
 /// position, takes an explicit flag either way, and is forgotten on
 /// delete.

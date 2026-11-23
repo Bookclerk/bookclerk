@@ -28,6 +28,7 @@ examples/plugins-echo-workerd-rust/modules/pkg/
 examples/plugins-echo-workerd-ts/modules/
 crates/bookclerk-plugins/optional/covers/modules/
 crates/bookclerk-plugins/optional/ingress-cloudflare/modules/
+crates/bookclerk-plugins/optional/ingress-ngrok/modules/
 crates/bookclerk-plugins/optional/ingress-cloudflare/src/relay-source.ts
 crates/bookclerk-plugins/optional/integration-audiobookshelf/modules/
 crates/bookclerk-plugins/optional/metadata-audnexus/modules/

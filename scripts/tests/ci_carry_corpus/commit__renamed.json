@@ -1,0 +1,15 @@
+{
+  "files": [
+    {
+      "filename": "ui/visual/baselines.lock",
+      "previous_filename": "ui/visual/old.lock",
+      "status": "renamed"
+    }
+  ],
+  "parents": [
+    {
+      "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}

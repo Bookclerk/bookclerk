@@ -377,6 +377,9 @@ pub(crate) struct LibraryFetch {
     /// The companion PDF the library holds for the edition, when the
     /// acquire wants one and the copy lists one.
     pub pdf: Option<PathBuf>,
+    /// The audio encoding the confined tag reader found in the copy's
+    /// audio file; `None` when it does not know it.
+    pub codec: Option<bookclerk_tags::AudioCodec>,
 }
 
 /// Downloads the files of `copy` an acquire uses into `dir` and describes
@@ -427,6 +430,7 @@ pub(crate) async fn fetch_library_copy(
         pdf_url: None,
     };
     let mut pdf = None;
+    let mut codec = None;
     for file in &taken {
         let path = dir.join(format!("{:03}.{}", file.index, file.ext));
         copy.fetch_file(file.index, &path).await?;
@@ -443,6 +447,7 @@ pub(crate) async fn fetch_library_copy(
             Taken::Pdf => pdf = Some(path),
             Taken::Mp4Audio | Taken::OtherAudio => {
                 let tags = media.read_tags(file.size, &FileRange::new(&path)).await?;
+                codec = tags.codec;
                 fetch.chapters = tags
                     .chapters
                     .iter()
@@ -456,7 +461,7 @@ pub(crate) async fn fetch_library_copy(
             }
         }
     }
-    Ok(LibraryFetch { fetch, pdf })
+    Ok(LibraryFetch { fetch, pdf, codec })
 }
 
 /// The one downloaded audio file as a part, with the running time the tag

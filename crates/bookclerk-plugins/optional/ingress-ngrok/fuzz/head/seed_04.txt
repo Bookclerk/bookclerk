@@ -1,0 +1,1 @@
+"GET /api/live HTTP/1.1\r\nConnection: keep-alive, Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: x\r\n\r\n"

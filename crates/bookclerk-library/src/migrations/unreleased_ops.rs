@@ -584,22 +584,36 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_trs_listing ON title_request_sources(listing_id)",
     ),
+    // Text vectors, the one durable copy (`store::vectors`). A row is the
+    // vector of one target in one vector space: `model` names what made it
+    // (`@<plugin id>/<model id>`, or `local-hash-v1` for the stand-in) and
+    // `revision` is that model's digest of everything that decides its
+    // output, so vectors are compared only inside one (`model`, `revision`).
+    // `packs` lists the languages the model was loaded for (informational:
+    // the revision already covers them). `target_kind` is `work` (the
+    // target is a `works.id`) or `text` (the target is the SHA-256 of the
+    // embedded text, shared by every candidate with that text);
+    // `text_hash` is the SHA-256 of the input, so an unchanged target is
+    // not embedded again. `updated_at` is when the vector was written or,
+    // for a `text` row, last used: unused ones are pruned by it.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS embeddings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         target_kind TEXT NOT NULL,
         target_id TEXT NOT NULL,
         model TEXT NOT NULL,
+        revision TEXT NOT NULL DEFAULT '',
+        packs TEXT NOT NULL DEFAULT '',
         dims INTEGER NOT NULL,
         vector BLOB NOT NULL,
         text_hash TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        UNIQUE(target_kind, target_id, model)
+        UNIQUE(target_kind, target_id, model, revision)
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_embeddings_target ON embeddings(target_kind, target_id)",
+        r"CREATE INDEX IF NOT EXISTS idx_embeddings_space ON embeddings(target_kind, model, revision, updated_at)",
     ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS user_preferences (
@@ -1584,7 +1598,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // titles share. A title a branch shares here is a node holding, so its
     // keys are its edition's too. `writer` is the host upload id that
     // claimed the key last (a branch's catalog upload included), or
-    // `acquire` for an acquire run on the node itself. `role` says what the file is. The probe
+    // `acquire:<32 hex>` for the acquire run on the node itself that wrote
+    // it (`acquire` for a branch's import of its owner's title). `role` says what the file is. The probe
     // result (`content_type`, `bitrate_kbps`, `lossless`, set at
     // `probed_at`) and the storefront the copy came from (`source_store`)
     // decide whether a later copy of the same edition replaces it, and tell

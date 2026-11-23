@@ -54,7 +54,6 @@ SHA_RE = re.compile(r"[0-9a-f]{40}")
 # CodeQL writes with a trailing slash. `upload-sarif` keeps an id that is
 # already there, so any other id would upload a different configuration.
 RUST_CATEGORY = "/language:rust"
-RUST_AUTOMATION_IDS = frozenset({RUST_CATEGORY, RUST_CATEGORY + "/"})
 
 # How long one `gh` call may take before the job gives up and analyzes.
 GH_TIMEOUT_SECONDS = 120
@@ -123,17 +122,21 @@ def rust_job_succeeded(raw: bytes) -> bool:
     return len(rust) == 1 and rust[0].get("conclusion") == "success"
 
 
-def sarif_problem(raw: bytes) -> str | None:
-    """Checks that a file is the SARIF of a CodeQL Rust analysis.
+def sarif_problem(raw: bytes, category: str = RUST_CATEGORY) -> str | None:
+    """Checks that a file is the SARIF of a CodeQL analysis of one category.
 
     Args:
         raw: The file's bytes.
+        category: The analysis category, such as ``/language:rust`` (the
+            default); ``scripts/ci_carry.py`` checks the other languages.
 
     Returns:
         None when it is SARIF 2.1.0 with at least one run, every run's tool
         is CodeQL and every run's ``automationDetails.id`` is exactly the
-        Rust category; otherwise a clause saying what is wrong.
+        category, with or without CodeQL's trailing slash; otherwise a
+        clause saying what is wrong.
     """
+    allowed = {category, category + "/"}
     try:
         doc = json.loads(raw)
     except (ValueError, UnicodeDecodeError):
@@ -152,8 +155,10 @@ def sarif_problem(raw: bytes) -> str | None:
             return "a SARIF run is not from CodeQL"
         details = run.get("automationDetails")
         ident = details.get("id") if isinstance(details, dict) else None
-        if not isinstance(ident, str) or ident not in RUST_AUTOMATION_IDS:
-            return "a SARIF run does not carry the Rust category"
+        if not isinstance(ident, str) or ident not in allowed:
+            if category == RUST_CATEGORY:
+                return "a SARIF run does not carry the Rust category"
+            return f"a SARIF run does not carry the {category} category"
     return None
 
 

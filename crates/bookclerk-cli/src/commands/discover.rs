@@ -121,8 +121,9 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
             no_listening,
             listening_providers,
         } => {
+            // The CLI has no model plugin to run, so it ranks on the
+            // stand-in's vectors, which it can always make itself.
             let mut embedder = bookclerk_discover::open_embedder();
-            let model_id = embedder.model_id().to_string();
 
             // Enrich first, so the works it changes are embedded this run.
             let providers = crate::registry::integrations(&host).await?;
@@ -137,7 +138,8 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
                     tracing::warn!(error = %err, "metadata enrichment failed");
                 }
             }
-            let _ = bookclerk_discover::embed_dirty_works(&library, embedder.as_mut()).await?;
+            let _ =
+                bookclerk_discover::embed_dirty_works(&library, embedder.as_mut(), None).await?;
 
             let operator_prefs = library
                 .get_user_preferences_or_default(bookclerk_library::OPERATOR_PREFS_KEY, None)
@@ -151,7 +153,7 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
 
             let opts = bookclerk_discover::RecommendOptions {
                 limit: limit.unwrap_or(cfg.discovery.recommend_limit),
-                embedding_model: model_id,
+                vectors: bookclerk_discover::VectorSource::stand_in(),
                 region: String::from("us"),
                 include_purchase_hints: !no_purchase_hints,
                 external_user_id: user,
@@ -239,7 +241,11 @@ pub async fn run(cfg: &Config, format: OutputFormat, command: DiscoverCommand) -
 /// Embeds dirty works with the local-hash stand-in.
 async fn embed_works(library: &LibraryStore) -> Result<usize> {
     let mut embedder = bookclerk_discover::open_embedder();
-    Ok(bookclerk_discover::embed_dirty_works(library, embedder.as_mut()).await?)
+    Ok(
+        bookclerk_discover::embed_dirty_works(library, embedder.as_mut(), None)
+            .await?
+            .written,
+    )
 }
 
 /// Pulls listening progress from every capable integration into the library DB.

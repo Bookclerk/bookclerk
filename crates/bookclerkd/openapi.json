@@ -59618,6 +59618,7 @@
           "discover_candidates",
           "discover_feed",
           "discover_request_queue",
+          "discover_embed",
           "cache_sweep",
           "search_index_rebuild",
           "library_index_rebuild",
@@ -72391,7 +72392,7 @@
             "items": {
               "type": "boolean"
             },
-            "description": "Per query, in order: `true` when its `null` is a failure or a query\nthat ran past the batch deadline, not an answer, so the client should\nnot keep it and may ask again later.",
+            "description": "Per query, in order: `true` when its result is not a final answer\n(the query failed or ran past the batch deadline, so its `null` is\nno answer, or a metadata provider or store failed or timed out while\nit resolved, so it may be missing details), so the client shows it\nbut does not keep it and may ask again later.",
             "example": [
               false,
               true

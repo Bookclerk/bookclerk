@@ -733,6 +733,7 @@ mod tests {
         )
         .await
         .expect("observation");
+        bookclerk_library::test_support::register_test_node(&library, "node-a").await;
         bookclerk_library::control_plane::record_node_heartbeat(
             &library,
             "node-a",

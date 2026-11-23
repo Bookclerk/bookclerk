@@ -419,8 +419,9 @@ async fn a_wake_without_a_subscriber_is_not_acked() {
 }
 
 /// A `work` that arrives after its claim timed out is not dropped: the host
-/// fails it with [`CLAIM_ABANDONED`] under that work's fence, so the owner
-/// frees the lease now.
+/// gives it back with `release` (reason [`CLAIM_ABANDONED`]) under that
+/// work's fence, so the owner frees the lease now without spending an
+/// attempt.
 #[tokio::test]
 async fn a_late_work_for_a_timed_out_claim_is_handed_back() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -458,7 +459,7 @@ async fn a_late_work_for_a_timed_out_claim_is_handed_back() {
         &mut socket,
         Duration::from_millis(800),
         |frame| match &frame.body {
-            Body::Heartbeat { .. } | Body::Fail { .. } => Some(Body::Accepted {}),
+            Body::Heartbeat { .. } | Body::Release { .. } => Some(Body::Accepted {}),
             Body::Claim { .. } => Some(Body::NoWork {
                 retry_after_secs: 300,
             }),
@@ -466,19 +467,24 @@ async fn a_late_work_for_a_timed_out_claim_is_handed_back() {
         },
     )
     .await;
-    let failed: Vec<(&str, i64, &str)> = frames
+    let released: Vec<(&str, i64, &str)> = frames
         .iter()
         .filter_map(|frame| match &frame.body {
-            Body::Fail {
+            Body::Release {
                 job_id,
                 fence,
-                error_kind,
-                ..
-            } => Some((job_id.as_str(), *fence, error_kind.as_str())),
+                reason,
+            } => Some((job_id.as_str(), *fence, reason.as_str())),
             _ => None,
         })
         .collect();
-    assert_eq!(failed, [("job-late", 7, CLAIM_ABANDONED)]);
+    assert_eq!(released, [("job-late", 7, CLAIM_ABANDONED)]);
+    assert!(
+        !frames
+            .iter()
+            .any(|frame| matches!(frame.body, Body::Fail { .. })),
+        "the late work was failed instead of given back"
+    );
     assert!(
         !runner.started.load(Ordering::SeqCst),
         "the late work was run"
@@ -1166,4 +1172,35 @@ async fn a_finished_job_frees_room_in_the_share() {
         "a finished job did not free its share: {claims} claims"
     );
     assert!(handle.held_fences().len() <= 1);
+}
+
+/// A request whose caller gives up (an outer timeout drops its future, as
+/// the renew loop's lease deadline does) leaves no waiting entry behind,
+/// so a long-lived connection does not collect them.
+#[tokio::test]
+async fn an_abandoned_request_leaves_no_waiting_entry() {
+    let (outbox, mut queue) = mpsc::channel(4);
+    let conn = Conn {
+        serial: 1,
+        outbox,
+        pending: Arc::new(Mutex::new(HashMap::new())),
+        next_id: Arc::new(AtomicU64::new(1)),
+        owner_box_key: [0; 32],
+        timeout: Duration::from_secs(60),
+    };
+    for _ in 0..3 {
+        let abandoned = tokio::time::timeout(
+            Duration::from_millis(20),
+            conn.request(Body::Renew {
+                item: ITEM_JOB.into(),
+                job_id: "job-1".into(),
+                fence: 1,
+                progress: None,
+            }),
+        )
+        .await;
+        assert!(abandoned.is_err(), "the owner never answers");
+        assert!(queue.recv().await.is_some(), "the renew was sent");
+    }
+    assert!(lock(&conn.pending).is_empty());
 }

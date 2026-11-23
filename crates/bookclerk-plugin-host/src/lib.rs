@@ -228,8 +228,8 @@ pub use registry::{
 pub use remote_consent::{
     approve_remote_request, narrow_remote_grant, remote_consent, remote_consent_state,
     remote_consent_view, remote_platform_auto_approval, remote_request_changes,
-    remote_request_within, remote_row_changes, remote_row_consent_state, RemoteApprovalError,
-    RemoteConsentState, RemoteNarrowing,
+    remote_request_within, remote_row_changes, remote_row_consent_state, LocalPlatformInstall,
+    RemoteApprovalError, RemoteConsentState, RemoteNarrowing,
 };
 pub use rpc_session::{
     plugin_instance_key, ExecutorIdentity, GuestDatabaseFactory, PluginSession, PluginStorage,

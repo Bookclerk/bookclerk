@@ -275,6 +275,23 @@ fn target_call_number(edition_id: &str) -> Option<CallNumber> {
     bookclerk_library::call_number(edition_id).and_then(|id| CallNumber::try_from(id).ok())
 }
 
+/// The titles an `acquire.plan` considers, in holding-id order (`holding`
+/// reads each one's) and only those after the branch's cursor (`after`,
+/// the last target it already tried this run), so titles that failed
+/// earlier in the run never fill the plan's cap ahead of ones not tried
+/// yet. `after` is the branch's text and is only compared.
+pub(super) fn plan_order<T>(
+    mut titles: Vec<T>,
+    after: Option<&str>,
+    holding: impl Fn(&T) -> &str,
+) -> Vec<T> {
+    if let Some(after) = after {
+        titles.retain(|title| holding(title) > after);
+    }
+    titles.sort_by(|a, b| holding(a).cmp(holding(b)));
+    titles
+}
+
 /// `acquire.plan`: the titles the job still needs, and how to name them.
 pub(super) async fn acquire_plan(
     library: &LibraryStore,
@@ -282,6 +299,7 @@ pub(super) async fn acquire_plan(
     id: String,
     job_id: String,
     fence: i64,
+    after: Option<&str>,
 ) -> bookclerk_library::Result<Frame> {
     let Some(job) = live_remote_job(library, &host.node_id, &job_id, fence).await? else {
         return Ok(lost(id, job_id, fence));
@@ -303,7 +321,7 @@ pub(super) async fn acquire_plan(
         return Ok(lost(id, job_id, fence));
     };
     let mut targets = Vec::new();
-    for title in titles {
+    for title in plan_order(titles, after, |title| title.holding_id.as_str()) {
         if targets.len() >= MAX_PLAN_TARGETS {
             break;
         }
@@ -588,4 +606,23 @@ pub(super) async fn upload_grant(
             error(id, "refused", reason)
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plan_order;
+
+    #[test]
+    fn a_plan_moves_past_the_titles_the_branch_already_tried() {
+        let titles = vec!["c", "a", "e", "b", "d"];
+        assert_eq!(
+            plan_order(titles.clone(), None, |t| t),
+            ["a", "b", "c", "d", "e"]
+        );
+        assert_eq!(
+            plan_order(titles.clone(), Some("b"), |t| t),
+            ["c", "d", "e"]
+        );
+        assert!(plan_order(titles, Some("e"), |t| t).is_empty());
+    }
 }

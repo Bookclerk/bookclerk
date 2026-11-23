@@ -58,6 +58,12 @@
 //!   sorting byte-wise past the one asked with, so a window's paging
 //!   always moves forward. Checked byte by byte here, since the window
 //!   stores them.
+//! - a `deployments` page a branch would accept (`deployments_page_problem`
+//!   finds nothing for the cursor it asked with) lists deployment ids in
+//!   strictly rising byte order, each after that cursor, and a next cursor
+//!   that sorts after it and not before the last entry, so a branch's
+//!   paging always moves forward and never lists a deployment twice.
+//!   Checked byte by byte here.
 //! - a `scan.removed` or `scan.pass_end` frame the owner would accept
 //!   (`scan_removed_problem` / `scan_pass_end_problem` find nothing) names
 //!   a non-blank account and carries at most 500 product ids, each
@@ -87,11 +93,11 @@
 use std::collections::BTreeSet;
 
 use bookclerk_node_proto::{
-    claimed_problem, copy_grant_problem, copy_granted_problem, finish_problem, found_problem,
-    questions_problem, scan_pass_end_problem, scan_removed_problem, target_destinations_problem,
-    window_page_problem, Availability, Body, BranchOrigin, CopyGrantedFrame, CopyRole, Frame,
-    LookupScheme, LookupWork, WindowCursor, FRAME_VERSION, MAX_BRANCH_ORIGIN_BYTES,
-    MAX_CALL_NUMBER_BYTES, MAX_FRAME_BYTES,
+    claimed_problem, copy_grant_problem, copy_granted_problem, deployments_page_problem,
+    finish_problem, found_problem, questions_problem, scan_pass_end_problem, scan_removed_problem,
+    target_destinations_problem, window_page_problem, Availability, Body, BranchOrigin,
+    CopyGrantedFrame, CopyRole, Frame, LookupScheme, LookupWork, WindowCursor, FRAME_VERSION,
+    MAX_BRANCH_ORIGIN_BYTES, MAX_CALL_NUMBER_BYTES, MAX_FRAME_BYTES,
 };
 use serde_json::Value;
 
@@ -182,6 +188,7 @@ pub fn check(data: &[u8]) {
     check_lookup(&frame.body);
     check_requests(&frame.body);
     check_window(&frame.body);
+    check_deployments(&frame.body);
     check_scan_reports(&frame.body);
     check_copies(&frame.body);
     check_heartbeat(&frame.body);
@@ -200,6 +207,44 @@ pub fn check(data: &[u8]) {
         same(&json(&again), &json(&frame)),
         "a frame changed across a round trip: {frame:?} became {again:?}"
     );
+}
+
+/// The rules of a `deployments` page a branch would accept, for the first
+/// page's cursor and for one that sorts just before the page's first entry.
+fn check_deployments(body: &Body) {
+    let Body::Deployments { items, next } = body else {
+        return;
+    };
+    let before_first = items
+        .first()
+        .map(|item| item.deployment_id.as_str())
+        .filter(|id| !id.is_empty())
+        .map(|id| &id[..id.len() - id.chars().last().map_or(0, char::len_utf8)]);
+    for after in [None, before_first] {
+        if deployments_page_problem(after, items, next.as_deref()).is_some() {
+            continue;
+        }
+        let mut previous = after.map(str::as_bytes);
+        for item in items {
+            let id = item.deployment_id.as_bytes();
+            assert!(
+                previous.is_none_or(|previous| id > previous),
+                "deployment {:?} out of order accepted",
+                item.deployment_id
+            );
+            previous = Some(id);
+        }
+        if let Some(next) = next {
+            assert!(
+                after.is_none_or(|after| next.as_bytes() > after.as_bytes()),
+                "a cursor that does not move forward accepted"
+            );
+            assert!(
+                previous.is_none_or(|last| next.as_bytes() >= last),
+                "a cursor before the page's last entry accepted"
+            );
+        }
+    }
 }
 
 /// The rules of a `copy.grant` the library would accept and of a

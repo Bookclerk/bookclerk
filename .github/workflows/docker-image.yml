@@ -37,10 +37,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # A visual approval commit (only ui/visual/baselines.lock changed since a
+  # parent whose run of this workflow succeeded) carries that run over
+  # instead of running again (docs/contributing/ci.md#visual-approval-commits).
+  carry:
+    name: Look for a visual approval commit
+    if: github.event_name == 'pull_request' && !github.event.pull_request.draft && github.event.pull_request.head.repo.full_name != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      run-id: ${{ steps.carry.outputs.run-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+
+      - name: Look for a visual approval commit
+        id: carry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: >-
+          python3 scripts/ci_carry.py find --repo "$REPO" --workflow docker-image.yml
+          --head "$HEAD_SHA" --head-repo "$HEAD_REPO" --head-branch "$HEAD_BRANCH"
+          --kind run --dest "$RUNNER_TEMP/ci-carry"
+
   image:
     name: build + boot
     # Deferred on a draft pull request until it is ready for review.
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    # Skipped as well for a visual approval commit carried over.
+    needs: carry
+    if: >-
+      !cancelled() &&
+      (github.event_name != 'pull_request' || !github.event.pull_request.draft) &&
+      needs.carry.outputs.run-id == ''
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
