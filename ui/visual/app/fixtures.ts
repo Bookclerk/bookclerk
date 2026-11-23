@@ -1255,7 +1255,9 @@ function signedIn(viewer: "owner" | "operator"): Routes {
         },
       },
     }),
-    "GET /api/users/default-scope": () => ({ json: { scope: { rules: [] } } }),
+    "GET /api/users/default-scope": () => ({
+      json: { scope: { rules: [] }, version: "0123456789abcdef0123456789abcdef" },
+    }),
     "GET /api/library/collections": () => ({
       json: { collections: [{ name: "Classics", prefixes: ["Classics/"] }] },
     }),
