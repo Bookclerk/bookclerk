@@ -313,6 +313,12 @@ pub async fn run_discover_feed(
     } else {
         None
     };
+    // Named in the job's summary, so a reader of the job list can tell a
+    // ranking on a model's vectors from one on the stand-in's.
+    let ranked_with = vectors.as_ref().map_or_else(
+        || "none".to_owned(),
+        |source| source.space.model.to_string(),
+    );
     let opts = discover_options(&cfg, vectors);
     let sources = state.sources.read().await.clone();
     // A candidate fetch that finishes while this ranking runs folds its
@@ -346,7 +352,7 @@ pub async fn run_discover_feed(
     // new `computed_at` on their next revision read.
     crate::live::poke(bookclerk_library::control_plane::LiveTopic::Discover);
     Ok(format!(
-        "subject={} scope={} shelves={} candidates={} passes={passes}",
+        "subject={} scope={} shelves={} candidates={} passes={passes} vectors={ranked_with}",
         subject.key(),
         report.scope.as_str(),
         report.shelves,
@@ -794,7 +800,10 @@ mod tests {
             .contains(&(JobKind::DiscoverFeed, String::from("operator"))));
         let summary = run_discover_feed(&state, &payload, None).await.unwrap();
         assert!(summary.contains("scope=household"), "{summary}");
-        assert!(summary.ends_with("passes=1"), "{summary}");
+        assert!(
+            summary.ends_with("passes=1 vectors=local-hash-v1"),
+            "{summary}"
+        );
 
         // The handlers ran here, not under the worker, so their rows are
         // still pending: the page reports the rebuild as in progress.

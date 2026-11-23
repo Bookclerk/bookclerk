@@ -312,3 +312,23 @@ The channel status maps as in the route table above: `404` / `405` are
 reply locally, so `err.limit` survives a `413` and an `unsupported` streamed
 read still falls back to the inline read. If the RPC call itself fails, the
 Python SDK reports it as `unavailable`.
+
+## Binding errors between the isolates
+
+The other adapter-held bindings, `EVENTS`, `NOTIFY`, `AI`, each
+`[[queues.producers]]` binding and each `[[kv_namespaces]]` binding, have no
+Cap'n reply to carry a failure. Workers RPC keeps an error's own properties
+(such as `code`) only under the enhanced error serialization of newer
+compatibility dates, so an error thrown across the hop would reach an author
+on an older `compatibility_date` as a plain `Error`.
+
+The adapter therefore hands the author one `SettledTransport` per binding
+instead of the binding itself. Its only method, `settle(method, args)`, runs
+one allow-listed binding method in the adapter and answers with
+`{ ok: value }` or `{ err: { code, message, details } }`; it never throws.
+The author side rebuilds the binding around it: the TypeScript SDK throws a
+`PluginError` carrying the code and `details`, the Python SDK raises one
+(and `env.EVENTS` returns the ABI reply unions, as the generated
+`EventPublisher` protocol says). The launcher's granted routes send
+`details` as JSON text next to `code` and `message`, so a detail object the
+host produced reaches the author unchanged.

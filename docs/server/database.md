@@ -802,7 +802,7 @@ Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `operator_sessions`, `account_links`, `patron_controls`, `admin_controls`, `patron_scopes`,
 `patron_scope_keys`, `account_shares`, `account_credential_revisions`, `listening_progress`, `title_requests`, `title_request_sources`,
 `embeddings`, `discover_candidates`, `discover_store_calls`,
-`discover_store_call_hits`, `discover_feeds`, `discover_tastes`, `discover_fetches`,
+`discover_store_call_hits`, `discover_feeds`, `discover_feed_parts`, `discover_tastes`, `discover_fetches`,
 `discover_request_queue`,
 `playback_progress`, `playback_sessions`, `bookmarks`,
 `player_passwords`, `player_cards`, `player_card_tokens`,

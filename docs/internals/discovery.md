@@ -104,7 +104,10 @@ operator, a household user, or a portal identity) has a **subject key**
    `discover_feed` job, which ranks the stored candidates into shelves with
    no network calls and stores the result. It uses only candidates fetched
    for the person's current seeds (their own, or the household's), and none
-   when `discovery.storefront_candidates` is off.
+   when `discovery.storefront_candidates` is off. A feed wider than one
+   cell or statement of the database plugin (the stored feed may reach
+   192 KiB, and D1 statements are much smaller) is stored in
+   `discover_feed_parts` pieces that the feed row names by version.
 
    The fetch reads the library once: the taste and the set of titles the
    library already holds (by ASIN, ISBN and store product id, used to keep
@@ -440,7 +443,8 @@ makes them itself while the stand-in serves.
 A model's work vectors are made by a `discover_embed` job, pinned to the
 node whose plugin serves the model. It is queued when:
 
-- a model is installed on the node (the model router reports a change);
+- the daemon starts, or a model is installed on the node (the model
+  router reports a change);
 - a ranking finds that the node's model does not serve yet;
 - a ranking runs and the node has not looked for changed works for an
   hour.

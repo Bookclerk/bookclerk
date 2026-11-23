@@ -2492,6 +2492,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "bookclerk-plugin-notifier-email"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "bookclerk-plugin-sdk",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "bookclerk-plugin-sdk"
 version = "0.1.0"
 dependencies = [

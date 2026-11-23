@@ -163,7 +163,11 @@ repository and commit, and the size and SHA-256 of each file.
 A build has four steps:
 
 1. **`fetch`** downloads the pinned files and refuses any whose size or
-   digest differs.
+   digest differs. A file already in the work directory is kept only when
+   it matches its pin. A download that fails in a way that may pass (HTTP
+   408, 429 or 5xx, a refused, reset or timed-out connection, a reply cut
+   short) is tried again after 5, 20 and 60 seconds; one that arrives but
+   does not match is never retried.
 2. **`build`** cuts the graph, writes every token's row to `base.rows`,
    converts `tokenizer.json` to a SentencePiece model and then, with
    upstream's `spm_to_fb`, to the Lite file, and writes `model.json` and
@@ -225,7 +229,23 @@ vocabulary as a SentencePiece model:
 
 [`.github/workflows/model-packs.yml`](../../.github/workflows/model-packs.yml)
 runs the four steps for each model on every pull request that touches the
-builder, the layout, the tokenizer or the plugin. On `main` it also
+builder, the layout, the tokenizer or the plugin. It caches the upstream
+files under `model-upstream-<model id>-<sources digest>`, where the digest
+(`model_packs.py sources-digest`) covers each file's repository, revision,
+path, size and SHA-256 and nothing else, so an unchanged model is not
+downloaded again and a changed pin misses the cache. `fetch` measures a
+restored file like any other, so a cache entry cannot change what is
+built.
+
+The built pack is cached too, by `main` only and only after `check` and
+`pin` pass, under a key that hashes every file that can change its bytes:
+`models.json`, `scripts/model_packs.py`, the builder's
+`requirements.txt`, `build-spm-to-fb.sh`, `vendor-sentencepiece-lite.sh`
+and `third_party/sentencepiece-lite/`. While none of them changes, a run
+restores that pack and skips building the converter and the pack; `check`
+and `pin` run on it as on a fresh build. A change to any of those files
+misses the cache, so it is always built and compared with the pins before
+it can merge. On `main` it also
 publishes each pack to the GitHub Container Registry as an OCI artifact:
 
 ```text
@@ -350,8 +370,16 @@ and restart. The host accepts a directory only when its `model.json` is
 the pinned one and every listed file has the listed size, and the plugin
 checks every file's SHA-256 before it loads the model.
 
-The hosted demo never downloads: a visitor's container lives for
-minutes.
+The hosted demo's containers never download: a visitor's container lives
+for minutes. The demo image is built with the default model in it
+instead. The image build lets `bookclerkd` download and verify the model
+as any host does, embeds the sample library with it, and ships the model
+under `/opt/bookclerk/models` and the vectors in the seeded library; a
+container copies the model into the plugin's data directory when it
+starts (`packaging/demo/bake-seed.sh` and `boot.sh`). Measured at a
+container's limits (a quarter of a CPU, 1 GiB), the plugin's code takes
+211 MiB at its peak, loads the model in about 1.4 s, and embeds a book
+description in about 0.25 s and a search query in about 0.1 s.
 
 A model takes 141 to 217 MB of the plugin's data directory, whose
 budget is 512 MiB by default. While a library changes from one model to

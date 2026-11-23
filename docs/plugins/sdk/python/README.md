@@ -103,7 +103,10 @@ returns to complete, raises to reject, or calls `job.suspend(...)` or
 
 Granted bindings arrive on `self.env` per invocation: `CONFIG`,
 `SECRETS`, `EVENTS`, `WORK_FS`, and one entry per `[[databases]]`
-binding. A binding's `await limits()` returns the `DbCapabilities` its
+binding. `EVENTS` follows the generated `EventPublisher` protocol:
+`await env.EVENTS.publish(event)` and `await env.EVENTS.read(request)` take
+the ABI request dicts and return the reply unions, `{"ok": ...}` or
+`{"err": {"code", "message", "details"}}`, instead of raising. A binding's `await limits()` returns the `DbCapabilities` its
 session negotiated; a request or result over one of them raises a
 `PluginError` whose `code` is `limit_exceeded` and whose `limit` names
 the cap. On a host that predates `limits()` the call raises
