@@ -827,12 +827,14 @@ async fn postgres_removal_and_a_first_heartbeat_order_on_the_node_row() {
             .unwrap()
             .is_none());
         // Hold the node's row so that the removal and the heartbeat both
-        // start and wait on it, the removal first.
+        // start and wait on it, the removal first. The hold only locks the
+        // row: an update would leave a newer row version that the two
+        // waiters then race to lock, in no set order.
         #[allow(clippy::disallowed_methods)]
         let holder = store_b.db().begin().await.expect("hold the node row");
         holder
             .execute_unprepared(&format!(
-                "UPDATE nodes SET heartbeat_at = heartbeat_at WHERE node_id = '{node_id}'"
+                "SELECT 1 FROM nodes WHERE node_id = '{node_id}' FOR UPDATE"
             ))
             .await
             .unwrap();
