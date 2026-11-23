@@ -1068,6 +1068,7 @@ function signedIn(viewer: "owner" | "operator"): Routes {
           acquire_status: b.status,
           edition_count: 1,
           holding_count: b.status === "acquired" ? 1 : 0,
+          acquirable_editions: b.status === "not_acquired" || b.status === "error" ? 1 : 0,
           added_at: ago(b.boughtDaysAgo * DAY),
           length_minutes: b.minutes,
           purchased_at: ago(b.boughtDaysAgo * DAY),
