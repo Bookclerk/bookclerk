@@ -44,6 +44,7 @@ pub const OPTIONAL_PLUGINS: &[&str] = &[
     "cloudflare_relay",
     "ngrok",
     "webhook",
+    "email",
 ];
 
 /// Reference Echo guests staged under `$BOOKCLERK_PLUGIN_ARTIFACTS`.

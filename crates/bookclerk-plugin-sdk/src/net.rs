@@ -298,10 +298,11 @@ impl PluginSocket {
 
     /// Start TLS on a `starttls` socket.
     ///
-    /// The proxy is byte-transparent, so TLS is end-to-end. Wrap
-    /// [`Self::into_stream`] with `tokio-rustls` (same pattern as workerd
-    /// `socket.startTls()` after `secureTransport: "starttls"`). Pathname
-    /// sockets may use [`Self::into_split`]. Mux links have no TCP fallback.
+    /// The proxy is byte-transparent, so TLS is end-to-end. Pass
+    /// [`Self::into_stream`] to `bookclerk_plugin_sdk::http::start_tls` (the
+    /// `http` feature), which verifies the certificate and offers no ALPN.
+    /// Pathname sockets may use [`Self::into_split`]. Mux links have no TCP
+    /// fallback.
     ///
     /// # Errors
     ///
@@ -317,7 +318,7 @@ impl PluginSocket {
         }
         self.started_tls = true;
         Err(SdkError::message(
-            "native startTls: wrap PluginSocket::into_stream() with tokio-rustls (proxy is byte-transparent; into_split is pathname-only)",
+            "native startTls: pass PluginSocket::into_stream() to bookclerk_plugin_sdk::http::start_tls (proxy is byte-transparent; into_split is pathname-only)",
         ))
     }
 }

@@ -1,6 +1,6 @@
 # ADR: Notifications are routed by the host and sent by plugins
 
-- **Status:** Accepted; partly built (routing, delivery log, inbox, web API and the generic webhook provider; no other providers or account mail yet)
+- **Status:** Accepted; partly built (routing, delivery log, inbox, web API, the generic webhook provider and the SMTP email provider; no other providers or account mail yet). Amended 2026-11-23: the SMTP provider is a native Rust guest (decision 11).
 - **Date:** 2026-11-20
 - **Related:** [Event delivery model](event-delivery-model.md),
   [First-party identity](first-party-identity.md),
@@ -156,6 +156,15 @@ third-party binary.
     mobile push once phone clients exist. Signal (no official API; every
     bridge needs a third-party binary), WhatsApp (business verification
     and per-message fees) and SMS are not planned.
+
+    *Amendment (2026-11-23):* email over SMTP is a native Rust guest
+    instead. A workerd socket cannot start TLS (`startTls()` is
+    unsupported on the host's CONNECT tunnel, and so is
+    `secureTransport: "on"`), and the host's TLS streams are only for
+    integrations and ingress and have no `STARTTLS`. The native guest
+    reaches the mail server through the same CONNECT tunnel, checked
+    against the approved `server` setting, and does TLS itself with the
+    Rust SDK's `http::start_tls`.
 
 ## Consequences
 
