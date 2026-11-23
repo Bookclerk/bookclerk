@@ -292,6 +292,34 @@ impl GrantedSlot {
         }
     }
 
+    /// A grant that only answers the `GET /cancel` long poll for one host
+    /// cancellation probe (a cron fire's).
+    #[must_use]
+    pub fn cancel_only(cancel: Box<dyn Cancellation>, expires: std::time::Instant) -> Self {
+        Self {
+            input: None,
+            output: None,
+            progress: None,
+            cancel: Some(cancel),
+            expires,
+            allow_open: false,
+            allow_put: false,
+            allow_progress: false,
+            database: None,
+            allow_database: false,
+            sql_policy: GuestSqlPolicy::host_authoritative(),
+            max_request_bytes: 0,
+            events: None,
+            queue: None,
+            kv: None,
+            sockets: None,
+            webhooks: None,
+            notify: None,
+            origin: None,
+            ai: None,
+        }
+    }
+
     /// A grant that only sends into one queue (no streams, no database).
     #[must_use]
     pub fn queue_only(producer: Rc<dyn QueueProducer>, expires: std::time::Instant) -> Self {

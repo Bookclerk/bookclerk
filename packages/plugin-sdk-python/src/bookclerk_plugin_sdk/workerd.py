@@ -29,7 +29,7 @@ import re
 import struct
 import time
 from collections.abc import AsyncIterable, AsyncIterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -2202,6 +2202,10 @@ class ScheduledController:
         attempt: Failure attempt, starting at 1.
         deadline_unix_ms: Deadline hint in Unix milliseconds; the host fence
             is authoritative.
+
+    Once the host stops awaiting the fire (fence loss or operator cancel),
+    :attr:`cancelled` turns ``True`` and :meth:`wait_cancelled` returns; stop
+    side effects then.
     """
 
     cron: str = ""
@@ -2209,6 +2213,22 @@ class ScheduledController:
     fire_id: str = ""
     attempt: int = 0
     deadline_unix_ms: int = 0
+    _cancelled: asyncio.Event = field(
+        default_factory=asyncio.Event, repr=False, compare=False, hash=False
+    )
+
+    @property
+    def cancelled(self) -> bool:
+        """Whether the host has cancelled this fire."""
+        return self._cancelled.is_set()
+
+    async def wait_cancelled(self) -> None:
+        """Return once the host cancels this fire (never, when it sent no probe)."""
+        await self._cancelled.wait()
+
+    def _cancel(self) -> None:
+        """Host-side cancellation observed (adapter-internal)."""
+        self._cancelled.set()
 
     @classmethod
     def from_wire(cls, wire: Any) -> ScheduledController:
@@ -2228,6 +2248,20 @@ class ScheduledController:
             attempt=int(_get(wire, "attempt", 0) or 0),
             deadline_unix_ms=int(_get(wire, "deadlineUnixMs", 0) or 0),
         )
+
+
+async def _watch_cancel(cancel: Any, controller: ScheduledController) -> None:
+    """Mark ``controller`` cancelled once the host's cancel watch resolves.
+
+    Args:
+        cancel: The adapter's cancel watch (``wait()`` resolves on cancel).
+        controller: The fire to mark.
+    """
+    try:
+        await _await_maybe(cancel.wait())
+    except Exception:  # noqa: BLE001 - a failed watch never cancels the fire
+        return
+    controller._cancel()
 
 
 # ---------------------------------------------------------------------------
@@ -2305,11 +2339,18 @@ class BookclerkEntrypoint(WorkerEntrypoint):
             return js(queue_batch_results(batch, err))
         return js(queue_batch_results(batch, None))
 
-    async def bookclerkScheduled(self, context: Any = None, wire_controller: Any = None) -> None:
+    async def bookclerkScheduled(
+        self, context: Any = None, wire_controller: Any = None, cancel: Any = None
+    ) -> None:
         """Adapter dispatch: run one cron fire through ``scheduled(controller)``.
 
         The handler receives a :class:`ScheduledController`. Returning
         completes the fire; raising has the host retry the same fire.
+
+        Args:
+            context: Granted bindings for this invocation.
+            wire_controller: Wire ``ScheduledController``.
+            cancel: Host cancel watch for this fire, when the host sent one.
 
         Raises:
             PluginError: ``unsupported`` when the author defines no ``scheduled``.
@@ -2318,7 +2359,17 @@ class BookclerkEntrypoint(WorkerEntrypoint):
         if not callable(handler):
             raise _unsupported("scheduled")
         _apply_invocation_env(self, context)
-        await _await_maybe(handler(ScheduledController.from_wire(wire_controller)))
+        controller = ScheduledController.from_wire(wire_controller)
+        watch = (
+            asyncio.ensure_future(_watch_cancel(cancel, controller))
+            if cancel is not None and callable(getattr(cancel, "wait", None))
+            else None
+        )
+        try:
+            await _await_maybe(handler(controller))
+        finally:
+            if watch is not None:
+                watch.cancel()
 
     def _socket_handle(self, context: Any, wire: Any) -> HostWebSocket:
         """The :class:`HostWebSocket` a socket event names."""

@@ -443,7 +443,18 @@ pub trait QueueConsumer {
 #[async_trait::async_trait(?Send)]
 pub trait ScheduledHandler {
     /// Runs one cron fire to completion.
-    async fn scheduled(&self, controller: crate::ScheduledController) -> Result<()>;
+    ///
+    /// # Arguments
+    ///
+    /// * `controller` - The fire being delivered.
+    /// * `cancel` - Host cancellation probe for this fire; it reports
+    ///   `true` once the host stops awaiting the fire (fence loss or
+    ///   operator cancel), after which side effects should stop.
+    async fn scheduled(
+        &self,
+        controller: crate::ScheduledController,
+        cancel: Box<dyn Cancellation>,
+    ) -> Result<()>;
 }
 
 /// Queue producer binding: host-served send into the queue a

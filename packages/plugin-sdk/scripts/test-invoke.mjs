@@ -122,6 +122,11 @@ class Plugin extends BookclerkEntrypoint {
   async scheduled(controller) {
     calls.scheduled.push(controller);
     if (controller.cron === "0 0 * * *") throw new Error("nightly failed");
+    if (controller.cron === "*/5 * * * *") {
+      // Waits for the host to cancel the fire, then reports what it saw.
+      await new Promise((resolve) => controller.signal.addEventListener("abort", resolve));
+      throw controller.signal.reason;
+    }
   }
 
   async queue(batch) {
@@ -1443,7 +1448,9 @@ function decodeReply(reply, resultsCodec, caps) {
     W.ScheduledHandlerScheduledResultsCodec,
   );
   assert.equal(ok.kind, "ok");
-  assert.deepEqual(calls.scheduled[0], fire("*/30 * * * *"));
+  const { signal, ...delivered } = calls.scheduled[0];
+  assert.deepEqual(delivered, fire("*/30 * * * *"));
+  assert.equal(signal.aborted, false, "a fire without a cancel probe never aborts");
   assert.ok(Object.isFrozen(calls.scheduled[0]), "the controller is read-only");
   const failed = decodeReply(
     await invoke("ScheduledHandler", "scheduled", W.ScheduledHandlerScheduledParamsCodec, {
@@ -1453,6 +1460,30 @@ function decodeReply(reply, resultsCodec, caps) {
   );
   assert.equal(failed.kind, "err");
   assert.match(String(failed.value.message), /nightly failed/);
+
+  // The host's cancel probe arrives as a granted long poll and aborts the
+  // fire's signal with a `cancelled` error.
+  granted.requests.length = 0;
+  granted.cancelState = { polls: 0, release: null, mode: "hold" };
+  const release = () => {
+    if (granted.cancelState.release) granted.cancelState.release();
+    else setTimeout(release, 0);
+  };
+  release();
+  const cancelled = decodeReply(
+    await invoke(
+      "ScheduledHandler",
+      "scheduled",
+      W.ScheduledHandlerScheduledParamsCodec,
+      { controller: fire("*/5 * * * *"), cancel: "c" },
+      { caps: [{ kind: "cancellation", token: "tok-fire" }] },
+    ),
+    W.ScheduledHandlerScheduledResultsCodec,
+  );
+  assert.equal(cancelled.kind, "err");
+  assert.equal(cancelled.value.code, "cancelled");
+  const poll = granted.requests.find((r) => r.path === "/cancel");
+  assert.equal(poll.headers.Authorization, "Bearer tok-fire");
 }
 
 // --- SocketHandler: messages and closes reach webSocketMessage / webSocketClose --

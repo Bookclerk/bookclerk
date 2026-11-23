@@ -1472,9 +1472,10 @@ export interface ScheduledHandler {
    * Run one cron fire to completion.
    *
    * @param controller - The fire being delivered.
+   * @param cancel - Fires once the host cancels the fire (fence loss or operator cancel); null from hosts that predate it.
    * @returns {@link EmptyReply}
    */
-  scheduled(controller: ScheduledController): Promise<EmptyReply>;
+  scheduled(controller: ScheduledController, cancel: Cancellation): Promise<EmptyReply>;
 }
 
 /**

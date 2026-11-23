@@ -2621,11 +2621,13 @@ class ScheduledHandler(Protocol):
     `fireId`, so handlers dedupe on `fireId`.
     """
 
-    async def scheduled(self, controller: ScheduledController) -> EmptyReply:
+    async def scheduled(self, controller: ScheduledController, cancel: Cancellation) -> EmptyReply:
         """Run one cron fire to completion.
 
         Args:
             controller: The fire being delivered.
+            cancel: Fires once the host cancels the fire (fence loss or operator
+                cancel); null from hosts that predate it.
 
         Returns:
             ``EmptyReply``

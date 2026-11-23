@@ -17,7 +17,7 @@ class BookclerkEntrypoint<Env> extends WorkerEntrypoint<Env> {
   event?(batch: EventBatch): Promise<void>;             // [[events.consumers]]
   queue?(batch: QueueBatch): Promise<void>;             // [[queues.consumers]]
   job?(job: JobController): Promise<JobCompletion | void>; // [triggers] jobs
-  scheduled?(controller: ScheduledController): Promise<void>; // [triggers] crons
+  scheduled?(controller: ScheduledFire): Promise<void>; // [triggers] crons
   databaseMigrations?(binding: string): Promise<PluginMigration[]>; // [[databases]]
   shutdown?(): Promise<void>;
 }
@@ -534,10 +534,10 @@ crons = ["*/30 * * * *", "0 3 * * MON-FRI"]
 
 ```ts
 export default class MyPlugin extends BookclerkEntrypoint<Env> {
-  async scheduled(controller: ScheduledController) {
+  async scheduled(controller: ScheduledFire) {
     // controller.cron, controller.scheduledTime (UTC Unix ms),
     // controller.fireId, controller.attempt, controller.deadlineUnixMs
-    await refresh(controller.scheduledTime);
+    await refresh(controller.scheduledTime, { signal: controller.signal });
   }
 }
 ```
@@ -547,6 +547,15 @@ frozen `ScheduledController` (`cron`, `scheduled_time`, `fire_id`,
 `attempt`, `deadline_unix_ms`). Native guests implement
 `ScheduledHandler::scheduled` and return it from `open` as
 `Entrypoints.scheduled_handler`.
+
+- **Cancellation.** When the fire's job loses its fence or an operator
+  cancels it, the host stops awaiting the fire and tells the handler:
+  `controller.signal` aborts with a `cancelled` error in TypeScript,
+  `controller.cancelled` turns `True` and `await controller.wait_cancelled()`
+  returns in Python, and the `cancel` probe passed to
+  `ScheduledHandler::scheduled` polls `true` in a native guest. Stop side
+  effects then; the host does not refuse the plugin's granted calls on its
+  own.
 
 - **Schedules.** Each entry has five fields (minute, hour, day of month,
   month, day of week) and is read in UTC. Fields take `*`, values, ranges,

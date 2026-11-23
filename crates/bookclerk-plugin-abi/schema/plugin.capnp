@@ -1473,7 +1473,8 @@ struct NamedDatabase {
 interface ScheduledHandler {
   # Run one cron fire to completion.
   scheduled @0 (
-      controller :ScheduledController  # The fire being delivered.
+      controller :ScheduledController,  # The fire being delivered.
+      cancel :Cancellation  # Fires once the host cancels the fire (fence loss or operator cancel); null from hosts that predate it.
   ) -> (result :EmptyReply);
 }
 

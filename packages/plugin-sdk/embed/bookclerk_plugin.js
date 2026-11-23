@@ -7885,16 +7885,24 @@ var EventConsumerEventResultsCodec = {
 };
 var ScheduledHandlerScheduledParamsCodec = {
   dataWords: 0,
-  pointerCount: 1,
+  pointerCount: 2,
   write(s, v, caps) {
     if (v.controller != null) {
       ScheduledControllerCodec.write(s.initStruct(0, 3, 2), v.controller, caps);
     }
+    if (v.cancel != null) {
+      s.setCap(1, caps.exportCap(v.cancel));
+    }
   },
   read(s, caps) {
-    return {
+    const out = {
       controller: ScheduledControllerCodec.read(s.getStruct(0, 3, 2), caps)
     };
+    const cancelValue = caps.importCap(s.getCapIndex(1));
+    if (!(cancelValue == null)) {
+      out.cancel = cancelValue;
+    }
+    return out;
   }
 };
 var ScheduledHandlerScheduledResultsCodec = {
@@ -11780,7 +11788,7 @@ var METHODS = {
       params: ScheduledHandlerScheduledParamsCodec,
       results: ScheduledHandlerScheduledResultsCodec,
       stub: "author",
-      call: (s, p, cx) => s.bookclerkScheduled(cx.host.bindContext(cx.ctx), p.controller ?? {}),
+      call: (s, p, cx) => s.bookclerkScheduled(cx.host.bindContext(cx.ctx), p.controller ?? {}, p.cancel ?? null),
       ok: okEmpty
     })
   },
@@ -13628,15 +13636,16 @@ var BookclerkEntrypoint = class extends WorkerEntrypoint {
    *
    * @param context - Granted bindings for this invocation.
    * @param wire - Wire `ScheduledController`.
+   * @param cancel - Host cancellation watch for this fire, when the host sent one.
    * @returns Resolves when the author's handler completes.
    * @internal
    */
-  async bookclerkScheduled(context, wire) {
+  async bookclerkScheduled(context, wire, cancel) {
     if (typeof this.scheduled !== "function") {
       throw unsupported("scheduled");
     }
     applyInvocationEnv(this, context);
-    await this.scheduled(scheduledControllerOf(wire));
+    await this.scheduled(scheduledControllerOf(wire, cancel));
   }
   /**
    * Adapter dispatch for `SocketHandler.message`.
@@ -15614,14 +15623,20 @@ var TRIGGER_FAMILIES = Object.freeze({
   socketHandler: "socketHandler",
   webhookHandler: "webhookHandler"
 });
-function scheduledControllerOf(wire) {
+function scheduledControllerOf(wire, cancel) {
   const w = wire && typeof wire === "object" ? wire : {};
+  const abort = new AbortController();
+  if (cancel && typeof cancel.wait === "function") {
+    Promise.resolve().then(() => cancel.wait()).then(() => abort.abort(PluginError.fromWire("cancelled", "cron fire cancelled by host")), () => {
+    });
+  }
   return Object.freeze({
     cron: String(w.cron ?? ""),
     scheduledTime: Number(w.scheduledTime ?? 0) || 0,
     fireId: String(w.fireId ?? ""),
     attempt: Number(w.attempt ?? 0) || 0,
-    deadlineUnixMs: Number(w.deadlineUnixMs ?? 0) || 0
+    deadlineUnixMs: Number(w.deadlineUnixMs ?? 0) || 0,
+    signal: abort.signal
   });
 }
 function allowedEntrypointFamilies(capabilities, requested) {

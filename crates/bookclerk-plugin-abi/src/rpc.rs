@@ -3606,10 +3606,17 @@ impl scheduled_handler_capnp::Server for ScheduledHandlerServer {
         params: scheduled_handler_capnp::ScheduledParams,
         mut results: scheduled_handler_capnp::ScheduledResults,
     ) -> capnp::Result<()> {
-        let controller =
-            crate::generated::read_scheduled_controller(params.get()?.get_controller()?)?;
+        let params = params.get()?;
+        let controller = crate::generated::read_scheduled_controller(params.get_controller()?)?;
+        let cancel: Box<dyn Cancellation> = if params.has_cancel() {
+            Box::new(CancellationClient {
+                client: params.get_cancel()?,
+            })
+        } else {
+            Box::new(NeverCancel)
+        };
         let mut result = results.get().init_result();
-        match self.inner.scheduled(controller).await {
+        match self.inner.scheduled(controller, cancel).await {
             Ok(()) => result.set_ok(()),
             Err(err) => write_error(result.init_err(), &err),
         }
@@ -5709,11 +5716,22 @@ impl ScheduledHandlerClient {
     pub fn new(client: scheduled_handler_capnp::Client) -> Self {
         Self { client }
     }
-}
 
-#[async_trait::async_trait(?Send)]
-impl ScheduledHandler for ScheduledHandlerClient {
-    async fn scheduled(&self, controller: crate::ScheduledController) -> Result<()> {
+    /// Delivers one fire with a caller-built cancellation client.
+    ///
+    /// Transports that do not host a local vat (the bookclerk-workerd
+    /// `/invoke` hook, where the probe is a grant-token descriptor) build
+    /// the client themselves.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginError::payload_too_large`] when the cron is longer
+    /// than [`crate::MAX_CRON_BYTES`], or the handler's error.
+    pub async fn scheduled_with_cancel(
+        &self,
+        controller: &crate::ScheduledController,
+        cancel: cancellation::Client,
+    ) -> Result<()> {
         if controller.cron.len() > crate::MAX_CRON_BYTES as usize {
             return Err(PluginError::payload_too_large(format!(
                 "cron of {} bytes exceeds {}",
@@ -5722,8 +5740,9 @@ impl ScheduledHandler for ScheduledHandlerClient {
             )));
         }
         let mut req = self.client.scheduled_request();
-        crate::generated::write_scheduled_controller(req.get().init_controller(), &controller)
+        crate::generated::write_scheduled_controller(req.get().init_controller(), controller)
             .map_err(from_capnp)?;
+        req.get().set_cancel(cancel);
         let reply = req.send().promise.await.map_err(from_capnp)?;
         let result = reply
             .get()
@@ -5734,6 +5753,23 @@ impl ScheduledHandler for ScheduledHandlerClient {
             empty_reply::Ok(()) => Ok(()),
             empty_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
         }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl ScheduledHandler for ScheduledHandlerClient {
+    async fn scheduled(
+        &self,
+        controller: crate::ScheduledController,
+        cancel: Box<dyn Cancellation>,
+    ) -> Result<()> {
+        self.scheduled_with_cancel(
+            &controller,
+            capnp_rpc::new_client(CancellationServer {
+                inner: Arc::from(cancel),
+            }),
+        )
+        .await
     }
 }
 
@@ -7980,7 +8016,14 @@ mod tests {
 
     #[async_trait::async_trait(?Send)]
     impl ScheduledHandler for CronEcho {
-        async fn scheduled(&self, controller: crate::ScheduledController) -> Result<()> {
+        async fn scheduled(
+            &self,
+            controller: crate::ScheduledController,
+            cancel: Box<dyn Cancellation>,
+        ) -> Result<()> {
+            if cancel.poll().await? {
+                return Err(PluginError::cancelled("fire cancelled"));
+            }
             if controller.cron != "*/30 * * * *" {
                 return Err(PluginError::invalid_params(format!(
                     "unexpected cron {}",
@@ -8030,17 +8073,29 @@ mod tests {
                 attempt: 1,
                 deadline_unix_ms: at + 60_000,
             };
+            let live = || -> Box<dyn Cancellation> { Box::new(NeverCancel) };
             handler
-                .scheduled(fire("*/30 * * * *", 1_800_000))
+                .scheduled(fire("*/30 * * * *", 1_800_000), live())
                 .await
                 .expect("fire ok");
+            let cancelled = handler
+                .scheduled(
+                    fire("*/30 * * * *", 1_800_000),
+                    Box::new(TestCancel(Arc::new(AtomicBool::new(true)))),
+                )
+                .await
+                .expect_err("the handler sees the host's cancel");
+            assert_eq!(cancelled.code, crate::PluginErrorCode::Cancelled);
             let err = handler
-                .scheduled(fire("0 0 * * *", 1_800_000))
+                .scheduled(fire("0 0 * * *", 1_800_000), live())
                 .await
                 .expect_err("wrong cron");
             assert_eq!(err.code, crate::PluginErrorCode::InvalidParams);
             let too_long = handler
-                .scheduled(fire(&"1".repeat(crate::MAX_CRON_BYTES as usize + 1), 0))
+                .scheduled(
+                    fire(&"1".repeat(crate::MAX_CRON_BYTES as usize + 1), 0),
+                    live(),
+                )
                 .await
                 .expect_err("cron too long");
             assert_eq!(too_long.code, crate::PluginErrorCode::PayloadTooLarge);

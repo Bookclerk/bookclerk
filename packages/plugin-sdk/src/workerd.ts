@@ -154,6 +154,7 @@ export type {
   ReadOptions,
   ReadResult,
   RetryOptions,
+  ScheduledFire,
   NamedKv,
   NamedQueue,
   NamedSockets,

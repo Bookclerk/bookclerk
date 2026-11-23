@@ -16083,7 +16083,7 @@
       "name": "ScheduledHandler.scheduled$Params",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 1,
+      "pointerCount": 2,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -16096,6 +16096,16 @@
             "name": "ScheduledController"
           },
           "offset": 0
+        },
+        {
+          "name": "cancel",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "Cancellation"
+          },
+          "offset": 1
         }
       ]
     },

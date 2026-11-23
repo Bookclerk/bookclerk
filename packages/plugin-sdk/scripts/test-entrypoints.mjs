@@ -378,23 +378,47 @@ function wireQueueMessage(overrides = {}) {
     attempt: 1,
     deadlineUnixMs: 180_000,
   });
-  assert.deepEqual(seen, [
-    {
-      cron: "0 3 * * MON",
-      scheduledTime: 120_000,
-      fireId: "fire-1",
-      attempt: 1,
-      deadlineUnixMs: 180_000,
-    },
-    1,
-  ]);
-  assert.deepEqual(scheduledControllerOf(undefined), {
+  const { signal, ...fields } = seen[0];
+  assert.deepEqual(fields, {
+    cron: "0 3 * * MON",
+    scheduledTime: 120_000,
+    fireId: "fire-1",
+    attempt: 1,
+    deadlineUnixMs: 180_000,
+  });
+  assert.equal(seen[1], 1);
+  assert.ok(signal instanceof AbortSignal && !signal.aborted, "no cancel watch: never aborts");
+  const { signal: idle, ...empty } = scheduledControllerOf(undefined);
+  assert.deepEqual(empty, {
     cron: "",
     scheduledTime: 0,
     fireId: "",
     attempt: 0,
     deadlineUnixMs: 0,
   });
+  assert.equal(idle.aborted, false);
+
+  // The host's cancel watch aborts the fire's signal with a `cancelled` error.
+  let fire;
+  const cancelled = new Promise((resolve) => {
+    fire = resolve;
+  });
+  let observed;
+  class Watching extends BookclerkEntrypoint {
+    async scheduled(controller) {
+      fire();
+      await new Promise((resolve) => controller.signal.addEventListener("abort", resolve));
+      observed = controller.signal.reason;
+    }
+  }
+  await new Watching({}, {}).bookclerkScheduled(
+    context,
+    { cron: "* * * * *" },
+    {
+      wait: () => cancelled,
+    },
+  );
+  assert.ok(observed instanceof PluginError && observed.wireCode === "cancelled", String(observed));
   await assert.rejects(
     () => new BookclerkEntrypoint({}, {}).bookclerkScheduled(context, {}),
     (err) => err instanceof PluginError && err.wireCode === "unsupported",

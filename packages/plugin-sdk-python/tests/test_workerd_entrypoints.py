@@ -158,6 +158,26 @@ class BookclerkEntrypointTests(unittest.IsolatedAsyncioTestCase):
             seen[0].attempt = 3  # type: ignore[misc]
         self.assertEqual(ScheduledController.from_wire({}), ScheduledController())
 
+    async def test_scheduled_sees_the_host_cancel(self) -> None:
+        """The host's cancel watch marks the fire cancelled while the handler runs."""
+        released = asyncio.Event()
+        observed: list[bool] = []
+
+        class Watch:
+            async def wait(self) -> None:
+                await released.wait()
+
+        class Default(BookclerkEntrypoint):
+            async def scheduled(self, controller: ScheduledController) -> None:
+                observed.append(controller.cancelled)
+                released.set()
+                await controller.wait_cancelled()
+                observed.append(controller.cancelled)
+
+        await Default().bookclerkScheduled({}, {"cron": "* * * * *"}, Watch())
+        self.assertEqual(observed, [False, True])
+        self.assertFalse(ScheduledController().cancelled)
+
     async def test_scheduled_errors_propagate_and_missing_is_unsupported(self) -> None:
         class Default(BookclerkEntrypoint):
             def scheduled(self, controller: ScheduledController) -> None:

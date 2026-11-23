@@ -8223,16 +8223,23 @@ _event_publisher_read_results_codec = _Codec(0, 1, _write_event_publisher_read_r
 def _write_scheduled_handler_scheduled_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("controller") is not None:
         _scheduled_controller_codec.write(s.init_struct(0, 3, 2), v["controller"], caps)
+    if v.get("cancel") is not None:
+        if v["cancel"] is not None:
+            s.set_cap(1, caps.export_cap(v["cancel"]))
 
 
 def _read_scheduled_handler_scheduled_params(s: _StructReader, caps: _CapTable) -> Any:
-    return {
+    out: dict[str, Any] = {
         "controller": _scheduled_controller_codec.read(s.get_struct(0, 3, 2), caps),
     }
+    cancel = caps.import_cap(s.get_cap_index(1))
+    if not (cancel is None):
+        out["cancel"] = cancel
+    return out
 
 
-_scheduled_handler_scheduled_params_codec = _Codec(0, 1, _write_scheduled_handler_scheduled_params, _read_scheduled_handler_scheduled_params)
-"""Wire codec for ``ScheduledHandlerScheduledParams`` (0 data words, 1 pointers)."""
+_scheduled_handler_scheduled_params_codec = _Codec(0, 2, _write_scheduled_handler_scheduled_params, _read_scheduled_handler_scheduled_params)
+"""Wire codec for ``ScheduledHandlerScheduledParams`` (0 data words, 2 pointers)."""
 
 
 def _write_scheduled_handler_scheduled_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:

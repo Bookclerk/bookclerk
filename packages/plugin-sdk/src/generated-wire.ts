@@ -506,6 +506,7 @@ export interface EventPublisherReadResults {
  */
 export interface ScheduledHandlerScheduledParams {
   controller: T.ScheduledController;
+  cancel?: T.Cancellation | null;
 }
 
 /**
@@ -13578,22 +13579,30 @@ export const EventPublisherReadResultsCodec: StructCodec<EventPublisherReadResul
 };
 
 /**
- * Wire codec for the `ScheduledHandler.scheduled` params envelope (0 data words, 1 pointers).
+ * Wire codec for the `ScheduledHandler.scheduled` params envelope (0 data words, 2 pointers).
  *
  * @internal
  */
 export const ScheduledHandlerScheduledParamsCodec: StructCodec<ScheduledHandlerScheduledParams> = {
   dataWords: 0,
-  pointerCount: 1,
+  pointerCount: 2,
   write(s, v, caps) {
     if (v.controller != null) {
       ScheduledControllerCodec.write(s.initStruct(0, 3, 2), v.controller, caps);
     }
+    if (v.cancel != null) {
+      s.setCap(1, caps.exportCap(v.cancel));
+    }
   },
   read(s, caps) {
-    return {
+    const out: ScheduledHandlerScheduledParams = {
       controller: ScheduledControllerCodec.read(s.getStruct(0, 3, 2), caps),
     };
+    const cancelValue = caps.importCap(s.getCapIndex(1)) as T.Cancellation;
+    if (!(cancelValue == null)) {
+      out.cancel = cancelValue;
+    }
+    return out;
   },
 };
 
