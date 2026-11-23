@@ -757,43 +757,6 @@ async fn shared_node_removal_is_one_batch_without_an_interactive_transaction() {
     }
 }
 
-/// Waits (up to 30 s) until `count` other sessions of this test's own
-/// database wait on a lock, as seen from the session holding it.
-///
-/// # Panics
-///
-/// Panics when they don't within the time, or the read fails.
-async fn waiters_on_the_row(holder: &sea_orm::DatabaseTransaction, count: i64) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        // A transaction keeps its first view of `pg_stat_activity` until
-        // the view is cleared.
-        holder
-            .execute_unprepared("SELECT pg_stat_clear_snapshot()")
-            .await
-            .expect("clear the activity snapshot");
-        let row = holder
-            .query_one_raw(sea_orm::Statement::from_string(
-                sea_orm::DatabaseBackend::Postgres,
-                "SELECT count(*)::bigint AS waiting FROM pg_stat_activity \
-                 WHERE datname = current_database() AND pid <> pg_backend_pid() \
-                 AND wait_event_type = 'Lock'",
-            ))
-            .await
-            .expect("read pg_stat_activity")
-            .expect("one row");
-        let waiting: i64 = row.try_get("", "waiting").expect("waiting");
-        if waiting >= count {
-            return;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "{waiting} of {count} sessions wait on the node row"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-}
-
 /// A node's first heartbeat and the removal of that node order themselves
 /// on the node's `nodes` row on PostgreSQL (`READ COMMITTED`): with both
 /// queued behind a lock on that row, the node never ends up removed while
@@ -804,6 +767,42 @@ async fn waiters_on_the_row(holder: &sea_orm::DatabaseTransaction, count: i64) {
 #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
 async fn postgres_removal_and_a_first_heartbeat_order_on_the_node_row() {
     use sea_orm::TransactionTrait;
+    /// Waits (up to 30 s) until `count` other sessions of this test's own
+    /// database wait on a lock, as seen from the session holding it.
+    ///
+    /// # Panics
+    ///
+    /// Panics when they don't within the time, or the read fails.
+    async fn waiters_on_the_row(holder: &sea_orm::DatabaseTransaction, count: i64) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            // A transaction keeps its first view of `pg_stat_activity` until
+            // the view is cleared.
+            holder
+                .execute_unprepared("SELECT pg_stat_clear_snapshot()")
+                .await
+                .expect("clear the activity snapshot");
+            let row = holder
+                .query_one_raw(sea_orm::Statement::from_string(
+                    holder.get_database_backend(),
+                    "SELECT count(*)::bigint AS waiting FROM pg_stat_activity \
+                     WHERE datname = current_database() AND pid <> pg_backend_pid() \
+                     AND wait_event_type = 'Lock'",
+                ))
+                .await
+                .expect("read pg_stat_activity")
+                .expect("one row");
+            let waiting: i64 = row.try_get("", "waiting").expect("waiting");
+            if waiting >= count {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{waiting} of {count} sessions wait on the node row"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
     if !super::tests::postgres_tests_enabled() {
         return;
     }
