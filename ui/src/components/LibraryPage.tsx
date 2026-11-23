@@ -8,6 +8,7 @@ import { TitleDetailModal, type TitleMetaSearchKind } from "@/components/TitleDe
 import { ConvertBookPanel } from "@/components/ConvertBookPanel";
 import { RealignChaptersPanel } from "@/components/RealignChaptersPanel";
 import { titleDetailFromWork } from "@/lib/titleDetail";
+import { SimilarWorks } from "@/components/SimilarWorks";
 import { WorkRow } from "@/components/WorkRow";
 import { JobsStrip } from "@/components/JobsStrip";
 import { WaveformThrobber } from "@/components/WaveformThrobber";
@@ -19,6 +20,7 @@ import {
   fetchEventDeliveries,
   fetchFacetValues,
   fetchJobs,
+  fetchMeaningStatus,
   fetchStatus,
   fetchWork,
   fetchWorks,
@@ -30,10 +32,12 @@ import {
   type AuthRole,
   type EventDeliveryInfo,
   type JobInfo,
+  type MeaningStatus,
   type MediaKind,
   type StatusResponse,
   type WorkDetail,
   type WorkFacet,
+  type WorkSearchMode,
   type WorkSort,
   type WorkSummary,
 } from "@/lib/api";
@@ -74,6 +78,12 @@ const MEDIA_OPTIONS: { value: MediaKind | "all"; label: string }[] = [
   { value: "audio", label: "Audio" },
   { value: "ebook", label: "Ebook" },
   { value: "print", label: "Print" },
+];
+
+/** The two ways a search reads its text. */
+const SEARCH_MODES: { value: WorkSearchMode; label: string; hint: string }[] = [
+  { value: "words", label: "Words", hint: "Find titles, authors, narrators and series" },
+  { value: "meaning", label: "Meaning", hint: "Find books about what you describe" },
 ];
 
 /** Page orders; a search orders by relevance instead. */
@@ -125,6 +135,11 @@ export function LibraryPage({
   const [deliveries, setDeliveries] = useState<EventDeliveryInfo[]>([]);
   const [q, setQ] = useState("");
   const [debouncedQ, setDebouncedQ] = useState("");
+  // Whether the search reads the words of `q` or what it means; the
+  // choice is offered once the library has an embedding model.
+  const [searchMode, setSearchMode] = useState<WorkSearchMode>("words");
+  const [meaning, setMeaning] = useState<MeaningStatus | null>(null);
+  const byMeaning = searchMode === "meaning" && meaning?.search === "ready";
   const [statusFilter, setStatusFilter] = useState<AcquireStatus | "all">("all");
   const [mediaFilter, setMediaFilter] = useState<MediaKind | "all">("all");
   const [sortKey, setSortKey] = useState<WorkSort>("title");
@@ -169,9 +184,32 @@ export function LibraryPage({
   const [place, setPlace] = useState<LibraryPlace>("all");
 
   useEffect(() => {
-    const t = window.setTimeout(() => setDebouncedQ(q.trim()), 250);
+    // A search by meaning runs the model once per query, so it waits for
+    // a longer pause in typing.
+    const t = window.setTimeout(() => setDebouncedQ(q.trim()), byMeaning ? 600 : 250);
     return () => window.clearTimeout(t);
-  }, [q]);
+  }, [q, byMeaning]);
+
+  // Whether the library can be searched by meaning. A daemon that cannot
+  // say (an older one, or a failed read) offers the search by words only.
+  // Read again on Refresh and whenever the library changes, so the switch
+  // turns on when the library's embedding ends.
+  const refreshMeaning = useCallback(async () => {
+    try {
+      setMeaning(await fetchMeaningStatus());
+    } catch {
+      setMeaning(null);
+    }
+  }, []);
+
+  // The end of the embedding changes nothing in the library, so while it
+  // runs the state is asked for again every few seconds.
+  const preparing = meaning?.search === "embedding" || meaning?.similar === "embedding";
+  useEffect(() => {
+    if (!preparing) return;
+    const t = window.setTimeout(() => void refreshMeaning(), 15_000);
+    return () => window.clearTimeout(t);
+  }, [preparing, meaning, refreshMeaning]);
 
   // Reads the value menu of the chosen facet, again on every Refresh (so a
   // failed read can be retried).
@@ -226,6 +264,7 @@ export function LibraryPage({
           fetchWorks,
           {
             q: debouncedQ || undefined,
+            search: byMeaning ? "meaning" : undefined,
             sort: sortKey,
             status: statusFilter,
             media_kind: mediaFilter === "all" ? undefined : mediaFilter,
@@ -267,7 +306,7 @@ export function LibraryPage({
         }
       }
     },
-    [debouncedQ, sortKey, statusFilter, mediaFilter, appliedFacet, appliedValue],
+    [debouncedQ, byMeaning, sortKey, statusFilter, mediaFilter, appliedFacet, appliedValue],
   );
   // Declared before the effects that load, so a queued load runs the
   // version for the current search and filter.
@@ -275,7 +314,9 @@ export function LibraryPage({
     loadWorksRef.current = loadWorks;
   }, [loadWorks]);
 
-  const reloadWorks = useCallback(() => loadWorks("reload"), [loadWorks]);
+  const reloadWorks = useCallback(async () => {
+    await Promise.all([loadWorks("reload"), refreshMeaning()]);
+  }, [loadWorks, refreshMeaning]);
 
   const refreshMeta = useCallback(async () => {
     if (!canAcquire) return;
@@ -295,8 +336,8 @@ export function LibraryPage({
 
   const refresh = useCallback(async () => {
     setFacetReads((n) => n + 1);
-    await Promise.all([loadWorks("replace"), refreshMeta()]);
-  }, [loadWorks, refreshMeta]);
+    await Promise.all([loadWorks("replace"), refreshMeta(), refreshMeaning()]);
+  }, [loadWorks, refreshMeta, refreshMeaning]);
 
   useEffect(() => {
     void refresh();
@@ -509,11 +550,49 @@ export function LibraryPage({
             }
           />
           <div className="flex flex-col gap-2">
-            <Input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="Search title, author:, narrator:, series:, asin:…"
-            />
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder={
+                  byMeaning
+                    ? "Describe what you are looking for…"
+                    : "Search title, author:, narrator:, series:, asin:…"
+                }
+              />
+              {meaning && meaning.search !== "no_model" ? (
+                <div
+                  role="group"
+                  aria-label="Search by"
+                  className="flex shrink-0 overflow-hidden rounded-md border border-ink/15 bg-card-strong text-sm shadow-sm"
+                >
+                  {SEARCH_MODES.map((mode) => {
+                    const preparing = mode.value === "meaning" && meaning.search !== "ready";
+                    const on = mode.value === (byMeaning ? "meaning" : "words");
+                    return (
+                      <button
+                        key={mode.value}
+                        type="button"
+                        aria-pressed={on}
+                        disabled={preparing}
+                        title={
+                          preparing
+                            ? "The library is still being prepared for search by meaning"
+                            : mode.hint
+                        }
+                        onClick={() => setSearchMode(mode.value)}
+                        className={cn(
+                          "flex-1 px-3 py-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal/50 disabled:cursor-not-allowed disabled:text-ink/70",
+                          on ? "bg-teal/15 font-semibold text-ink" : "text-ink hover:bg-card-mid",
+                        )}
+                      >
+                        {mode.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
             <div
               className={cn(
                 "grid grid-cols-1 gap-2 sm:grid-cols-3",
@@ -704,20 +783,29 @@ export function LibraryPage({
               : undefined
           }
           extra={
-            role === "operator" || role === "owner" || role === "administrator" ? (
-              <>
-                <LibraryTagsEditor workId={selected.id} />
-                {storedEditions(selectedDetail).length > 0 ? (
-                  <>
-                    <ConvertBookPanel
-                      editions={storedEditions(selectedDetail)}
-                      onQueued={() => void refreshMeta()}
-                    />
-                    <RealignChaptersPanel editions={storedEditions(selectedDetail)} />
-                  </>
-                ) : null}
-              </>
-            ) : undefined
+            <>
+              <SimilarWorks
+                workId={selected.id}
+                onOpen={(work) => {
+                  setLoadedDetail(null);
+                  setSelected(work);
+                }}
+              />
+              {role === "operator" || role === "owner" || role === "administrator" ? (
+                <>
+                  <LibraryTagsEditor workId={selected.id} />
+                  {storedEditions(selectedDetail).length > 0 ? (
+                    <>
+                      <ConvertBookPanel
+                        editions={storedEditions(selectedDetail)}
+                        onQueued={() => void refreshMeta()}
+                      />
+                      <RealignChaptersPanel editions={storedEditions(selectedDetail)} />
+                    </>
+                  ) : null}
+                </>
+              ) : null}
+            </>
           }
           onMetaSearch={(kind: TitleMetaSearchKind, value: string) => {
             setSelected(null);
@@ -728,6 +816,8 @@ export function LibraryPage({
               setFacet("genre");
               setFacetValue(value);
             } else {
+              // A field query (`author:"…"`) is read by its words.
+              setSearchMode("words");
               setQ(metaSearchQuery(kind, value));
             }
           }}

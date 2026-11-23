@@ -972,7 +972,8 @@ impl ContentSource for ExternalSource {
                 "a source opened for a host job scans with scan_handed",
             ));
         }
-        let (credentials, skipped_disabled) = scan_credentials_for(scope, &opts.accounts).await?;
+        let (credentials, skipped_disabled) =
+            scan_credentials_for(scope, &opts.accounts, opts.account_match).await?;
         if credentials.is_empty() {
             return Err(bookclerk_source::SourceError::no_accounts(format!(
                 "no {} accounts with stored credentials to scan",
@@ -1839,6 +1840,7 @@ impl PassIo for CollectPass<'_> {
 async fn scan_credentials_for(
     scope: &SourceScope,
     account_filter: &[String],
+    account_match: bookclerk_source::AccountMatch,
 ) -> bookclerk_source::Result<(Vec<(String, Vec<u8>)>, usize)> {
     let accounts = scope
         .list_accounts()
@@ -1850,11 +1852,7 @@ async fn scan_credentials_for(
     for acct in accounts {
         if explicit {
             let matched = account_filter.iter().any(|needle| {
-                acct.account_id.eq_ignore_ascii_case(needle)
-                    || acct
-                        .label
-                        .as_deref()
-                        .is_some_and(|l| l.eq_ignore_ascii_case(needle))
+                account_match.matches(needle, &acct.account_id, acct.label.as_deref())
             });
             if !matched {
                 continue;
@@ -2253,7 +2251,10 @@ mod tests {
             .await
             .unwrap();
 
-        let (creds, _) = scan_credentials_for(&echo, &[]).await.unwrap();
+        let (creds, _) =
+            scan_credentials_for(&echo, &[], bookclerk_source::AccountMatch::IdOrLabel)
+                .await
+                .unwrap();
         assert_eq!(creds.len(), 1);
         assert_eq!(creds[0].0, "a1");
         let json = credentials_from_bytes(&creds[0].1).unwrap();
@@ -2273,10 +2274,19 @@ mod tests {
             .await
             .unwrap();
 
-        let (creds, skipped) = scan_credentials_for(&echo, &[]).await.unwrap();
+        let (creds, skipped) =
+            scan_credentials_for(&echo, &[], bookclerk_source::AccountMatch::IdOrLabel)
+                .await
+                .unwrap();
         assert!(creds.is_empty());
         assert_eq!(skipped, 1, "the disabled account is counted");
-        let (explicit, skipped) = scan_credentials_for(&echo, &["a1".into()]).await.unwrap();
+        let (explicit, skipped) = scan_credentials_for(
+            &echo,
+            &["a1".into()],
+            bookclerk_source::AccountMatch::IdOrLabel,
+        )
+        .await
+        .unwrap();
         assert_eq!(explicit.len(), 1);
         assert_eq!(skipped, 0);
     }

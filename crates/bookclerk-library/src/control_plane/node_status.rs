@@ -107,6 +107,21 @@ pub struct CacheUsage {
     pub swept_ms: Option<i64>,
 }
 
+/// The part of a branch's own budget it gives one library: the branch's
+/// `node.runtime` budget, cut to that library's share of its machine.
+///
+/// A library's budget for the node is applied to the physical share the
+/// branch reports, so without this a library whose percentage is higher
+/// than the branch's own would plan more than the branch budgeted.
+/// [`record_node_heartbeat`] records the smaller of the two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BudgetShare {
+    /// CPU, in millicores.
+    pub cpu_millicores: i64,
+    /// Memory, in bytes; `None` when the branch could not measure memory.
+    pub memory_bytes: Option<i64>,
+}
+
 /// One heartbeat's measurements, before budget and accounting are applied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeHeartbeat {
@@ -134,6 +149,10 @@ pub struct NodeHeartbeat {
     /// node API); `None` for a branch without one (a local branch) and for
     /// a shared node, which reports none.
     pub public_origin: Option<String>,
+    /// The budget a branch gives this library ([`BudgetShare`]); `None`
+    /// from the library's own nodes and from a branch that reports none,
+    /// whose budget is then the library's alone.
+    pub budget_share: Option<BudgetShare>,
 }
 
 /// A node's latest heartbeat with budget, accounting, and availability.
@@ -344,6 +363,7 @@ impl NodeSampler {
                 .and_then(fit),
             cache: None,
             public_origin: None,
+            budget_share: None,
         }
     }
 }
@@ -418,6 +438,8 @@ pub async fn record_node_heartbeat(
         None => (AVAILABILITY_FULL_PPM, now_ms),
     };
     let budget = |value: i64, percent: u8| value.saturating_mul(i64::from(percent)) / 100;
+    // A branch's own budget for this library bounds the library's.
+    let capped = |value: i64, cap: Option<i64>| cap.map_or(value, |cap| value.min(cap.max(0)));
     let status = NodeStatus {
         node_id: node_id.to_string(),
         incarnation: heartbeat.incarnation.clone(),
@@ -427,10 +449,16 @@ pub async fn record_node_heartbeat(
         interval_ms,
         cpu_millicores: heartbeat.cpu_millicores,
         memory_bytes: heartbeat.memory_bytes,
-        cpu_budget_millicores: budget(heartbeat.cpu_millicores, runtime.cpu_budget_percent),
-        memory_budget_bytes: heartbeat
-            .memory_bytes
-            .map(|bytes| budget(bytes, runtime.memory_budget_percent)),
+        cpu_budget_millicores: capped(
+            budget(heartbeat.cpu_millicores, runtime.cpu_budget_percent),
+            heartbeat.budget_share.map(|share| share.cpu_millicores),
+        ),
+        memory_budget_bytes: heartbeat.memory_bytes.map(|bytes| {
+            capped(
+                budget(bytes, runtime.memory_budget_percent),
+                heartbeat.budget_share.and_then(|share| share.memory_bytes),
+            )
+        }),
         schedulable: runtime.schedulable,
         cpu_used_millicores: heartbeat.cpu_used_millicores,
         memory_available_bytes: heartbeat.memory_available_bytes,

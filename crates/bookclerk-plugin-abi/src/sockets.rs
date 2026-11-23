@@ -11,8 +11,8 @@
 use crate::generated::{SocketAutoResponse, SocketConnectRequest, SocketFrame};
 use crate::limits::{
     MAX_SOCKET_ATTACHMENT_BYTES, MAX_SOCKET_AUTO_RESPONSES, MAX_SOCKET_AUTO_RESPONSE_BYTES,
-    MAX_SOCKET_FRAME_BYTES, MAX_SOCKET_HEADERS, MAX_SOCKET_TRUST_ANCHORS,
-    MAX_SOCKET_TRUST_ANCHOR_BYTES, MAX_SOCKET_URL_BYTES,
+    MAX_SOCKET_FRAME_BYTES, MAX_SOCKET_HEADERS, MAX_SOCKET_SERVER_NAME_BYTES,
+    MAX_SOCKET_TRUST_ANCHORS, MAX_SOCKET_TRUST_ANCHOR_BYTES, MAX_SOCKET_URL_BYTES,
 };
 use crate::{PluginError, Result};
 
@@ -462,6 +462,11 @@ pub fn validate_socket_connect(request: &SocketConnectRequest) -> Result<SocketT
             "trust anchors are for tls:// sockets only",
         ));
     }
+    if !request.server_name.is_empty() {
+        return Err(PluginError::invalid_params(
+            "a server name is for tls:// sockets only",
+        ));
+    }
     check_socket_attachment(&request.attachment)?;
     Ok(target)
 }
@@ -500,8 +505,55 @@ fn validate_stream_connect(
         ));
     }
     check_trust_anchors(&request.trust_anchors)?;
+    check_server_name(&request.server_name)?;
     check_socket_attachment(&request.attachment)?;
     Ok(target)
+}
+
+/// Checks a `tls://` request's server name: empty, or a DNS name of at most
+/// [`MAX_SOCKET_SERVER_NAME_BYTES`] whose dot-separated labels are 1 to 63
+/// letters, digits and inner hyphens. IP literals, punycode (`xn--`)
+/// labels and a numeric last label are refused: the name is matched
+/// against certificates and grants as text, so it must be one spelling.
+///
+/// # Errors
+///
+/// `invalid_params` naming the problem.
+pub fn check_server_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Ok(());
+    }
+    let bad = || {
+        PluginError::invalid_params(format!(
+            "a server name must be a DNS name of at most {MAX_SOCKET_SERVER_NAME_BYTES} bytes: \
+             letters, digits and inner hyphens in dot-separated labels, not an IP address"
+        ))
+    };
+    if name.len() > MAX_SOCKET_SERVER_NAME_BYTES as usize {
+        return Err(bad());
+    }
+    let mut last = "";
+    for label in name.split('.') {
+        let bytes = label.as_bytes();
+        let shaped = (1..=63).contains(&bytes.len())
+            && bytes
+                .iter()
+                .all(|b| b.is_ascii_alphanumeric() || *b == b'-')
+            && bytes.first() != Some(&b'-')
+            && bytes.last() != Some(&b'-');
+        if !shaped
+            || label
+                .get(..4)
+                .is_some_and(|p| p.eq_ignore_ascii_case("xn--"))
+        {
+            return Err(bad());
+        }
+        last = label;
+    }
+    if last.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(bad());
+    }
+    Ok(())
 }
 
 /// Checks a `tls://` request's trust anchors: at most

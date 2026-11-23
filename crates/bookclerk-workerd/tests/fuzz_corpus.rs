@@ -449,6 +449,13 @@ fn socket_route_seeds_are_current() {
             ),
         ),
         (
+            "connect_tls_server_name.bin",
+            route_seed(
+                0,
+                r#"{"url":"tls://region1.v2.argotunnel.com:7844","protocols":["h2"],"serverName":"h2.cftunnel.com"}"#,
+            ),
+        ),
+        (
             "connect_extra_field.bin",
             route_seed(0, r#"{"url":"wss://a.example/","proxy":"x"}"#),
         ),

@@ -1105,6 +1105,49 @@ async fn a_scoped_member_sees_only_their_scope_on_every_library_screen() {
         .collect();
     assert_eq!(authors, ["J. R. R. Tolkien"], "facet values");
 
+    // The works most like one keep to the scope too. Another node's
+    // model embedded the library; this one compares the stored vectors.
+    let space = bookclerk_library::VectorSpace {
+        model: "@embedder/tiny".into(),
+        revision: "r1".into(),
+        packs: String::new(),
+    };
+    let vector = bookclerk_discover::vector_to_bytes(&[1.0, 0.0]);
+    let vectors: Vec<bookclerk_library::NewVector<'_>> = ids
+        .iter()
+        .map(|id| bookclerk_library::NewVector {
+            target_id: id,
+            vector: &vector,
+            text_hash: "h",
+        })
+        .collect();
+    library
+        .put_vectors(bookclerk_library::VECTOR_KIND_WORK, &space, 2, &vectors)
+        .await
+        .expect("vectors");
+    let hobbit = &ids[0];
+    let similar = format!("/api/library/works/{hobbit}/similar");
+    let (status, body) = get_json(&app, None, &similar).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "ready");
+    assert_eq!(titles(&body).len(), 2, "the operator sees both others");
+    let (status, body) = get_json(&app, Some(&cookie), &similar).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], "ready");
+    assert!(titles(&body).is_empty(), "nothing else is in the scope");
+    let (status, body) = get_json(
+        &app,
+        Some(&cookie),
+        &format!("/api/library/works/{dune}/similar"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "similar: {body}");
+    assert_eq!(body["error"], format!("work {dune} not found"));
+    let (status, body) = get_json(&app, Some(&cookie), "/api/library/works/meaning").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["search"], "no_model");
+    assert_eq!(body["similar"], "ready");
+
     // Books on the member's own store account always pass.
     library
         .link_account(identity.id, "audible", "acct", "audible")

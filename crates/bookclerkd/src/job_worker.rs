@@ -271,6 +271,7 @@ fn spawn_network_worker(state: Arc<AppState>, index: u32) {
                     plugin_instance: cfg.jobs.concurrency.plugin_instance.max(1),
                 },
                 filter: None,
+                node_bound: Some(crate::jobs::is_node_bound_key),
             };
             match claim_with_replay(&library, &claim).await {
                 Ok(Some(claimed)) => {

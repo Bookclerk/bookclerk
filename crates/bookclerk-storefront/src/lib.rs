@@ -42,9 +42,9 @@ pub use text::{
     decode_html_entities_opt, decode_html_entities_opt_in_place, str_maybe_html_entity,
 };
 pub use types::{
-    CatalogHit, CatalogSearchField, CatalogSearchOpts, CatalogSearchSort, CatalogSortDir,
-    ChapterKind, ConfigOptionValue, ExpandSeed, ImportCredentialsOptions, LoginOptions,
-    OAuthProgress, PlainAudioPart, PlainFetch, PriceLookup, PricedAnswer, PricedListing,
-    PurchaseHintOpts, ScanOptions, ScanSummary, SourceAccount, SourceConfigOption, SourceFetch,
-    SourcePurchaseHint, DEFAULT_CATALOG_SEARCH_LIMIT,
+    AccountMatch, CatalogHit, CatalogSearchField, CatalogSearchOpts, CatalogSearchSort,
+    CatalogSortDir, ChapterKind, ConfigOptionValue, ExpandSeed, ImportCredentialsOptions,
+    LoginOptions, OAuthProgress, PlainAudioPart, PlainFetch, PriceLookup, PricedAnswer,
+    PricedListing, PurchaseHintOpts, ScanOptions, ScanSummary, SourceAccount, SourceConfigOption,
+    SourceFetch, SourcePurchaseHint, DEFAULT_CATALOG_SEARCH_LIMIT,
 };

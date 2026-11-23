@@ -1595,6 +1595,7 @@ fn socket_request_seeds_are_current() {
         }],
         attachment: b"{\"user\":\"u1\"}".to_vec(),
         trust_anchors: Vec::new(),
+        server_name: String::new(),
     };
     let mut smuggled = abs.clone();
     smuggled.headers[0].name = "Sec-WebSocket-Key".into();
@@ -1629,6 +1630,12 @@ fn socket_request_seeds_are_current() {
     bad_anchor.trust_anchors = vec![vec![0x30, 0x81, 0x05, 0, 0, 0, 0, 0]];
     let mut ws_anchor = abs.clone();
     ws_anchor.trust_anchors = anchored.trust_anchors.clone();
+    let mut named = tunnel.clone();
+    named.server_name = "h2.cftunnel.com".into();
+    let mut named_ip = tunnel.clone();
+    named_ip.server_name = "10.0.0.1".into();
+    let mut ws_named = abs.clone();
+    ws_named.server_name = named.server_name.clone();
     let seeds: Vec<(&str, Vec<u8>)> = vec![
         ("url_wss.bin", url("wss://abs.example.com/socket.io/?EIO=4")),
         ("url_ws_port.bin", url("ws://10.0.0.5:13378/socket.io")),
@@ -1660,6 +1667,15 @@ fn socket_request_seeds_are_current() {
             capnp_socket_connect(&bad_anchor),
         ),
         ("connect_ws_anchor.bin", capnp_socket_connect(&ws_anchor)),
+        ("connect_tls_server_name.bin", capnp_socket_connect(&named)),
+        (
+            "connect_tls_server_name_ip.bin",
+            capnp_socket_connect(&named_ip),
+        ),
+        (
+            "connect_ws_server_name.bin",
+            capnp_socket_connect(&ws_named),
+        ),
         ("connect_abs.bin", capnp_socket_connect(&abs)),
         (
             "connect_smuggled_header.bin",

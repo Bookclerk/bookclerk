@@ -307,3 +307,43 @@ fn trust_anchors_are_for_tls_only_and_shaped_like_certificates() {
     }
     assert!(is_der_certificate_shape(&long));
 }
+
+#[test]
+fn a_server_name_is_for_tls_only_and_must_be_a_dns_name() {
+    let mut req = request("tls://region1.v2.argotunnel.com:7844");
+    req.server_name = "h2.cftunnel.com".into();
+    assert!(validate_socket_connect(&req).is_ok());
+    req.server_name = "H2.CFTunnel.com".into();
+    assert!(validate_socket_connect(&req).is_ok(), "case is free");
+    let mut ws = request("wss://a.example/");
+    ws.server_name = "b.example".into();
+    assert!(
+        validate_socket_connect(&ws).is_err(),
+        "websocket server name"
+    );
+    let long_label = "a".repeat(64);
+    let too_long = format!("{}com", "a.".repeat(126));
+    for bad in [
+        "10.0.0.1",
+        "::1",
+        "[::1]",
+        "a..b",
+        ".a.b",
+        "a.b.",
+        "-a.b",
+        "a-.b",
+        "a_b.example",
+        "xn--d1acufc.example",
+        "a.b:443",
+        "a.123",
+        "é.example",
+        long_label.as_str(),
+        too_long.as_str(),
+    ] {
+        req.server_name = bad.into();
+        assert!(validate_socket_connect(&req).is_err(), "{bad:?} accepted");
+    }
+    assert!(check_server_name("").is_ok());
+    assert!(check_server_name("localhost").is_ok());
+    assert!(check_server_name(&format!("{}com", "a.".repeat(124))).is_ok());
+}

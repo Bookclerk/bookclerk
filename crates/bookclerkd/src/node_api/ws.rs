@@ -476,6 +476,7 @@ async fn run(
                 class: cfg.jobs.concurrency.network.max(1),
                 plugin_instance: cfg.jobs.concurrency.plugin_instance.max(1),
             },
+            node_bound: Some(crate::jobs::is_node_bound_key),
         };
         (
             canonical_origin(&crate::origin::effective_origin_from_config(&cfg, None)),

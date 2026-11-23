@@ -32,6 +32,7 @@ const SETTINGS: RemoteClaimSettings = RemoteClaimSettings {
         class: 8,
         plugin_instance: 8,
     },
+    node_bound: None,
 };
 
 /// A store on a fresh SQLite file in `dir`, with the host schema and a master key.

@@ -182,6 +182,9 @@ export const MAX_SOCKET_TRUST_ANCHORS = 4 as const;
 /** Largest DER certificate in `SocketConnectRequest.trustAnchors`, in bytes. */
 export const MAX_SOCKET_TRUST_ANCHOR_BYTES = 8192 as const;
 
+/** Longest `SocketConnectRequest.serverName`, in bytes (a DNS name's limit). */
+export const MAX_SOCKET_SERVER_NAME_BYTES = 253 as const;
+
 /** Longest `SocketConnectRequest.url`, in bytes. */
 export const MAX_SOCKET_URL_BYTES = 2048 as const;
 

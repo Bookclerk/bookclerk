@@ -233,8 +233,8 @@ pub use job_routing::{
     account_semaphore, claim_routed_job, class_semaphore, common_deployment_nodes,
     instance_running_on_database_node, instance_semaphore, job_permit_holder_prefix,
     job_plugin_keys, job_semaphores, job_source_plugin_key, node_can_run_job,
-    resolve_job_requirements, JobClaimFilter, JobClaimLimits, JobClaimRequest, RoutedJobClaim,
-    ACCOUNT_SEMAPHORE_LIMIT, ROUTED_CLAIM_CANDIDATES,
+    resolve_job_requirements, JobClaimFilter, JobClaimLimits, JobClaimRequest, NodeBoundKey,
+    RoutedJobClaim, ACCOUNT_SEMAPHORE_LIMIT, ROUTED_CLAIM_CANDIDATES,
 };
 pub use keeper::{
     adopt_library_sign_in, apply_keeper_update, confirmed_keeping_branch, keeper_reconcile,
@@ -280,10 +280,10 @@ pub use node_queue::{
 };
 pub use node_status::{
     instance_demand, list_node_statuses, load_node_status, next_availability, node_reservations,
-    record_deployment_reservation, record_node_heartbeat, CacheUsage, GuestReservation,
-    NodeHeartbeat, NodeSampler, NodeStatus, AVAILABILITY_FULL_PPM, AVAILABILITY_TAU,
-    DEFAULT_GUEST_CPU_MILLICORES, DEFAULT_GUEST_MEMORY_BYTES, NODE_HEARTBEAT_INTERVAL,
-    NODE_LIVE_INTERVALS,
+    record_deployment_reservation, record_node_heartbeat, BudgetShare, CacheUsage,
+    GuestReservation, NodeHeartbeat, NodeSampler, NodeStatus, AVAILABILITY_FULL_PPM,
+    AVAILABILITY_TAU, DEFAULT_GUEST_CPU_MILLICORES, DEFAULT_GUEST_MEMORY_BYTES,
+    NODE_HEARTBEAT_INTERVAL, NODE_LIVE_INTERVALS,
 };
 pub use output::{
     import_output_if_absent, is_output_setting_key, load_output, overlay_output,

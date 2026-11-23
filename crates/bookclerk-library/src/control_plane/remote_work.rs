@@ -47,7 +47,7 @@ use super::semaphore::{
     permits_with_holder_prefix, release_permits, renew_permits, SemaphorePermit,
 };
 use super::trust::{
-    accounts_named, handoff_routed_job, node_may_claim_job, node_may_claim_job_in_scope,
+    accounts_named_as, handoff_routed_job, node_may_claim_job, node_may_claim_job_in_scope,
     node_trust, Claimant, NodeTrust,
 };
 use crate::entities::{encrypted_secrets, job_secret_handoffs};
@@ -130,6 +130,9 @@ pub struct RemoteClaimSettings {
     pub lease_secs: u64,
     /// Library semaphore limits.
     pub limits: JobClaimLimits,
+    /// Tells node-bound output keys, so a job's requirements are checked
+    /// again before it is claimed ([`JobClaimRequest::node_bound`]).
+    pub node_bound: Option<super::NodeBoundKey>,
 }
 
 /// A job claimed for a Host, with the secrets to seal for it.
@@ -240,6 +243,7 @@ pub async fn claim_remote_job(
         lease_secs: settings.lease_secs,
         limits: settings.limits,
         filter,
+        node_bound: settings.node_bound,
     };
     let Some(claim) = claim_routed_job(store, &request).await? else {
         return Ok(None);
@@ -419,7 +423,14 @@ async fn job_secret_records(
         return Ok(Vec::new());
     }
     let mut records = Vec::new();
-    for (provider, account_id) in accounts_named(store, account, pinned_key.as_deref()).await? {
+    for (provider, account_id) in accounts_named_as(
+        store,
+        account,
+        pinned_key.as_deref(),
+        job.payload.account_match,
+    )
+    .await?
+    {
         let rows = encrypted_secrets::Entity::find()
             .filter(encrypted_secrets::Column::AccountType.eq(secret_account_type::INTEGRATION))
             .filter(encrypted_secrets::Column::AccountId.eq(account_id.as_str()))
@@ -603,7 +614,13 @@ async fn canonical_account(
     let Some(selector) = job.payload.account.as_deref().filter(|a| !a.is_empty()) else {
         return Ok(None);
     };
-    let named = accounts_named(store, selector, source_plugin_key).await?;
+    let named = accounts_named_as(
+        store,
+        selector,
+        source_plugin_key,
+        job.payload.account_match,
+    )
+    .await?;
     let mut named = named.into_iter();
     Ok(match (named.next(), named.next()) {
         (Some((_, account_id)), None) if account_id != selector => Some(account_id),

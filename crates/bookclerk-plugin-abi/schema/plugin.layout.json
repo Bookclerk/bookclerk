@@ -16483,7 +16483,7 @@
       "name": "SocketConnectRequest",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 6,
+      "pointerCount": 7,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -16554,6 +16554,15 @@
             }
           },
           "offset": 5
+        },
+        {
+          "name": "serverName",
+          "codeOrder": 6,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 6
         }
       ]
     },
@@ -19862,6 +19871,11 @@
       "name": "maxSocketHeaders",
       "file": "plugin.capnp",
       "value": 16
+    },
+    "maxSocketServerNameBytes": {
+      "name": "maxSocketServerNameBytes",
+      "file": "plugin.capnp",
+      "value": 253
     },
     "maxSocketTrustAnchorBytes": {
       "name": "maxSocketTrustAnchorBytes",
