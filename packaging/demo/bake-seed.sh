@@ -98,39 +98,30 @@ start_daemon || exit 1
 
 # Done when the library is embedded with the model (a discover_embed job
 # succeeded and reports the model's vectors serve; the daemon queues it once
-# the model is installed), a Discover ranking succeeded after that and no
-# job is pending or running, three checks in a row. A ranking that had
-# already succeeded before the embedding was seen ranked on the stand-in's
-# vectors, so it is remembered by job id and does not count: the embedding
-# queues the ranking again, and that later one stores the shelves ranked on
-# the model's vectors. Past the cap the bake keeps what is stored only when
-# such a ranking finished (a container recomputes the rest after it
-# starts); otherwise the build fails below.
+# the model is installed), a Discover ranking succeeded on a model's vectors
+# and no job is pending or running, three checks in a row. A ranking names
+# the vectors it read in its summary: one that ran before the embedding
+# says `vectors=local-hash-v1` (the stand-in) and does not count; the
+# embedding queues the ranking again, and that later one stores the shelves
+# ranked on the model's vectors. Past the cap the bake keeps what is stored
+# only when such a ranking finished (a container recomputes the rest after
+# it starts); otherwise the build fails below.
 waited=0
 quiet=0
 embedded=0
 ranked=0
-stand_in_ranked=' '
 while [ "$quiet" -lt 3 ]; do
 	jobs=$(bookclerk daemon jobs 2>/dev/null || true)
 	if printf '%s\n' "$jobs" |
 		grep 'kind=discover_embed status=succeeded' | grep -q 'serving=true'; then
 		embedded=1
 	fi
-	for id in $(printf '%s\n' "$jobs" |
-		sed -n 's/^\([^ ]*\) kind=discover_feed status=succeeded.*/\1/p'); do
-		case $stand_in_ranked in
-		*" $id "*) ;;
-		*)
-			if [ "$embedded" -eq 1 ]; then
-				ranked=1
-			else
-				stand_in_ranked="$stand_in_ranked$id "
-			fi
-			;;
-		esac
-	done
-	if [ "$ranked" -eq 1 ] &&
+	if printf '%s\n' "$jobs" |
+		grep 'kind=discover_feed status=succeeded' |
+		grep ' vectors=' | grep -Evq ' vectors=(none|local-hash-v1)( |$)'; then
+		ranked=1
+	fi
+	if [ "$embedded" -eq 1 ] && [ "$ranked" -eq 1 ] &&
 		! printf '%s\n' "$jobs" | grep -Eq 'status=(pending|running)'; then
 		quiet=$((quiet + 1))
 	else
@@ -155,7 +146,7 @@ if [ -z "$model" ] || [ "$embedded" -ne 1 ]; then
 	exit 1
 fi
 if [ "$ranked" -ne 1 ]; then
-	echo "bake-seed: no Discover ranking finished after the library was embedded" >&2
+	echo "bake-seed: no Discover ranking finished on the model's vectors" >&2
 	exit 1
 fi
 
