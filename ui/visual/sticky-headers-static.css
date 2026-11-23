@@ -1,0 +1,10 @@
+/*
+ * Applied while the website's element screenshots are taken
+ * (workers.spec.ts): the sticky headers stay in the page flow, so a block
+ * taller than the viewport (the home page hero on a phone) is not drawn with
+ * the header pinned over part of it wherever Playwright scrolled. A sticky
+ * element keeps its place in the flow, so nothing else moves.
+ */
+.site-header {
+  position: static !important;
+}

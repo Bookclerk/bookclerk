@@ -19,6 +19,7 @@
  */
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
+import { fileURLToPath } from "node:url";
 import {
   VISUAL_COMPONENTS as COLLECTOR_COMPONENTS,
   VISUAL_PAGES as COLLECTOR_PAGES,
@@ -31,6 +32,14 @@ import { COLLECTOR_ORIGIN, SITE_ORIGIN } from "./servers.ts";
 
 /** Themes every page is rendered in. */
 const THEMES = ["light", "dark"] as const;
+
+/**
+ * Stylesheet applied while an element screenshot is taken; it keeps the
+ * website's sticky headers in the page flow (see the file's comment).
+ */
+const STICKY_HEADERS_STATIC = fileURLToPath(
+  new URL("./sticky-headers-static.css", import.meta.url),
+);
 
 /** WCAG 2.2 A and AA rule tags axe-core checks, as for the stories. */
 const WCAG_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
@@ -159,7 +168,9 @@ for (const c of COMPONENTS) {
       const element = page.locator(c.selector).first();
       await expect(element).toBeVisible();
       await expectNoViolations(new AxeBuilder({ page }).include(c.selector));
-      await expect(element).toHaveScreenshot(`${c.worker}--component--${c.name}--${theme}.png`);
+      await expect(element).toHaveScreenshot(`${c.worker}--component--${c.name}--${theme}.png`, {
+        stylePath: STICKY_HEADERS_STATIC,
+      });
     });
   }
 }

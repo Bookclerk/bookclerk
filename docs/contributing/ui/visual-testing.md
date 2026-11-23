@@ -65,6 +65,11 @@ that element, named `<worker>--component--<name>--<theme>.png`. A change to
 one building block then shows up as its own small image beside the full
 pages.
 
+While a building block is captured, `ui/visual/sticky-headers-static.css`
+keeps the website's sticky header in the page flow. Otherwise a block
+taller than the viewport, such as the hero on a phone, is drawn with the
+header pinned over part of it, wherever Playwright scrolled to.
+
 A new collector page template gets a sample render in `visual/serve.ts`
 and an entry in `visual/pages.ts`. A new website page gets an entry in
 `audit/pages.ts`. A new building block gets a `VISUAL_COMPONENTS` entry.
