@@ -5093,8 +5093,8 @@ async function sendTitleMetaBatch(queries: TitleMetaQuery[]): Promise<(TitleMeta
   };
   return queries.map((query, idx) => {
     const meta = data.results[idx] ?? null;
-    // A failed or late query is not an answer: keep it out of the cache so a
-    // later look asks again.
+    // A failed or late query, or one a store or provider failed for, is not
+    // a final answer: keep it out of the cache so a later look asks again.
     const keep = data.incomplete?.[idx] !== true;
     if (keep && lookupGeneration() === asked) {
       titleMetaClientCache.set(titleMetaClientKey(query), meta);

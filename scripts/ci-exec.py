@@ -68,6 +68,19 @@ def _load_validated(args: argparse.Namespace) -> dict:
     return artifact
 
 
+def _load_carried(path: Path | None) -> dict | None:
+    """The parent run record ``--carried-from`` names, or None without one."""
+    if path is None:
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ExecError(f"carried-from record unreadable: {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ExecError("carried-from record is not a JSON object")
+    return data
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--plan", type=Path, default=None, help="Plan artifact path")
@@ -92,6 +105,12 @@ def main(argv: list[str] | None = None) -> int:
         "--linux-only",
         action="store_true",
         help="Pull request run: leave the Windows and macOS legs to the merge queue",
+    )
+    r.add_argument(
+        "--carried-from",
+        type=Path,
+        default=None,
+        help="Visual approval commit: the parent run record scripts/ci_carry.py wrote (JSON)",
     )
     r.add_argument("--selective", default=os.environ.get("SELECTIVE_CI", "0"))
     r.add_argument("--event", default=os.environ.get("GITHUB_EVENT_NAME", "local"))
@@ -136,6 +155,7 @@ def main(argv: list[str] | None = None) -> int:
                 linux_only=args.linux_only,
                 workspace=WORKSPACE,
                 paths=args.paths,
+                carried_from=_load_carried(args.carried_from),
             )
             args.plan.parent.mkdir(parents=True, exist_ok=True)
             args.plan.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n", encoding="utf-8")

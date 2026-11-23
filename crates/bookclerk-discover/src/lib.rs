@@ -89,10 +89,11 @@ pub use shelves::{
     DiscoverShelf, FeedState, ShelfKindInfo, ShelfTaste, SERIES_CAP,
 };
 pub use title_meta::{
-    check_title_meta_query, plan_title_meta_fill, resolve_title_meta, resolve_title_meta_batch,
-    resolve_title_reviews, resolve_title_sample, FillLookup, FillStoreLookups, TitleMeta,
-    TitleMetaQuery, TitleMetaQueryProblem, TitleReview, TitleReviewsPage, TitleReviewsQuery,
-    TITLE_META_BATCH_DEADLINE, TITLE_META_MAX_STORE_EDITIONS,
+    check_title_meta_query, plan_title_meta_fill, resolve_title_meta, resolve_title_meta_answer,
+    resolve_title_meta_batch, resolve_title_reviews, resolve_title_sample, FillLookup,
+    FillStoreLookups, Settlement, TitleMeta, TitleMetaAnswer, TitleMetaQuery,
+    TitleMetaQueryProblem, TitleReview, TitleReviewsPage, TitleReviewsQuery,
+    TITLE_META_BATCH_DEADLINE, TITLE_META_MAX_STORE_EDITIONS, TITLE_META_RETRY_TTL,
 };
 pub use wish_pool::{
     pool_wish_editions, record_wish_member_offers, PooledEdition, MAX_WISH_EDITIONS,

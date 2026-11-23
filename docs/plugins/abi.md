@@ -1806,6 +1806,9 @@ The host calls `send` from one `notify_send` job per delivery and
 records the answer in the delivery log; see
 [Notifications](../server/notifications.md) for retries and pausing.
 
+For a complete notifier, see the first-party `webhook` plugin under
+`crates/bookclerk-plugins/optional/notifier-webhook`.
+
 ### Raising notifications
 
 A plugin that declares [`[[notifications.types]]`](manifest.md#notificationstypes-notifications-a-plugin-raises)
