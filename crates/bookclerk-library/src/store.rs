@@ -25,11 +25,11 @@ use uuid::Uuid;
 use crate::atomic_txn::AtomicTxnBackend;
 use crate::control_plane::{batch, Bump, LiveTopic};
 use crate::entities::{
-    account_links, accounts, claim_tickets, embeddings, encrypted_secrets, ignored_titles,
-    library_work_rows, listening_progress, oidc_auth_codes, oidc_clients, oidc_refresh_tokens,
-    oidc_rp_states, operator_sessions, portal_identities, portal_sessions, saved_filters,
-    security_audit_events, title_request_sources, title_requests, user_invites, user_preferences,
-    users, webauthn_challenges, webauthn_credentials,
+    account_links, accounts, claim_tickets, encrypted_secrets, ignored_titles, library_work_rows,
+    listening_progress, oidc_auth_codes, oidc_clients, oidc_refresh_tokens, oidc_rp_states,
+    operator_sessions, portal_identities, portal_sessions, saved_filters, security_audit_events,
+    title_request_sources, title_requests, user_invites, user_preferences, users,
+    webauthn_challenges, webauthn_credentials,
 };
 use crate::error::{LibraryError, Result};
 use crate::models::{
@@ -5972,157 +5972,6 @@ impl LibraryStore {
         Ok(())
     }
 
-    /// Inserts or replaces an embedding vector for a target.
-    ///
-    /// # Arguments
-    ///
-    /// * `target_kind` - Embedding target kind.
-    /// * `target_id` - Embedding target id.
-    /// * `model` - Embedding model id.
-    /// * `dims` - Vector dimensionality.
-    /// * `vector` - Raw embedding bytes.
-    /// * `text_hash` - Hash of the embedded text.
-    ///
-    /// # Returns
-    ///
-    /// `Result<()>` — `Ok` on success.
-    ///
-    /// # Errors
-    ///
-    /// Returns a crate error when the database operation fails or inputs are invalid.
-    pub async fn upsert_embedding(
-        &self,
-        target_kind: &str,
-        target_id: &str,
-        model: &str,
-        dims: i64,
-        vector: &[u8],
-        text_hash: &str,
-    ) -> Result<()> {
-        let now = now_str();
-        let existing = embeddings::Entity::find()
-            .filter(embeddings::Column::TargetKind.eq(target_kind))
-            .filter(embeddings::Column::TargetId.eq(target_id))
-            .filter(embeddings::Column::Model.eq(model))
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        if let Some(existing) = existing {
-            let mut am: embeddings::ActiveModel = existing.into();
-            am.dims = Set(dims);
-            am.vector = Set(vector.to_vec());
-            am.text_hash = Set(text_hash.to_string());
-            am.updated_at = Set(now);
-            am.update(&self.db).await.map_err(LibraryError::Orm)?;
-        } else {
-            let am = embeddings::ActiveModel {
-                id: NotSet,
-                target_kind: Set(target_kind.to_string()),
-                target_id: Set(target_id.to_string()),
-                model: Set(model.to_string()),
-                dims: Set(dims),
-                vector: Set(vector.to_vec()),
-                text_hash: Set(text_hash.to_string()),
-                created_at: Set(now.clone()),
-                updated_at: Set(now),
-            };
-            am.insert(&self.db).await.map_err(LibraryError::Orm)?;
-        }
-        Ok(())
-    }
-
-    /// Loads the raw embedding bytes for a target, if present.
-    ///
-    /// # Arguments
-    ///
-    /// * `target_kind` - Embedding target kind.
-    /// * `target_id` - Embedding target id.
-    /// * `model` - Embedding model id.
-    ///
-    /// # Returns
-    ///
-    /// `Result<Option<(String, Vec<u8>)>>` — `Ok` on success.
-    ///
-    /// # Errors
-    ///
-    /// Returns a crate error when the database operation fails or inputs are invalid.
-    pub async fn get_embedding_vector(
-        &self,
-        target_kind: &str,
-        target_id: &str,
-        model: &str,
-    ) -> Result<Option<(String, Vec<u8>)>> {
-        Ok(embeddings::Entity::find()
-            .filter(embeddings::Column::TargetKind.eq(target_kind))
-            .filter(embeddings::Column::TargetId.eq(target_id))
-            .filter(embeddings::Column::Model.eq(model))
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .map(|m| (m.text_hash, m.vector)))
-    }
-
-    /// Lists embedding metadata rows (optionally filtered).
-    ///
-    /// # Arguments
-    ///
-    /// * `target_kind` - Embedding target kind.
-    /// * `model` - Embedding model id.
-    ///
-    /// # Returns
-    ///
-    /// `Result<Vec<(String, Vec<u8>)>>` — `Ok` on success.
-    ///
-    /// # Errors
-    ///
-    /// Returns a crate error when the database operation fails or inputs are invalid.
-    pub async fn list_embeddings(
-        &self,
-        target_kind: &str,
-        model: &str,
-    ) -> Result<Vec<(String, Vec<u8>)>> {
-        Ok(embeddings::Entity::find()
-            .filter(embeddings::Column::TargetKind.eq(target_kind))
-            .filter(embeddings::Column::Model.eq(model))
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(|m| (m.target_id, m.vector))
-            .collect())
-    }
-
-    /// Returns the stored text hash for an embedding target, if any.
-    ///
-    /// # Arguments
-    ///
-    /// * `target_kind` - Embedding target kind.
-    /// * `target_id` - Embedding target id.
-    /// * `model` - Embedding model id.
-    ///
-    /// # Returns
-    ///
-    /// `Result<Option<String>>` — `Ok` on success.
-    ///
-    /// # Errors
-    ///
-    /// Returns a crate error when the database operation fails or inputs are invalid.
-    pub async fn embedding_text_hash(
-        &self,
-        target_kind: &str,
-        target_id: &str,
-        model: &str,
-    ) -> Result<Option<String>> {
-        Ok(embeddings::Entity::find()
-            .filter(embeddings::Column::TargetKind.eq(target_kind))
-            .filter(embeddings::Column::TargetId.eq(target_id))
-            .filter(embeddings::Column::Model.eq(model))
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .map(|m| m.text_hash))
-    }
-
     /// Load per-user GUI / Discover preferences by subject key.
     ///
     /// # Errors
@@ -7303,6 +7152,7 @@ pub(crate) mod scan_state;
 pub(crate) mod storage_scan;
 pub(crate) mod taste_titles;
 pub(crate) mod user_title_state;
+pub(crate) mod vectors;
 pub(crate) mod work_batch;
 pub(crate) mod work_detail;
 pub(crate) mod work_search;
@@ -7333,6 +7183,7 @@ pub use holdings::{HoldingSelection, NodeHoldingSelection, HOLDING_REMOVED};
 pub use notifications::{NotifyCursor, NotifyPage, NotifyQueueLimits, MAX_NOTIFY_PAGE};
 pub use request_queue::{QueueRank, StoredQueueRank, MAX_QUEUE_REASONS};
 pub use taste_titles::{apply_user_states, HeldIdentifiers};
+pub use vectors::{NewVector, SpaceCoverage, VectorSpace, VECTOR_KIND_TEXT, VECTOR_KIND_WORK};
 pub(crate) mod job_queue;
 
 mod lock_retry;

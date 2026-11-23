@@ -9,12 +9,22 @@ pub struct Model {
     /// Surrogate primary key assigned by the database.
     #[sea_orm(primary_key)]
     pub id: i64,
-    /// Embedding target kind (`book`, `work`, …).
+    /// What was embedded: `work` (a `works.id`) or `text` (a text shared
+    /// by every candidate that has it).
     pub target_kind: String,
-    /// Id of the embedded target within `target_kind`.
+    /// Id of the embedded target within `target_kind`: the work id, or the
+    /// SHA-256 hex of the text.
     pub target_id: String,
-    /// Embedding model identifier used to produce `vector`.
+    /// What made `vector`: `@<plugin id>/<model id>`, or `local-hash-v1`
+    /// for the stand-in.
     pub model: String,
+    /// The model's digest of everything that decides its output; empty for
+    /// the stand-in. Vectors are compared only inside one (`model`,
+    /// `revision`).
+    pub revision: String,
+    /// BCP 47 tags of the languages the model was loaded for, joined by
+    /// `,`; empty when it has no language packs.
+    pub packs: String,
     /// Dimensionality of the stored embedding vector.
     pub dims: i64,
     /// Raw embedding bytes (little-endian f32 sequence).
@@ -23,7 +33,8 @@ pub struct Model {
     pub text_hash: String,
     /// RFC 3339 timestamp when the row was inserted.
     pub created_at: String,
-    /// RFC 3339 timestamp when the row was last modified.
+    /// RFC 3339 timestamp when the vector was written or, for a `text`
+    /// row, last used.
     pub updated_at: String,
 }
 

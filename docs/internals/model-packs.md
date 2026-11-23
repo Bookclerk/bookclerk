@@ -336,7 +336,9 @@ node (512 MiB by default) cannot be picked there.
 
 The chosen model becomes the one `@library/text-embeddings` names once
 it is installed. Vectors of two models are never compared, so features
-that store vectors embed the library again after a change.
+that store vectors embed the library again after a change, and the
+vectors of the model before keep serving until that is done (see
+[Which space serves](discovery.md#which-space-serves)).
 
 ### Nodes that do not download
 
@@ -465,6 +467,17 @@ which packs a node holds.
   `echo_workerd_ts` example run `@library/text-embeddings` through its
   `AI` binding and compares the vector with the model's arithmetic. That
   is two real plugins in two jails with the host routing between them.
+
+- Discover's use of a model is tested with fake models, not a real one:
+  the daemon's tests (`crates/bookclerkd/src/embedding.rs`) deploy a
+  model plugin that answers through the real router, and check that the
+  job embeds every work in runs of 16, that the model serves only once
+  it covers the library, that a new revision takes over only after its
+  own pass, that vectors of an unlisted revision are refused, and that
+  installing a model queues the job. `bookclerk-discover`'s tests check
+  the serving rule, shared candidate vectors, pruning and that a model's
+  similarities rank by standing. The store's tests run under every
+  database profile.
 
 ## Next steps
 
