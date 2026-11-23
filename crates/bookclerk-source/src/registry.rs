@@ -11,8 +11,8 @@ use std::sync::Arc;
 use bookclerk_library::{LibraryStore, SourceScope};
 
 use crate::traits::ContentSource;
+use crate::{AccountMatch, ScanOptions, ScanSummary, SourceAccount};
 use crate::{Result, SourceError};
-use crate::{ScanOptions, ScanSummary, SourceAccount};
 
 /// Maps a registry address to an installed [`ContentSource`].
 ///
@@ -327,7 +327,7 @@ async fn filter_scan_opts_for_source(
     let filtered: Vec<String> = opts
         .accounts
         .iter()
-        .filter(|needle| account_needle_matches(needle, &accounts))
+        .filter(|needle| account_needle_matches(needle, &accounts, opts.account_match))
         .cloned()
         .collect();
     if filtered.is_empty() {
@@ -346,14 +346,11 @@ fn registry_address(source: &dyn ContentSource) -> &str {
     }
 }
 
-/// True when `needle` matches an account id or display label, ignoring ASCII case.
-fn account_needle_matches(needle: &str, accounts: &[SourceAccount]) -> bool {
-    accounts.iter().any(|a| {
-        a.account_id.eq_ignore_ascii_case(needle)
-            || a.label
-                .as_deref()
-                .is_some_and(|label| label.eq_ignore_ascii_case(needle))
-    })
+/// True when `needle` picks one of `accounts` the way `how` says.
+fn account_needle_matches(needle: &str, accounts: &[SourceAccount], how: AccountMatch) -> bool {
+    accounts
+        .iter()
+        .any(|a| how.matches(needle, &a.account_id, a.label.as_deref()))
 }
 
 #[cfg(test)]
@@ -741,8 +738,26 @@ mod tests {
             label: Some("Libro Main".into()),
             scan_enabled: true,
         }];
-        assert!(account_needle_matches("libro-user@example.com", &accounts));
-        assert!(account_needle_matches("LIBRO MAIN", &accounts));
-        assert!(!account_needle_matches("audible-only", &accounts));
+        let loose = crate::AccountMatch::IdOrLabel;
+        assert!(account_needle_matches(
+            "libro-user@example.com",
+            &accounts,
+            loose
+        ));
+        assert!(account_needle_matches("LIBRO MAIN", &accounts, loose));
+        assert!(!account_needle_matches("audible-only", &accounts, loose));
+        // An exact name matches the id alone, never the label.
+        let exact = crate::AccountMatch::ExactId;
+        assert!(account_needle_matches(
+            "libro-user@example.com",
+            &accounts,
+            exact
+        ));
+        assert!(!account_needle_matches("Libro Main", &accounts, exact));
+        assert!(!account_needle_matches(
+            "LIBRO-USER@example.com",
+            &accounts,
+            exact
+        ));
     }
 }

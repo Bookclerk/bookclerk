@@ -286,6 +286,7 @@ function connectBody(
     trustAnchors: (options?.trustAnchors ?? []).map((anchor) =>
       typeof anchor === "string" ? pemBody(anchor) : toBase64(anchor),
     ),
+    serverName: String(options?.serverName ?? ""),
   };
 }
 

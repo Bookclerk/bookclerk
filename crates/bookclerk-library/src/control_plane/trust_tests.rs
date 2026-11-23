@@ -48,6 +48,7 @@ fn request<'a>(node_id: &'a str, claimant: Claimant, owner: &'a str) -> JobClaim
             plugin_instance: 8,
         },
         filter: None,
+        node_bound: None,
     }
 }
 
@@ -1015,7 +1016,9 @@ async fn acquires_are_trusted_and_planned_per_item(owner_db: LibraryStore, host_
         );
     }
 
-    // The planner: privileged requests split per title only.
+    // The planner: privileged requests split per title, and a title per
+    // account id it is in, so a Host trusted with that account can take it;
+    // a title in no account keeps one unsplit job.
     let titles = |ids: &[&str]| ids.iter().map(|t| t.to_string()).collect::<Vec<_>>();
     let shape = |plan: Vec<JobPayload>| -> Vec<(Option<String>, Option<String>)> {
         plan.into_iter()
@@ -1028,17 +1031,53 @@ async fn acquires_are_trusted_and_planned_per_item(owner_db: LibraryStore, host_
             &host_db,
             requester,
             None,
-            &titles(&["B0RILEY", " b0riley ", "B0SAM", ""]),
+            &titles(&["B0RILEY", " b0riley ", "B0SAM", "B0BOTH", "B0NONE", ""]),
             None,
         )
         .await
         .unwrap();
-        assert_eq!(shape(plan), vec![(None, s("B0RILEY")), (None, s("B0SAM"))]);
+        assert_eq!(
+            shape(plan),
+            vec![
+                (s("a1"), s("B0RILEY")),
+                (s("a2"), s("B0SAM")),
+                (s("a1"), s("B0BOTH")),
+                (s("a2"), s("B0BOTH")),
+                (None, s("B0NONE")),
+            ]
+        );
         let plan = plan_acquire(&host_db, requester, None, &[], None)
             .await
             .unwrap();
         assert_eq!(shape(plan), vec![(None, None)]);
     }
+    // Two ids that reach one account (here a label equal to the other id,
+    // ignoring case) would acquire the title twice: it stays unsplit.
+    accounts::Entity::update_many()
+        .col_expr(accounts::Column::Label, Expr::value("A1"))
+        .filter(accounts::Column::AccountId.eq("a2"))
+        .exec(host_db.db())
+        .await
+        .unwrap();
+    let plan = plan_acquire(
+        &host_db,
+        ScanRequester::Operator,
+        None,
+        &titles(&["B0BOTH", "B0SAM"]),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        shape(plan),
+        vec![(None, s("B0BOTH")), (s("a2"), s("B0SAM"))]
+    );
+    accounts::Entity::update_many()
+        .col_expr(accounts::Column::Label, Expr::value(Option::<String>::None))
+        .filter(accounts::Column::AccountId.eq("a2"))
+        .exec(host_db.db())
+        .await
+        .unwrap();
     // A Member: their own titles, accounts, or every account they own.
     let plan = plan_acquire(
         &host_db,
@@ -1314,7 +1353,8 @@ async fn scan_all_respects_per_plugin_flags(owner_db: LibraryStore, host_db: Lib
     add_account(&owner_db, PLUGIN, "mixed", true).await;
     add_account(&owner_db, OTHER_PLUGIN, "mixed", false).await;
     add_account(&owner_db, PLUGIN, "plain", true).await;
-    // Same account under another case on another plugin: one job covers both.
+    // Another case on another plugin is another account: each id is
+    // named exactly, so each gets its own job and neither reaches the other.
     add_account(&owner_db, OTHER_PLUGIN, "Plain", true).await;
 
     let plan = plan_scan(&host_db, ScanRequester::Operator, None, None)
@@ -1329,7 +1369,13 @@ async fn scan_all_respects_per_plugin_flags(owner_db: LibraryStore, host_db: Lib
         vec![
             (Some("Plain".into()), None),
             (Some("mixed".into()), Some(instance.id.to_string())),
+            (Some("plain".into()), None),
         ]
+    );
+    assert!(
+        plan.iter()
+            .all(|p| p.account_match == bookclerk_storefront::AccountMatch::ExactId),
+        "scan-all names every account exactly"
     );
 
     // A queued pinned scan of `plain` does not swallow scan-all's unpinned one.
@@ -1389,9 +1435,9 @@ async fn scan_all_respects_per_plugin_flags(owner_db: LibraryStore, host_db: Lib
     let accounts: Vec<Option<String>> = plan.into_iter().map(|p| p.account).collect();
     assert_eq!(accounts, vec![Some("acct-b".into())]);
 
-    // `acct-c` is labelled with `acct-d`, which sorts after it. The needle
-    // `acct-d` reaches both, so scan-all keeps it alone rather than also
-    // scanning `acct-c` on its own (twice in all).
+    // `acct-c` is labelled with `acct-d`, and `acct-e` with `acct-c`: a
+    // chain. Each id is named exactly, so every account gets one job and
+    // none reaches another through its label (#305).
     add_account(&owner_db, OTHER_PLUGIN, "acct-c", true).await;
     add_account(&owner_db, OTHER_PLUGIN, "acct-d", true).await;
     accounts::Entity::update_many()
@@ -1400,18 +1446,52 @@ async fn scan_all_respects_per_plugin_flags(owner_db: LibraryStore, host_db: Lib
         .exec(owner_db.db())
         .await
         .unwrap();
+    add_account(&owner_db, OTHER_PLUGIN, "acct-e", true).await;
+    accounts::Entity::update_many()
+        .col_expr(accounts::Column::Label, Expr::value("acct-c"))
+        .filter(accounts::Column::AccountId.eq("acct-e"))
+        .exec(owner_db.db())
+        .await
+        .unwrap();
     let plan = plan_scan(&host_db, ScanRequester::Operator, None, None)
         .await
         .unwrap();
     let accounts: Vec<String> = plan.into_iter().filter_map(|p| p.account).collect();
-    for (id, kept) in [
-        ("acct-a", true),
-        ("acct-b", false),
-        ("acct-c", false),
-        ("acct-d", true),
-    ] {
-        assert_eq!(accounts.iter().any(|a| a == id), kept, "{id}: {accounts:?}");
-    }
+    let acct: Vec<&str> = accounts
+        .iter()
+        .map(String::as_str)
+        .filter(|a| a.starts_with("acct-"))
+        .collect();
+    assert_eq!(acct, ["acct-a", "acct-b", "acct-c", "acct-d", "acct-e"]);
+
+    // Trust reads an exact job the way it runs: a node of acct-c's owner
+    // may take scan-all's acct-c job although acct-e (someone else's) is
+    // labelled acct-c, but not the id-or-label job of that name.
+    link(&owner_db, riley, OTHER_PLUGIN, "acct-c").await;
+    link(&owner_db, sam, OTHER_PLUGIN, "acct-e").await;
+    let named = |how| JobPayload {
+        account: Some("acct-c".into()),
+        account_match: how,
+        ..Default::default()
+    };
+    let trust = NodeTrust::OwnedBy(riley);
+    let exact = named(bookclerk_storefront::AccountMatch::ExactId);
+    let wide = named(bookclerk_storefront::AccountMatch::IdOrLabel);
+    assert!(
+        job_trusted(&host_db, &trust, &record(JobKind::Scan, exact.clone()))
+            .await
+            .unwrap()
+    );
+    assert!(
+        !job_trusted(&host_db, &trust, &record(JobKind::Scan, wide.clone()))
+            .await
+            .unwrap()
+    );
+    // Nor do the two fold into each other when queued.
+    assert_ne!(
+        JobKind::Scan.dedup_key(&exact),
+        JobKind::Scan.dedup_key(&wide)
+    );
 }
 
 #[tokio::test]

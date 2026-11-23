@@ -27476,6 +27476,20 @@
             }
           },
           {
+            "name": "search",
+            "in": "query",
+            "description": "How `q` is matched (default `words`). `meaning` needs the library's\nembedding model on the node that answers and the library embedded\nwith it (`GET /api/library/works/meaning` says whether it is\nready); `q` is then plain text, not a Lucene query.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "How `q` is matched against the library's works.",
+              "enum": [
+                "words",
+                "meaning"
+              ]
+            }
+          },
+          {
             "name": "sort",
             "in": "query",
             "description": "Order of the page (default `title`).",
@@ -27719,6 +27733,324 @@
                       "error": "the search index is being built; try again shortly"
                     }
                   },
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          },
+          {
+            "clerkToken": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
+      }
+    },
+    "/api/library/works/meaning": {
+      "get": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Says whether search by meaning and similar works are ready.",
+        "description": "A client asks before it offers either. `search` is about the node\nthat answers: it needs the library's embedding model there.",
+        "operationId": "get_meaning_status",
+        "responses": {
+          "200": {
+            "description": "What is ready.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeaningStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "clerk_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "clerk_sign_in_unavailable",
+                      "message": "This library does not accept clerks on this address.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          },
+          {
+            "clerkToken": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
+      }
+    },
+    "/api/library/works/{id}/similar": {
+      "get": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Lists the held works most like one work.",
+        "description": "Likeness is how close the works' descriptions are in meaning, as the\nlibrary's embedding model reads them. The caller sees only works\ninside their own scope.",
+        "operationId": "list_similar_works",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Work id (a podcast's show).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Most works to list, clamped to 1–40 (default 12).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The similar works, or why there are none.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimilarWorks"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "clerk_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "clerk_sign_in_unavailable",
+                      "message": "This library does not accept clerks on this address.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "work 0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b not found"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
                   "session_check_unavailable": {
                     "summary": "The sign-in could not be checked in time",
                     "value": {
@@ -61880,6 +62212,33 @@
           }
         }
       },
+      "MeaningState": {
+        "type": "string",
+        "description": "Whether a way of reading the library by meaning can be used now.",
+        "enum": [
+          "ready",
+          "no_model",
+          "embedding"
+        ]
+      },
+      "MeaningStatus": {
+        "type": "object",
+        "description": "Answer of `GET /api/library/works/meaning`.",
+        "required": [
+          "search",
+          "similar"
+        ],
+        "properties": {
+          "search": {
+            "$ref": "#/components/schemas/MeaningState",
+            "description": "Whether `search=meaning` answers on this node."
+          },
+          "similar": {
+            "$ref": "#/components/schemas/MeaningState",
+            "description": "Whether `GET /api/library/works/{id}/similar` lists works."
+          }
+        }
+      },
       "MediaCapabilitiesJson": {
         "type": "object",
         "description": "The codecs, containers and encodings this build's media worker handles.",
@@ -72364,6 +72723,27 @@
             ],
             "description": "Known social preset the client may style (`google`, `github`, …), when the provider matches one.",
             "example": "google"
+          }
+        }
+      },
+      "SimilarWorks": {
+        "type": "object",
+        "description": "Answer of `GET /api/library/works/{id}/similar`.",
+        "required": [
+          "state",
+          "works"
+        ],
+        "properties": {
+          "state": {
+            "$ref": "#/components/schemas/MeaningState",
+            "description": "`ready` when `works` was looked up; otherwise why it is empty."
+          },
+          "works": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkSummaryJson"
+            },
+            "description": "The held works most like the one asked about, most alike first.\nEmpty when the work has no vector yet."
           }
         }
       },

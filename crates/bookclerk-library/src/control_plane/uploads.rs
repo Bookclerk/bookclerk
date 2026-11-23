@@ -47,7 +47,7 @@ use super::job_routing::{job_plugin_keys, JobClaimLimits};
 use super::remote_work::{fenced_job, held_job_permits, remote_job_fence};
 use super::semaphore::release_permits;
 use super::trust::{
-    accounts_named, accounts_owned_by, node_may_claim_job, node_trust, Claimant, NodeTrust,
+    accounts_named_as, accounts_owned_by, node_may_claim_job, node_trust, Claimant, NodeTrust,
 };
 use crate::entities::{edition_acquisitions, node_upload_sessions};
 use crate::error::{LibraryError, Result};
@@ -396,7 +396,9 @@ async fn job_accounts(
     job: &JobRecord,
 ) -> Result<Option<BTreeSet<(String, String)>>> {
     match job.payload.account.as_deref().filter(|a| !a.is_empty()) {
-        Some(account) => Ok(Some(accounts_named(store, account, None).await?)),
+        Some(account) => Ok(Some(
+            accounts_named_as(store, account, None, job.payload.account_match).await?,
+        )),
         None => Ok(None),
     }
 }

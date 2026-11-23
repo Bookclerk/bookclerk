@@ -8191,6 +8191,24 @@ async fn works_page_by_id_and_vectors_read_in_bulk_under_every_profile() {
             1,
             "{name}"
         );
+        // The whole space, in work id order, and nothing of another.
+        let all = store.work_vectors_in(&m).await.unwrap();
+        let mut ids = expected[..2].to_vec();
+        ids.sort();
+        assert_eq!(
+            all.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+            ids,
+            "{name}"
+        );
+        assert!(all.iter().all(|(_, vector)| vector.len() == 4), "{name}");
+        assert!(
+            store
+                .work_vectors_in(&space("nobody", "r1"))
+                .await
+                .unwrap()
+                .is_empty(),
+            "{name}"
+        );
         assert_eq!(
             store.prune_orphan_work_vectors().await.unwrap(),
             0,

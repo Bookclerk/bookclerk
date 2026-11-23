@@ -45,6 +45,19 @@ const MAX_LIMIT: u64 = 200;
 /// An error answer of these routes: status and JSON message.
 pub(crate) type WorksError = (StatusCode, Json<ErrorMessage>);
 
+/// How `q` is matched against the library's works.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SearchModeParam {
+    /// By the words of `q`: titles, authors, narrators, series and store
+    /// ids that contain them.
+    #[default]
+    Words,
+    /// By what `q` means: works whose description is about it, in any
+    /// words and any language the library's embedding model knows.
+    Meaning,
+}
+
 /// How a page of works is ordered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -329,7 +342,13 @@ pub(crate) struct WorksQuery {
     /// Search text (Lucene-style); matches titles, authors, narrators,
     /// series and store ids. Works then come best match first and `sort`
     /// is not used.
-    q: Option<String>,
+    pub(crate) q: Option<String>,
+    /// How `q` is matched (default `words`). `meaning` needs the library's
+    /// embedding model on the node that answers and the library embedded
+    /// with it (`GET /api/library/works/meaning` says whether it is
+    /// ready); `q` is then plain text, not a Lucene query.
+    #[param(inline)]
+    pub(crate) search: Option<SearchModeParam>,
     /// Order of the page (default `title`).
     #[param(inline)]
     sort: Option<WorkSortParam>,
@@ -353,9 +372,9 @@ pub(crate) struct WorksQuery {
     value: Option<String>,
     /// `next_cursor` of the previous page, under the same `sort` (or the
     /// same `q`).
-    cursor: Option<String>,
+    pub(crate) cursor: Option<String>,
     /// Page size, clamped to 1–200 (default 40).
-    limit: Option<u64>,
+    pub(crate) limit: Option<u64>,
 }
 
 /// One work in a page of `GET /api/library/works`.
@@ -363,12 +382,12 @@ pub(crate) struct WorksQuery {
 pub(crate) struct WorkSummaryJson {
     /// Work id.
     #[schema(example = "0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b")]
-    id: String,
+    pub(crate) id: String,
     /// Book or podcast.
     kind: WorkKindJson,
     /// Display title.
     #[schema(example = "The Left Hand of Darkness")]
-    title: String,
+    pub(crate) title: String,
     /// Authors (hosts for a podcast), joined for display.
     #[schema(example = "Ursula K. Le Guin")]
     authors: Option<String>,
@@ -415,10 +434,10 @@ pub(crate) struct WorkSummaryJson {
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub(crate) struct WorksPage {
     /// The works, in the requested order.
-    works: Vec<WorkSummaryJson>,
+    pub(crate) works: Vec<WorkSummaryJson>,
     /// Pass as `cursor` for the next page; absent on the last page.
     #[schema(example = "eyJzb3J0IjoidGl0bGUiLCJrZXkiOiJsZWZ0IGhhbmQiLCJ3b3JrX2lkIjoiMGI4ZiJ9")]
-    next_cursor: Option<String>,
+    pub(crate) next_cursor: Option<String>,
 }
 
 /// Who holds a listing.
@@ -925,10 +944,16 @@ pub(crate) async fn search_page(
     state: &AppState,
     library: &bookclerk_library::LibraryStore,
     q: &str,
+    mode: SearchModeParam,
     cursor: Option<&str>,
     filters: &WorkPageQuery,
 ) -> Result<(Vec<LibraryWorkRow>, Option<String>), WorksError> {
-    let filter_key = search_filter_key(filters);
+    let filter_key = match mode {
+        SearchModeParam::Words => search_filter_key(filters),
+        // A cursor of one mode is a position in other matches than the
+        // other mode's.
+        SearchModeParam::Meaning => format!("meaning|{}", search_filter_key(filters)),
+    };
     let start = match cursor {
         Some(token) => match SearchCursor::decode(token) {
             Some(cursor) if cursor.q == q && cursor.filters == filter_key => cursor.at,
@@ -941,25 +966,42 @@ pub(crate) async fn search_page(
         },
         None => 0,
     };
-    let dir = state.config.read().await.paths().search_index_dir.clone();
-    let window = WorkSearchIndex::open_and_match_ids(dir, q.into(), start, SEARCH_SCAN_BUDGET)
-        .await
-        .map_err(|err| match err {
-            SearchError::Query(message) => bad_request(format!("invalid search query: {message}")),
-            SearchError::NotReady => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorMessage::new(
-                    "the search index is being built; try again shortly",
-                )),
-            ),
-            other => {
-                tracing::warn!(error = %other, "GET /api/library/works: search failed");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorMessage::new("the search index could not be read")),
-                )
+    let window = match mode {
+        SearchModeParam::Words => {
+            let dir = state.config.read().await.paths().search_index_dir.clone();
+            WorkSearchIndex::open_and_match_ids(dir, q.into(), start, SEARCH_SCAN_BUDGET)
+                .await
+                .map_err(|err| match err {
+                    SearchError::Query(message) => {
+                        bad_request(format!("invalid search query: {message}"))
+                    }
+                    SearchError::NotReady => (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(ErrorMessage::new(
+                            "the search index is being built; try again shortly",
+                        )),
+                    ),
+                    other => {
+                        tracing::warn!(error = %other, "GET /api/library/works: search failed");
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorMessage::new("the search index could not be read")),
+                        )
+                    }
+                })?
+        }
+        SearchModeParam::Meaning => {
+            let matches = crate::library_meaning::matches(state, library, q).await?;
+            bookclerk_search::WorkMatches {
+                total: matches.len(),
+                ids: matches
+                    .into_iter()
+                    .skip(start)
+                    .take(SEARCH_SCAN_BUDGET)
+                    .collect(),
             }
-        })?;
+        }
+    };
     let library = library.clone();
     let limit = usize::try_from(filters.limit).unwrap_or(usize::MAX);
     let (rows, used) = fill_search_page(
@@ -1029,7 +1071,17 @@ pub(crate) async fn list_works(
         limit: query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT),
     };
     let (rows, next_cursor) = match query.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
-        Some(q) => search_page(&state, &library, q, cursor, &filters).await?,
+        Some(q) => {
+            search_page(
+                &state,
+                &library,
+                q,
+                query.search.unwrap_or_default(),
+                cursor,
+                &filters,
+            )
+            .await?
+        }
         None => {
             if let Some(token) = cursor {
                 filters.after =
@@ -1045,6 +1097,21 @@ pub(crate) async fn list_works(
             (page.works, page.next.map(|c| c.encode()))
         }
     };
+    let works = summaries(&state, &library, rows, "GET /api/library/works").await?;
+    Ok(Json(WorksPage { works, next_cursor }))
+}
+
+/// `rows` as the API lists works, each with the path of its cover.
+///
+/// # Errors
+///
+/// A 500 when the covers' addresses cannot be read.
+pub(crate) async fn summaries(
+    state: &AppState,
+    library: &bookclerk_library::LibraryStore,
+    rows: Vec<LibraryWorkRow>,
+    route: &str,
+) -> Result<Vec<WorkSummaryJson>, WorksError> {
     let cover_ids: Vec<String> = rows
         .iter()
         .filter_map(|w| w.cover_edition_id.clone())
@@ -1052,8 +1119,8 @@ pub(crate) async fn list_works(
     let urls = library
         .edition_cover_urls(&cover_ids)
         .await
-        .map_err(|err| read_failed("GET /api/library/works", &err))?;
-    let works = rows
+        .map_err(|err| read_failed(route, &err))?;
+    Ok(rows
         .into_iter()
         .map(|row| {
             let cover_path = row
@@ -1063,8 +1130,7 @@ pub(crate) async fn list_works(
                 .and_then(|url| state.covers.path_for(url));
             summary(row, cover_path)
         })
-        .collect();
-    Ok(Json(WorksPage { works, next_cursor }))
+        .collect())
 }
 
 /// Reads one work with its editions, listings, holdings and the caller's

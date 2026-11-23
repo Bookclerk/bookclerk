@@ -47,6 +47,7 @@ fn allowed_fields(op: &str) -> &'static [&'static str] {
             "autoResponses",
             "attachment",
             "trustAnchors",
+            "serverName",
         ],
         "send" => &["socket", "frame"],
         "close" => &["socket", "code", "reason"],
@@ -92,6 +93,7 @@ fn route_body(call: &SocketCall) -> Vec<u8> {
                 .iter()
                 .map(|der| bookclerk_plugin_abi::json_bytes::encode(der))
                 .collect(),
+            server_name: request.server_name.clone(),
         }),
         SocketCall::Send { socket, frame } => serde_json::to_vec(&RouteSend {
             socket: socket.clone(),

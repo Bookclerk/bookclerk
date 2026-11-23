@@ -1,0 +1,109 @@
+api_version = 3
+id = "cloudflare_tunnel"
+name = "Cloudflare Tunnel"
+version = "0.1.0"
+runtime = "workerd"
+entrypoints = ["ingress"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+compatibility_flags = []
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[workerd.limits]
+cpu_ms = 30000
+# A request is one library call; each later piece of a large response one
+# more.
+subrequests = 100
+
+# Emitted from `src/` by `npm run build`; CI fails when they drift.
+[[modules]]
+name = "index.js"
+path = "index.js"
+type = "js"
+
+[[modules]]
+name = "agent.js"
+path = "agent.js"
+type = "js"
+
+[[modules]]
+name = "ca.js"
+path = "ca.js"
+type = "js"
+
+[[modules]]
+name = "capnp.js"
+path = "capnp.js"
+type = "js"
+
+[[modules]]
+name = "h2.js"
+path = "h2.js"
+type = "js"
+
+[[modules]]
+name = "hpack.js"
+path = "hpack.js"
+type = "js"
+
+[[modules]]
+name = "lifecycle.js"
+path = "lifecycle.js"
+type = "js"
+
+[[modules]]
+name = "rpc.js"
+path = "rpc.js"
+type = "js"
+
+[[modules]]
+name = "serve.js"
+path = "serve.js"
+type = "js"
+
+[[modules]]
+name = "version.js"
+path = "version.js"
+type = "js"
+
+[[modules]]
+name = "ws.js"
+path = "ws.js"
+type = "js"
+
+[ingress]
+kind = "relay"
+
+[capabilities.network]
+mode = "outbound"
+# Cloudflare's tunnel edge, as one TLS stream the host holds (`tls://`); the
+# edge's certificate names `h2.cftunnel.com`, which the stream asks for.
+tcp = [
+  { host = "region1.v2.argotunnel.com", ports = [7844] },
+  { host = "region2.v2.argotunnel.com", ports = [7844] },
+  { host = "h2.cftunnel.com", ports = [7844] },
+]
+
+# The connection to Cloudflare, and the clients' WebSockets to the library;
+# the host holds them while the plugin waits.
+[sockets]
+
+[vars]
+
+[[settings]]
+key = "hostname"
+label = "Public hostname"
+type = "string"
+required = true
+description = "The public hostname you routed to this tunnel in the Cloudflare dashboard (such as books.example.com)."
+
+[[settings]]
+key = "token"
+label = "Tunnel token"
+type = "secret"
+description = "The tunnel's token from the Cloudflare dashboard (the long value after `cloudflared service install`)."
+
+[secrets]

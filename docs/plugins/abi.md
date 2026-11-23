@@ -640,7 +640,15 @@ are UTF-8 JSON, so any SDK reads what another stored. See the
   endpoints do) can be reached by sending up to 4 trust anchors, DER
   root certificates of at most 8 KiB each: the server's chain must then
   end in one of them, and Mozilla's roots don't count for that socket.
-  Only a `tls://` socket takes trust anchors. Closing a stream sends TLS
+  Only a `tls://` socket takes trust anchors. An endpoint dialed at one
+  name that answers for another (a Cloudflare Tunnel edge is dialed at
+  `region1.v2.argotunnel.com` and serves `h2.cftunnel.com`) takes a
+  `serverName`: the DNS name sent as SNI and checked against the
+  server's certificate instead of the URL's host. It must be on a `tcp`
+  grant for the URL's port as well, so naming another service can't
+  route past the grant, and it may not be an IP address or hold an
+  `xn--` label (at most 253 bytes). Only a `tls://` socket takes a
+  server name. Closing a stream sends TLS
   `close_notify` and waits up to 5 seconds for the server to end its
   side; the close reports the plugin's code.
 - **Handler.** A plugin that declares `[sockets]` may return a

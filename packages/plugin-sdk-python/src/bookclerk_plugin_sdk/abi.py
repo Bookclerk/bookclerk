@@ -6965,6 +6965,12 @@ class SocketConnectRequest(TypedDict):
             the server's chain must end in instead of Mozilla's roots, for a service
             that signs its own (an ngrok or Cloudflare Tunnel agent endpoint). Empty
             uses Mozilla's.
+        serverName: `tls://` only: the DNS name to send as SNI and to check the server's
+            certificate against, for an endpoint reached at one name that answers for
+            another (a Cloudflare Tunnel edge, dialed at `region1.v2.argotunnel.com` and
+            serving `h2.cftunnel.com`). It must be on a `tcp` grant for the URL's port
+            too, so it can't route past the grant by name. At most
+            `maxSocketServerNameBytes`; empty uses the URL's host.
     """
 
     url: str
@@ -6973,6 +6979,7 @@ class SocketConnectRequest(TypedDict):
     autoResponses: list[SocketAutoResponse]
     attachment: bytes
     trustAnchors: list[bytes]
+    serverName: str
 
 
 class SocketInfo(TypedDict):
