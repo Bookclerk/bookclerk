@@ -19,6 +19,13 @@ GitHub then merges it, or adds it to the merge queue when one is required,
 once `CI Gate` and `PR scan / osv-scan` pass. Failing pull requests stay
 open for a human.
 
+Major bumps are included on purpose: CI is what keeps a breaking update
+out, so a major that passes every check merges like any other.
+
+To keep one Dependabot pull request out of auto-merge, add the `hold`
+label and turn its auto-merge off. Without the label the workflow
+approves it and turns auto-merge back on whenever Dependabot rebases it.
+
 The repository-level **Allow auto-merge** setting only makes the
 per-pull-request "Enable auto-merge" button and API available. It never
 merges a pull request on its own, so human pull requests merge exactly as

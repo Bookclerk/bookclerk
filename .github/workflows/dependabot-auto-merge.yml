@@ -8,6 +8,11 @@
 # - Uses a GitHub App token: merges attributed to GITHUB_TOKEN do not start
 #   `push` / `merge_group` workflow runs, and the App can approve PRs without
 #   the "Actions may approve PRs" setting.
+# - A pull request labeled `hold` is skipped, so a person's "not this one"
+#   survives Dependabot's rebases (each one is a `synchronize` that would
+#   otherwise approve and re-arm auto-merge). Labeling doesn't disarm an
+#   already armed pull request: also turn its auto-merge off.
+# - Major bumps auto-merge too: CI is what stops a breaking one.
 # - Hold back specific packages with `exclude`, or tighten `target`.
 #
 # Setup (App, Dependabot secrets, rulesets): docs/contributing/automation.md#dependabot-auto-merge
@@ -27,7 +32,9 @@ concurrency:
 jobs:
   enable-auto-merge:
     name: enable auto-merge
-    if: github.actor == 'dependabot[bot]'
+    if: >-
+      github.actor == 'dependabot[bot]' &&
+      !contains(github.event.pull_request.labels.*.name, 'hold')
     runs-on: ubuntu-latest
     # The action's inner dependabot/fetch-metadata step lists PR commits with
     # the job's GITHUB_TOKEN (it does not accept the App token).
