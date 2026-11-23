@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 
 use bookclerk_resolve as resolve;
 use chrono::Utc;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -1932,18 +1932,21 @@ impl LibraryStore {
         after_id: Option<&str>,
         limit: u64,
     ) -> Result<Vec<WorkRecord>> {
-        let mut query = works::Entity::find().order_by_asc(works::Column::Id);
+        let mut query = works::Entity::find();
         if let Some(after) = after_id {
             query = query.filter(works::Column::Id.gt(after));
         }
-        let mut works: Vec<WorkRecord> = query
-            .limit(limit.clamp(1, 500))
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(map_work)
-            .collect();
+        let mut works: Vec<WorkRecord> = super::keyset::read_keyset_limit(
+            self,
+            query,
+            &[works::Column::Id],
+            super::keyset::KeyOrder::Ascending,
+            limit.clamp(1, 500),
+        )
+        .await?
+        .into_iter()
+        .map(map_work)
+        .collect();
         self.fill_work_names(&mut works).await?;
         Ok(works)
     }
@@ -1954,14 +1957,15 @@ impl LibraryStore {
     ///
     /// Returns [`LibraryError::Orm`] when a read fails.
     pub async fn list_works(&self) -> Result<Vec<WorkRecord>> {
-        let mut works: Vec<WorkRecord> = works::Entity::find()
-            .order_by_asc(works::Column::Title)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(map_work)
-            .collect();
+        let mut works: Vec<WorkRecord> = crate::store::keyset::read_keyset(
+            self,
+            works::Entity::find(),
+            &[works::Column::Title, works::Column::Id],
+        )
+        .await?
+        .into_iter()
+        .map(map_work)
+        .collect();
         self.fill_work_names(&mut works).await?;
         Ok(works)
     }

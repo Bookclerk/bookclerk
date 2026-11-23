@@ -1206,13 +1206,13 @@ async fn an_edition_wider_than_a_cell_is_kept_whole_under_every_profile() {
         finish_window_read(&store, "lib", &later).await.unwrap();
         let view = window_view(&store).await.unwrap();
         assert_eq!(view[0].editions[0].edition, short, "{name}");
-        let versions: BTreeSet<String> = window_book_parts::Entity::find()
-            .all(store.db())
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|part| part.version)
-            .collect();
+        let versions: BTreeSet<String> =
+            crate::test_support::uncapped(window_book_parts::Entity::find().all(store.db()))
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|part| part.version)
+                .collect();
         assert_eq!(versions.len(), 1, "{name}: only the named version stays");
         assert_eq!(
             clear_window_books(&store, "lib").await.unwrap(),
@@ -1733,14 +1733,14 @@ async fn read_person(store: &LibraryStore, person: i64) -> Vec<WindowWork> {
 /// the library (as for a book the library only knows from its pool).
 async fn drop_holdings_of(store: &LibraryStore, asin: &str) {
     use sea_orm::QueryFilter as _;
-    let listings: Vec<String> = store_listings::Entity::find()
-        .all(store.db())
-        .await
-        .unwrap()
-        .into_iter()
-        .filter(|l| l.product_id.ends_with(asin))
-        .map(|l| l.id)
-        .collect();
+    let listings: Vec<String> =
+        crate::test_support::uncapped(store_listings::Entity::find().all(store.db()))
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|l| l.product_id.ends_with(asin))
+            .map(|l| l.id)
+            .collect();
     holdings::Entity::delete_many()
         .filter(holdings::Column::ListingId.is_in(listings))
         .exec(store.db())

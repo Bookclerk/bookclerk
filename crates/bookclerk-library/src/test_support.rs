@@ -18,7 +18,9 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use bookclerk_db_exec::begin_gate::{with_batch_in_progress, BeginGate, BeginGateHandle};
+use bookclerk_db_exec::begin_gate::{
+    with_batch_in_progress, with_uncapped_reads, BeginGate, BeginGateHandle, ReadCaps,
+};
 use bookclerk_db_exec::{
     execute_typed_envelope_on_connection, stamp_adapter_execute, AdapterExecuteRequest,
     AtomicSession, ExecCaps,
@@ -343,6 +345,16 @@ pub struct ProfileStore {
     exec: Arc<ProfileExec>,
 }
 
+/// Runs `read`, a test's own look at the tables, past the profile's
+/// result limits: the store's reads are held to them, but no plugin
+/// serves an assertion in production.
+pub async fn uncapped<F, T>(read: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    with_uncapped_reads(read).await
+}
+
 impl ProfileStore {
     /// Opens `engine` behind a begin gate, applies the host schema and wires
     /// a store that enforces `profile` on every host batch and every named
@@ -370,6 +382,14 @@ impl ProfileStore {
         // any adapter session exists; the gate starts refusing afterwards.
         crate::apply_host_schema(&db).await?;
         handle.refuse(true);
+        // Plain reads are held to the profile's result rows and bytes from
+        // here on, the way the plugin host's proxy holds them. Cells are not
+        // held yet: configuration documents wider than one cell are stored
+        // whole until they are stored in pieces.
+        handle.cap_reads(Some(ReadCaps {
+            max_cell_bytes: 0,
+            ..ReadCaps::from_capabilities(&caps)
+        }));
         let exec = Arc::new(ProfileExec::new(db.clone(), caps.clone()));
         let atomic = NamedAtomicBackend::new(ProfileAtomic::new(Arc::clone(&exec), caps.clone()));
         let store = LibraryStore::from_connection(db)

@@ -7,7 +7,7 @@
 //! `docs/adr/patron-scopes.md`).
 
 use chrono::Utc;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::{Deserialize, Serialize};
 
 use super::library_index::facet_key;
@@ -200,13 +200,12 @@ impl LibraryStore {
     /// or the read error.
     pub async fn work_tags(&self, work_id: &str) -> Result<Vec<WorkTag>> {
         self.tag_target(work_id).await?;
-        let rows = work_tags::Entity::find()
-            .filter(work_tags::Column::WorkId.eq(work_id))
-            .order_by_asc(work_tags::Column::Key)
-            .order_by_asc(work_tags::Column::Source)
-            .all(self.db())
-            .await
-            .map_err(LibraryError::Orm)?;
+        let rows = crate::store::keyset::read_keyset(
+            self,
+            work_tags::Entity::find().filter(work_tags::Column::WorkId.eq(work_id)),
+            &[work_tags::Column::Key, work_tags::Column::Source],
+        )
+        .await?;
         Ok(rows
             .into_iter()
             .filter_map(|row| {

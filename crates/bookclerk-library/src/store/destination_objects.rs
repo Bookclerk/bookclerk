@@ -22,10 +22,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use sea_orm::sea_query::{Expr, OnConflict};
-use sea_orm::{
-    ActiveValue::Set, ColumnTrait, Condition, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
-    QuerySelect,
-};
+use sea_orm::{ActiveValue::Set, ColumnTrait, Condition, EntityTrait, PaginatorTrait, QueryFilter};
 
 use super::LibraryStore;
 use crate::entities::{destination_feeds, destination_objects, edition_copies, edition_files};
@@ -281,11 +278,12 @@ impl LibraryStore {
     ///
     /// Returns an error when the read fails.
     pub async fn destination_feeds(&self) -> Result<Vec<DestinationFeed>> {
-        let rows = destination_feeds::Entity::find()
-            .order_by_asc(destination_feeds::Column::Destination)
-            .all(self.db())
-            .await
-            .map_err(LibraryError::Orm)?;
+        let rows = crate::store::keyset::read_keyset(
+            self,
+            destination_feeds::Entity::find(),
+            &[destination_feeds::Column::Destination],
+        )
+        .await?;
         Ok(rows
             .into_iter()
             .filter_map(DestinationFeed::from_row)
@@ -436,18 +434,20 @@ impl LibraryStore {
         let mut changed_count = 0;
         for chunk in objects.chunks(self.object_keys_per_statement(3)) {
             let known: HashMap<String, destination_objects::Model> =
-                destination_objects::Entity::find()
-                    .filter(destination_objects::Column::Destination.eq(destination))
-                    .filter(
-                        destination_objects::Column::ObjectKey
-                            .is_in(chunk.iter().map(|object| object.key.clone())),
-                    )
-                    .all(self.db())
-                    .await
-                    .map_err(LibraryError::Orm)?
-                    .into_iter()
-                    .map(|row| (row.object_key.clone(), row))
-                    .collect();
+                crate::store::keyset::read_keyset(
+                    self,
+                    destination_objects::Entity::find()
+                        .filter(destination_objects::Column::Destination.eq(destination))
+                        .filter(
+                            destination_objects::Column::ObjectKey
+                                .is_in(chunk.iter().map(|object| object.key.clone())),
+                        ),
+                    &[destination_objects::Column::ObjectKey],
+                )
+                .await?
+                .into_iter()
+                .map(|row| (row.object_key.clone(), row))
+                .collect();
             let mut unchanged = Vec::new();
             let mut changed = Vec::new();
             for object in chunk {
@@ -675,15 +675,19 @@ impl LibraryStore {
                 ),
             None => Condition::all().add(destination_objects::Column::ChangedSeq.gt(seq)),
         };
-        let rows = destination_objects::Entity::find()
-            .filter(destination_objects::Column::Destination.eq(destination))
-            .filter(position)
-            .order_by_asc(destination_objects::Column::ChangedSeq)
-            .order_by_asc(destination_objects::Column::ObjectKey)
-            .limit(limit)
-            .all(self.db())
-            .await
-            .map_err(LibraryError::Orm)?;
+        let rows = crate::store::keyset::read_keyset_limit(
+            self,
+            destination_objects::Entity::find()
+                .filter(destination_objects::Column::Destination.eq(destination))
+                .filter(position),
+            &[
+                destination_objects::Column::ChangedSeq,
+                destination_objects::Column::ObjectKey,
+            ],
+            crate::store::keyset::KeyOrder::Ascending,
+            limit,
+        )
+        .await?;
         Ok(rows
             .into_iter()
             .map(|row| ChangedObject {
@@ -741,13 +745,15 @@ impl LibraryStore {
     ) -> Result<LostCopies> {
         let mut lost = LostCopies::default();
         for chunk in keys.chunks(self.object_keys_per_statement(2)) {
-            let copies = edition_copies::Entity::find()
-                .filter(edition_copies::Column::Destination.eq(destination))
-                .filter(edition_copies::Column::State.eq(CopyState::Stored.as_str()))
-                .filter(edition_copies::Column::StorageKey.is_in(chunk.iter().cloned()))
-                .all(self.db())
-                .await
-                .map_err(LibraryError::Orm)?;
+            let copies = crate::store::keyset::read_keyset(
+                self,
+                edition_copies::Entity::find()
+                    .filter(edition_copies::Column::Destination.eq(destination))
+                    .filter(edition_copies::Column::State.eq(CopyState::Stored.as_str()))
+                    .filter(edition_copies::Column::StorageKey.is_in(chunk.iter().cloned())),
+                &[edition_copies::Column::EditionId],
+            )
+            .await?;
             for copy in copies {
                 let edition = copy.edition_id.clone();
                 let moved_to = self
@@ -817,15 +823,17 @@ impl LibraryStore {
     ///
     /// Returns an error when a read or a write fails.
     pub async fn release_missing_editions(&self, destination: &str) -> Result<u64> {
-        let mut editions: Vec<String> = edition_copies::Entity::find()
-            .filter(edition_copies::Column::Destination.eq(destination))
-            .filter(edition_copies::Column::State.eq(CopyState::Missing.as_str()))
-            .all(self.db())
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(|copy| copy.edition_id)
-            .collect();
+        let mut editions: Vec<String> = crate::store::keyset::read_keyset(
+            self,
+            edition_copies::Entity::find()
+                .filter(edition_copies::Column::Destination.eq(destination))
+                .filter(edition_copies::Column::State.eq(CopyState::Missing.as_str())),
+            &[edition_copies::Column::EditionId],
+        )
+        .await?
+        .into_iter()
+        .map(|copy| copy.edition_id)
+        .collect();
         editions.sort();
         editions.dedup();
         let mut released = 0;
@@ -892,30 +900,34 @@ impl LibraryStore {
     ///
     /// Returns an error when a read fails.
     pub async fn unlisted_copy_keys(&self, destination: &str) -> Result<(Vec<String>, u64)> {
-        let mut keys: Vec<String> = edition_copies::Entity::find()
-            .filter(edition_copies::Column::Destination.eq(destination))
-            .filter(edition_copies::Column::State.eq(CopyState::Stored.as_str()))
-            .all(self.db())
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .filter_map(|copy| copy.storage_key)
-            .collect();
+        let mut keys: Vec<String> = crate::store::keyset::read_keyset(
+            self,
+            edition_copies::Entity::find()
+                .filter(edition_copies::Column::Destination.eq(destination))
+                .filter(edition_copies::Column::State.eq(CopyState::Stored.as_str())),
+            &[edition_copies::Column::EditionId],
+        )
+        .await?
+        .into_iter()
+        .filter_map(|copy| copy.storage_key)
+        .collect();
         keys.sort();
         keys.dedup();
         let stored = u64::try_from(keys.len()).unwrap_or(u64::MAX);
         let mut missing = Vec::new();
         for chunk in keys.chunks(self.object_keys_per_statement(2)) {
-            let present: std::collections::HashSet<String> = destination_objects::Entity::find()
-                .filter(destination_objects::Column::Destination.eq(destination))
-                .filter(destination_objects::Column::Removed.eq(0))
-                .filter(destination_objects::Column::ObjectKey.is_in(chunk.iter().cloned()))
-                .all(self.db())
-                .await
-                .map_err(LibraryError::Orm)?
-                .into_iter()
-                .map(|row| row.object_key)
-                .collect();
+            let present: std::collections::HashSet<String> = crate::store::keyset::read_keyset(
+                self,
+                destination_objects::Entity::find()
+                    .filter(destination_objects::Column::Destination.eq(destination))
+                    .filter(destination_objects::Column::Removed.eq(0))
+                    .filter(destination_objects::Column::ObjectKey.is_in(chunk.iter().cloned())),
+                &[destination_objects::Column::ObjectKey],
+            )
+            .await?
+            .into_iter()
+            .map(|row| row.object_key)
+            .collect();
             missing.extend(chunk.iter().filter(|key| !present.contains(*key)).cloned());
         }
         Ok((missing, stored))
@@ -930,15 +942,16 @@ impl LibraryStore {
         edition_id: &str,
         gone: Option<&str>,
     ) -> Result<Option<String>> {
-        let files = edition_files::Entity::find()
-            .filter(edition_files::Column::Destination.eq(destination))
-            .filter(edition_files::Column::OwnerKind.eq("edition"))
-            .filter(edition_files::Column::OwnerId.eq(edition_id))
-            .filter(edition_files::Column::Role.eq(FileRole::Audio.as_str()))
-            .order_by_asc(edition_files::Column::StorageKey)
-            .all(self.db())
-            .await
-            .map_err(LibraryError::Orm)?;
+        let files = crate::store::keyset::read_keyset(
+            self,
+            edition_files::Entity::find()
+                .filter(edition_files::Column::Destination.eq(destination))
+                .filter(edition_files::Column::OwnerKind.eq("edition"))
+                .filter(edition_files::Column::OwnerId.eq(edition_id))
+                .filter(edition_files::Column::Role.eq(FileRole::Audio.as_str())),
+            &[edition_files::Column::StorageKey],
+        )
+        .await?;
         for file in files {
             if Some(file.storage_key.as_str()) == gone {
                 continue;

@@ -305,11 +305,20 @@ read an unbounded number of rows reads them in pages, using the helpers in
   at most one result page, ordered by columns that are unique together and
   `NOT NULL`. A composite key is compared as an `OR` of prefix matches,
   since row-value comparisons are outside SQL v1.
+- `read_keyset_limit` reads the first `limit` rows the same way, walking
+  the key in ascending or descending order: what `ORDER BY key LIMIT n`
+  reads in one reply where the plugin allows it.
+- `read_keyset_column` reads one unique text column of the selected rows
+  as a projection, for walks that only need ids.
 - `find_chunked_paged` reads a one-to-many lookup (the credits of many
   works, the listings of many editions) in chunks of ids that fit the
   bind and size limits, and each chunk in keyset pages by such a key.
 
-Both halve a page the plugin refuses as too large and keep the smaller
+A lookup by a unique key returns at most one row per key, so it reads in
+chunks no wider than one reply's rows. A paged API whose caller passes a
+page size reads that page in keyset pages of one reply each.
+
+These helpers halve a page the plugin refuses as too large and keep the smaller
 size. They page by key, never by `OFFSET`: a row deleted between two page
 reads would shift the later rows, and the next offset would skip one.
 
@@ -358,6 +367,15 @@ assert_eq!(db.refused_begins(), 0);
   back from the typed reply. They never take the in-process `begin()`
   fallback a store without a database plugin uses, so a named operation
   the adapter would refuse fails in the test too.
+- **Plain reads held to the result caps.** A read outside a batch is held
+  to the profile's `maxResultRows` and `maxResultBytes` (the streamed
+  budget when the profile streams), the way the plugin host's proxy holds
+  it, so a listing that returns more rows than one reply allows fails in
+  the test with the adapter's `limit_exceeded`. Page such reads by key
+  (see [Paging reads in host code](#paging-reads-in-host-code)). A test's
+  own look at the tables, which no plugin serves in production, goes
+  through `uncapped(...)`. Cells are not held on plain reads yet, since
+  some configuration documents are still stored wider than one cell.
 - **Every cap applied.** Each host batch is admitted against the profile
   (`maxStatements`, `maxBinds`, `maxPayloadBytes`, `maxRequestBytes`), run
   as one transaction under its result caps and its reply checked, so a
