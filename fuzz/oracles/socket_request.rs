@@ -19,8 +19,9 @@
 //!   URL parses and the independent restatement of the header, subprotocol,
 //!   heartbeat and attachment rules below holds (for `tls://`: ALPN ids of
 //!   1 to 255 visible ASCII bytes, no headers and no heartbeats, and trust
-//!   anchors that are each one DER SEQUENCE of at most 8 KiB, which a
-//!   WebSocket may not send);
+//!   anchors that are each one DER SEQUENCE of at most 8 KiB, and a server
+//!   name that is empty or a DNS name that isn't an IP address, neither of
+//!   which a WebSocket may send);
 //! - [`check_socket_frame_for`] refuses text on a `tls://` stream and
 //!   otherwise agrees with the frame size check;
 //! - [`auto_response_for`] answers exactly the frames equal (same kind, same
@@ -38,8 +39,8 @@ use bookclerk_plugin_abi::{
     roundtrip_socket_message, RoundTripFailure, SocketAutoResponse, SocketCodec,
     SocketConnectRequest, SocketFrame, SocketWireMessage, MAX_SOCKET_ATTACHMENT_BYTES,
     MAX_SOCKET_AUTO_RESPONSES, MAX_SOCKET_AUTO_RESPONSE_BYTES, MAX_SOCKET_FRAME_BYTES,
-    MAX_SOCKET_HEADERS, MAX_SOCKET_TRUST_ANCHORS, MAX_SOCKET_TRUST_ANCHOR_BYTES,
-    MAX_SOCKET_URL_BYTES,
+    MAX_SOCKET_HEADERS, MAX_SOCKET_SERVER_NAME_BYTES, MAX_SOCKET_TRUST_ANCHORS,
+    MAX_SOCKET_TRUST_ANCHOR_BYTES, MAX_SOCKET_URL_BYTES,
 };
 
 /// Largest input worth parsing; a real connect request is under 64 KiB.
@@ -89,6 +90,46 @@ fn stream_rules_hold(request: &SocketConnectRequest) -> bool {
         && request.attachment.len() <= MAX_SOCKET_ATTACHMENT_BYTES as usize
         && request.trust_anchors.len() <= MAX_SOCKET_TRUST_ANCHORS as usize
         && request.trust_anchors.iter().all(|der| der_shape(der))
+        && server_name_shape(&request.server_name)
+}
+
+/// A server name restated as a byte-by-byte state machine: empty, or at
+/// most 253 bytes of dot-separated labels of 1 to 63 letters, digits and
+/// inner hyphens, none starting `xn--`, the last not all digits (so no IPv4
+/// address, and no IPv6 since `:` never passes).
+fn server_name_shape(name: &str) -> bool {
+    if name.is_empty() {
+        return true;
+    }
+    if name.len() > MAX_SOCKET_SERVER_NAME_BYTES as usize {
+        return false;
+    }
+    let label_ok = |label: &[u8]| {
+        !label.is_empty()
+            && label.len() <= 63
+            && label[0] != b'-'
+            && label[label.len() - 1] != b'-'
+            && !(label.len() >= 4 && label[..4].eq_ignore_ascii_case(b"xn--"))
+    };
+    let (mut label, mut digits_only) = (Vec::new(), true);
+    for &b in name.as_bytes() {
+        match b {
+            b'.' => {
+                if !label_ok(&label) {
+                    return false;
+                }
+                label.clear();
+                digits_only = true;
+            }
+            b'0'..=b'9' => label.push(b),
+            b'a'..=b'z' | b'A'..=b'Z' | b'-' => {
+                label.push(b);
+                digits_only = false;
+            }
+            _ => return false,
+        }
+    }
+    label_ok(&label) && !digits_only
 }
 
 /// One DER SEQUENCE covering all of `der`, restated with a general
@@ -139,7 +180,12 @@ fn connect_rules_hold(request: &SocketConnectRequest, scheme: SocketScheme) -> b
             })
         });
     let attachment_ok = request.attachment.len() <= MAX_SOCKET_ATTACHMENT_BYTES as usize;
-    protocols_ok && headers_ok && heartbeats_ok && attachment_ok && request.trust_anchors.is_empty()
+    protocols_ok
+        && headers_ok
+        && heartbeats_ok
+        && attachment_ok
+        && request.trust_anchors.is_empty()
+        && request.server_name.is_empty()
 }
 
 /// Checks an accepted URL against the WHATWG parse.

@@ -75,6 +75,14 @@ export interface SocketConnectOptions {
    * of DER.
    */
   trustAnchors?: Array<Uint8Array | string>;
+  /**
+   * `tls://` only: the DNS name to send as SNI and to check the server's
+   * certificate against, for an endpoint dialed at one name that answers for
+   * another. It must be on a `tcp` grant for the URL's port too. At most
+   * `MAX_SOCKET_SERVER_NAME_BYTES`; IP addresses and `xn--` labels are
+   * refused. Defaults to the URL's host.
+   */
+  serverName?: string;
 }
 
 /**
