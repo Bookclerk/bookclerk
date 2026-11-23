@@ -217,6 +217,8 @@ async fn credits_written_after_a_link_publish_an_edition_update() {
 /// probe only on the row it read: unchanged since, still unprobed.
 #[tokio::test]
 async fn the_probe_backfill_writes_only_the_row_it_read() {
+    /// A cutoff after every row the test writes.
+    const LATER: &str = "9999-01-01T00:00:00Z";
     let store = kit_store().await;
     let owner = crate::FileOwner::Edition("ed-backfill".into());
     for key in ["A/A.m4b", "B/B.mp3"] {
@@ -227,17 +229,23 @@ async fn the_probe_backfill_writes_only_the_row_it_read() {
     }
     let destinations = ["local".to_string()];
     let first = store
-        .unprobed_audio_files(&destinations, None, 1)
+        .unprobed_audio_files(&destinations, LATER, None, 1)
         .await
         .unwrap();
     assert_eq!(first.len(), 1);
     assert_eq!(first[0].storage_key, "A/A.m4b");
     let next = store
-        .unprobed_audio_files(&destinations, Some(("local", "A/A.m4b")), 10)
+        .unprobed_audio_files(&destinations, LATER, Some(("local", "A/A.m4b")), 10)
         .await
         .unwrap();
     assert_eq!(next.len(), 1);
     assert_eq!(next[0].storage_key, "B/B.mp3");
+    // A row written after the cutoff is still settling and is left alone.
+    assert!(store
+        .unprobed_audio_files(&destinations, "2000-01-01T00:00:00Z", None, 10)
+        .await
+        .unwrap()
+        .is_empty());
     let probe = crate::FileProbe {
         content_type: "audio/mp4".into(),
         bitrate_kbps: Some(128),
@@ -266,7 +274,7 @@ async fn the_probe_backfill_writes_only_the_row_it_read() {
         .await
         .unwrap());
     let left = store
-        .unprobed_audio_files(&destinations, None, 10)
+        .unprobed_audio_files(&destinations, LATER, None, 10)
         .await
         .unwrap();
     assert_eq!(left.len(), 1);

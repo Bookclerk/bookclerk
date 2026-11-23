@@ -275,8 +275,10 @@ when it finds one, queues a `file_probe` job pinned to itself. The job
 reads each file's tags through the destination's ranged reads (the file
 is not downloaded whole), stores the probe and the stream values in one
 write, and takes the source store from the edition's holdings when they
-are all through one store. A file written again while the job read it
-keeps no probe from the old one. A file it still cannot read is tried again by the
+are all through one store. It leaves a row written in the last hour for
+a later job, since an acquire records a key before it writes the file and
+probes the file itself; a file written again while the job read it keeps
+no probe from the old one. A file it still cannot read is tried again by the
 next day's job; until then, comparing copies treats it as unknown
 quality.
 

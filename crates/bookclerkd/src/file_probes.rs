@@ -41,6 +41,21 @@ const PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 
 /// Rows read per page of the walk.
 const PROBE_PAGE: u64 = 64;
 
+/// How long a row must stand unchanged before the walk reads its file: an
+/// acquire records the key before it writes the bytes and probes them
+/// itself once they are stored, so a row written moments ago may name a
+/// file about to be replaced.
+const PROBE_SETTLE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// The `written_before` cutoff for rows that have stood unchanged for
+/// `settle`.
+fn settled_before(settle: std::time::Duration) -> String {
+    chrono::Duration::from_std(settle)
+        .map(|d| Utc::now() - d)
+        .unwrap_or_else(|_| Utc::now())
+        .to_rfc3339()
+}
+
 /// The payload of `node_id`'s probe walk.
 fn probe_payload(node_id: &str) -> JobPayload {
     JobPayload {
@@ -86,14 +101,19 @@ pub(crate) async fn enqueue_file_probe(
 
 /// Queues a probe walk for `node_id` when none was admitted in the last
 /// [`PROBE_INTERVAL`] and a destination deployed here has an audio file
-/// that was never probed. The heartbeat calls it once its beat is
-/// recorded.
+/// that was never probed (and has stood for [`PROBE_SETTLE`]). The
+/// heartbeat calls it once its beat is recorded.
 ///
 /// # Arguments
 ///
 /// * `state` - The daemon.
 /// * `node_id` - This node.
 pub(crate) async fn queue_file_probe_if_due(state: &AppState, node_id: &str) {
+    queue_file_probe_settled(state, node_id, PROBE_SETTLE).await;
+}
+
+/// [`queue_file_probe_if_due`] for rows that have stood for `settle`.
+async fn queue_file_probe_settled(state: &AppState, node_id: &str, settle: std::time::Duration) {
     let library = state.library_snapshot().await;
     let since = chrono::Duration::from_std(PROBE_INTERVAL)
         .map(|d| Utc::now() - d)
@@ -112,7 +132,12 @@ pub(crate) async fn queue_file_probe_if_due(state: &AppState, node_id: &str) {
         return;
     };
     match library
-        .unprobed_audio_files(&destination_ids(&destinations), None, 1)
+        .unprobed_audio_files(
+            &destination_ids(&destinations),
+            &settled_before(settle),
+            None,
+            1,
+        )
         .await
     {
         Ok(rows) if rows.is_empty() => return,
@@ -214,6 +239,16 @@ pub(crate) async fn run_file_probe(
     state: &AppState,
     ctx: Option<&JobExecCtx>,
 ) -> anyhow::Result<String> {
+    walk_file_probes(state, ctx, PROBE_SETTLE).await
+}
+
+/// [`run_file_probe`] over rows that have stood for `settle`.
+async fn walk_file_probes(
+    state: &AppState,
+    ctx: Option<&JobExecCtx>,
+    settle: std::time::Duration,
+) -> anyhow::Result<String> {
+    let written_before = settled_before(settle);
     let library = state.library_snapshot().await;
     let destinations = owner_destinations(state).await?;
     let ids = destination_ids(&destinations);
@@ -226,6 +261,7 @@ pub(crate) async fn run_file_probe(
         let page = library
             .unprobed_audio_files(
                 &ids,
+                &written_before,
                 after.as_ref().map(|(d, k)| (d.as_str(), k.as_str())),
                 PROBE_PAGE,
             )

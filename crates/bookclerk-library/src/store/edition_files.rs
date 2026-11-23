@@ -1142,6 +1142,9 @@ impl LibraryStore {
     /// # Arguments
     ///
     /// * `destinations` - Destination ids whose files the caller can read.
+    /// * `written_before` - Only rows last written before this RFC 3339
+    ///   time: an acquire records a key before it writes the file, so a
+    ///   row written moments ago may still name bytes about to change.
     /// * `after` - The last `(destination, storage_key)` of the previous
     ///   page; `None` to start.
     /// * `limit` - Most rows to return, further capped at the database's
@@ -1153,6 +1156,7 @@ impl LibraryStore {
     pub async fn unprobed_audio_files(
         &self,
         destinations: &[String],
+        written_before: &str,
         after: Option<(&str, &str)>,
         limit: u64,
     ) -> Result<Vec<UnprobedFile>> {
@@ -1162,6 +1166,7 @@ impl LibraryStore {
         let mut query = edition_files::Entity::find()
             .filter(edition_files::Column::Destination.is_in(destinations.iter().cloned()))
             .filter(edition_files::Column::ProbedAt.is_null())
+            .filter(edition_files::Column::WrittenAt.lt(written_before))
             .filter(edition_files::Column::Role.is_in([
                 FileRole::Audio.as_str(),
                 FileRole::Part.as_str(),

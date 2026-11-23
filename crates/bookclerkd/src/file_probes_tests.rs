@@ -56,9 +56,21 @@ async fn the_walk_probes_files_stored_without_a_probe() {
             .expect("record"));
     }
 
-    // The heartbeat queues one walk, and no other inside the interval.
+    // Rows written just now are still settling: no walk yet.
     queue_file_probe_if_due(&state, "node-a").await;
     let key = JobKind::FileProbe.dedup_key(&probe_payload("node-a"));
+    assert!(!library
+        .job_admitted_since(&key, Utc::now() - chrono::Duration::minutes(1))
+        .await
+        .expect("read"));
+    assert!(run_file_probe(&state, None)
+        .await
+        .expect("walk")
+        .starts_with("0 file(s) probed, 0 could not"));
+
+    // Once they have stood, the heartbeat queues one walk, and no other
+    // inside the interval.
+    queue_file_probe_settled(&state, "node-a", std::time::Duration::ZERO).await;
     assert!(library
         .job_admitted_since(&key, Utc::now() - chrono::Duration::minutes(1))
         .await
@@ -67,7 +79,9 @@ async fn the_walk_probes_files_stored_without_a_probe() {
         panic!("the queued walk absorbs another");
     };
 
-    let summary = run_file_probe(&state, None).await.expect("walk");
+    let summary = walk_file_probes(&state, None, std::time::Duration::ZERO)
+        .await
+        .expect("walk");
     assert!(
         summary.starts_with("1 file(s) probed, 1 could not"),
         "{summary}"
@@ -90,7 +104,7 @@ async fn the_walk_probes_files_stored_without_a_probe() {
         "an unreadable file stays for the next walk"
     );
     let left = library
-        .unprobed_audio_files(&["local".to_string()], None, 10)
+        .unprobed_audio_files(&["local".to_string()], "9999-01-01T00:00:00Z", None, 10)
         .await
         .expect("read");
     assert_eq!(left.len(), 1);
