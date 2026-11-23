@@ -598,6 +598,7 @@ def _media_tables(m: Table) -> list[tuple[str, Any]]:
                 [
                     ("destinations", _strings(notifier, "destinations")),
                     ("account_mail", _bool(notifier, "account_mail")),
+                    ("deliverability_check", _true_only(notifier, "deliverability_check")),
                     (
                         "formats",
                         ["text"] if "formats" not in notifier else _strings(notifier, "formats"),

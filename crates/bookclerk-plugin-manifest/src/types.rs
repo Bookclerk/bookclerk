@@ -507,7 +507,7 @@ pub struct NotifierManifest {
     pub account_mail: bool,
     /// Whether the plugin implements `Notifier.checkDeliverability`, so the
     /// instance's settings offer the operator a deliverability check.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub deliverability_check: bool,
     /// Body formats the plugin renders; must include `text`.
     #[serde(default = "default_notifier_formats")]
