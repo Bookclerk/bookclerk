@@ -185,10 +185,12 @@ struct Stamp {
 }
 
 /// The matrix in memory and when the table was last looked at.
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct Held {
-    /// The matrix and the stamp it was built at.
-    matrix: Option<(Arc<WorkMatrix>, Stamp)>,
+    /// The matrix, the stamp it was built at and the store it was read
+    /// from. Holding the store keeps a request that still reads a replaced
+    /// store from handing its vectors to requests on the new one.
+    matrix: Option<(Arc<WorkMatrix>, Stamp, LibraryStore)>,
     /// When the table was last looked at for a change.
     looked: Option<Instant>,
     /// Query vectors by `(space, text)`, oldest first.
@@ -196,7 +198,7 @@ struct Held {
 }
 
 /// This node's index of work vectors. One per daemon.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(crate) struct WorkVectors {
     /// The matrix; the lock is held across a rebuild, so two requests
     /// that find it stale read the table once.
@@ -216,9 +218,17 @@ impl WorkVectors {
         space: &VectorSpace,
     ) -> bookclerk_library::Result<Arc<WorkMatrix>> {
         let mut held = self.held.lock().await;
-        if let (Some((matrix, _)), Some(looked)) = (&held.matrix, held.looked) {
-            if matrix.space.same_as(space) && looked.elapsed() < REVALIDATE_EVERY {
-                return Ok(Arc::clone(matrix));
+        // A matrix read from another store, or of another space, is not
+        // this question's, however fresh.
+        let fits = |held: &Held| {
+            held.matrix
+                .as_ref()
+                .filter(|(matrix, _, of)| of.same_store(library) && matrix.space.same_as(space))
+                .map(|(matrix, built_at, _)| (Arc::clone(matrix), built_at.clone()))
+        };
+        if let (Some((matrix, _)), Some(looked)) = (fits(&held), held.looked) {
+            if looked.elapsed() < REVALIDATE_EVERY {
+                return Ok(matrix);
             }
         }
         let stamp = library
@@ -237,9 +247,9 @@ impl WorkVectors {
                 },
             );
         held.looked = Some(Instant::now());
-        if let Some((matrix, built_at)) = &held.matrix {
-            if matrix.space.same_as(space) && *built_at == stamp {
-                return Ok(Arc::clone(matrix));
+        if let Some((matrix, built_at)) = fits(&held) {
+            if built_at == stamp {
+                return Ok(matrix);
             }
         }
         let stored = library.work_vectors_in(space).await?;
@@ -249,7 +259,7 @@ impl WorkVectors {
             works = matrix.len(),
             "rebuilt the work vector index"
         );
-        held.matrix = Some((Arc::clone(&matrix), stamp));
+        held.matrix = Some((Arc::clone(&matrix), stamp, library.clone()));
         Ok(matrix)
     }
 
@@ -365,6 +375,42 @@ mod tests {
         let mut endless = [f32::INFINITY, 1.0];
         unit(&mut endless);
         assert_eq!(endless, [f32::INFINITY, 1.0]);
+    }
+
+    #[tokio::test]
+    async fn a_matrix_is_only_served_to_the_store_it_was_read_from() {
+        use bookclerk_library::{NewVector, VECTOR_KIND_WORK};
+        // Two stores holding one work vector each, in the same space.
+        let files_a = tempfile::tempdir().unwrap();
+        let files_b = tempfile::tempdir().unwrap();
+        let (_state_a, old) = crate::node_api::tests::test_state(&files_a).await;
+        let (_state_b, new) = crate::node_api::tests::test_state(&files_b).await;
+        let m = space("m");
+        let vector = bookclerk_discover::vector_to_bytes(&[1.0, 0.0]);
+        for (store, work) in [(&old, "in-the-old"), (&new, "in-the-new")] {
+            let row = NewVector {
+                target_id: work,
+                vector: &vector,
+                text_hash: "h",
+            };
+            store
+                .put_vectors(VECTOR_KIND_WORK, &m, 2, &[row])
+                .await
+                .unwrap();
+        }
+        let index = WorkVectors::default();
+        let ids = |matrix: &WorkMatrix| matrix.ids.clone();
+        assert_eq!(ids(&index.current(&old, &m).await.unwrap()), ["in-the-old"]);
+        // The daemon swaps stores; no revalidation is due yet.
+        index.reset().await;
+        assert_eq!(ids(&index.current(&new, &m).await.unwrap()), ["in-the-new"]);
+        // A request that began before the swap still reads the old store,
+        // and what it builds is not served to the new store's requests.
+        assert_eq!(ids(&index.current(&old, &m).await.unwrap()), ["in-the-old"]);
+        assert_eq!(ids(&index.current(&new, &m).await.unwrap()), ["in-the-new"]);
+        // A clone of a store is that store: the matrix is reused.
+        let again = index.current(&new.clone(), &m).await.unwrap();
+        assert!(Arc::ptr_eq(&again, &index.current(&new, &m).await.unwrap()));
     }
 
     #[tokio::test]
