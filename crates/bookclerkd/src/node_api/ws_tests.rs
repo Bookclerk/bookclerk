@@ -695,6 +695,8 @@ async fn work_frames_seal_secrets_and_resume_refuses_lost_fences() {
                 memory_available_bytes: None,
                 files_dir_free_bytes: None,
                 public_origin: Some(" HTTPS://Branch.Example/ ".into()),
+                budget_cpu_millicores: Some(500),
+                budget_memory_bytes: Some(1 << 20),
             },
         ),
     )
@@ -706,6 +708,9 @@ async fn work_frames_seal_secrets_and_resume_refuses_lost_fences() {
         status.public_origin.as_deref(),
         Some("https://branch.example")
     );
+    // The branch's own budget for this library bounds the library's.
+    assert_eq!(status.cpu_budget_millicores, 500);
+    assert_eq!(status.memory_budget_bytes, Some(1 << 20));
     // An address that is not a plain origin is dropped, not stored.
     let beat = request(
         &mut client,
@@ -720,6 +725,8 @@ async fn work_frames_seal_secrets_and_resume_refuses_lost_fences() {
                 memory_available_bytes: None,
                 files_dir_free_bytes: None,
                 public_origin: Some("https://branch.example/path".into()),
+                budget_cpu_millicores: None,
+                budget_memory_bytes: None,
             },
         ),
     )
@@ -727,6 +734,8 @@ async fn work_frames_seal_secrets_and_resume_refuses_lost_fences() {
     assert!(matches!(beat.body, Body::Accepted {}), "{beat:?}");
     let status = load_node_status(&store, &node_id).await.unwrap().unwrap();
     assert_eq!(status.public_origin, None);
+    // A branch that reports no budget leaves the library's own.
+    assert!(status.cpu_budget_millicores > 500, "{status:?}");
 
     // Reconnect while the fence is still the job's: it is renewed.
     drop(client);
