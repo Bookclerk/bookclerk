@@ -65,6 +65,14 @@ that element, named `<worker>--component--<name>--<theme>.png`. A change to
 one building block then shows up as its own small image beside the full
 pages.
 
+Before a building block is captured, `workers.spec.ts` sets the website's
+sticky header to `position: static` on the element itself, so the header
+stays in the page flow. Otherwise a block taller than the viewport, such
+as the hero on a phone, is drawn with the header pinned over part of it,
+wherever Playwright scrolled to. The site's CSP refuses injected
+stylesheets, and Playwright's `stylePath` option is one, so it has no
+effect on the site's pages.
+
 A new collector page template gets a sample render in `visual/serve.ts`
 and an entry in `visual/pages.ts`. A new website page gets an entry in
 `audit/pages.ts`. A new building block gets a `VISUAL_COMPONENTS` entry.
@@ -216,6 +224,12 @@ It runs inside the pinned Playwright image
 run renders with the same browser, fonts and system libraries. The image's
 version must match `@playwright/test` in `ui/package.json`. When they
 differ, Playwright can't find its browser and the job fails.
+Dependabot bumps `@playwright/test` but can't move the image, so its
+Playwright pull request fails this job until the image's tag and digest
+(in `ci.yml` and `visual-recheck.yml`, which must match) and the
+`playwright-core` override in `ui/package.json` move to the same version
+in that pull request. A new browser can render some screenshots
+differently; approve those in the visual comment as usual.
 
 Each run first records a full set of screenshots, then, once any are
 approved, compares with them. The job uploads a `ui-visual` artifact:

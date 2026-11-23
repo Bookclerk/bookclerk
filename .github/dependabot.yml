@@ -8,6 +8,15 @@ updates:
     # Match workerd pin cooldown (supply-chain). Platform default is 3 days.
     cooldown:
       default-days: 7
+    # One D-Bus stack: the desktop's media controls (souvlaki) and the tray
+    # (ksni) are on zbus 5, so the keystore stays on zbus 5 and notify-rust
+    # on 4.18, its last zbus 5 line (crates/bookclerk-desktop/Cargo.toml).
+    # Lift both once those move to zbus 6.
+    ignore:
+      - dependency-name: "zbus"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "notify-rust"
+        versions: [">=4.19"]
     groups:
       # capnp / capnpc / capnp-rpc share a version; bumping one alone
       # dual-compiles the runtime and breaks generated Client bounds.
@@ -55,8 +64,17 @@ updates:
         patterns:
           - "*"
 
+  # The three Cloudflare Workers: the diagnostics collector, the hosted demo
+  # (Containers library) and the bookclerk.app website. They share their
+  # tooling (wrangler, @cloudflare/vitest-plugin, @cloudflare/workers-types),
+  # which releases together, so one pull request a week moves it in all three
+  # lockfiles; separate per-package PRs conflicted with each other on every
+  # merge (docs/contributing/automation.md#what-dependabot-updates).
   - package-ecosystem: npm
-    directory: "/tools/diagnostics-collector"
+    directories:
+      - "/tools/diagnostics-collector"
+      - "/tools/demo"
+      - "/tools/site"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -69,38 +87,10 @@ updates:
         patterns:
           - "vitest"
           - "@vitest/*"
-
-  # The hosted demo Worker (Containers library, wrangler).
-  - package-ecosystem: npm
-    directory: "/tools/demo"
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    cooldown:
-      default-days: 7
-    groups:
-      # @vitest/coverage-v8 requires the exact vitest version it was
-      # released with, so bumping either one alone fails `npm ci`.
-      vitest:
-        patterns:
-          - "vitest"
-          - "@vitest/*"
-
-  # Deploy tooling (wrangler) for the bookclerk.app website.
-  - package-ecosystem: npm
-    directory: "/tools/site"
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    cooldown:
-      default-days: 7
-    groups:
-      # @vitest/coverage-v8 requires the exact vitest version it was
-      # released with, so bumping either one alone fails `npm ci`.
-      vitest:
-        patterns:
-          - "vitest"
-          - "@vitest/*"
+      workers-tooling-minor-patch:
+        update-types:
+          - minor
+          - patch
 
   # Lighthouse and axe-core for the website's CI audit.
   - package-ecosystem: npm

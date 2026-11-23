@@ -52,6 +52,10 @@ runs:
         if [[ -z "$EXPECTED_SHA" ]]; then
           exit 0
         fi
+        # A job in a container (the UI visual job's Playwright image) runs
+        # as a user that doesn't own the runner's checkout, and git refuses
+        # such a repository ("dubious ownership"), so trust it first.
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
         # Quiet, so the log never lists what the commit changes.
         git fetch --quiet "$dir/head.bundle" refs/heads/osv-remediation
         # Fail closed: a remediation commit sits on github.sha and changes

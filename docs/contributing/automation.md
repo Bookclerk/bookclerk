@@ -19,6 +19,15 @@ GitHub then merges it, or adds it to the merge queue when one is required,
 once `CI Gate` and `PR scan / osv-scan` pass. Failing pull requests stay
 open for a human.
 
+Major bumps are included on purpose: CI is what keeps a breaking update
+out, so a major that passes every check merges like any other.
+
+To keep one Dependabot pull request out of auto-merge, add the `hold`
+label and turn its auto-merge off. Without the label the workflow
+approves it and turns auto-merge back on whenever Dependabot rebases it.
+A run that was already past its label check when you added the label can
+still arm it, so check again once that run finishes.
+
 The repository-level **Allow auto-merge** setting only makes the
 per-pull-request "Enable auto-merge" button and API available. It never
 merges a pull request on its own, so human pull requests merge exactly as
@@ -50,9 +59,23 @@ digest within the pinned major.
 
 Packages that must share one version are grouped so they move in one pull
 request: `capnp`, `capnp-rpc`, `capnpc` and `capnp-futures` in Cargo, and
-`vitest` with its `@vitest/*` plugins in each Worker under `tools/`
+`vitest` with its `@vitest/*` plugins in the Workers under `tools/`
 (`@vitest/coverage-v8` accepts only the vitest release it shipped with, so
 bumping either one alone fails `npm ci`).
+
+Most other minor and patch releases are grouped too, so a weekly round
+opens a handful of pull requests rather than one per package. Each one
+takes a full suite in the merge queue, and bumps that edit the same
+lockfile conflict with each other as they land. The three Workers under
+`tools/` (`diagnostics-collector`, `demo` and `site`) share one entry, so
+wrangler, `@cloudflare/vitest-plugin` and `@cloudflare/workers-types`
+move in all three lockfiles in one pull request. Major releases still
+arrive one per pull request.
+
+In Cargo, Dependabot leaves zbus majors and notify-rust 4.19 and later
+alone, so the desktop keeps one D-Bus stack: its media controls and tray
+are on zbus 5, and notify-rust 4.18 is the last line on it. Lift both
+ignores when those crates move to zbus 6.
 
 `examples/` lockfiles are left out, because they are reference plugins and
 never packaged. The full OSV scan still reports them.

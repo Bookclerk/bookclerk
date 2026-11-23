@@ -32,6 +32,25 @@ import { COLLECTOR_ORIGIN, SITE_ORIGIN } from "./servers.ts";
 /** Themes every page is rendered in. */
 const THEMES = ["light", "dark"] as const;
 
+/**
+ * Keeps the website's sticky headers in the page flow before an element
+ * screenshot, so a block taller than the viewport (the home page hero on a
+ * phone) is not drawn with the header pinned over part of it wherever
+ * Playwright scrolled. A sticky element keeps its place in the flow, so
+ * nothing else moves. It sets the elements' own style through the CSSOM:
+ * the site's CSP (`style-src 'self'`) refuses an injected stylesheet, which
+ * is also how Playwright applies `stylePath`.
+ *
+ * @param page - The page about to be captured.
+ */
+async function unstickHeaders(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    for (const header of document.querySelectorAll<HTMLElement>(".site-header")) {
+      header.style.setProperty("position", "static", "important");
+    }
+  });
+}
+
 /** WCAG 2.2 A and AA rule tags axe-core checks, as for the stories. */
 const WCAG_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
 
@@ -159,6 +178,7 @@ for (const c of COMPONENTS) {
       const element = page.locator(c.selector).first();
       await expect(element).toBeVisible();
       await expectNoViolations(new AxeBuilder({ page }).include(c.selector));
+      await unstickHeaders(page);
       await expect(element).toHaveScreenshot(`${c.worker}--component--${c.name}--${theme}.png`);
     });
   }

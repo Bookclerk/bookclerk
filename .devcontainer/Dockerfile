@@ -16,7 +16,7 @@
 # Node.js for `ui/` and the Workers under tools/: taken from the official image
 # rather than an apt repository so Dependabot tracks its digest. The major is
 # the `nodejs` pin in /.tool-versions, moved by hand (scripts/tests/test_dev_env.py).
-FROM node:26-trixie-slim@sha256:36793bcbb160a6a16cede1e62b93f84e26b78a972a8a4c0b879c1c12f22761ec AS node
+FROM node:26-trixie-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc AS node
 
 # uv installs the Python plugin SDK's dev/docs tools from its uv.lock (the
 # `python_sdk` CI check and `generate-api-docs.sh --python`). The tag is the
