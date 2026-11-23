@@ -294,8 +294,8 @@ accounts and which of them would travel.
 - **The branch operator's rule.** Each operator decides whether members
   may connect store accounts there with the **Link store accounts**
   member control, for every member or one (**Settings → User
-  Management**, `PUT /api/users/default-controls` and
-  `PUT /api/users/{id}/controls`; see
+  Management**, `PATCH /api/users/default-controls` and
+  `PATCH /api/users/{id}/controls`; see
   [Sharing](../guide/sharing.md#limit-what-a-patron-may-do)). It is on
   by default and nobody can change their own. An Owner or the operator
   can turn it off for one Administrator too; Owners are never limited. A member it is off for adds nothing from a join,
@@ -398,6 +398,17 @@ account itself.
   keeps refreshing it itself, so a branch that was sent the account but
   couldn't keep it (no Owner to keep it for, or its member rule refused it)
   never leaves it stale.
+- **The first push.** A branch's first push can come from the copy the
+  library sent it while the library saved a newer refresh since. So until a
+  push from the branch is applied, the library answers one whose secrets
+  differ from its own with `reconcile`, carrying its own sign-in sealed to
+  the branch's box key, whenever its secrets were written after it last
+  sent the account there. When the branch's copy is still the one it was
+  sent (none of its secrets written since it arrived), the branch takes the
+  library's sign-in, guarded on that in one atomic batch, and pushes it
+  back, which matches and is applied. Otherwise the branch's own sign-in
+  is newer, and it pushes it again marked `keeps_own`, which the library
+  applies.
 - **Elsewhere.** A kept account travels back only to its keeper, never to
   a second branch, and a second branch's offer of it is not kept.
 - **A new keeper.** When the account is disconnected everywhere on the
@@ -555,6 +566,13 @@ elevating, since removing one deletes its records. Stop Bookclerk on it
 first: a branch that heartbeats while it's being removed either keeps its
 place (the removal is refused as running) or is removed and then has its
 heartbeats refused until it restarts and joins again.
+
+A shared branch that was cut off from the database for a while reads as
+not running and can be removed while it still runs. When it reconnects
+it notices it was removed: it logs an error, writes no heartbeat and
+queues none of the maintenance work a heartbeat queues, so it never comes
+back half-registered. Stop Bookclerk
+on it, or restart it to register it again.
 
 > [!WARNING]
 > Removing a shared branch doesn't take back the database credentials or key it
@@ -1050,7 +1068,9 @@ C is B's.
   members' books stay on B, unless A requests one or A's operator turns on
   **Acquire all of this branch's members' books** (see below). Each title
   carries its store, product id, marketplace, metadata (with its ASIN,
-  ISBN and kind) and file list, nothing else. A matches each one to the edition it already knows, as a
+  ISBN and kind) and file list, nothing else. One product held in two
+  marketplaces (the same ASIN on Audible US and UK) is two titles, each
+  shared on its own. A matches each one to the edition it already knows, as a
   store scan would, and records B as holding it, so C's books are simply
   B's books there, belonging to the A user who owns B. A title B got from
   A, or acquired for A and added to its own library, isn't sent back.
@@ -1060,11 +1080,22 @@ C is B's.
   uses is recorded, but its files aren't sent. Neither are the files of an
   edition A already has (acquired there, or delivered by another branch),
   so each edition arrives once. If A has no output deployed, it records
-  the titles without files.
+  the titles without files. If a title A already has the files of later
+  moves to another edition (an Administrator pins its listing there, or
+  the listing is linked again to another edition), those files belong to
+  the edition it matched before: A counts the title as not delivered
+  again and asks B for its files.
 - **Sync** runs when the branch connects, every 5 minutes, and at once
   when a setting changes. It is incremental and resumes after a
   reconnect. A full pass (after a setting changes, and once a day) also
-  withdraws titles B no longer has.
+  withdraws titles B no longer has. If B can't list a title's files (its
+  destination is briefly unreachable), the pass keeps the title and tries
+  again on the next one. If the title still can't be listed after about
+  an hour while B's other titles do list, B skips it, so a folder B can
+  never read doesn't stop every pass from finishing, and A withdraws it
+  like any title B no longer has. While nothing lists (the destination
+  is down), B keeps every title, however long that lasts. A restart of B
+  starts the hour again.
 
 ### Sharing settings on the branch
 
@@ -1359,10 +1390,13 @@ and every library above it.
   A ← B ← C ← A can be made.
 - A tree holds at most 64 libraries along one path. A join that would take
   the joining install's ancestry past that is refused
-  (`409 ancestry_too_deep`).
+  (`409 ancestry_too_deep`) when it starts and when its code is redeemed.
+  Inspecting a library checks only for a loop, since the depth depends
+  on whether you join as a branch or a shared branch.
 
 A shared branch is the same point in the tree as its
-library.
+library, so it adds no depth: a shared branch join to a library at the
+limit is not refused.
 
 ## Leaving
 

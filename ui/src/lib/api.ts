@@ -1496,6 +1496,19 @@ export interface UserScope {
   own: boolean;
   /** False for an Owner or Administrator, who always see everything. */
   applies: boolean;
+  /**
+   * The version of the patron's scope; a write sends it back as
+   * `expected_version` and is refused (409) when the scope changed since.
+   */
+  version: string;
+}
+
+/** The library's default scope as `GET`/`PUT /api/users/default-scope` report it. */
+export interface DefaultScope {
+  /** The scope patrons without their own follow. */
+  scope: PatronScope;
+  /** The version of the default; a write sends it back as `expected_version`. */
+  version: string;
 }
 
 /**
@@ -1615,18 +1628,24 @@ export async function getUserScope(id: number): Promise<UserScope> {
 
 /**
  * Gives a patron their own scope, or with `null` returns them to the
- * library's default.
+ * library's default, if their scope is still at `expectedVersion`.
  *
  * @param id - The user.
  * @param scope - Their own scope, or `null`.
+ * @param expectedVersion - The `version` the scope was read at.
  * @returns The scope after the change.
+ * @throws ApiError With status 409 when someone changed the scope since it was read.
  */
-export async function putUserScope(id: number, scope: PatronScope | null): Promise<UserScope> {
+export async function putUserScope(
+  id: number,
+  scope: PatronScope | null,
+  expectedVersion: string,
+): Promise<UserScope> {
   const res = await fetch(`/api/users/${encodeURIComponent(String(id))}/scope`, {
     method: "PUT",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ scope }),
+    body: JSON.stringify({ scope, expected_version: expectedVersion }),
   });
   return parseJson(res);
 }
@@ -1636,23 +1655,29 @@ export async function putUserScope(id: number, scope: PatronScope | null): Promi
  *
  * @returns The default.
  */
-export async function getDefaultScope(): Promise<{ scope: PatronScope }> {
+export async function getDefaultScope(): Promise<DefaultScope> {
   const res = await fetch("/api/users/default-scope", { credentials: "include" });
   return parseJson(res);
 }
 
 /**
- * Replaces the library's default patron scope.
+ * Replaces the library's default patron scope, if it is still at
+ * `expectedVersion`.
  *
  * @param scope - The new default.
+ * @param expectedVersion - The `version` the default was read at.
  * @returns The default after the change.
+ * @throws ApiError With status 409 when someone changed the default since it was read.
  */
-export async function putDefaultScope(scope: PatronScope): Promise<{ scope: PatronScope }> {
+export async function putDefaultScope(
+  scope: PatronScope,
+  expectedVersion: string,
+): Promise<DefaultScope> {
   const res = await fetch("/api/users/default-scope", {
     method: "PUT",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(scope),
+    body: JSON.stringify({ scope, expected_version: expectedVersion }),
   });
   return parseJson(res);
 }
@@ -1699,23 +1724,28 @@ export async function getUserControls(id: number): Promise<UserControls> {
   return parseJson(res);
 }
 
+/** What a change does to one of a patron's controls. */
+export type ControlChoice = "on" | "off" | "default";
+
 /**
- * Sets the controls that differ for one patron; the rest follow the
- * library's default.
+ * Changes some controls for one patron.
+ *
+ * Only the named controls change, so a concurrent edit of another control
+ * is kept.
  *
  * @param id - The user.
- * @param overrides - The controls set for them alone (`{}` for none).
+ * @param changes - `on` or `off` for them alone, or `default` to follow the library's default.
  * @returns The controls after the change.
  */
-export async function putUserControls(
+export async function patchUserControls(
   id: number,
-  overrides: ControlOverrides,
+  changes: Partial<Record<MemberControl, ControlChoice>>,
 ): Promise<UserControls> {
   const res = await fetch(`/api/users/${encodeURIComponent(String(id))}/controls`, {
-    method: "PUT",
+    method: "PATCH",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ overrides }),
+    body: JSON.stringify({ changes }),
   });
   return parseJson(res);
 }
@@ -1731,19 +1761,22 @@ export async function getDefaultControls(): Promise<{ controls: MemberControls }
 }
 
 /**
- * Replaces the library's default member controls.
+ * Changes some of the library's default member controls.
  *
- * @param controls - The new default.
+ * Only the named controls change, so a concurrent edit of another control
+ * is kept.
+ *
+ * @param changes - The controls to change and their new values.
  * @returns The default after the change.
  */
-export async function putDefaultControls(
-  controls: MemberControls,
+export async function patchDefaultControls(
+  changes: Partial<MemberControls>,
 ): Promise<{ controls: MemberControls }> {
   const res = await fetch("/api/users/default-controls", {
-    method: "PUT",
+    method: "PATCH",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(controls),
+    body: JSON.stringify({ changes }),
   });
   return parseJson(res);
 }

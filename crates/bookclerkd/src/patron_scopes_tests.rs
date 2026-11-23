@@ -76,13 +76,22 @@ async fn an_administrator_sets_the_default_and_a_patrons_own_scope() {
     assert_eq!(body["scope"]["rules"], serde_json::json!([]));
     assert_eq!(body["own"], false);
     assert_eq!(body["applies"], true);
+    let following = body["version"].as_str().expect("version").to_owned();
 
-    let kids = r#"{"rules":[{"field":"genre","value":" Kids ","effect":"include"}]}"#;
-    let (status, body) = send(&app, "PUT", "/api/users/default-scope", &admin, Some(kids)).await;
+    let (_, body) = send(&app, "GET", "/api/users/default-scope", &admin, None).await;
+    let unrestricted = body["version"].as_str().expect("version").to_owned();
+    let kids = format!(
+        r#"{{"expected_version":"{unrestricted}","scope":{{"rules":[{{"field":"genre","value":" Kids ","effect":"include"}}]}}}}"#
+    );
+    let (status, body) = send(&app, "PUT", "/api/users/default-scope", &admin, Some(&kids)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["scope"]["rules"][0]["value"], "Kids", "trimmed");
+    assert_ne!(body["version"], unrestricted.as_str(), "{body}");
     let (_, body) = send(&app, "GET", "/api/users/default-scope", &admin, None).await;
     assert_eq!(body["scope"]["rules"][0]["field"], "genre");
+    // A second write from the same reading is refused.
+    let (status, body) = send(&app, "PUT", "/api/users/default-scope", &admin, Some(&kids)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
     let (_, body) = send(
         &app,
         "GET",
@@ -96,21 +105,49 @@ async fn an_administrator_sets_the_default_and_a_patrons_own_scope() {
         "follows default"
     );
     assert_eq!(body["own"], false);
+    assert_eq!(body["version"], following.as_str(), "not the default's");
 
     // The member's own scope, then back to the default.
-    let own = r#"{"scope":{"rules":[{"field":"series","value":"Discworld","effect":"exclude"}]}}"#;
+    let own = format!(
+        r#"{{"expected_version":"{following}","scope":{{"rules":[{{"field":"series","value":"Discworld","effect":"exclude"}}]}}}}"#
+    );
     let (status, body) = send(
         &app,
         "PUT",
         &format!("/api/users/{member}/scope"),
         &admin,
-        Some(own),
+        Some(&own),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["own"], true);
     assert_eq!(body["scope"]["rules"][0]["effect"], "exclude");
+    let owned = body["version"].as_str().expect("version").to_owned();
+    // Another Administrator who read the member before that write is
+    // refused rather than replacing it.
     let (status, body) = send(
+        &app,
+        "PUT",
+        &format!("/api/users/{member}/scope"),
+        &admin,
+        Some(&format!(
+            r#"{{"expected_version":"{following}","scope":null}}"#
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let (status, body) = send(
+        &app,
+        "PUT",
+        &format!("/api/users/{member}/scope"),
+        &admin,
+        Some(&format!(r#"{{"expected_version":"{owned}","scope":null}}"#)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["own"], false);
+    // A body without a version is refused.
+    let (status, _) = send(
         &app,
         "PUT",
         &format!("/api/users/{member}/scope"),
@@ -118,8 +155,7 @@ async fn an_administrator_sets_the_default_and_a_patrons_own_scope() {
         Some(r#"{"scope":null}"#),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["own"], false);
+    assert!(status.is_client_error(), "no version: {status}");
 
     // Bad scopes, unknown users and self-service are refused.
     let (status, body) = send(
@@ -127,7 +163,9 @@ async fn an_administrator_sets_the_default_and_a_patrons_own_scope() {
         "PUT",
         &format!("/api/users/{member}/scope"),
         &admin,
-        Some(r#"{"scope":{"rules":[{"field":"genre","value":"  ","effect":"include"}]}}"#),
+        Some(&format!(
+            r#"{{"expected_version":"{following}","scope":{{"rules":[{{"field":"genre","value":"  ","effect":"include"}}]}}}}"#
+        )),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -140,7 +178,9 @@ async fn an_administrator_sets_the_default_and_a_patrons_own_scope() {
         "PUT",
         &format!("/api/users/{member}/scope"),
         &admin,
-        Some(r#"{"scope":{"rules":[{"field":"shelf","value":"x","effect":"include"}]}}"#),
+        Some(&format!(
+            r#"{{"expected_version":"{following}","scope":{{"rules":[{{"field":"shelf","value":"x","effect":"include"}}]}}}}"#
+        )),
     )
     .await;
     assert!(status.is_client_error(), "unknown field: {status}");
@@ -151,7 +191,9 @@ async fn an_administrator_sets_the_default_and_a_patrons_own_scope() {
         "PUT",
         &format!("/api/users/{administrator}/scope"),
         &admin,
-        Some(r#"{"scope":null}"#),
+        Some(&format!(
+            r#"{{"expected_version":"{following}","scope":null}}"#
+        )),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "own scope: {body}");
@@ -171,7 +213,9 @@ async fn an_administrator_sets_the_default_and_a_patrons_own_scope() {
         "PUT",
         "/api/users/default-scope",
         &member_cookie,
-        Some("{}"),
+        Some(&format!(
+            r#"{{"expected_version":"{unrestricted}","scope":{{}}}}"#
+        )),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -242,25 +286,46 @@ async fn an_administrator_sets_the_default_and_a_patrons_own_controls() {
     // The default turns prices off; the member follows it.
     let (status, body) = send(
         &app,
-        "PUT",
+        "PATCH",
         "/api/users/default-controls",
         &admin,
-        Some(r#"{"see_prices":false}"#),
+        Some(r#"{"changes":{"see_prices":false}}"#),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["controls"]["see_prices"], false);
     assert_eq!(body["controls"]["download"], true);
+    // Another Administrator changing another control keeps that change.
+    let (status, body) = send(
+        &app,
+        "PATCH",
+        "/api/users/default-controls",
+        &admin,
+        Some(r#"{"changes":{"upload":true}}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["controls"]["upload"], true);
+    assert_eq!(body["controls"]["see_prices"], false, "kept");
     let (_, body) = send(&app, "GET", "/api/users/default-controls", &admin, None).await;
     assert_eq!(body["controls"]["see_prices"], false);
 
     // The member alone loses account linking and keeps prices.
     let (status, body) = send(
         &app,
-        "PUT",
+        "PATCH",
         &format!("/api/users/{member}/controls"),
         &admin,
-        Some(r#"{"overrides":{"link_accounts":false,"see_prices":true}}"#),
+        Some(r#"{"changes":{"link_accounts":"off"}}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = send(
+        &app,
+        "PATCH",
+        &format!("/api/users/{member}/controls"),
+        &admin,
+        Some(r#"{"changes":{"see_prices":"on"}}"#),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -292,19 +357,19 @@ async fn an_administrator_sets_the_default_and_a_patrons_own_controls() {
     // An unknown control is refused, and so is setting one's own.
     let (status, _) = send(
         &app,
-        "PUT",
+        "PATCH",
         &format!("/api/users/{member}/controls"),
         &admin,
-        Some(r#"{"overrides":{"fly":false}}"#),
+        Some(r#"{"changes":{"fly":"off"}}"#),
     )
     .await;
     assert!(status.is_client_error(), "{status}");
     let (status, _) = send(
         &app,
-        "PUT",
+        "PATCH",
         &format!("/api/users/{administrator}/controls"),
         &admin,
-        Some(r#"{"overrides":{}}"#),
+        Some(r#"{"changes":{}}"#),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -313,10 +378,10 @@ async fn an_administrator_sets_the_default_and_a_patrons_own_controls() {
     let owner = portal_cookie_for(&library, "test", "admin-ext").await;
     let (status, body) = send(
         &app,
-        "PUT",
+        "PATCH",
         &format!("/api/users/{administrator}/controls"),
         &owner,
-        Some(r#"{"overrides":{"link_accounts":false}}"#),
+        Some(r#"{"changes":{"link_accounts":"off"}}"#),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -342,10 +407,10 @@ async fn an_administrator_sets_the_default_and_a_patrons_own_controls() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, _) = send(
         &app,
-        "PUT",
+        "PATCH",
         "/api/users/default-controls",
         &member_cookie,
-        Some("{}"),
+        Some(r#"{"changes":{}}"#),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -353,10 +418,10 @@ async fn an_administrator_sets_the_default_and_a_patrons_own_controls() {
     // Back to the default for every control.
     let (status, body) = send(
         &app,
-        "PUT",
+        "PATCH",
         &format!("/api/users/{member}/controls"),
         &admin,
-        Some(r#"{"overrides":{}}"#),
+        Some(r#"{"changes":{"link_accounts":"default","see_prices":"default"}}"#),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -610,11 +675,11 @@ async fn the_operator_sets_the_default_controls_and_a_stale_session_may_not() {
         .clone()
         .oneshot(
             Request::builder()
-                .method("PUT")
+                .method("PATCH")
                 .uri("/api/users/default-controls")
                 .header(header::AUTHORIZATION, "Bearer op-token-default-controls")
                 .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(r#"{"upload":false}"#))
+                .body(Body::from(r#"{"changes":{"upload":false}}"#))
                 .expect("request"),
         )
         .await

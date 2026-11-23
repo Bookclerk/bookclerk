@@ -290,17 +290,17 @@ export async function agentHealth(ctx) {
             return { serving: false, detail };
         }
     }
-    let sentAt;
+    let ticket;
     try {
-        sentAt = await session.beat(ioFor(ctx.env, ws), ctx.beat());
+        ticket = await session.beat(ioFor(ctx.env, ws), ctx.beat());
     }
     catch {
         return { serving: false, detail: "the connection to ngrok closed" };
     }
     const deadline = Date.now() + ctx.beatWaitMs;
-    while (session.lastEcho < sentAt && Date.now() < deadline)
+    while (session.echoed < ticket && Date.now() < deadline)
         await ctx.sleep(POLL_MS);
-    if (session.lastEcho >= sentAt)
+    if (session.echoed >= ticket)
         return { serving: true };
     return { serving: false, detail: "ngrok did not answer a heartbeat" };
 }

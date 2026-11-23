@@ -237,7 +237,8 @@ Bookclerk asks every deployed metadata provider, in turn, when it:
 
 With no provider deployed, ASIN matching, the acquire overlay and gap
 filling find nothing and leave your library as it is; Bookclerk has no
-built-in lookups to fall back to. Discover title details still fill what
+built-in lookups to fall back to, and skips the Audible catalog searches
+ASIN matching would otherwise make. Discover title details still fill what
 they can from the Libro.fm catalog when a deployed `libro` source finds the
 book's ISBN. A provider that fails, or gives no answer within 30 seconds, is
 logged and skipped, and the next one is asked.

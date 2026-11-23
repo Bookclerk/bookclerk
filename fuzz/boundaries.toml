@@ -569,7 +569,7 @@ artifacts = ["bookclerk"]
 
 [targets.member_controls_request]
 crate = "bookclerk-library"
-boundary = "Member controls an Owner or Administrator sets, from PUT /api/users/default-controls and PUT /api/users/{id}/controls"
+boundary = "Member controls an Owner or Administrator changes, from PATCH /api/users/default-controls and PATCH /api/users/{id}/controls"
 input_from = "Owner, Administrator or operator"
 side = "host"
 artifacts = ["bookclerk"]

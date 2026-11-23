@@ -1348,6 +1348,97 @@ async fn a_keeping_branch_pushes_its_newer_sign_ins_up_the_link() {
     }
 }
 
+/// A branch brings a single-keeper account from its library, which then
+/// refreshes it before the branch's first push: the branch takes the
+/// library's refresh in place of its unchanged copy and pushes it back, so
+/// neither side loses the newer sign-in.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_first_push_takes_the_librarys_newer_refresh() {
+    use bookclerk_library::control_plane::confirmed_keeping_branch;
+    use bookclerk_library::secrets::{
+        build_sealed_record, get_secret, secret_account_type, secret_kind, unseal_secret,
+        upsert_secret,
+    };
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let (owner_state, owner_store, origin, member) = owner(&owner_files).await;
+    let host_files = tempfile::tempdir().unwrap();
+    let (host_state, host_store) = crate::node_api::tests::test_state(&host_files).await;
+    let plugin_key = stage_storefront(&owner_files, &owner_state, "single_keeper");
+    std::os::unix::fs::symlink(
+        owner_files.path().join("plugins"),
+        host_files.path().join("plugins"),
+    )
+    .unwrap();
+    let account = "riley@example.com";
+    connect_account(&owner_store, member, &plugin_key, account, b"sent").await;
+    host_store
+        .create_user(UserRole::Owner, Some("Riley"), None)
+        .await
+        .unwrap();
+    let host = host_routes(&host_state);
+    let start = json!({ "address": origin, "branch_name": "Den PC" });
+    let (status, _, started) = call(&host, "POST", "/api/config/join/start", Some(start)).await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let authorize_url = started["authorize_url"].as_str().unwrap().to_string();
+    let back = consent_with(
+        &owner_state,
+        member,
+        &authorize_url,
+        true,
+        json!({ "bring_connections": true }),
+    )
+    .await;
+    let callback = json!({ "code": back["code"], "state": back["state"] });
+    let (status, _, joined) =
+        call(&host, "POST", "/api/config/join/callback", Some(callback)).await;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    assert_eq!(joined["connections"]["added"], 1, "{joined}");
+
+    // The library refreshes the account before the branch's link (and its
+    // pusher) starts.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let record = build_sealed_record(
+        b"refreshed",
+        secret_kind::SOURCE_AUTH,
+        &plugin_key,
+        secret_account_type::INTEGRATION,
+        account,
+        "auth",
+    )
+    .unwrap();
+    upsert_secret(owner_store.db(), &record).await.unwrap();
+    super::super::spawn_library_links(Arc::clone(&host_state));
+
+    let secret_in = |store: LibraryStore| {
+        let plugin_key = plugin_key.clone();
+        async move {
+            let record = get_secret(
+                store.db(),
+                secret_kind::SOURCE_AUTH,
+                Some(&plugin_key),
+                secret_account_type::INTEGRATION,
+                Some(account),
+                "auth",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            unseal_secret(&record).unwrap()
+        }
+    };
+    eventually("the branch to take over the account", || async {
+        confirmed_keeping_branch(&owner_store, &plugin_key, account)
+            .await
+            .unwrap()
+            .is_some()
+    })
+    .await;
+    assert_eq!(secret_in(host_store.clone()).await, b"refreshed");
+    assert_eq!(secret_in(owner_store.clone()).await, b"refreshed");
+}
+
 /// A card or branch is replaced only at the library it was made for, with
 /// the certificate pinned then; each refusal names the held thing.
 #[tokio::test]

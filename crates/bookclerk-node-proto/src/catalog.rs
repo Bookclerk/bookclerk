@@ -144,7 +144,12 @@ pub struct CatalogFile {
     pub content_type: Option<String>,
 }
 
-/// A title named by store and product id.
+/// A title named by store, product id and marketplace: the identity of a
+/// [`CatalogTitle`] on both ends of a catalog sync.
+///
+/// One store product may be sold in several marketplaces (an ASIN on
+/// Audible US and on Audible UK), and each is a title of its own, so the
+/// marketplace is part of the identity.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CatalogRef {
@@ -152,6 +157,23 @@ pub struct CatalogRef {
     pub store: String,
     /// Product id.
     pub product_id: String,
+    /// Lower-cased marketplace, as the title names it ([`is_marketplace`]);
+    /// empty when the store has none. Left out of the frame when empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub marketplace: String,
+}
+
+impl CatalogRef {
+    /// True when every part is well formed: a store id ([`is_store_id`]), a
+    /// product id ([`is_product_id`]) and a marketplace
+    /// ([`is_marketplace`]). A receiver refuses a reference that is not, so
+    /// the parts it stores together never run into one another.
+    #[must_use]
+    pub fn is_well_formed(&self) -> bool {
+        is_store_id(&self.store)
+            && is_product_id(&self.product_id)
+            && is_marketplace(&self.marketplace)
+    }
 }
 
 /// True for a store id: a short lowercase token.
@@ -209,6 +231,7 @@ impl CatalogTitle {
         CatalogRef {
             store: self.store.clone(),
             product_id: self.product_id.clone(),
+            marketplace: self.marketplace.clone(),
         }
     }
 

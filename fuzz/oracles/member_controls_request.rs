@@ -3,33 +3,31 @@
 //! (`docs/adr/untrusted-input-fuzzing.md`).
 //!
 //! The boundary is the member controls an Owner or Administrator sends:
-//! the body of `PUT /api/users/default-controls`
-//! ([`parse_member_controls`]) and of `PUT /api/users/{id}/controls`
-//! ([`parse_user_controls_request`]). The first input byte picks the body
-//! (`d` for the default, `u` for a patron's overrides); the rest is the
-//! body.
+//! the body of `PATCH /api/users/default-controls`
+//! ([`parse_default_controls_patch`]) and of
+//! `PATCH /api/users/{id}/controls` ([`parse_user_controls_patch`]). The
+//! first input byte picks the body (`d` for the default, `u` for a
+//! patron's overrides); the rest is the body.
 //!
 //! The invariant, checked against this file's own reading of the bytes as
 //! an untyped JSON value rather than the typed body:
 //!
-//! - The default is one JSON object with no repeated keys whose keys are
-//!   among the six control names (`link_accounts`, `download`,
-//!   `edit_metadata`, `upload`, `request_books`, `see_prices`), each a
-//!   boolean. A control the body leaves out is allowed, except `upload`,
-//!   which is refused until a body turns it on.
-//! - A patron's body is one object with no repeated keys and exactly the
-//!   key `overrides`, an object with no repeated keys whose keys are among
-//!   the six control names, each a boolean or `null`. A control left out
-//!   or `null` follows the default.
+//! - Each body is one JSON object with no repeated keys and exactly the
+//!   key `changes`, an object with no repeated keys whose keys are among
+//!   the six control names (`link_accounts`, `download`, `edit_metadata`,
+//!   `upload`, `request_books`, `see_prices`).
+//! - In the default's changes each value is a boolean (the new default) or
+//!   `null`; in a patron's, each is the string `on`, `off` or `default`,
+//!   or `null`. A control left out or `null` is not changed.
 //!
-//! An accepted body yields exactly those values; a refused one is
+//! An accepted body yields exactly those changes; a refused one is
 //! `Invalid`, never another error.
 
 use std::collections::BTreeSet;
 
 use bookclerk_library::control_plane::{
-    parse_member_controls, parse_user_controls_request, ControlOverrides, MemberControl,
-    MemberControls,
+    parse_default_controls_patch, parse_user_controls_patch, ControlChanges, ControlOverrides,
+    MemberControl,
 };
 use bookclerk_library::LibraryError;
 use serde::de::{Deserializer as _, MapAccess, SeqAccess, Visitor};
@@ -49,9 +47,10 @@ const DOCUMENTED_NAMES: [&str; 6] = [
     "see_prices",
 ];
 
-/// A value per documented control, in [`DOCUMENTED_NAMES`] order: `None`
-/// for a control the body leaves out or sets to `null`.
-type Values = [Option<bool>; 6];
+/// A change per documented control, in [`DOCUMENTED_NAMES`] order: `None`
+/// for a control the body leaves out or sets to `null`, `Some(Some(v))` to
+/// set it to `v`, and `Some(None)` to make a patron follow the default.
+type Values = [Option<Option<bool>>; 6];
 
 /// Runs the oracle on one input.
 ///
@@ -75,12 +74,12 @@ pub fn check(data: &[u8]) -> bool {
     };
     let (got, expected) = match selector {
         b'd' => (
-            parse_member_controls(body).map(|controls| values_of_default(&controls)),
-            expected_default(body),
+            parse_default_controls_patch(body).map(|changes| values_of_default(&changes)),
+            expected_values(body, read_default_value),
         ),
         b'u' => (
-            parse_user_controls_request(body).map(|overrides| values_of_overrides(&overrides)),
-            expected_user(body),
+            parse_user_controls_patch(body).map(|changes| values_of_changes(&changes)),
+            expected_values(body, read_choice),
         ),
         _ => return false,
     };
@@ -103,36 +102,23 @@ pub fn check(data: &[u8]) -> bool {
     }
 }
 
-/// The parser's default as oracle values: every control set.
-fn values_of_default(controls: &MemberControls) -> Values {
-    MemberControl::ALL.map(|control| Some(controls.allows(control)))
+/// The parser's default changes as oracle values.
+fn values_of_default(changes: &ControlOverrides) -> Values {
+    MemberControl::ALL.map(|control| changes.get(control).map(Some))
 }
 
-/// The parser's overrides as oracle values.
-fn values_of_overrides(overrides: &ControlOverrides) -> Values {
-    MemberControl::ALL.map(|control| overrides.get(control))
+/// The parser's patron changes as oracle values.
+fn values_of_changes(changes: &ControlChanges) -> Values {
+    MemberControl::ALL.map(|control| changes.get(control).map(|choice| choice.value()))
 }
 
-/// The expected values for a default body, or `None` when it is refused.
-/// A control the body leaves out is allowed, except `upload`.
-fn expected_default(body: &[u8]) -> Option<Values> {
-    if has_repeated_key(body) {
-        return None;
-    }
-    let Ok(Value::Object(fields)) = serde_json::from_slice::<Value>(body) else {
-        return None;
-    };
-    let values = read_values(&fields, false)?;
-    let mut out: Values = [None; 6];
-    for (index, value) in values.into_iter().enumerate() {
-        let left_out = DOCUMENTED_NAMES[index] != "upload";
-        out[index] = Some(value.unwrap_or(left_out));
-    }
-    Some(out)
-}
-
-/// The expected values for a patron's body, or `None` when it is refused.
-fn expected_user(body: &[u8]) -> Option<Values> {
+/// The expected changes for a body, or `None` when it is refused;
+/// `read_value` reads one control's value (`None` to refuse it, `Some(None)`
+/// for no change).
+fn expected_values(
+    body: &[u8],
+    read_value: fn(&Value) -> Option<Option<Option<bool>>>,
+) -> Option<Values> {
     if has_repeated_key(body) {
         return None;
     }
@@ -142,23 +128,46 @@ fn expected_user(body: &[u8]) -> Option<Values> {
     if fields.len() != 1 {
         return None;
     }
-    let Some(Value::Object(overrides)) = fields.get("overrides") else {
+    let Some(Value::Object(changes)) = fields.get("changes") else {
         return None;
     };
-    read_values(overrides, true)
+    read_values(changes, read_value)
+}
+
+/// One value of the default's changes: a boolean, or `null` for no change.
+fn read_default_value(value: &Value) -> Option<Option<Option<bool>>> {
+    match value {
+        Value::Bool(flag) => Some(Some(Some(*flag))),
+        Value::Null => Some(None),
+        _ => None,
+    }
+}
+
+/// One value of a patron's changes: `on`, `off`, `default`, or `null` for
+/// no change.
+fn read_choice(value: &Value) -> Option<Option<Option<bool>>> {
+    match value {
+        Value::String(choice) => match choice.as_str() {
+            "on" => Some(Some(Some(true))),
+            "off" => Some(Some(Some(false))),
+            "default" => Some(Some(None)),
+            _ => None,
+        },
+        Value::Null => Some(None),
+        _ => None,
+    }
 }
 
 /// Reads the documented controls out of one object, refusing an unknown
-/// key or a value that is not a boolean (or, when `nullable`, `null`).
-fn read_values(fields: &Map<String, Value>, nullable: bool) -> Option<Values> {
+/// key or a value `read_value` refuses.
+fn read_values(
+    fields: &Map<String, Value>,
+    read_value: fn(&Value) -> Option<Option<Option<bool>>>,
+) -> Option<Values> {
     let mut values: Values = [None; 6];
     for (key, value) in fields {
         let index = DOCUMENTED_NAMES.iter().position(|name| name == key)?;
-        values[index] = match value {
-            Value::Bool(flag) => Some(*flag),
-            Value::Null if nullable => None,
-            _ => return None,
-        };
+        values[index] = read_value(value)?;
     }
     Some(values)
 }

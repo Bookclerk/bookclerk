@@ -698,18 +698,23 @@ test("heartbeats: ngrok's are echoed, the agent's own are matched", async () => 
   await session.receive(ngrok.io, encodeData(2, new Uint8Array(), FLAG_FIN));
   assert.ok(streamBytes(ngrok.take(), 2).fin);
 
-  const sentAt = await session.beat(ngrok.io, bytes("1234"));
+  assert.equal(await session.beat(ngrok.io, bytes("1234")), 1);
   const beat = opened(ngrok.take(), StreamType.Heartbeat);
   assert.ok(beat);
   assert.equal(beat.body, "1234");
-  assert.equal(session.lastEcho, 0);
+  assert.equal(session.echoed, 0);
   await session.receive(ngrok.io, encodeData(beat.stream, bytes("9999")));
-  assert.equal(session.lastEcho, 0, "a wrong echo does not count");
+  assert.equal(session.echoed, 0, "a wrong echo does not count");
   await session.receive(ngrok.io, encodeData(beat.stream, bytes("1234")));
-  assert.ok(session.lastEcho >= sentAt);
-  await session.beat(ngrok.io, bytes("5678"));
+  assert.equal(session.echoed, 1);
+  assert.equal(await session.beat(ngrok.io, bytes("5678")), 2);
   const again = streamBytes(ngrok.take(), beat.stream);
   assert.equal(text(again.bytes), "5678");
+  // An echo repeated from an earlier beat does not answer this one.
+  await session.receive(ngrok.io, encodeData(beat.stream, bytes("1234")));
+  assert.equal(session.echoed, 1);
+  await session.receive(ngrok.io, encodeData(beat.stream, bytes("5678")));
+  assert.equal(session.echoed, 2);
   await session.receive(ngrok.io, encodeRst(beat.stream, ErrorCode.StreamClosed));
   await session.beat(ngrok.io, bytes("0000"));
   assert.ok(opened(ngrok.take(), StreamType.Heartbeat), "a reset beat stream is reopened");

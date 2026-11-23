@@ -1,0 +1,1 @@
+{"v":1,"id":"12","type":"catalog.session","fence":4,"cursor":"c","ancestry":["lib-a"],"destinations":["local"],"wanted":[{"store":"audible","product_id":"B0TEST"},{"store":"audible","product_id":"B0TEST","marketplace":"uk"}],"members_books":false}

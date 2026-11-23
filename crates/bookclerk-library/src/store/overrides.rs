@@ -420,6 +420,25 @@ fn pin_statements(p: &PinWrite<'_>) -> Vec<TypedDbStatement> {
                 batch::text(p.edition_id),
             ],
         ),
+        // Files a node holding of the listing delivered belong to the
+        // edition it sold before the move: none of them reads as delivered
+        // any more, so each is asked for again for the pinned edition.
+        batch::exec(
+            &format!(
+                "UPDATE holdings SET delivered_digest = NULL, updated_at = ? \
+                 WHERE listing_id = ? AND holder_kind = 'node' \
+                 AND delivered_digest IS NOT NULL \
+                 AND EXISTS (SELECT 1 FROM store_listings WHERE id = ? AND edition_id <> ?) \
+                 AND {edition_exists}"
+            ),
+            vec![
+                batch::text(p.now),
+                batch::text(p.listing_id),
+                batch::text(p.listing_id),
+                batch::text(p.edition_id),
+                batch::text(p.edition_id),
+            ],
+        ),
         batch::exec(
             &format!(
                 "UPDATE store_listings SET edition_id = ?, updated_at = ? \

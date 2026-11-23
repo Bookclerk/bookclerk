@@ -4,6 +4,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
 use bookclerk_enrich::normalize_region;
+use bookclerk_library::ListedProduct;
 use bookclerk_source::{
     PriceLookup, PricedAnswer, PurchaseHintOpts, SourcePurchaseHint, SourceRegistry,
 };
@@ -417,26 +418,43 @@ pub async fn retain_card_recordings(
     let key_of = |source: &str| -> Option<String> {
         registry.get(source).map(|s| s.plugin_key().to_string())
     };
-    let cards: Vec<Vec<(String, String)>> = queries
+    // The card and its hints are both in the card's marketplace: a store
+    // was asked about it there.
+    let markets: Vec<String> = queries.iter().map(query_region).collect();
+    let cards: Vec<Vec<ListedProduct>> = queries
         .iter()
-        .map(|query| {
+        .zip(&markets)
+        .map(|(query, market)| {
             card_editions(query)
                 .into_iter()
-                .filter_map(|(source, product)| Some((key_of(&source)?, product)))
+                .filter_map(|(source, product)| {
+                    Some(ListedProduct::new(
+                        key_of(&source)?,
+                        market.clone(),
+                        product,
+                    ))
+                })
                 .collect()
         })
         .collect();
-    let hints: Vec<Vec<Option<(String, String)>>> = responses
+    let hints: Vec<Vec<Option<ListedProduct>>> = responses
         .iter()
-        .map(|response| {
+        .zip(markets.iter().chain(std::iter::repeat(&String::new())))
+        .map(|(response, market)| {
             response
                 .hints
                 .iter()
-                .map(|h| Some((key_of(&h.source)?, h.product_id.clone())))
+                .map(|h| {
+                    Some(ListedProduct::new(
+                        key_of(&h.source)?,
+                        market.clone(),
+                        h.product_id.clone(),
+                    ))
+                })
                 .collect()
         })
         .collect();
-    let mut pairs: Vec<(String, String)> = Vec::new();
+    let mut pairs: Vec<ListedProduct> = Vec::new();
     for (card, card_hints) in cards.iter().zip(&hints) {
         if card.is_empty() {
             continue;
@@ -491,6 +509,12 @@ pub async fn retain_card_recordings(
             .map(|h| best_hint_for_caller(h, &preferred));
     }
     Ok(())
+}
+
+/// The marketplace a card is priced in: its region, normalized (`us`
+/// when it names none), as [`resolve_purchase_hints_batch`] asks the stores.
+fn query_region(query: &PurchaseHintsQuery) -> String {
+    normalize_region(query.region.as_deref().unwrap_or("us"))
 }
 
 /// The card's own store editions, as `(source, product_id)`: its candidate
@@ -682,10 +706,7 @@ pub async fn resolve_purchase_hints_batch(
 ) -> Vec<Result<PurchaseHintsResponse>> {
     let _ = max_concurrent;
     let deadline = tokio::time::Instant::now() + BATCH_DEADLINE;
-    let regions: Vec<String> = queries
-        .iter()
-        .map(|q| normalize_region(q.region.as_deref().unwrap_or("us")))
-        .collect();
+    let regions: Vec<String> = queries.iter().map(query_region).collect();
     let mut out: Vec<Option<PurchaseHintsResponse>> = queries
         .iter()
         .zip(&regions)
@@ -868,8 +889,11 @@ struct Placement {
     /// The recordings (expression ids) of each card's own editions, by
     /// query index; a card the pool knows nothing of is left out.
     cards: HashMap<usize, BTreeSet<String>>,
-    /// The recordings the pool placed each `(plugin_key, product_id)` in.
-    expressions: HashMap<(String, String), BTreeSet<String>>,
+    /// The recordings the pool placed each product in, in the marketplace
+    /// its card was asked about.
+    expressions: HashMap<ListedProduct, BTreeSet<String>>,
+    /// Each query's marketplace, by index, which scopes its records.
+    regions: Vec<String>,
 }
 
 /// One card's view of a [`Placement`], for one store's answer.
@@ -878,9 +902,11 @@ struct PoolView<'a> {
     /// The card's recordings; `None` when the pool knows none of its editions.
     card: Option<&'a BTreeSet<String>>,
     /// Every placed product's recordings.
-    expressions: &'a HashMap<(String, String), BTreeSet<String>>,
+    expressions: &'a HashMap<ListedProduct, BTreeSet<String>>,
     /// The answering store's PluginKey.
     plugin_key: &'a str,
+    /// The card's marketplace, which its records were listed in.
+    marketplace: &'a str,
 }
 
 impl Placement {
@@ -895,6 +921,7 @@ impl Placement {
             card: self.cards.get(&index),
             expressions: &self.expressions,
             plugin_key,
+            marketplace: self.regions.get(index).map_or("", String::as_str),
         }
     }
 }
@@ -910,10 +937,11 @@ impl PoolView<'_> {
         let Some(card) = self.card else {
             return RecordPlacement::CardNotPooled;
         };
-        match self
-            .expressions
-            .get(&(self.plugin_key.to_string(), product_id.to_string()))
-        {
+        match self.expressions.get(&ListedProduct::new(
+            self.plugin_key,
+            self.marketplace,
+            product_id,
+        )) {
             None => RecordPlacement::RecordNotPooled,
             Some(own) if own.iter().any(|x| card.contains(x)) => RecordPlacement::SameRecording,
             Some(_) => RecordPlacement::OtherRecording,
@@ -1017,34 +1045,42 @@ fn spawn_placement(
 ) -> tokio::task::JoinHandle<Result<Placement>> {
     let now = chrono::Utc::now();
     let mut listings = Vec::new();
-    let mut pairs: Vec<(String, String)> = Vec::new();
+    let mut pairs: Vec<ListedProduct> = Vec::new();
+    let region_of = |i: usize| regions.get(i).map_or("us", String::as_str);
     for store in stores {
         for (&i, answer) in pending.iter().zip(&store.answers) {
             for priced in &answer.records {
-                let region = regions.get(i).map_or("us", String::as_str);
+                let region = region_of(i);
                 listings.push(crate::pool::catalog_listing(
                     &store.plugin_key,
                     region,
                     &priced.record,
                     now,
                 ));
-                pairs.push((store.plugin_key.clone(), priced.record.product_id.clone()));
+                pairs.push(ListedProduct::new(
+                    store.plugin_key.clone(),
+                    region,
+                    priced.record.product_id.clone(),
+                ));
             }
         }
     }
     let key_of = |source: &str| registry.get(source).map(|s| s.plugin_key().to_string());
-    let card_pairs: Vec<(usize, Vec<(String, String)>)> = pending
+    let card_pairs: Vec<(usize, Vec<ListedProduct>)> = pending
         .iter()
         .filter_map(|&i| queries.get(i).map(|q| (i, q)))
         .map(|(i, query)| {
             let own = card_editions(query)
                 .into_iter()
-                .filter_map(|(source, product)| Some((key_of(&source)?, product)))
+                .filter_map(|(source, product)| {
+                    Some(ListedProduct::new(key_of(&source)?, region_of(i), product))
+                })
                 .collect();
             (i, own)
         })
         .collect();
     let library = library.clone();
+    let regions = regions.to_vec();
     tokio::spawn(async move {
         if listings.is_empty() {
             return Ok(Placement::default());
@@ -1069,7 +1105,11 @@ fn spawn_placement(
                 (!recordings.is_empty()).then_some((i, recordings))
             })
             .collect();
-        Ok(Placement { cards, expressions })
+        Ok(Placement {
+            cards,
+            expressions,
+            regions,
+        })
     })
 }
 
@@ -2264,16 +2304,25 @@ mod tests {
                 sunlit_record("UNPLACED", ExpressionKind::Narration, None, 100),
             ],
         };
-        let mut placement = Placement::default();
+        let mut placement = Placement {
+            regions: vec![String::from("us")],
+            ..Placement::default()
+        };
         placement
             .cards
             .insert(0, BTreeSet::from([String::from("expr-narration")]));
         for (product, expression) in [("SAME", "expr-narration"), ("OTHER", "expr-drama")] {
             placement.expressions.insert(
-                (String::from("store-a"), String::from(product)),
+                ListedProduct::new("store-a", "us", product),
                 BTreeSet::from([String::from(expression)]),
             );
         }
+        // The same product id in another marketplace is another listing:
+        // it does not place this card's record.
+        placement.expressions.insert(
+            ListedProduct::new("store-a", "uk", "UNPLACED"),
+            BTreeSet::from([String::from("expr-narration")]),
+        );
         let opts = PurchaseHintOpts::default();
         let mut tally = DropTally::default();
         let kept = evaluate_answer(

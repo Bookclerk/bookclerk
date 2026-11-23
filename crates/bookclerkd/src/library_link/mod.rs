@@ -778,14 +778,14 @@ async fn start_clients(
         // The link's catalog sync (a branch sharing its books with this
         // library) stops with its client the same way.
         let catalog_sync = AbortOnDrop(Some(tokio::spawn(
-            catalog_sync::CatalogSync {
-                library: library.clone(),
-                library_id: library_id.clone(),
-                handle: handle.clone(),
-                shelf: catalog_sync::DaemonShelf {
+            catalog_sync::CatalogSync::new(
+                library.clone(),
+                library_id.clone(),
+                handle.clone(),
+                catalog_sync::DaemonShelf {
                     state: Arc::clone(state),
                 },
-            }
+            )
             .run(link_shutdown.clone()),
         )));
         // The link's catalog answers (the library asking what this branch
