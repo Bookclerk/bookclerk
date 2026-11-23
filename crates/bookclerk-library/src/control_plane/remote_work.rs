@@ -52,7 +52,9 @@ use super::trust::{
 };
 use crate::entities::{encrypted_secrets, job_secret_handoffs};
 use crate::error::{LibraryError, Result};
-use crate::models::{JobFence, JobKind, JobRecord, JobResourceClass, JobState};
+use crate::models::{
+    JobFence, JobKind, JobRecord, JobResourceClass, JobState, UserRole, UserStatus,
+};
 use crate::secrets::{
     build_sealed_record, forget_cached_secret, get_secret, secret_account_type, unseal_secret,
     EncryptedSecretRecord,
@@ -143,8 +145,9 @@ pub struct RemoteJobClaim {
     /// The one plugin whose source guest runs the job
     /// ([`job_source_plugin_key`]); always set under a claim filter.
     pub source_plugin_key: Option<String>,
-    /// The claim resumed a suspended job ([`RoutedJobClaim::resumed`]).
-    /// Pass it back to [`release_remote_job`] if the claim is given back.
+    /// The claim resumed a suspended job ([`RoutedJobClaim::resumed`]), as
+    /// the `work` frame tells the Host. A release does not take it back
+    /// from the Host: the job row records it.
     pub resumed: bool,
     /// Every store account the job touches belongs to the user who owns
     /// the node ([`super::job_for_node_owner`]): the branch owner's own
@@ -260,7 +263,7 @@ pub async fn claim_remote_job(
             .unwrap_or_default(),
         Err(err) => {
             // Nothing went out; give the claim back unspent.
-            give_back_claim(store, &fence, &permits, resumed).await;
+            give_back_claim(store, &fence, &permits).await;
             return Err(err);
         }
     };
@@ -268,7 +271,7 @@ pub async fn claim_remote_job(
         Ok(key) => key,
         Err(err) => {
             // Nothing went out; give the claim back unspent.
-            give_back_claim(store, &fence, &permits, resumed).await;
+            give_back_claim(store, &fence, &permits).await;
             return Err(err);
         }
     };
@@ -276,7 +279,7 @@ pub async fn claim_remote_job(
         Ok(canonical) => canonical,
         Err(err) => {
             // Nothing went out; give the claim back unspent.
-            give_back_claim(store, &fence, &permits, resumed).await;
+            give_back_claim(store, &fence, &permits).await;
             return Err(err);
         }
     };
@@ -285,7 +288,7 @@ pub async fn claim_remote_job(
     let for_node_owner = match super::job_for_node_owner(store, node_id, &job).await {
         Ok(mine) => mine,
         Err(err) => {
-            give_back_claim(store, &fence, &permits, resumed).await;
+            give_back_claim(store, &fence, &permits).await;
             return Err(err);
         }
     };
@@ -303,7 +306,7 @@ pub async fn claim_remote_job(
             )
             .await;
             if !matches!(still_trusted, Ok(true)) {
-                give_back_claim(store, &fence, &permits, resumed).await;
+                give_back_claim(store, &fence, &permits).await;
                 return still_trusted.map(|_| None);
             }
             match record_handoff(store, node_id, &fence, &secrets).await {
@@ -320,12 +323,12 @@ pub async fn claim_remote_job(
                     // read, and nothing went out. A fence that still holds
                     // the row gives it back unspent; the release is fenced,
                     // so a job already claimed again is left alone.
-                    give_back_claim(store, &fence, &permits, resumed).await;
+                    give_back_claim(store, &fence, &permits).await;
                     Ok(None)
                 }
                 Err(err) => {
                     // Nothing went out; give the claim back unspent.
-                    give_back_claim(store, &fence, &permits, resumed).await;
+                    give_back_claim(store, &fence, &permits).await;
                     Err(err)
                 }
             }
@@ -353,20 +356,15 @@ pub async fn claim_remote_job(
 
 /// Gives a claim back unspent after a failure before anything was handed
 /// to the Host: the job returns to `pending` without spending an attempt
-/// (a resumed claim is resumable again, as
-/// [`LibraryStore::release_job_claim`] does for `resumed`), and its
-/// semaphore permits are released.
+/// (a resumed claim is resumable again, from the row's own record,
+/// [`LibraryStore::release_job_claim`]), and its semaphore permits are
+/// released.
 ///
 /// Best effort: the caller is already returning an error, so a failure
 /// here is only logged; the lease and the permits then expire on their
 /// own, after which the job is redelivered.
-async fn give_back_claim(
-    store: &LibraryStore,
-    fence: &JobFence,
-    permits: &[SemaphorePermit],
-    resumed: bool,
-) {
-    if let Err(err) = store.release_job_claim(fence, resumed).await {
+async fn give_back_claim(store: &LibraryStore, fence: &JobFence, permits: &[SemaphorePermit]) {
+    if let Err(err) = store.release_job_claim(fence, false).await {
         tracing::warn!(
             job_id = %fence.job_id,
             error = %err,
@@ -787,9 +785,11 @@ pub async fn finish_remote_job(
 /// For a Host whose operator no longer consents to the job's plugin, and
 /// for a `work` answer that cannot reach the Host (its connection was
 /// superseded or is closing), so the job is claimable again at once instead
-/// of only after its lease expires. `resumed` is the claim's
-/// [`RemoteJobClaim::resumed`]: a resumed claim gets its resume flag back,
-/// any other its attempt.
+/// of only after its lease expires. Whether the claim was a resume is read
+/// from the job row ([`LibraryStore::release_job_claim`]), never taken from
+/// the Host: a resumed claim gets its resume flag back, any other its
+/// attempt, so a Host cannot keep a job by claiming and releasing it as
+/// resumed.
 ///
 /// The attempt is not spent, unless the job carries a checkpoint (it may
 /// have resumed, which spent none, or saved progress under this claim), in
@@ -811,7 +811,6 @@ pub async fn release_remote_job(
     node_id: &str,
     job_id: &str,
     generation: i64,
-    resumed: bool,
     limits: JobClaimLimits,
 ) -> Result<RemoteFinish> {
     let fence = remote_job_fence(node_id, job_id, generation);
@@ -820,12 +819,11 @@ pub async fn release_remote_job(
     };
     let keep_spent = job.payload.checkpoint.is_some();
     let (permits, _) = held_job_permits(store, node_id, &job, limits).await?;
-    // A checkpointed job keeps its attempt spent and resumes from the
+    // Whether the claim was a resume is the library's own record
+    // (`JobPayload::resumed_generation`), never the branch's word. A
+    // checkpointed job keeps its attempt spent and resumes from the
     // checkpoint, as a resumed claim does.
-    if !store
-        .release_job_claim(&fence, resumed || keep_spent)
-        .await?
-    {
+    if !store.release_job_claim(&fence, keep_spent).await? {
         return Ok(RemoteFinish::Lost);
     }
     release_permits(store, &permits).await?;
@@ -887,7 +885,9 @@ pub async fn write_back_job_secret(
     // takes the job row with a fenced update, so a reclaim or a claim by
     // another node either committed before it (and the guards below match
     // nothing) or waits for it, and then updates the secret only while the
-    // fence, the handoff row and the node credential are all still live.
+    // fence, the handoff row, the node credential and the node's trust with
+    // the secret's account (its owner's status, role and account link) all
+    // still hold.
     if !store_guarded_write_back(store, node_id, &fence, secret_ref, &record).await? {
         return Ok(WriteBack::Refused("fence_not_live"));
     }
@@ -919,8 +919,14 @@ pub async fn live_remote_job(
 
 /// Overwrites the sealed value of `secret_ref` with `record` in one host
 /// batch, guarded on `fence` owning the running generation, the secret
-/// having been handed under it, and `node_id` being a shared node or a host
-/// node with an unrevoked credential.
+/// having been handed under it, and `node_id` being a shared node or a
+/// branch node still trusted with the secret: an unrevoked credential and
+/// an active owner who is an Owner or Administrator (trusted with every
+/// job) or whose identity is linked to the secret's account. That is the
+/// trust predicate ([`super::node_trust`], [`super::job_trusted`]) for the
+/// one account written, evaluated inside the transaction, so a revocation,
+/// a demotion, a disabled owner or an unlinked account that commits before
+/// the batch leaves the secret untouched on every backend.
 ///
 /// Only an existing row is updated: a secret deleted since the handoff (its
 /// account unlinked or revoked) is not brought back.
@@ -989,10 +995,30 @@ async fn store_guarded_write_back(
                         AND EXISTS (
                             SELECT 1 FROM nodes
                              WHERE nodes.node_id = ?
-                               AND (nodes.kind = 'shared' OR EXISTS (
-                                   SELECT 1 FROM node_credentials
-                                    WHERE node_credentials.node_id = nodes.node_id
-                                      AND node_credentials.revoked_at IS NULL
+                               AND (nodes.kind = 'shared' OR (
+                                   EXISTS (
+                                       SELECT 1 FROM node_credentials
+                                        WHERE node_credentials.node_id = nodes.node_id
+                                          AND node_credentials.revoked_at IS NULL
+                                   )
+                                   AND EXISTS (
+                                       SELECT 1 FROM users
+                                        WHERE users.id = nodes.owner_user_id
+                                          AND users.status = ?
+                                          AND (users.role = ? OR users.role = ?
+                                               OR EXISTS (
+                                                   SELECT 1 FROM account_links
+                                                    WHERE account_links.plugin_key = ?
+                                                      AND account_links.account_id = ?
+                                                      AND EXISTS (
+                                                          SELECT 1 FROM portal_identities
+                                                           WHERE portal_identities.id =
+                                                                 account_links.identity_id
+                                                             AND portal_identities.user_id =
+                                                                 users.id
+                                                      )
+                                               ))
+                                   )
                                ))
                         )",
                     vec![
@@ -1022,6 +1048,11 @@ async fn store_guarded_write_back(
                         text(&secret_ref.account_id),
                         text(&secret_ref.name),
                         text(node_id),
+                        text(UserStatus::Active.as_str()),
+                        text(UserRole::Owner.as_str()),
+                        text(UserRole::Administrator.as_str()),
+                        text(&secret_ref.provider),
+                        text(&secret_ref.account_id),
                     ],
                 ),
                 super::bump_if_stamped(super::LiveTopic::Jobs, &now)?,

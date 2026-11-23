@@ -751,7 +751,10 @@ only that. The others check:
   a copy (where one is stated) with a lowercase media type, a
   bitrate of 1 to 20000 kbit/s, a short lowercase source store and a
   plain version, and a plain next cursor (up to 64 letters, digits and `-`)
-  sorting past the one asked with. A `scan.removed` or
+  sorting past the one asked with. A `deployments` page that passes its
+  validator lists deployment ids in strictly rising byte order, each past
+  the cursor asked with, and a next cursor past that cursor and not before
+  the last entry. A `scan.removed` or
   `scan.pass_end` that passes its validator names an account and carries
   at most 500 product ids, each non-blank, at most 512 bytes and free of
   control characters, or a sync token of at most 4096 bytes with no
@@ -767,8 +770,10 @@ only that. The others check:
   character or drive prefix), each at most 1 TiB, exactly one of them the
   primary audio. The `copy_*` seeds' names say whether the receiver takes
   the frame, and the replay test checks each against its name. Seeds cover `accounts.update`, `accounts.updated`,
-  `scan.removed`, `scan.pass_end`, a `work` frame with scan tokens, and
-  `acquire.targets` with a destination subset, an empty list and a list
+  `scan.removed`, `scan.pass_end`, a `work` frame with scan tokens,
+  `deployments.list` and `acquire.plan` with and without a cursor, paged
+  and out-of-order `deployments`, `release` with the old `resumed` flag
+  (ignored), and `acquire.targets` with a destination subset, an empty list and a list
   that does not fit its plan. The shared oracle is `fuzz/oracles/node_frame.rs`,
   replayed from `bookclerk-node-proto`.
 - **`node_account_bundle`**: an accepted bundle is within the size limit,

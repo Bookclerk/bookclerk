@@ -1319,12 +1319,16 @@ async fn acquire_titles<G: HostGuests>(
     job_dir: &Path,
 ) -> anyhow::Result<(u32, u32)> {
     let mut attempted = BTreeSet::new();
+    // The last holding id this run was planned: each plan asks only for
+    // titles after it, so titles that failed earlier in the run never fill
+    // the plan's cap ahead of ones not tried yet.
+    let mut cursor: Option<String> = None;
     let mut acquired = 0u32;
     let mut failed = 0u32;
     // Read once per job, so every title of one job follows one setting.
     let keep_copy = keeps_local_copy(host, guests).await;
     'plan: loop {
-        let (targets, planned) = with_retries(|| host.acquire_plan())
+        let (targets, planned) = with_retries(|| host.acquire_plan(cursor.as_deref()))
             .await
             .map_err(|err| owner_error("the acquire plan", &err))?;
         if planned.is_empty() {
@@ -1335,6 +1339,11 @@ async fn acquire_titles<G: HostGuests>(
             .cloned()
             .map(HostDestination::from_plan)
             .collect::<anyhow::Result<Vec<_>>>()?;
+        if let Some(last) = targets.iter().map(|target| &target.holding_id).max() {
+            if cursor.as_ref().is_none_or(|cursor| last > cursor) {
+                cursor = Some(last.clone());
+            }
+        }
         let fresh: Vec<AcquireTarget> = targets
             .into_iter()
             .filter(|target| !attempted.contains(&target.holding_id))
