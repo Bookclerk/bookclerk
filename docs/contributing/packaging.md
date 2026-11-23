@@ -213,10 +213,14 @@ in a separate Cargo invocation, because building them beside the seed
 would change those crates' features and recompile them. The demo image's
 last stage seeds the demo library at build time
 (`packaging/demo/bake-seed.sh`): it runs the seed and `bookclerkd` with
-network access to the storefronts' public catalogs, downloads the covers
+network access to the storefronts' public catalogs, downloads the default
+embedding model and embeds the sample library with it, downloads the covers
 a new session shows first into the cover cache, then strips every
 per-container secret, so building the demo image needs outbound network
-(see [`tools/demo/README.md`](../../tools/demo/README.md)).
+(see [`tools/demo/README.md`](../../tools/demo/README.md)). The model
+ships as a layer of its own (`/opt/bookclerk/models`, 141 MB), which a
+seed refresh reuses, and the build fails when the model could not be
+installed, so a demo never ships without it.
 The hosted demo's deploy pulls the
 published demo image without signing in, so the package must be public.
 When the image for the deployed commit exists and its attestation

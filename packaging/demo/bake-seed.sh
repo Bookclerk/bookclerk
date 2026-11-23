@@ -6,8 +6,13 @@
 #
 #   1. bookclerk-demo-seed adds Sam, his books, wishlist and offline branch,
 #      and approves and deploys the storefronts and covers.
-#   2. bookclerkd runs until it has replayed the seed's events and stored
-#      Sam's Discover shelves, then stops.
+#   2. bookclerkd runs until it has replayed the seed's events, downloaded
+#      the default embedding model into the embedder's data dir (verified
+#      against the digests pinned in the plugin package), embedded the
+#      library with it and stored Sam's Discover shelves ranked on those
+#      vectors, then stops. The vectors ship in the template and the model
+#      beside it (step 5), so a container neither downloads the model nor
+#      embeds the library.
 #   3. With bookclerkd stopped, bookclerk-demo-seed --list-covers lists the
 #      covers a new session's first pages show (the Library and the store
 #      listings Discover ranks from); bookclerkd then runs again while
@@ -19,7 +24,13 @@
 #      the library secret fingerprint, leases and heartbeats in the library
 #      (refusing a library that holds any sealed secret or session), and
 #      master.key, the covers URL key, plugin sessions and logs on disk.
-#   5. The check below fails the build if any secret file is left.
+#   5. The model's files move out of the template into
+#      $BOOKCLERK_DEMO_MODELS_OUT, which the image ships as
+#      /opt/bookclerk/models and boot.sh copies back into the embedder's
+#      data dir. They are a layer of their own that way, so a seed refresh
+#      (Dockerfile.refresh) neither downloads them again nor adds a second
+#      copy to the image: it starts from the models the image holds.
+#   6. The check below fails the build if any secret file is left.
 #
 # The node identity (node-identity.json: node_id and library_id) is baked
 # too, so every demo container shares the same two ids. That is acceptable:
@@ -32,11 +43,23 @@ set -eu
 
 dir=${BOOKCLERK_FILES_DIR:?BOOKCLERK_FILES_DIR must name the template dir}
 
-# The bake downloads no embedding model (containers do not either, see
-# boot.sh). The file is removed below so it never ships: a container
-# writes its own.
+# The bake downloads the embedding model, which a host does by default; a
+# container never does (see boot.sh), so the template must hold it. The
+# config file is removed below so none ships: a container writes its own.
 bake_config=${BOOKCLERK_CONFIG:-$dir/config.toml}
-printf '[plugins.models]\ndownload = false\n' >"$bake_config"
+: >"$bake_config"
+
+# A refresh: the image already holds the model, and its template names the
+# embedder's models dir, so put the files there and nothing is downloaded.
+# The host accepts them only when they are the pinned ones.
+shipped_models=/opt/bookclerk/models
+for old_models in /opt/bookclerk/seeded/plugin-state/*/data/models; do
+	[ -d "$old_models" ] && [ -d "$shipped_models" ] || continue
+	place=$dir${old_models#/opt/bookclerk/seeded}
+	mkdir -p "$place"
+	cp -a "$shipped_models/." "$place/" ||
+		echo "bake-seed: could not reuse the image's model; downloading it" >&2
+done
 
 /opt/bookclerk/bookclerk-demo-seed
 
@@ -73,28 +96,55 @@ stop_daemon() {
 
 start_daemon || exit 1
 
-# Done when a Discover feed is stored and no job is pending or running, three
-# checks in a row. Past the cap the bake keeps whatever is stored, and a
-# container recomputes the rest after it starts.
+# Done when the library is embedded with the model (a discover_embed job
+# succeeded, which the daemon queues once the model is installed), a
+# Discover feed is stored and no job is pending or running, three checks in
+# a row. The embedding queues the ranking again before it finishes, so the
+# stored shelves are the ones ranked on the model's vectors. Past the cap
+# the bake keeps whatever shelves are stored, and a container recomputes
+# the rest after it starts; a missing model fails the build below.
 waited=0
 quiet=0
+embedded=0
 while [ "$quiet" -lt 3 ]; do
 	jobs=$(bookclerk daemon jobs 2>/dev/null || true)
-	if printf '%s\n' "$jobs" | grep -q 'kind=discover_feed status=succeeded' &&
+	if printf '%s\n' "$jobs" | grep -q 'kind=discover_embed status=succeeded'; then
+		embedded=1
+	fi
+	if [ "$embedded" -eq 1 ] &&
+		printf '%s\n' "$jobs" | grep -q 'kind=discover_feed status=succeeded' &&
 		! printf '%s\n' "$jobs" | grep -Eq 'status=(pending|running)'; then
 		quiet=$((quiet + 1))
 	else
 		quiet=0
 	fi
 	waited=$((waited + 1))
-	if [ "$waited" -gt 180 ]; then
-		echo "bake-seed: Discover still busy after 180 s; baking what is stored" >&2
+	if [ "$waited" -gt 420 ]; then
+		echo "bake-seed: Discover still busy after 420 s; baking what is stored" >&2
 		break
 	fi
 	sleep 1
 done
 
 stop_daemon
+
+# The demo's Discover and search need the model: without it every container
+# would quietly fall back to the stand-in ranking, so the build fails and
+# the deployed demo stays as it is.
+model=$(find "$dir/plugin-state" -path '*/data/models/*/model.json' -print 2>/dev/null | head -n 1)
+if [ -z "$model" ] || [ "$embedded" -ne 1 ]; then
+	echo "bake-seed: the embedding model was not installed, or the library was not embedded with it" >&2
+	exit 1
+fi
+
+# Step 5: the template keeps the embedder's empty models dir, which tells
+# boot.sh (and the next refresh) where the files go.
+models_dir=${model%/*/model.json}
+if [ -n "${BOOKCLERK_DEMO_MODELS_OUT:-}" ]; then
+	cp -a "$models_dir/." "$BOOKCLERK_DEMO_MODELS_OUT/"
+fi
+rm -rf "$models_dir"
+mkdir -p "$models_dir"
 
 # Bake the covers (step 3). Best effort: a cover that fails is fetched by
 # the container that first shows it.

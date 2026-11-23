@@ -440,7 +440,8 @@ makes them itself while the stand-in serves.
 A model's work vectors are made by a `discover_embed` job, pinned to the
 node whose plugin serves the model. It is queued when:
 
-- a model is installed on the node (the model router reports a change);
+- the daemon starts, or a model is installed on the node (the model
+  router reports a change);
 - a ranking finds that the node's model does not serve yet;
 - a ranking runs and the node has not looked for changed works for an
   hour.
