@@ -993,7 +993,8 @@ impl LibraryStore {
     }
 
     /// Clears any probe and stream values on `owner`'s row of `key` on
-    /// `destination`, leaving it for the next `file_probe` walk.
+    /// `destination` and stamps its `written_at` anew, leaving it for the
+    /// next `file_probe` walk.
     ///
     /// An acquire whose own probe of a file it just wrote failed calls this:
     /// a walk on another node sharing the destination may have stored a
@@ -1032,6 +1033,9 @@ impl LibraryStore {
                 Expr::value(Option::<String>::None),
             )
             .clear_stream()
+            // A new `written_at`, so a walk that read the row before the
+            // clear cannot store its probe of the old bytes after it.
+            .col_expr(edition_files::Column::WrittenAt, Expr::value(now_str()))
             .filter(edition_files::Column::Destination.eq(destination))
             .filter(edition_files::Column::StorageKey.eq(key))
             .filter(edition_files::Column::OwnerKind.eq(owner.kind()))

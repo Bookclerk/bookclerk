@@ -325,6 +325,19 @@ async fn a_cleared_probe_returns_the_row_to_the_walk() {
         .await
         .unwrap();
     assert_eq!(left.len(), 1);
+    // A walk that read the row before a clear stores nothing after it.
+    assert!(store
+        .clear_edition_file_probe("local", "C/C.m4b", &owner)
+        .await
+        .unwrap());
+    assert!(!store
+        .set_backfilled_file_probe(&left[0], &probe, &crate::AudioStream::default())
+        .await
+        .unwrap());
+    assert_eq!(
+        store.edition_file_probe("local", "C/C.m4b").await.unwrap(),
+        None
+    );
     // Another owner's clear changes nothing.
     assert!(!store
         .clear_edition_file_probe(
