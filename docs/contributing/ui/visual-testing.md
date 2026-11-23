@@ -226,8 +226,9 @@ version must match `@playwright/test` in `ui/package.json`. When they
 differ, Playwright can't find its browser and the job fails.
 Dependabot bumps `@playwright/test` but can't move the image, so its
 Playwright pull request fails this job until the image's tag and digest
-(and the `playwright-core` override in `ui/package.json`) move to the same
-version in that pull request. A new browser can render some screenshots
+(in `ci.yml` and `visual-recheck.yml`, which must match) and the
+`playwright-core` override in `ui/package.json` move to the same version
+in that pull request. A new browser can render some screenshots
 differently; approve those in the visual comment as usual.
 
 Each run first records a full set of screenshots, then, once any are
