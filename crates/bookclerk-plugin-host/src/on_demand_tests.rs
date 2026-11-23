@@ -32,6 +32,8 @@ struct FakeGuest {
     library: bool,
     /// New-user polls this guest answered.
     polls: AtomicUsize,
+    /// `externalUserId`s the host acknowledged, in order.
+    acked: std::sync::Mutex<Vec<String>>,
     /// `oidcClients` asks this guest answered.
     oidc_asks: AtomicUsize,
     /// Set when `start` was handed a new-user hook.
@@ -52,6 +54,7 @@ impl FakeGuest {
             release: tokio::sync::Notify::new(),
             library: false,
             polls: AtomicUsize::new(0),
+            acked: std::sync::Mutex::new(Vec::new()),
             oidc_asks: AtomicUsize::new(0),
             started_with_hook: AtomicBool::new(false),
             oidc_fails: AtomicBool::new(false),
@@ -155,6 +158,14 @@ impl super::ExternalUserPoll for FakeGuest {
             display_name: None,
             access_token: None,
         }])
+    }
+
+    async fn ack_external_users(
+        &self,
+        external_user_ids: Vec<String>,
+    ) -> bookclerk_integrations::Result<()> {
+        self.acked.lock().expect("acked").extend(external_user_ids);
+        Ok(())
     }
 
     async fn fetch_oidc_clients(
@@ -786,6 +797,12 @@ async fn the_proxy_polls_a_sleeping_remote_library_through_a_wake() {
     let woken = started.lock().expect("started").clone();
     assert_eq!(woken.len(), 1, "the poll woke one guest");
     assert!(!woken[0].started_with_hook.load(Ordering::SeqCst));
+    // The users that reached the hook are acknowledged to the guest that
+    // reported them.
+    wait_for("the acknowledgement", || {
+        woken[0].acked.lock().expect("acked").as_slice() == ["user-0"]
+    })
+    .await;
     // The guest sleeps again before the next poll, which wakes another.
     wait_for("the polled guest to sleep", || {
         !woken[0].guest_running() && !proxy.is_awake()
@@ -858,6 +875,7 @@ async fn an_ask_with_no_poll_running_is_dropped() {
             counter.fetch_add(1, Ordering::SeqCst);
             async { Some(Ok(Vec::new())) }
         },
+        |_ids| async { Ok(()) },
     );
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(

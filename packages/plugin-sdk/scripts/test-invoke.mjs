@@ -47,6 +47,7 @@ const {
   packEmbeddingVectors,
   unpackEmbeddingVectors,
   PluginError,
+  RemoteLibraryEntrypoint,
   StorageEntrypoint,
   StorefrontEntrypoint,
   dataMigrationOp,
@@ -1984,6 +1985,59 @@ const jobParams = (commandType) => ({
   );
   assert.equal(schema.kind, "ok");
   assert.equal(schema.value.commands[0].name, "ping");
+}
+
+// --- RemoteLibrary: pollEvents carries ackFollows; ackEvents reaches the author --
+
+{
+  const seen = { polls: [], acks: [] };
+  class Library extends RemoteLibraryEntrypoint {
+    async pollEvents(params) {
+      seen.polls.push(params);
+      return [{ provider: "", externalUserId: "u1", displayName: "ada" }];
+    }
+    async ackEvents(params) {
+      seen.acks.push(params);
+    }
+  }
+  const withLibrary = new Adapter({}, { ...env, PLUGIN_REMOTE_LIBRARY: new Library({}, {}) });
+  const call = (method, paramsCodec, params) =>
+    withLibrary.invoke(
+      "RemoteLibrary",
+      method,
+      contextJson,
+      null,
+      null,
+      W.encodeMessage(paramsCodec, params),
+    );
+  const polled = decodeReply(
+    await call("pollEvents", W.RemoteLibraryPollEventsParamsCodec, {
+      params: { ackFollows: true },
+    }),
+    W.RemoteLibraryPollEventsResultsCodec,
+  );
+  assert.equal(polled.kind, "ok");
+  assert.deepEqual(
+    polled.value.users.map((u) => u.externalUserId),
+    ["u1"],
+  );
+  // A host that predates the params sends none: ackFollows reads false.
+  await call("pollEvents", W.RemoteLibraryPollEventsParamsCodec, {});
+  assert.deepEqual(
+    seen.polls.map((p) => p?.ackFollows === true),
+    [true, false],
+  );
+  const acked = decodeReply(
+    await call("ackEvents", W.RemoteLibraryAckEventsParamsCodec, {
+      params: { externalUserIds: ["u1"] },
+    }),
+    W.RemoteLibraryAckEventsResultsCodec,
+  );
+  assert.equal(acked.kind, "ok");
+  assert.deepEqual(seen.acks, [{ externalUserIds: ["u1"] }]);
+  // The base class acknowledges nothing and succeeds.
+  class Draining extends RemoteLibraryEntrypoint {}
+  assert.equal(await new Draining({}, {}).ackEvents({ externalUserIds: ["u1"] }), undefined);
 }
 
 // --- MetadataProvider -----------------------------------------------------

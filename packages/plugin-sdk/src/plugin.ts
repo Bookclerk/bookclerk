@@ -114,6 +114,8 @@ import type {
   EventReadPage,
   ExpandCandidatesParams,
   ExtensibleConfig,
+  EventAckParams,
+  EventPollParams,
   ExternalUser,
   FetchTitleParams,
   HealthOk,
@@ -2884,6 +2886,7 @@ const REMOTE_LIBRARY_METHODS = Object.freeze([
   "scanLibrary",
   "syncListening",
   "pollEvents",
+  "ackEvents",
 ]);
 
 /**
@@ -2946,12 +2949,28 @@ export class RemoteLibraryEntrypoint<
     return Promise.reject(unsupported("syncListening"));
   }
   /**
-   * Drains external users observed since the last poll.
+   * External users observed and not yet acknowledged. When
+   * `params.ackFollows` is true the host calls {@link ackEvents} with every
+   * user it passes on: keep returning a user until then, so a lost reply
+   * does not lose it. When it is false (a host that predates `ackEvents`),
+   * a returned user counts as delivered.
    *
-   * @returns Newly observed users.
+   * @param _params - Whether the host acknowledges what it receives.
+   * @returns Users the host has not acknowledged.
    */
-  pollEvents(): Promise<ExternalUser[]> {
+  pollEvents(_params?: EventPollParams): Promise<ExternalUser[]> {
     return Promise.reject(unsupported("pollEvents"));
+  }
+  /**
+   * Acknowledges users a {@link pollEvents} reply handed over: stop
+   * returning them. The default does nothing, which suits a plugin that
+   * treats every returned user as delivered.
+   *
+   * @param _params - The acknowledged `externalUserId`s.
+   * @returns Resolves once recorded.
+   */
+  ackEvents(_params: EventAckParams): Promise<void> {
+    return Promise.resolve();
   }
 }
 

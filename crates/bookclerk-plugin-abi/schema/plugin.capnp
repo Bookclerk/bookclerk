@@ -1768,8 +1768,17 @@ interface RemoteLibrary {
   ) -> (result :EmptyReply);
   # Push / pull listening progress.
   syncListening @5 () -> (result :SyncListeningReply);
-  # Drain external users the remote side observed since the last poll.
-  pollEvents @6 () -> (result :EventPollReply);
+  # External users the remote side observed and the host has not
+  # acknowledged. Without `params.ackFollows` (hosts that predate
+  # `ackEvents`) a returned user counts as delivered.
+  pollEvents @6 (
+      params :EventPollParams  # Whether the host acknowledges what it receives.
+  ) -> (result :EventPollReply);
+  # Acknowledge users a `pollEvents` reply handed over: the host has passed
+  # them on, so the guest stops returning them.
+  ackEvents @7 (
+      params :EventAckParams  # The acknowledged users.
+  ) -> (result :EmptyReply);
 }
 
 # `cli` entrypoint: guest commands under `bookclerk plugins <id> <command>`.
@@ -4680,6 +4689,20 @@ struct ProvisionReply {
 struct DeprovisionRequest {
   # The operator's grant, or kind `none` to use the stored secrets.
   grant @0 :ProvisionGrant;
+}
+
+# Params of `RemoteLibrary.pollEvents`.
+struct EventPollParams {
+  # The host calls `ackEvents` with every user it passes on, so the guest
+  # keeps returning a user until it is acknowledged. False from hosts that
+  # predate `ackEvents`: the guest then treats a returned user as delivered.
+  ackFollows @0 :Bool;
+}
+
+# Params of `RemoteLibrary.ackEvents`.
+struct EventAckParams {
+  # `ExternalUser.externalUserId` of each user the host passed on.
+  externalUserIds @0 :List(Text);
 }
 
 # --- rust-generated: end ---

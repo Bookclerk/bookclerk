@@ -335,7 +335,10 @@ async fn poll_session_users(
     session: &PluginSession,
 ) -> bookclerk_integrations::Result<Vec<ExternalUser>> {
     let users = session
-        .remote_library(|stub| async move { stub.poll_events().await })
+        .remote_library(|stub| async move {
+            stub.poll_events(bookclerk_plugin_abi::EventPollParams { ack_follows: true })
+                .await
+        })
         .await?;
     Ok(users
         .into_iter()
@@ -348,7 +351,44 @@ async fn poll_session_users(
         .collect())
 }
 
+/// Acknowledges users a [`poll_session_users`] reply handed over, so the
+/// guest stops returning them.
+///
+/// # Errors
+///
+/// Returns the guest's `ackEvents` failure, or a missing entrypoint.
+async fn ack_session_users(
+    session: &PluginSession,
+    external_user_ids: Vec<String>,
+) -> bookclerk_integrations::Result<()> {
+    session
+        .remote_library(|stub| async move {
+            stub.ack_events(bookclerk_plugin_abi::EventAckParams { external_user_ids })
+                .await
+        })
+        .await?;
+    Ok(())
+}
+
 impl ExternalIntegration {
+    /// Acknowledges users a poll handed over.
+    ///
+    /// # Errors
+    ///
+    /// Returns the guest's `ackEvents` failure.
+    pub(crate) async fn ack_external_users(
+        &self,
+        external_user_ids: Vec<String>,
+    ) -> bookclerk_integrations::Result<()> {
+        if !self
+            .session
+            .has_entrypoint(crate::Entrypoint::RemoteLibrary)
+        {
+            return Ok(());
+        }
+        ack_session_users(&self.session, external_user_ids).await
+    }
+
     /// Asks this integration's resident poll loop, when one runs, to poll
     /// the guest's new users now.
     pub(crate) fn poll_users_now(&self) {
@@ -455,9 +495,16 @@ impl Integration for ExternalIntegration {
                     crate::user_poll::RESIDENT_USER_POLL_INTERVAL,
                     self.id().to_string(),
                     on_user,
-                    move || {
+                    {
                         let session = Arc::clone(&session);
-                        async move { Some(poll_session_users(&session).await) }
+                        move || {
+                            let session = Arc::clone(&session);
+                            async move { Some(poll_session_users(&session).await) }
+                        }
+                    },
+                    move |ids| {
+                        let session = Arc::clone(&session);
+                        async move { ack_session_users(&session, ids).await }
                     },
                 );
             }

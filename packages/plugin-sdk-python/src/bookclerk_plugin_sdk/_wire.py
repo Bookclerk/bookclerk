@@ -6564,6 +6564,34 @@ _deprovision_request_codec = _Codec(0, 1, _write_deprovision_request, _read_depr
 """Wire codec for ``DeprovisionRequest`` (0 data words, 1 pointers)."""
 
 
+def _write_event_poll_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_bool(0, v["ackFollows"])
+
+
+def _read_event_poll_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "ackFollows": s.get_bool(0),
+    }
+
+
+_event_poll_params_codec = _Codec(1, 0, _write_event_poll_params, _read_event_poll_params)
+"""Wire codec for ``EventPollParams`` (1 data words, 0 pointers)."""
+
+
+def _write_event_ack_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text_list(0, v["externalUserIds"])
+
+
+def _read_event_ack_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "externalUserIds": s.get_text_list(0),
+    }
+
+
+_event_ack_params_codec = _Codec(0, 1, _write_event_ack_params, _read_event_ack_params)
+"""Wire codec for ``EventAckParams`` (0 data words, 1 pointers)."""
+
+
 def _write_db_value(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "null":
@@ -9651,15 +9679,18 @@ _remote_library_sync_listening_results_codec = _Codec(0, 1, _write_remote_librar
 
 
 def _write_remote_library_poll_events_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    pass
+    if v.get("params") is not None:
+        _event_poll_params_codec.write(s.init_struct(0, 1, 0), v["params"], caps)
 
 
 def _read_remote_library_poll_events_params(s: _StructReader, caps: _CapTable) -> Any:
-    return {}
+    return {
+        "params": _event_poll_params_codec.read(s.get_struct(0, 1, 0), caps),
+    }
 
 
-_remote_library_poll_events_params_codec = _Codec(0, 0, _write_remote_library_poll_events_params, _read_remote_library_poll_events_params)
-"""Wire codec for ``RemoteLibraryPollEventsParams`` (0 data words, 0 pointers)."""
+_remote_library_poll_events_params_codec = _Codec(0, 1, _write_remote_library_poll_events_params, _read_remote_library_poll_events_params)
+"""Wire codec for ``RemoteLibraryPollEventsParams`` (0 data words, 1 pointers)."""
 
 
 def _write_remote_library_poll_events_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -9675,6 +9706,36 @@ def _read_remote_library_poll_events_results(s: _StructReader, caps: _CapTable) 
 
 _remote_library_poll_events_results_codec = _Codec(0, 1, _write_remote_library_poll_events_results, _read_remote_library_poll_events_results)
 """Wire codec for ``RemoteLibraryPollEventsResults`` (0 data words, 1 pointers)."""
+
+
+def _write_remote_library_ack_events_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("params") is not None:
+        _event_ack_params_codec.write(s.init_struct(0, 0, 1), v["params"], caps)
+
+
+def _read_remote_library_ack_events_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "params": _event_ack_params_codec.read(s.get_struct(0, 0, 1), caps),
+    }
+
+
+_remote_library_ack_events_params_codec = _Codec(0, 1, _write_remote_library_ack_events_params, _read_remote_library_ack_events_params)
+"""Wire codec for ``RemoteLibraryAckEventsParams`` (0 data words, 1 pointers)."""
+
+
+def _write_remote_library_ack_events_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("result") is not None:
+        _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_remote_library_ack_events_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _empty_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_remote_library_ack_events_results_codec = _Codec(0, 1, _write_remote_library_ack_events_results, _read_remote_library_ack_events_results)
+"""Wire codec for ``RemoteLibraryAckEventsResults`` (0 data words, 1 pointers)."""
 
 
 def _write_plugin_cli_describe_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:

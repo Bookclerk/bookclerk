@@ -23,6 +23,7 @@ from bookclerk_plugin_sdk.workerd import (
     NotifierEntrypoint,
     PluginError,
     ProvisioningEntrypoint,
+    RemoteLibraryEntrypoint,
     ScheduledController,
     StorageEntrypoint,
     StorefrontEntrypoint,
@@ -322,6 +323,43 @@ class PurchaseHintsDefaultTests(unittest.IsolatedAsyncioTestCase):
 
 
 class NamedEntrypointTests(unittest.IsolatedAsyncioTestCase):
+    async def test_remote_library_poll_and_ack(self) -> None:
+        class Acking(RemoteLibraryEntrypoint):
+            def __init__(self) -> None:
+                super().__init__()
+                self.pending = ["ada"]
+                self.seen: list[object] = []
+
+            async def pollEvents(self, params=None):
+                self.seen.append(params)
+                return [
+                    {"provider": "test", "externalUserId": user, "displayName": ""}
+                    for user in self.pending
+                ]
+
+            async def ackEvents(self, params):
+                self.pending = [u for u in self.pending if u not in params["externalUserIds"]]
+
+        plugin = Acking()
+        polled = await plugin.bookclerkInvoke({}, "pollEvents", {"ackFollows": True})
+        self.assertEqual([u["externalUserId"] for u in polled], ["ada"])
+        self.assertEqual(plugin.seen, [{"ackFollows": True}])
+        await plugin.bookclerkInvoke({}, "ackEvents", {"externalUserIds": ["ada"]})
+        self.assertEqual(await plugin.bookclerkInvoke({}, "pollEvents", {"ackFollows": True}), [])
+
+        class Legacy(RemoteLibraryEntrypoint):
+            async def pollEvents(self):
+                return [{"provider": "test", "externalUserId": "old", "displayName": ""}]
+
+        legacy = await Legacy().bookclerkInvoke({}, "pollEvents", {"ackFollows": True})
+        self.assertEqual([u["externalUserId"] for u in legacy], ["old"])
+        self.assertIsNone(
+            await Legacy().bookclerkInvoke({}, "ackEvents", {"externalUserIds": ["old"]})
+        )
+        with self.assertRaises(PluginError) as ctx:
+            await RemoteLibraryEntrypoint().bookclerkInvoke({}, "pollEvents", {})
+        self.assertEqual(ctx.exception.code, "unsupported")
+
     async def test_cli_invoke_allowlisted(self) -> None:
         class Cli(CliEntrypoint):
             async def invoke(self, params):

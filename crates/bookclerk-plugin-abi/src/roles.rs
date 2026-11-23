@@ -8,18 +8,18 @@ use tokio::io::AsyncRead;
 use crate::generated::{
     AiModelList, AiRunOk, AiRunParams, AuthenticateUserParams, CatalogDetailParams, CatalogHit,
     CliInvokeParams, CliInvokeResult, CliSchema, CoverFetchParams, CoverImage,
-    DatabaseAdapterConfig, DeprovisionRequest, ExpandCandidatesParams, ExternalUser,
-    FetchTitleParams, IngressHealth, Invocation, ListDealsParams, ListeningProgress,
-    LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, MetadataChapters,
-    MetadataChaptersParams, MetadataFileParseParams, MetadataFileParsed, MetadataFileRenderParams,
-    MetadataFileRendered, MetadataLookupParams, MetadataRecord, MetadataSearchParams,
-    NotifyRaiseParams, NotifyRaised, NotifySendParams, NotifySent, NotifyValidateParams,
-    NotifyValidated, OriginHeader, PlainFetch, PluginEvent, ProvisionRequest, Provisioned,
-    PublishOk, PurchaseHint, PurchaseHintParams, PurchaseHintResult, PurchaseHintsParams,
-    QualityOffersParams, QualityOffersResult, RevokeAccountParams, ScanLibraryParams, ScanPage,
-    ScanParams, SearchCatalogParams, SocketClosed, SocketConnectRequest, SocketFrame, SocketInfo,
-    SocketMessage, SocketMessageOk, SourceAccount, WebhookAckRequest, WebhookDelivered,
-    WebhookPullPage, WebhookPullRequest,
+    DatabaseAdapterConfig, DeprovisionRequest, EventAckParams, EventPollParams,
+    ExpandCandidatesParams, ExternalUser, FetchTitleParams, IngressHealth, Invocation,
+    ListDealsParams, ListeningProgress, LoginCompleteParams, LoginParams, LoginResult,
+    LoginStartResult, MetadataChapters, MetadataChaptersParams, MetadataFileParseParams,
+    MetadataFileParsed, MetadataFileRenderParams, MetadataFileRendered, MetadataLookupParams,
+    MetadataRecord, MetadataSearchParams, NotifyRaiseParams, NotifyRaised, NotifySendParams,
+    NotifySent, NotifyValidateParams, NotifyValidated, OriginHeader, PlainFetch, PluginEvent,
+    ProvisionRequest, Provisioned, PublishOk, PurchaseHint, PurchaseHintParams, PurchaseHintResult,
+    PurchaseHintsParams, QualityOffersParams, QualityOffersResult, RevokeAccountParams,
+    ScanLibraryParams, ScanPage, ScanParams, SearchCatalogParams, SocketClosed,
+    SocketConnectRequest, SocketFrame, SocketInfo, SocketMessage, SocketMessageOk, SourceAccount,
+    WebhookAckRequest, WebhookDelivered, WebhookPullPage, WebhookPullRequest,
 };
 use crate::rpc_types::{
     CopyResult, DomainEvent, EventResult, ExtensibleConfig, JobInvocation, JobOutcome, ListOptions,
@@ -886,9 +886,21 @@ pub trait RemoteLibrary {
         Err(PluginError::unsupported("syncListening"))
     }
 
-    /// Drain external users observed since the last poll.
-    async fn poll_events(&self) -> Result<Vec<ExternalUser>> {
+    /// External users observed and not yet acknowledged.
+    ///
+    /// With `params.ack_follows` the host acknowledges every user it passes
+    /// on through [`Self::ack_events`]; keep returning a user until then, so
+    /// a lost reply does not lose it. Without it (a host that predates
+    /// `ackEvents`), a returned user counts as delivered.
+    async fn poll_events(&self, _params: EventPollParams) -> Result<Vec<ExternalUser>> {
         Err(PluginError::unsupported("pollEvents"))
+    }
+
+    /// Acknowledges users a [`Self::poll_events`] reply handed over; stop
+    /// returning them. The default does nothing, which suits a guest that
+    /// treats every returned user as delivered.
+    async fn ack_events(&self, _params: EventAckParams) -> Result<()> {
+        Ok(())
     }
 }
 

@@ -3262,11 +3262,28 @@ class RemoteLibrary(Protocol):
         """
         ...
 
-    async def poll_events(self) -> EventPollReply:
-        """Drain external users the remote side observed since the last poll.
+    async def poll_events(self, params: EventPollParams) -> EventPollReply:
+        """External users the remote side observed and the host has not
+        acknowledged. Without `params.ackFollows` (hosts that predate
+        `ackEvents`) a returned user counts as delivered.
+
+        Args:
+            params: Whether the host acknowledges what it receives.
 
         Returns:
             ``EventPollReply``
+        """
+        ...
+
+    async def ack_events(self, params: EventAckParams) -> EmptyReply:
+        """Acknowledge users a `pollEvents` reply handed over: the host has passed
+        them on, so the guest stops returning them.
+
+        Args:
+            params: The acknowledged users.
+
+        Returns:
+            ``EmptyReply``
         """
         ...
 
@@ -7655,6 +7672,28 @@ class DeprovisionRequest(TypedDict):
     grant: ProvisionGrant
 
 
+class EventPollParams(TypedDict):
+    """Params of `RemoteLibrary.pollEvents`.
+
+    Attributes:
+        ackFollows: The host calls `ackEvents` with every user it passes on, so the
+            guest keeps returning a user until it is acknowledged. False from hosts that
+            predate `ackEvents`: the guest then treats a returned user as delivered.
+    """
+
+    ackFollows: bool
+
+
+class EventAckParams(TypedDict):
+    """Params of `RemoteLibrary.ackEvents`.
+
+    Attributes:
+        externalUserIds: `ExternalUser.externalUserId` of each user the host passed on.
+    """
+
+    externalUserIds: list[str]
+
+
 class DbValueNull(TypedDict):
     """``DbValue`` member ``null``.
 
@@ -9477,6 +9516,8 @@ __all__ = [
     "ProvisionReplyErr",
     "ProvisionReply",
     "DeprovisionRequest",
+    "EventPollParams",
+    "EventAckParams",
     "DbValueNull",
     "DbValueBoolean",
     "DbValueInt64",

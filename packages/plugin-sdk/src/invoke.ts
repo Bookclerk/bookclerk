@@ -969,12 +969,19 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       W.RemoteLibrarySyncListeningResultsCodec,
       (value) => okValue({ items: asList<ListeningProgress>(value) }),
     ),
-    pollEvents: withoutParams(
+    pollEvents: withParams(
       "remoteLibrary",
       "pollEvents",
       W.RemoteLibraryPollEventsParamsCodec,
       W.RemoteLibraryPollEventsResultsCodec,
       (value) => okValue({ users: asList<ExternalUser>(value) }),
+    ),
+    ackEvents: withParams(
+      "remoteLibrary",
+      "ackEvents",
+      W.RemoteLibraryAckEventsParamsCodec,
+      W.RemoteLibraryAckEventsResultsCodec,
+      okEmpty,
     ),
   },
   EventConsumer: {

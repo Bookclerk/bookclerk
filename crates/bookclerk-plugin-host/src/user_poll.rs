@@ -96,9 +96,12 @@ impl PollGeneration {
 /// Spawns the poll loop for one remote library.
 ///
 /// The loop waits `interval` (or less, when [`PollGeneration::poll_now`]
-/// asks), calls `poll`, and hands every user it returns to `on_user`, until `generations` moves past the generation it was
-/// spawned under or `poll` returns `None` (its owner is gone). A failed poll
-/// is logged and the loop keeps its schedule.
+/// asks), calls `poll`, hands every user it returns to `on_user`, then
+/// acknowledges them through `ack` so the guest stops returning them. It
+/// runs until `generations` moves past the generation it was spawned under
+/// or `poll` returns `None` (its owner is gone). A failed poll or
+/// acknowledgement is logged and the loop keeps its schedule; a user whose
+/// acknowledgement failed comes back on the next poll.
 ///
 /// # Arguments
 ///
@@ -110,15 +113,19 @@ impl PollGeneration {
 ///   empty.
 /// * `on_user` - the daemon hook each user is passed to.
 /// * `poll` - one poll; `None` ends the loop.
-pub(crate) fn spawn<F, Fut>(
+/// * `ack` - acknowledges the `externalUserId`s of users passed on.
+pub(crate) fn spawn<F, Fut, A, AckFut>(
     generations: &PollGeneration,
     interval: Duration,
     plugin_id: String,
     on_user: OnExternalUser,
     poll: F,
+    ack: A,
 ) where
     F: Fn() -> Fut + Send + 'static,
     Fut: Future<Output = Option<bookclerk_integrations::Result<Vec<ExternalUser>>>> + Send,
+    A: Fn(Vec<String>) -> AckFut + Send + 'static,
+    AckFut: Future<Output = bookclerk_integrations::Result<()>> + Send,
 {
     let current = generations.watch(generations.next());
     let wake = generations.new_wake();
@@ -139,8 +146,20 @@ pub(crate) fn spawn<F, Fut>(
             // already handed them over.
             match result {
                 Ok(users) => {
+                    let ids: Vec<String> =
+                        users.iter().map(|u| u.external_user_id.clone()).collect();
                     for user in users {
                         on_user(with_provider(user, &plugin_id));
+                    }
+                    if !ids.is_empty() {
+                        if let Err(err) = ack(ids).await {
+                            tracing::warn!(
+                                id = %plugin_id,
+                                %err,
+                                "remote library user acknowledgement failed; \
+                                 the users come back on the next poll"
+                            );
+                        }
                     }
                 }
                 Err(err) => {
@@ -202,6 +221,8 @@ mod tests {
         let polls = Arc::new(AtomicUsize::new(0));
         let (hook, seen) = recorder();
         let counter = Arc::clone(&polls);
+        let acked = Arc::new(std::sync::Mutex::new(Vec::<Vec<String>>::new()));
+        let ack_sink = Arc::clone(&acked);
         spawn(
             &generations,
             Duration::from_secs(10),
@@ -217,6 +238,10 @@ mod tests {
                     })
                 }
             },
+            move |ids| {
+                ack_sink.lock().expect("acked").push(ids);
+                async { Ok(()) }
+            },
         );
         tokio::time::sleep(Duration::from_secs(5)).await;
         assert_eq!(polls.load(Ordering::SeqCst), 0, "the first poll waits");
@@ -226,6 +251,11 @@ mod tests {
         let users = seen.lock().expect("seen").clone();
         assert_eq!(users.len(), 2);
         assert!(users.iter().all(|u| u.provider == "abs"));
+        // Each poll that handed users over acknowledged them, after the hook.
+        assert_eq!(
+            acked.lock().expect("acked").clone(),
+            vec![vec!["u1".to_string()], vec!["u1".to_string()]]
+        );
         generations.end();
         tokio::time::sleep(Duration::from_secs(60)).await;
         assert_eq!(polls.load(Ordering::SeqCst), 3, "an ended loop stops");
@@ -246,6 +276,7 @@ mod tests {
                 counter.fetch_add(1, Ordering::SeqCst);
                 async { None }
             },
+            |_ids| async { Ok(()) },
         );
         tokio::time::sleep(Duration::from_secs(10)).await;
         assert_eq!(polls.load(Ordering::SeqCst), 1);

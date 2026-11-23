@@ -1948,11 +1948,22 @@ export interface RemoteLibrary {
    */
   syncListening(): Promise<SyncListeningReply>;
   /**
-   * Drain external users the remote side observed since the last poll.
+   * External users the remote side observed and the host has not
+   * acknowledged. Without `params.ackFollows` (hosts that predate
+   * `ackEvents`) a returned user counts as delivered.
    *
+   * @param params - Whether the host acknowledges what it receives.
    * @returns {@link EventPollReply}
    */
-  pollEvents(): Promise<EventPollReply>;
+  pollEvents(params: EventPollParams): Promise<EventPollReply>;
+  /**
+   * Acknowledge users a `pollEvents` reply handed over: the host has passed
+   * them on, so the guest stops returning them.
+   *
+   * @param params - The acknowledged users.
+   * @returns {@link EmptyReply}
+   */
+  ackEvents(params: EventAckParams): Promise<EmptyReply>;
 }
 
 /** `cli` entrypoint: guest commands under `bookclerk plugins <id> <command>`. */
@@ -4970,6 +4981,22 @@ export type ProvisionReply =
 export interface DeprovisionRequest {
   /** The operator's grant, or kind `none` to use the stored secrets. */
   grant: ProvisionGrant;
+}
+
+/** Params of `RemoteLibrary.pollEvents`. */
+export interface EventPollParams {
+  /**
+   * The host calls `ackEvents` with every user it passes on, so the guest
+   * keeps returning a user until it is acknowledged. False from hosts that
+   * predate `ackEvents`: the guest then treats a returned user as delivered.
+   */
+  ackFollows: boolean;
+}
+
+/** Params of `RemoteLibrary.ackEvents`. */
+export interface EventAckParams {
+  /** `ExternalUser.externalUserId` of each user the host passed on. */
+  externalUserIds: string[];
 }
 
 /** One typed SQL cell or bind parameter. */

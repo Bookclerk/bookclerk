@@ -3132,15 +3132,32 @@ impl remote_library_capnp::Server for RemoteLibraryServer {
 
     async fn poll_events(
         self: Rc<Self>,
-        _params: remote_library_capnp::PollEventsParams,
+        params: remote_library_capnp::PollEventsParams,
         mut results: remote_library_capnp::PollEventsResults,
     ) -> capnp::Result<()> {
+        // A host that predates the params sends none: a null pointer reads
+        // as the default, `ackFollows = false`.
+        let params = crate::generated::read_event_poll_params(params.get()?.get_params()?)?;
         let outcome = self
             .inner
-            .poll_events()
+            .poll_events(params)
             .await
             .map(|users| EventPollResult { users });
         write_event_poll_reply(results.get().init_result(), &outcome)
+    }
+
+    async fn ack_events(
+        self: Rc<Self>,
+        params: remote_library_capnp::AckEventsParams,
+        mut results: remote_library_capnp::AckEventsResults,
+    ) -> capnp::Result<()> {
+        let params = crate::generated::read_event_ack_params(params.get()?.get_params()?)?;
+        let mut result = results.get().init_result();
+        match self.inner.ack_events(params).await {
+            Ok(()) => result.set_ok(()),
+            Err(err) => write_error(result.init_err(), &err),
+        }
+        Ok(())
     }
 }
 
@@ -4910,12 +4927,21 @@ impl RemoteLibrary for RemoteLibraryClient {
             .map_err(from_capnp)?
             .map(|ok| ok.items)
     }
-    async fn poll_events(&self) -> Result<Vec<ExternalUser>> {
-        let req = self.client.poll_events_request();
+    async fn poll_events(&self, params: crate::EventPollParams) -> Result<Vec<ExternalUser>> {
+        let mut req = self.client.poll_events_request();
+        crate::generated::write_event_poll_params(req.get().init_params(), &params)
+            .map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
         read_event_poll_reply(reply_result!(reply))
             .map_err(from_capnp)?
             .map(|ok| ok.users)
+    }
+    async fn ack_events(&self, params: crate::EventAckParams) -> Result<()> {
+        let mut req = self.client.ack_events_request();
+        crate::generated::write_event_ack_params(req.get().init_params(), &params)
+            .map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        read_empty(reply_result!(reply))
     }
 }
 

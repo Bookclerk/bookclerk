@@ -258,6 +258,8 @@ export type {
   NotifySent,
   NotifyValidateParams,
   NotifyValidated,
+  EventAckParams,
+  EventPollParams,
   ScanLibraryParams,
   SeriesEntry,
   SocketMessageOk,

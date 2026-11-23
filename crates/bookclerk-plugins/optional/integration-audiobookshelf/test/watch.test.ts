@@ -18,7 +18,14 @@ import type { PluginMigration } from "@bookclerk/plugin-sdk/workerd";
 
 import type { AbsUser } from "../src/client.ts";
 import { hexKey, LISTENING_KEY_TAG } from "../src/hash.ts";
-import { SEEDED, UserWatch, WATCH_MIGRATION, insertKeys, watchKey } from "../src/watch.ts";
+import {
+  SEEDED,
+  UserWatch,
+  WATCH_MIGRATION,
+  WATCH_PENDING_MIGRATION,
+  insertKeys,
+  watchKey,
+} from "../src/watch.ts";
 
 /**
  * Users with the given ids.
@@ -176,4 +183,48 @@ test("without a database the set lives in memory", async () => {
   assert.equal(await watch.seed(users(["root", "ada"])), 0);
   assert.deepEqual(ids(await watch.takeNew(users(["root", "ada"]))), ["ada"]);
   assert.equal(memory.size, 3, "two users and the seed marker");
+});
+
+test("an acknowledging host gets each new user until it acknowledges it", async () => {
+  await eachProfile([WATCH_MIGRATION, WATCH_PENDING_MIGRATION], async (db, profile) => {
+    const watch = new UserWatch(db.binding, new Set());
+    await watch.seed(users(["root"]));
+    const polled = users(["root", "ada", "grace"]);
+    assert.deepEqual(ids(await watch.takeNew(polled, true)), ["ada", "grace"], profile);
+    // The reply was lost: the next poll answers the same users again.
+    const restarted = new UserWatch(db.binding, new Set());
+    assert.deepEqual(ids(await restarted.takeNew(polled, true)), ["ada", "grace"], profile);
+    await restarted.ack(["ada", "never-pending"]);
+    assert.deepEqual(ids(await restarted.takeNew(polled, true)), ["grace"], profile);
+    // A pending user gone from the server is not reported.
+    assert.deepEqual(ids(await restarted.takeNew(users(["root", "ada"]), true)), [], profile);
+    await restarted.ack(["grace"]);
+    assert.deepEqual(await restarted.takeNew(polled, true), [], profile);
+    // An older host never sees pending users again.
+    const newcomer = users(["root", "linus"]);
+    assert.deepEqual(ids(await restarted.takeNew(newcomer, true)), ["linus"], profile);
+    assert.deepEqual(await restarted.takeNew(newcomer), [], profile);
+  });
+});
+
+test("a user is pending before it is known, so a failed pending write loses nobody", async () => {
+  await eachProfile([WATCH_MIGRATION], async (db, profile) => {
+    // No pending table: recording the user as pending fails.
+    const watch = new UserWatch(db.binding, new Set());
+    await watch.seed(users(["root"]));
+    await assert.rejects(watch.takeNew(users(["root", "ada"]), true));
+    assert.deepEqual(ids(await watch.takeNew(users(["root", "ada"]))), ["ada"], profile);
+  });
+});
+
+test("without a database the pending set lives in memory", async () => {
+  const pending = new Set<string>();
+  const watch = new UserWatch(undefined, new Set(), pending);
+  await watch.seed(users(["root"]));
+  assert.deepEqual(ids(await watch.takeNew(users(["root", "ada"]), true)), ["ada"]);
+  assert.deepEqual(ids(await watch.takeNew(users(["root", "ada"]), true)), ["ada"]);
+  assert.equal(pending.size, 1);
+  await watch.ack(["ada"]);
+  assert.deepEqual(await watch.takeNew(users(["root", "ada"]), true), []);
+  assert.equal(pending.size, 0);
 });

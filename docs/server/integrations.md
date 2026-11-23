@@ -46,7 +46,8 @@ plugin that runs in `workerd`, in
 The plugin does Audiobookshelf work only: scans, listening sync, sign-in
 with Audiobookshelf credentials, and watching users through `pollEvents`.
 Claim tickets and the Accounts page are part of Bookclerk itself; the host
-polls `pollEvents` and starts those workflows.
+polls `pollEvents`, starts those workflows, and then acknowledges the users
+(`ackEvents`) so the plugin stops reporting them.
 
 ### Set it up
 

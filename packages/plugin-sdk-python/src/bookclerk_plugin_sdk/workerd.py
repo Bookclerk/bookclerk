@@ -2808,6 +2808,7 @@ REMOTE_LIBRARY_METHODS: tuple[str, ...] = (
     "scanLibrary",
     "syncListening",
     "pollEvents",
+    "ackEvents",
 )
 """RPC surface of the ``remoteLibrary`` entrypoint."""
 
@@ -2841,9 +2842,61 @@ class RemoteLibraryEntrypoint(NamedEntrypoint):
         """Push / pull listening progress (list of ``ListeningProgress``)."""
         raise _unsupported("syncListening")
 
-    async def pollEvents(self):
-        """``ExternalUser`` records observed since the last poll."""
+    async def pollEvents(self, _params: abi.EventPollParams | None = None):
+        """``ExternalUser`` records observed since the last poll.
+
+        Args:
+            _params: ``{"ackFollows": True}`` when the host calls
+                :meth:`ackEvents` with every user it passes on, so a user
+                should be returned again until it is acknowledged. ``None``
+                or ``False`` from hosts that predate ``ackEvents``.
+        """
         raise _unsupported("pollEvents")
+
+    async def ackEvents(self, _params: abi.EventAckParams) -> None:
+        """The host passed these users on; stop returning them.
+
+        Args:
+            _params: ``{"externalUserIds": [...]}``, the
+                ``externalUserId`` of each user the host received.
+        """
+        return None
+
+    async def bookclerkInvoke(self, context=None, method="", *args):
+        """Dispatch as the base adapter does, keeping old ``pollEvents`` overrides working.
+
+        A ``pollEvents`` written before it took params (``async def
+        pollEvents(self)``) is called without them, as it was before.
+
+        Args:
+            context: The invocation context.
+            method: The method name.
+            *args: The method's wire arguments.
+
+        Returns:
+            The method's wire result.
+        """
+        if str(method) == "pollEvents" and args and not _takes_positional(self.pollEvents):
+            args = ()
+        return await super().bookclerkInvoke(context, method, *args)
+
+
+def _takes_positional(fn: Any) -> bool:
+    """Whether ``fn`` (a bound method) accepts at least one positional argument.
+
+    Args:
+        fn: The callable.
+
+    Returns:
+        ``True`` when one positional argument can be passed.
+    """
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return True
+    return any(
+        p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD, p.VAR_POSITIONAL) for p in params
+    )
 
 
 _ADAPTER_SESSIONS: dict[str, Any] = {}
