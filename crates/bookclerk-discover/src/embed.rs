@@ -165,7 +165,7 @@ pub struct EmbedFields<'a> {
     pub series: Option<&'a str>,
     /// Genres, categories or subjects, as one line.
     pub genres: Option<&'a str>,
-    /// Synopsis; only its first [`EMBED_DESCRIPTION_CHARS`] characters are
+    /// Synopsis; only its first 1,200 characters are
     /// used.
     pub description: Option<&'a str>,
 }
@@ -524,7 +524,7 @@ pub async fn prune_vectors(library: &LibraryStore, serving: &VectorSpace) -> Res
     Ok(removed)
 }
 
-/// The vectors of `texts` in `space`, keyed by [`text_hash`].
+/// The vectors of `texts` in `space`, keyed by the SHA-256 of each text.
 ///
 /// Stored vectors are read first. The texts without one are embedded and
 /// stored when `embedder` makes vectors of `space`, until `deadline`; a
