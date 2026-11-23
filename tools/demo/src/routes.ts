@@ -250,6 +250,9 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["GET", "/api/library/editions/{id}/chapters/claims", "allow"],
   ["PUT", "/api/library/editions/{id}/chapters/pin", "allow"],
   ["DELETE", "/api/library/editions/{id}/chapters/pin", "allow"],
+  // Re-align reads a stored copy and writes claims to the visitor's own
+  // library; the image has no output plugin, so the job finds no copy.
+  ["POST", "/api/library/editions/{id}/chapters/realign", "allow"],
   ["GET", "/api/library/conflicts", "allow"],
   ["PUT", "/api/library/listings/{id}/pin", "allow"],
   ["DELETE", "/api/library/listings/{id}/pin", "allow"],
