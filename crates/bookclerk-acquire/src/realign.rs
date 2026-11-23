@@ -178,9 +178,11 @@ pub(crate) fn copy_timeline(
         // Every node in the tree moves by the same scale, including those
         // the title clean-ups dropped from the list to align, so none keeps
         // a start on the provider's timeline.
-        let every: Vec<(String, u64)> = flatten_chapters(info)
+        let mut starts = Vec::new();
+        tree_starts(info.get("chapters"), &mut starts);
+        let every: Vec<(String, u64)> = starts
             .into_iter()
-            .map(|chapter| (String::new(), chapter.start_ms))
+            .map(|start| (String::new(), start))
             .collect();
         let mut map: HashMap<u64, u64> = every
             .iter()
@@ -206,6 +208,22 @@ pub(crate) fn copy_timeline(
             ),
             rebase_chapter_tree_for_plain_audio(info, Some(copy_ms)),
         )
+    }
+}
+
+/// Collects the start of every node under `nodes` (a `chapters` array),
+/// nested ones included and whatever its title, in the spellings
+/// [`apply_start_map_to_chapter_tree`] rewrites.
+fn tree_starts(nodes: Option<&Value>, out: &mut Vec<u64>) {
+    for node in nodes.and_then(Value::as_array).into_iter().flatten() {
+        tree_starts(node.get("chapters"), out);
+        if let Some(start) = node
+            .get("start_offset_ms")
+            .and_then(Value::as_u64)
+            .or_else(|| node.get("startOffsetMs").and_then(Value::as_u64))
+        {
+            out.push(start);
+        }
     }
 }
 
@@ -280,6 +298,10 @@ mod tests {
             .as_array_mut()
             .expect("chapters")
             .push(json!({"title": "Audible Studios", "startOffsetMs": 30_000}));
+        info["chapters"]
+            .as_array_mut()
+            .expect("chapters")
+            .push(json!({"title": " ", "startOffsetMs": 70_000}));
         let options = DownloadOptions {
             strip_audible_brand_audio: true,
             ..DownloadOptions::default()
@@ -288,6 +310,7 @@ mod tests {
         let starts: Vec<u64> = flat.iter().map(|(_, start)| *start).collect();
         assert_eq!(starts, vec![0, 9_900, 49_500]);
         assert_eq!(tree["chapters"][3]["startOffsetMs"], json!(29_700));
+        assert_eq!(tree["chapters"][4]["startOffsetMs"], json!(69_300));
     }
 
     #[test]
