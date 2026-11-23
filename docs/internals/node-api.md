@@ -48,7 +48,7 @@ request is answered by a frame with the same `id`. Both sides ping every
 | `instance.config` | `CONFIG`, and `SECRETS` sealed to the node only for a node trusted with every job |
 | `observation` | `ok` (`materialized` or `error` for its own deployments) |
 | `secret.update` | `ok` (a refreshed store token, sealed to the owner, only for a ref handed with a live job), or `error` `refused` `kept_by_branch` for a single-keeper account a branch keeps and has pushed a sign-in for |
-| `accounts.update {sealed, revision}` | `accounts.updated {outcome}`: `applied`, `stale` (not newer than the last one applied) or `not_shared` (not an account this branch keeps there); see [One refresh keeper](../server/branches.md#one-refresh-keeper) |
+| `accounts.update {sealed, revision, keeps_own?}` | `accounts.updated {outcome, sealed?}`: `applied`, `stale` (not newer than the last one applied), `not_shared` (not an account this branch keeps there) or `reconcile` (a first push the library answers with its newer sign-in in `sealed`, sealed to the branch's box key, unless `keeps_own` is true); see [One refresh keeper](../server/branches.md#one-refresh-keeper) |
 | `scan.results` | `scan.accepted {batch, upserted}` |
 | `scan.removed {account_id, batch, product_ids}` (at most 500 ids, after the job's rows) | `scan.accepted {batch, upserted}` (holdings removed), `lost`, or `error` `refused` |
 | `scan.pass_end {account_id, sync_token, complete, full}` (one per account, last) | `scan.accepted {batch: 0, upserted}` (holdings a complete full pass pruned), `lost`, or `error` `refused` |

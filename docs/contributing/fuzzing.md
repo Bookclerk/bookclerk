@@ -75,7 +75,7 @@ boundary extends it.
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
 | `node_frame` | Node-to-node frames on the library socket, including the public origin a branch reports in its heartbeat | `bookclerk-node-proto::Frame`, `BranchOrigin::parse` |
-| `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, a branch offers its library (`accounts.add`), and a sign-in a keeping branch pushes there (`accounts.update`) | `bookclerk-node-proto::parse_account_bundle` |
+| `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, a branch offers its library (`accounts.add`), and a sign-in a keeping branch pushes there (`accounts.update`) or the library answers its first push with (`reconcile`) | `bookclerk-node-proto::parse_account_bundle` |
 | `destination_filter` | A storage destination's filter: the body of `PUT /api/config/plugin-instances/{id}/filter` and the stored `core.destination` document | `bookclerk-config::parse_destination_filter` |
 | `intake_settings` | A drop folder's settings: the body of `PUT /api/config/plugin-instances/{id}/intake` and the stored `core.intake` document | `bookclerk-config::parse_intake_settings` |
 | `intake_items` | A drop folder's listing: object keys, sizes and change signatures grouped into items and settled | `bookclerk-intake::ItemGrouper`, `step` |
@@ -781,7 +781,7 @@ only that. The others check:
   (at most 512 bytes, no `.` or `..` segment, backslash, control
   character or drive prefix), each at most 1 TiB, exactly one of them the
   primary audio. The `copy_*` seeds' names say whether the receiver takes
-  the frame, and the replay test checks each against its name. Seeds cover `accounts.update`, `accounts.updated`,
+  the frame, and the replay test checks each against its name. Seeds cover `accounts.update` (with and without `keeps_own`), `accounts.updated` (with a `reconcile` answer),
   `scan.removed`, `scan.pass_end`, a `work` frame with scan tokens,
   `deployments.list` and `acquire.plan` with and without a cursor, paged
   and out-of-order `deployments`, `release` with the old `resumed` flag

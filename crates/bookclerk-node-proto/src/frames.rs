@@ -660,12 +660,25 @@ pub enum Body {
         sealed: String,
         /// The keeper's revision of the sign-in.
         revision: i64,
+        /// True when the branch was answered [`KeeperOutcome::Reconcile`]
+        /// for this account and keeps its own sign-in, which is newer than
+        /// the one the library sent it: the library then applies the push
+        /// rather than answering with its own sign-in again. Left out when
+        /// false.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        keeps_own: bool,
     },
     /// Library → branch: what became of an [`Body::AccountsUpdate`].
     #[serde(rename = "accounts.updated")]
     AccountsUpdated {
         /// What the library did with the sign-in.
         outcome: KeeperOutcome,
+        /// With [`KeeperOutcome::Reconcile`] only: the library's own
+        /// sign-in of the account, a one-account [`crate::AccountBundle`]
+        /// sealed to the branch's box key
+        /// ([`crate::seal_account_reconcile`]), base64url without padding.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sealed: Option<String>,
     },
     /// Branch → library: send the catalog questions waiting for this
     /// branch (see [`crate::LookupWork`]). Answered with
@@ -965,6 +978,12 @@ pub enum KeeperOutcome {
     /// The account is not the branch owner's here, or not shared with
     /// this branch; nothing changed. The keeper stops pushing it here.
     NotShared,
+    /// The branch's first push of the account, and the library refreshed
+    /// its own sign-in after it sent the account to the branch: nothing
+    /// changed, and the answer carries the library's sign-in. The branch
+    /// takes it when its own copy is still the one the library sent, and
+    /// otherwise pushes its own again with `keeps_own`.
+    Reconcile,
 }
 
 /// The owner's library import settings a host scan runs with.

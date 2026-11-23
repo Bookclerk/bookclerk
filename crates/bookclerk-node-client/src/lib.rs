@@ -72,8 +72,8 @@ pub use clerk::{
 };
 pub use client::{
     CatalogBatchAccepted, CatalogSession, ClientExit, ClientTiming, HeartbeatSource, HostClient,
-    HostClientConfig, HostClientHandle, OfferedAccounts, AWAITING_HOST_CONSENT, KIND_NOT_RUN_HERE,
-    MAX_ARTIFACT_BYTES, MAX_LEASE, SECRETS_UNOPENABLE,
+    HostClientConfig, HostClientHandle, OfferedAccounts, SignInPushed, AWAITING_HOST_CONSENT,
+    KIND_NOT_RUN_HERE, MAX_ARTIFACT_BYTES, MAX_LEASE, SECRETS_UNOPENABLE,
 };
 pub use copies::{fetch_copy_file, CopyFetchError};
 pub use endpoint::{

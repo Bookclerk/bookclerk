@@ -398,6 +398,17 @@ account itself.
   keeps refreshing it itself, so a branch that was sent the account but
   couldn't keep it (no Owner to keep it for, or its member rule refused it)
   never leaves it stale.
+- **The first push.** A branch's first push can come from the copy the
+  library sent it while the library saved a newer refresh since. So until a
+  push from the branch is applied, the library answers one whose secrets
+  differ from its own with `reconcile`, carrying its own sign-in sealed to
+  the branch's box key, whenever its secrets were written after it last
+  sent the account there. When the branch's copy is still the one it was
+  sent (none of its secrets written since it arrived), the branch takes the
+  library's sign-in, guarded on that in one atomic batch, and pushes it
+  back, which matches and is applied. Otherwise the branch's own sign-in
+  is newer, and it pushes it again marked `keeps_own`, which the library
+  applies.
 - **Elsewhere.** A kept account travels back only to its keeper, never to
   a second branch, and a second branch's offer of it is not kept.
 - **A new keeper.** When the account is disconnected everywhere on the
