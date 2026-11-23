@@ -17,7 +17,7 @@ use crate::match_score::{
     calculate_match_confidence, is_asin_title, is_valid_asin, normalize_isbn, MatchQuery,
     ScoreInput,
 };
-use crate::providers::{asin_identifier, record_identifier, MetadataProviders};
+use crate::providers::{asin_identifier, record_identifier, MetadataProviders, ProviderCoverage};
 use bookclerk_audible_catalog::{
     normalize_region, public_http_client, search_catalog_asins, search_catalog_keywords,
 };
@@ -101,8 +101,39 @@ pub async fn lookup_by_metadata(
     region: &str,
     min_confidence: f64,
 ) -> Result<Option<ScoredMatch>> {
+    Ok(
+        lookup_by_metadata_checked(providers, query, region, min_confidence)
+            .await?
+            .0,
+    )
+}
+
+/// [`lookup_by_metadata`], also saying whether every provider answered.
+///
+/// # Arguments
+///
+/// * `providers` - Deployed metadata providers asked for each candidate.
+/// * `query` - Title, author, ISBN and runtime of the row to match.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+/// * `min_confidence` - Minimum match confidence in `[0.0, 1.0]` to apply enrichment.
+///
+/// # Returns
+///
+/// The highest-scoring candidate at or above `min_confidence`, and
+/// [`ProviderCoverage::Partial`] when a provider call failed for any
+/// candidate (that provider may have had a better record).
+///
+/// # Errors
+///
+/// Returns an error when the HTTP client cannot be built or a catalog search fails.
+pub async fn lookup_by_metadata_checked(
+    providers: &dyn MetadataProviders,
+    query: &MatchQuery<'_>,
+    region: &str,
+    min_confidence: f64,
+) -> Result<(Option<ScoredMatch>, ProviderCoverage)> {
     let http = public_http_client()?;
-    lookup_by_metadata_with_client(&http, providers, query, region, min_confidence).await
+    match_by_metadata(&http, providers, query, region, min_confidence).await
 }
 
 /// Catalog search + provider lookup against an already-built HTTP client.
@@ -130,15 +161,47 @@ pub async fn lookup_by_metadata_with_client(
     region: &str,
     min_confidence: f64,
 ) -> Result<Option<ScoredMatch>> {
+    Ok(
+        match_by_metadata(http, providers, query, region, min_confidence)
+            .await?
+            .0,
+    )
+}
+
+/// Catalog search + provider lookup, with the providers' coverage.
+///
+/// # Arguments
+///
+/// * `http` - Client for the public Audible catalog search.
+/// * `providers` - Deployed metadata providers asked for each candidate.
+/// * `query` - Title, author, ISBN and runtime of the row to match.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+/// * `min_confidence` - Minimum match confidence in `[0.0, 1.0]` to apply enrichment.
+///
+/// # Returns
+///
+/// The highest-scoring candidate at or above `min_confidence`, and whether
+/// every provider answered for every candidate.
+///
+/// # Errors
+///
+/// Returns an error when a catalog search fails.
+async fn match_by_metadata(
+    http: &Client,
+    providers: &dyn MetadataProviders,
+    query: &MatchQuery<'_>,
+    region: &str,
+    min_confidence: f64,
+) -> Result<(Option<ScoredMatch>, ProviderCoverage)> {
     let title = query.title.trim();
     let isbn_norm = query.isbn.map(normalize_isbn).filter(|s| !s.is_empty());
     if title.is_empty() && isbn_norm.is_none() {
-        return Ok(None);
+        return Ok((None, ProviderCoverage::Complete));
     }
     // Candidates are scored on provider records only, so with no provider
     // deployed no candidate can match: skip the catalog searches.
     if providers.provider_keys().is_empty() {
-        return Ok(None);
+        return Ok((None, ProviderCoverage::Complete));
     }
     let region = normalize_region(region);
     let author_query = query.author.map(primary_author).filter(|s| !s.is_empty());
@@ -167,12 +230,14 @@ pub async fn lookup_by_metadata_with_client(
     }
 
     let mut best: Option<ScoredMatch> = None;
+    let mut coverage = ProviderCoverage::Complete;
     for asin in asins {
         // Every provider's audio record for this ASIN is scored, so a
         // sparse first record cannot hide a complete later one. Ebook and
         // print records never describe the Audible edition being matched.
-        let candidates = records_for_asin(providers, &asin, &region)
-            .await
+        let (records, answered) = records_for_asin(providers, &asin, &region).await;
+        coverage = coverage.and(answered);
+        let candidates = records
             .into_iter()
             .filter(|record| record.media_kind == MediaKind::Audio)
             .filter_map(|record| enrichment_from_record(&record, &asin));
@@ -180,7 +245,7 @@ pub async fn lookup_by_metadata_with_client(
             best = better_match(best, enrichment, query, min_confidence);
         }
     }
-    Ok(best)
+    Ok((best, coverage))
 }
 
 /// Scores `enrichment` against `query` and keeps it when it clears
@@ -509,14 +574,36 @@ pub async fn enrichment_for_asin(
     asin: &str,
     region: &str,
 ) -> Option<Enrichment> {
+    enrichment_for_asin_checked(providers, asin, region).await.0
+}
+
+/// [`enrichment_for_asin`], also saying whether every provider answered.
+///
+/// # Arguments
+///
+/// * `providers` - Deployed metadata providers.
+/// * `asin` - Audible / Amazon ASIN.
+/// * `region` - Marketplace / region code (`us`, `uk`, …).
+///
+/// # Returns
+///
+/// The record's fields (or `None`), and [`ProviderCoverage::Partial`] when
+/// a provider call failed. A malformed ASIN is `None` with complete
+/// coverage: no provider is asked and asking again changes nothing.
+pub async fn enrichment_for_asin_checked(
+    providers: &dyn MetadataProviders,
+    asin: &str,
+    region: &str,
+) -> (Option<Enrichment>, ProviderCoverage) {
     let asin = asin.trim().to_ascii_uppercase();
     if !is_valid_asin(&asin) {
-        return None;
+        return (None, ProviderCoverage::Complete);
     }
-    records_for_asin(providers, &asin, region)
-        .await
+    let (records, coverage) = records_for_asin(providers, &asin, region).await;
+    let found = records
         .iter()
-        .find_map(|record| enrichment_from_record(record, &asin))
+        .find_map(|record| enrichment_from_record(record, &asin));
+    (found, coverage)
 }
 
 /// Every provider record for `asin`, in provider order, without those that
@@ -534,12 +621,13 @@ pub async fn enrichment_for_asin(
 ///
 /// # Returns
 ///
-/// The matching records. A provider failure is logged and contributes none.
+/// The matching records, and whether every provider answered. A provider
+/// failure is logged and contributes none.
 async fn records_for_asin(
     providers: &dyn MetadataProviders,
     asin: &str,
     region: &str,
-) -> Vec<MetadataRecord> {
+) -> (Vec<MetadataRecord>, ProviderCoverage) {
     let region = normalize_region(region);
     let answer = providers
         .lookup(&MetadataLookupParams {
@@ -556,7 +644,8 @@ async fn records_for_asin(
             "metadata provider lookup failed"
         );
     }
-    answer
+    let coverage = answer.coverage();
+    let records = answer
         .records
         .into_iter()
         .map(|provided| provided.record)
@@ -564,7 +653,8 @@ async fn records_for_asin(
             record_identifier(record, IdentifierScheme::Asin)
                 .is_none_or(|named| named.eq_ignore_ascii_case(asin))
         })
-        .collect()
+        .collect();
+    (records, coverage)
 }
 
 /// Maps a provider record into enrichment fields.
@@ -933,6 +1023,45 @@ mod tests {
                 .await
                 .is_none()
         );
+    }
+
+    /// A failed provider makes the coverage partial even when another
+    /// provider answered; no failure, or a malformed ASIN no provider is
+    /// asked about, is complete.
+    #[tokio::test]
+    async fn the_checked_lookups_report_provider_coverage() {
+        let providers = ByAsin(vec![("B00TEST001".into(), full_record())]);
+        let (found, coverage) = enrichment_for_asin_checked(&providers, "B00TEST001", "us").await;
+        assert!(found.is_some());
+        assert_eq!(coverage, ProviderCoverage::Partial, "the broken provider");
+        assert_eq!(
+            enrichment_for_asin_checked(&NoMetadataProviders, "B00TEST001", "us").await,
+            (None, ProviderCoverage::Complete)
+        );
+        assert_eq!(
+            enrichment_for_asin_checked(&providers, "not an asin", "us").await,
+            (None, ProviderCoverage::Complete)
+        );
+
+        // An ASIN-shaped title is looked up without a catalog search.
+        let query = MatchQuery {
+            title: "B00TEST001",
+            subtitle: None,
+            author: None,
+            narrator: None,
+            isbn: None,
+            duration_minutes: None,
+        };
+        let (matched, coverage) = lookup_by_metadata_checked(&providers, &query, "us", 0.0)
+            .await
+            .unwrap();
+        assert!(matched.is_some());
+        assert_eq!(coverage, ProviderCoverage::Partial);
+        let (none, coverage) = lookup_by_metadata_checked(&NoMetadataProviders, &query, "us", 0.0)
+            .await
+            .unwrap();
+        assert!(none.is_none());
+        assert_eq!(coverage, ProviderCoverage::Complete);
     }
 
     #[tokio::test]

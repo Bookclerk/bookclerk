@@ -171,14 +171,41 @@ jobs:
           # installs them on the first cargo call, racing parallel calls.
           components: rustfmt, clippy
 
+      # A ready pull request's head that only commits the approved
+      # screenshots (ui/visual/baselines.lock) since a parent whose run
+      # passed everything but the visual job carries that run's results
+      # over: the plan covers the lock change alone, so only the visual
+      # check and what else the lock selects run again
+      # (docs/contributing/ci.md#visual-approval-commits). Anything else
+      # prints why and writes nothing, and the run is the usual one.
+      - name: Look for a visual approval commit
+        id: carry
+        if: github.event_name == 'pull_request' && !github.event.pull_request.draft && !inputs.private-head && github.event.pull_request.head.repo.full_name != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: >-
+          python3 scripts/ci_carry.py find --repo "$REPO" --workflow ci.yml
+          --head "$HEAD_SHA" --head-repo "$HEAD_REPO" --head-branch "$HEAD_BRANCH"
+          --kind ci --dest "$RUNNER_TEMP/ci-carry" --carry-out "$RUNNER_TEMP/ci-carry/carried.json"
+
       - name: Resolve base / head
         id: shas
+        env:
+          CARRIED_PARENT: ${{ steps.carry.outputs.parent }}
         run: |
           set -euo pipefail
           if [ "${{ inputs.private-head }}" = "true" ]; then
             # The sealed commit sits on top of github.sha.
             HEAD="$(git rev-parse HEAD)"
             BASE="$(git rev-parse HEAD^)"
+          elif [ "${{ github.event_name }}" = "pull_request" ] && [ -n "$CARRIED_PARENT" ]; then
+            # A visual approval commit: only its own change is planned.
+            BASE="$CARRIED_PARENT"
+            HEAD="${{ github.event.pull_request.head.sha }}"
           elif [ "${{ github.event_name }}" = "pull_request" ]; then
             BASE="${{ github.event.pull_request.base.sha }}"
             HEAD="${{ github.event.pull_request.head.sha }}"
@@ -246,6 +273,7 @@ jobs:
           "$PY" scripts/tests/test_mutation_base.py
           "$PY" scripts/tests/test_codeql_languages.py
           "$PY" scripts/tests/test_codeql_reuse.py
+          "$PY" scripts/tests/test_ci_carry.py
           "$PY" scripts/tests/test_merge_queue_requeue.py
           "$PY" scripts/tests/test_cflite_artifacts.py
           "$PY" scripts/tests/test_model_packs.py
@@ -266,6 +294,7 @@ jobs:
           # Never for a called OSV remediation run, which is always full.
           PR_DRAFT: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && !inputs.private-head }}
           PR_RUN: ${{ github.event_name == 'pull_request' && !inputs.private-head }}
+          CARRIED_PARENT: ${{ steps.carry.outputs.parent }}
         run: |
           set -euo pipefail
           EXTRA=()
@@ -289,6 +318,10 @@ jobs:
           # job run in the merge queue, which CI Gate requires before a merge.
           if [ "$PR_RUN" = "true" ]; then
             EXTRA+=(--linux-only)
+          fi
+          # A visual approval commit records the run it carries over.
+          if [ -n "$CARRIED_PARENT" ]; then
+            EXTRA+=(--carried-from "$RUNNER_TEMP/ci-carry/carried.json")
           fi
           python3 scripts/ci-exec.py resolve \
             --base "${{ steps.shas.outputs.base }}" \
@@ -407,6 +440,7 @@ jobs:
             crates/bookclerk-plugins/optional/metadata-audnexus/package-lock.json
             crates/bookclerk-plugins/optional/metadata-files/package-lock.json
             crates/bookclerk-plugins/optional/metadata-openlibrary/package-lock.json
+            crates/bookclerk-plugins/optional/notifier-webhook/package-lock.json
 
       # The Python SDK check and its API docs install from
       # packages/plugin-sdk-python/uv.lock. No uv cache: nothing from an
@@ -2066,6 +2100,7 @@ jobs:
           --run-attempt "$RUN_ATTEMPT" --stranded-job "macOS (sandbox, gateway, tray)"
 
       - name: Compare job results with the expected execution
+        id: compare
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
           CI_GATE_STRANDED: ${{ steps.stranded.outputs.stranded == 'true' && 'macos' || '' }}
@@ -2090,6 +2125,7 @@ jobs:
           path: ${{ runner.temp }}/ci-patch
 
       - name: Coverage
+        id: coverage
         if: ${{ !cancelled() && !inputs.private-head }}
         run: >-
           python3 scripts/coverage_gate.py
@@ -2106,6 +2142,7 @@ jobs:
       # build-only main push, a selective plan) gets one log line and no
       # summary.
       - name: Web API contract
+        id: contract
         if: ${{ !cancelled() && !inputs.private-head }}
         env:
           TESTS_RESULT: ${{ needs.test.result }}
@@ -2115,3 +2152,25 @@ jobs:
           --plan "$RUNNER_TEMP/ci-plan/ci-plan.json"
           --tests-result "$TESTS_RESULT"
           --mode enforce
+
+      # What a later visual approval commit replays to carry this run's
+      # results over (docs/contributing/ci.md#visual-approval-commits): each
+      # job's result and the coverage and contract step outcomes, one
+      # artifact per attempt. Pull request runs only.
+      - name: Write the gate verdict
+        if: ${{ always() && github.event_name == 'pull_request' && !inputs.private-head }}
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          CI_GATE_STRANDED: ${{ steps.stranded.outputs.stranded == 'true' && 'macos' || '' }}
+          COVERAGE_OUTCOME: ${{ steps.coverage.outcome }}
+          CONTRACT_OUTCOME: ${{ steps.contract.outcome }}
+        run: python3 scripts/ci_carry.py verdict --out "$RUNNER_TEMP/ci-gate-verdict/verdict.json"
+
+      - name: Keep the gate verdict
+        if: ${{ always() && github.event_name == 'pull_request' && !inputs.private-head }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-gate-verdict-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-gate-verdict/verdict.json
+          if-no-files-found: error
+          retention-days: 14

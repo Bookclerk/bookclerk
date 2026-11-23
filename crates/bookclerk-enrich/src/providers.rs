@@ -49,6 +49,50 @@ impl MetadataAnswer {
     pub fn incomplete(&self) -> bool {
         !self.failures.is_empty()
     }
+
+    /// Whether every provider answered this call (see [`ProviderCoverage`]).
+    #[must_use]
+    pub fn coverage(&self) -> ProviderCoverage {
+        if self.incomplete() {
+            ProviderCoverage::Partial
+        } else {
+            ProviderCoverage::Complete
+        }
+    }
+}
+
+/// Whether every metadata provider asked during a lookup answered.
+///
+/// A caller that remembers an answer for a long time (a "nothing found" or
+/// a sparse record) should do so only when the coverage is
+/// [`Complete`](ProviderCoverage::Complete): a provider that failed may
+/// have had a better record, and asking again later may find it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderCoverage {
+    /// Every provider asked answered (with a record or with none).
+    Complete,
+    /// At least one provider call failed, so its records are missing.
+    Partial,
+}
+
+impl ProviderCoverage {
+    /// The coverage of two steps together: complete only when both are.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - The coverage of the other step.
+    ///
+    /// # Returns
+    ///
+    /// [`ProviderCoverage::Complete`] when both are complete, otherwise
+    /// [`ProviderCoverage::Partial`].
+    #[must_use]
+    pub fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Complete, Self::Complete) => Self::Complete,
+            (Self::Partial, _) | (_, Self::Partial) => Self::Partial,
+        }
+    }
 }
 
 /// A chapter layout and the provider plugin that returned it.

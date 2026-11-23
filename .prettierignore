@@ -33,6 +33,7 @@ crates/bookclerk-plugins/optional/integration-audiobookshelf/modules/
 crates/bookclerk-plugins/optional/metadata-audnexus/modules/
 crates/bookclerk-plugins/optional/metadata-files/modules/
 crates/bookclerk-plugins/optional/metadata-openlibrary/modules/
+crates/bookclerk-plugins/optional/notifier-webhook/modules/
 packages/plugin-sdk/src/generated.ts
 packages/plugin-sdk/src/generated-wire.ts
 packages/plugin-sdk/src/abi.ts

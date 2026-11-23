@@ -334,7 +334,11 @@ its new screenshots are approved. The `Visual baselines` workflow
    and drops the ones it removes, leaving every other entry alone. It
    commits that through the API, so GitHub signs the commit. For a fork,
    the comment tells the author which entries to change.
-4. The next run compares against the new images and passes.
+4. The next run compares against the new images and passes. The approval
+   commit changes only the lock, so CI runs just the visual checks again
+   and carries every other result over from the run before it, and the
+   other workflows do the same (see
+   [Visual approval commits](../ci.md#visual-approval-commits)).
 
 A tick from anyone else is undone with the reason. The approval is of the
 images the comment shows, not of a commit, so a push after the comment
@@ -375,8 +379,9 @@ of the combination. The `Visual recheck` workflow
 4. The `Visual baselines` workflow then proposes what differs on each pull
    request, the same way as for a CI run, as long as the pull request is
    still open, at the same head and has auto-merge on. Approving the
-   comment commits the lock change, so the pull request runs CI again
-   before it reaches the queue.
+   comment commits the lock change, so the pull request runs the visual
+   checks again before it reaches the queue and carries its other results
+   over (see [Visual approval commits](../ci.md#visual-approval-commits)).
 
 > [!NOTE]
 > A pull request queued behind another one that hasn't landed yet is
