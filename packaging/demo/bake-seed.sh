@@ -97,22 +97,40 @@ stop_daemon() {
 start_daemon || exit 1
 
 # Done when the library is embedded with the model (a discover_embed job
-# succeeded, which the daemon queues once the model is installed), a
-# Discover feed is stored and no job is pending or running, three checks in
-# a row. The embedding queues the ranking again before it finishes, so the
-# stored shelves are the ones ranked on the model's vectors. Past the cap
-# the bake keeps whatever shelves are stored, and a container recomputes
-# the rest after it starts; a missing model fails the build below.
+# succeeded and reports the model's vectors serve; the daemon queues it once
+# the model is installed), a Discover ranking succeeded after that and no
+# job is pending or running, three checks in a row. A ranking that had
+# already succeeded before the embedding was seen ranked on the stand-in's
+# vectors, so it is remembered by job id and does not count: the embedding
+# queues the ranking again, and that later one stores the shelves ranked on
+# the model's vectors. Past the cap the bake keeps what is stored only when
+# such a ranking finished (a container recomputes the rest after it
+# starts); otherwise the build fails below.
 waited=0
 quiet=0
 embedded=0
+ranked=0
+stand_in_ranked=' '
 while [ "$quiet" -lt 3 ]; do
 	jobs=$(bookclerk daemon jobs 2>/dev/null || true)
-	if printf '%s\n' "$jobs" | grep -q 'kind=discover_embed status=succeeded'; then
+	if printf '%s\n' "$jobs" |
+		grep 'kind=discover_embed status=succeeded' | grep -q 'serving=true'; then
 		embedded=1
 	fi
-	if [ "$embedded" -eq 1 ] &&
-		printf '%s\n' "$jobs" | grep -q 'kind=discover_feed status=succeeded' &&
+	for id in $(printf '%s\n' "$jobs" |
+		sed -n 's/^\([^ ]*\) kind=discover_feed status=succeeded.*/\1/p'); do
+		case $stand_in_ranked in
+		*" $id "*) ;;
+		*)
+			if [ "$embedded" -eq 1 ]; then
+				ranked=1
+			else
+				stand_in_ranked="$stand_in_ranked$id "
+			fi
+			;;
+		esac
+	done
+	if [ "$ranked" -eq 1 ] &&
 		! printf '%s\n' "$jobs" | grep -Eq 'status=(pending|running)'; then
 		quiet=$((quiet + 1))
 	else
@@ -120,7 +138,7 @@ while [ "$quiet" -lt 3 ]; do
 	fi
 	waited=$((waited + 1))
 	if [ "$waited" -gt 420 ]; then
-		echo "bake-seed: Discover still busy after 420 s; baking what is stored" >&2
+		echo "bake-seed: Discover still busy after 420 s" >&2
 		break
 	fi
 	sleep 1
@@ -136,15 +154,18 @@ if [ -z "$model" ] || [ "$embedded" -ne 1 ]; then
 	echo "bake-seed: the embedding model was not installed, or the library was not embedded with it" >&2
 	exit 1
 fi
+if [ "$ranked" -ne 1 ]; then
+	echo "bake-seed: no Discover ranking finished after the library was embedded" >&2
+	exit 1
+fi
 
-# Step 5: the template keeps the embedder's empty models dir, which tells
-# boot.sh (and the next refresh) where the files go.
+# Step 5, first half: copy the model out. It stays in the template until
+# the covers are baked, so the bookclerkd that serves them finds it there
+# and does not download it again.
 models_dir=${model%/*/model.json}
 if [ -n "${BOOKCLERK_DEMO_MODELS_OUT:-}" ]; then
 	cp -a "$models_dir/." "$BOOKCLERK_DEMO_MODELS_OUT/"
 fi
-rm -rf "$models_dir"
-mkdir -p "$models_dir"
 
 # Bake the covers (step 3). Best effort: a cover that fails is fetched by
 # the container that first shows it.
@@ -163,6 +184,12 @@ else
 fi
 rm -f "$covers"
 unset BOOKCLERK_OPERATOR_TOKEN
+
+# Step 5, second half: no bookclerkd runs again, so empty the template's
+# models dir. The empty dir stays: it tells boot.sh (and the next refresh)
+# where the files go.
+rm -rf "$models_dir"
+mkdir -p "$models_dir"
 
 /opt/bookclerk/bookclerk-demo-seed --bake-finish
 rm -f "$bake_config"
