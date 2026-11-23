@@ -598,13 +598,13 @@ async fn a_tree_of_libraries_shares_books_one_hop_at_a_time() {
     }
 }
 
-/// A local destination whose listing of one folder fails while `fail`
-/// names it.
+/// A local destination whose listing of the folders under one prefix fails
+/// while `fail` names it.
 #[derive(Clone)]
 struct FlakyList {
     /// The destination itself.
     inner: bookclerk_storage::LocalFsBackend,
-    /// The prefix whose listing fails, if any.
+    /// A prefix: the listing of any folder under it fails.
     fail: Arc<std::sync::Mutex<Option<String>>>,
 }
 
@@ -639,7 +639,13 @@ impl StorageBackend for FlakyList {
         &self,
         prefix: &str,
     ) -> bookclerk_storage::Result<Vec<bookclerk_storage::ObjectInfo>> {
-        if self.fail.lock().unwrap().as_deref() == Some(prefix) {
+        if self
+            .fail
+            .lock()
+            .unwrap()
+            .as_deref()
+            .is_some_and(|fail| prefix.starts_with(fail))
+        {
             return Err(bookclerk_storage::StorageError::Io(std::io::Error::other(
                 "the destination is briefly unreachable",
             )));
@@ -722,7 +728,7 @@ async fn a_title_that_cannot_be_listed_now_is_not_withdrawn() {
     let b_link = join(&a, &b, riley, &a_origin, None).await.unwrap();
     let (b_handle, _b_stop) = start(&b, &b_link).await;
     let fail = Arc::new(std::sync::Mutex::new(None));
-    let b_sync = CatalogSync::new(
+    let mut b_sync = CatalogSync::new(
         b.clone(),
         b_link.parent_library_id.clone(),
         b_handle,
@@ -764,19 +770,27 @@ async fn a_title_that_cannot_be_listed_now_is_not_withdrawn() {
     assert!(shares(&a, &first).await);
     assert_eq!(b_sync.sync_once().await.unwrap().sent, 0);
 
-    // A title whose files can never be listed holds a pass from the start
-    // open only for its retries: then it is skipped, the pass ends, and
-    // the library withdraws it.
+    // While the destination lists nothing (it is down), no title runs out
+    // of time, however long the outage: the whole catalog stays shared.
     set_library_link_sharing(&b, &b_link.parent_library_id, true, true)
         .await
         .unwrap();
-    *fail.lock().unwrap() = Some(format!("Author/{first}/"));
-    for pass in 1..super::MAX_UNLISTED_PASSES {
+    b_sync.unlisted_grace = Duration::ZERO;
+    *fail.lock().unwrap() = Some("Author/".to_owned());
+    for pass in 1..=3 {
         b_sync.sync_once().await.unwrap();
-        assert!(shares(&a, &first).await, "still retried on pass {pass}");
+        for product in ["b1", "b2"] {
+            assert!(shares(&a, product).await, "{product} on outage pass {pass}");
+        }
     }
+
+    // A title whose files can never be listed, while others list, holds a
+    // pass from the start open only for its grace: then it is skipped, the
+    // pass ends, and the library withdraws it.
+    *fail.lock().unwrap() = Some(format!("Author/{first}/"));
     b_sync.sync_once().await.unwrap();
-    assert!(!shares(&a, &first).await, "skipped once out of retries");
+    b_sync.sync_once().await.unwrap();
+    assert!(!shares(&a, &first).await, "skipped once out of grace");
     let other = if first == "b1" { "b2" } else { "b1" };
     assert!(shares(&a, other).await);
 }
@@ -839,4 +853,42 @@ fn a_later_siblings_newer_change_moves_the_titles_entry() {
         super::Source::Own(key) => assert_eq!(key.holding_id, "holding-a"),
         super::Source::Branch(_) => panic!("an own title became a branch entry"),
     }
+}
+
+/// A wanted reference with no marketplace (from a library that names none)
+/// finds the one title with its store and product id, and neither of two
+/// marketplace copies.
+#[test]
+fn a_wanted_reference_without_a_marketplace_finds_its_only_copy() {
+    use std::collections::BTreeMap;
+
+    use bookclerk_node_proto::CatalogRef;
+
+    let reference = |product_id: &str, marketplace: &str| CatalogRef {
+        store: "audible".to_owned(),
+        product_id: product_id.to_owned(),
+        marketplace: marketplace.to_owned(),
+    };
+    let entry = |product_id: &str, marketplace: &str| super::Entry {
+        order: format!("{product_id}{marketplace}"),
+        reference: reference(product_id, marketplace),
+        source: super::Source::Own(own_key("h", "acct", product_id)),
+    };
+    let entries = [entry("one", "us"), entry("two", "us"), entry("two", "uk")];
+    let by_ref: BTreeMap<CatalogRef, &super::Entry> = entries
+        .iter()
+        .map(|entry| (entry.reference.clone(), entry))
+        .collect();
+    let found = |wanted: CatalogRef| {
+        super::wanted_entry(&by_ref, &wanted).map(|entry| entry.reference.clone())
+    };
+    assert_eq!(found(reference("one", "us")), Some(reference("one", "us")));
+    assert_eq!(found(reference("one", "")), Some(reference("one", "us")));
+    assert_eq!(found(reference("two", "uk")), Some(reference("two", "uk")));
+    assert_eq!(found(reference("two", "")), None, "two copies: neither");
+    assert_eq!(
+        found(reference("one", "uk")),
+        None,
+        "a named marketplace is exact"
+    );
 }

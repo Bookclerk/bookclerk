@@ -449,6 +449,51 @@ pub async fn record_node_heartbeat(
     Ok(status)
 }
 
+/// Takes back the status row a heartbeat just wrote for `node_id` when the
+/// node's `nodes` row is gone: it was removed from the library between the
+/// beat's check that it exists and its write.
+///
+/// Deletes the row only while it still holds that beat (`heartbeat_ms`) and
+/// no `nodes` row exists, in one statement, so a node registered again
+/// meanwhile keeps its row.
+///
+/// # Arguments
+///
+/// * `store` - the library.
+/// * `node_id` - the node the beat was for.
+/// * `heartbeat_ms` - the recorded beat's [`NodeStatus::heartbeat_ms`].
+///
+/// # Returns
+///
+/// `true` when the row was taken back (the node is removed).
+///
+/// # Errors
+///
+/// A database write failure.
+pub async fn withdraw_removed_node_status(
+    store: &LibraryStore,
+    node_id: &str,
+    heartbeat_ms: i64,
+) -> Result<bool> {
+    let statements = vec![
+        super::batch::exec(
+            "DELETE FROM node_status WHERE node_id = ? AND heartbeat_ms = ? \
+             AND NOT EXISTS (SELECT 1 FROM nodes WHERE node_id = ?)",
+            vec![
+                super::batch::text(node_id),
+                super::batch::int(heartbeat_ms),
+                super::batch::text(node_id),
+            ],
+        ),
+        super::bump(LiveTopic::Nodes),
+    ];
+    let operation_id = format!("node-status-withdraw-{}", uuid::Uuid::new_v4());
+    let reply = store
+        .execute_host_batch(super::batch::request(&operation_id, statements))
+        .await?;
+    Ok(super::batch::rows_affected(&reply, 0) == 1)
+}
+
 /// Writes `status` as the node's row (insert or replace).
 pub(crate) async fn upsert_node_status(store: &LibraryStore, status: &NodeStatus) -> Result<()> {
     let model = node_status::ActiveModel {

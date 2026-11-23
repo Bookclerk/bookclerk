@@ -672,9 +672,15 @@ async fn prepare_catalog_batch(
         if held_here(store, &owned, title).await? {
             skipped += 1;
             if let Some(pass) = &pass {
+                // A holding recorded before references named a marketplace
+                // carries the reference without one; it is the same title.
+                let unmarked = share_ref(&CatalogRef {
+                    marketplace: String::new(),
+                    ..title.reference()
+                });
                 held_seen.push(gated(
-                    "UPDATE holdings SET seen_pass = ? WHERE node_id = ? AND share_ref = ?",
-                    vec![text(pass), text(node_id), text(&reference)],
+                    "UPDATE holdings SET seen_pass = ? WHERE node_id = ? AND share_ref IN (?, ?)",
+                    vec![text(pass), text(node_id), text(&reference), text(&unmarked)],
                 ));
             }
             continue;

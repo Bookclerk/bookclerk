@@ -557,7 +557,8 @@ first.
 A shared branch that was cut off from the database for a while reads as
 not running and can be removed while it still runs. When it reconnects
 it notices it was removed: it logs an error, writes no heartbeat and
-queues no work, so it never comes back half-registered. Stop Bookclerk
+queues none of the maintenance work a heartbeat queues, so it never comes
+back half-registered. Stop Bookclerk
 on it, or restart it to register it again.
 
 > [!WARNING]
@@ -1063,9 +1064,12 @@ C is B's.
   reconnect. A full pass (after a setting changes, and once a day) also
   withdraws titles B no longer has. If B can't list a title's files (its
   destination is briefly unreachable), the pass keeps the title and tries
-  again on the next one. After 12 passes in a row (about an hour) B skips
-  the title, so a folder B can never read doesn't stop every pass from
-  finishing, and A withdraws it like any title B no longer has.
+  again on the next one. If the title still can't be listed after about
+  an hour while B's other titles do list, B skips it, so a folder B can
+  never read doesn't stop every pass from finishing, and A withdraws it
+  like any title B no longer has. While nothing lists (the destination
+  is down), B keeps every title, however long that lasts. A restart of B
+  starts the hour again.
 
 ### Sharing settings on the branch
 

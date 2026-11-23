@@ -21,14 +21,18 @@
 //! otherwise come back as a status row with no node, deployments or
 //! subscriber registrations behind it, serving while missing from
 //! library administration. Instead each beat logs an error saying the node
-//! was removed, and the node writes no status and queues no node-pinned
-//! work until it is stopped, or restarted, which registers it again.
+//! was removed, and the node writes no status and queues none of the
+//! node-pinned work a beat queues, until it is stopped, or restarted, which
+//! registers it again. A removal that lands between the beat's check and
+//! its write is caught after the write, which takes the row back. The
+//! image caches are still kept within their limits.
 
 use std::sync::Arc;
 
 use bookclerk_library::control_plane::{
     load_cache_settings, load_node, load_node_runtime, load_or_create_node_identity,
-    record_node_heartbeat, NodeRuntimeSettingsV1, NodeSampler, NodeStatus, NODE_HEARTBEAT_INTERVAL,
+    record_node_heartbeat, withdraw_removed_node_status, NodeRuntimeSettingsV1, NodeSampler,
+    NodeStatus, NODE_HEARTBEAT_INTERVAL,
 };
 use bookclerk_library::{LibraryError, LibraryStore};
 use tracing::warn;
@@ -79,9 +83,6 @@ async fn beat(
         Err(err) => return (sampler, Err(err.into())),
     };
     let library = state.library_snapshot().await;
-    if let Err(err) = refuse_removed_node(&library, &node_id).await {
-        return (sampler, Err(err));
-    }
     let limits = match cache_limits(&library, &node_id).await {
         Ok(limits) => limits,
         Err(err) => {
@@ -92,9 +93,12 @@ async fn beat(
     };
     let due = state.covers.maintain(limits).await;
     heartbeat.cache = Some(state.covers.usage());
-    let status = record_node_heartbeat(&library, &node_id, &heartbeat)
-        .await
-        .map_err(anyhow::Error::from);
+    // The caches are kept within their limits above whether or not this
+    // node may still write a beat.
+    let status = match refuse_removed_node(&library, &node_id).await {
+        Ok(()) => record_removable_heartbeat(&library, &node_id, &heartbeat).await,
+        Err(err) => Err(err),
+    };
     if due {
         if status.is_ok() {
             // Queued only once this beat is on record, so the requirements
@@ -139,6 +143,29 @@ async fn refuse_removed_node(library: &LibraryStore, node_id: &str) -> anyhow::R
         }
         Err(err) => Err(err.into()),
     }
+}
+
+/// Records the beat, then takes it back when the node's `nodes` row went
+/// away meanwhile: a removal that ran between [`refuse_removed_node`] and
+/// the write would otherwise leave a status row with no node behind it.
+///
+/// # Errors
+///
+/// A database failure, or the node was removed (logged as in
+/// [`refuse_removed_node`]).
+async fn record_removable_heartbeat(
+    library: &LibraryStore,
+    node_id: &str,
+    heartbeat: &bookclerk_library::control_plane::NodeHeartbeat,
+) -> anyhow::Result<NodeStatus> {
+    let recorded = record_node_heartbeat(library, node_id, heartbeat).await?;
+    if withdraw_removed_node_status(library, node_id, recorded.heartbeat_ms).await? {
+        refuse_removed_node(library, node_id).await?;
+        return Err(anyhow::anyhow!(
+            "node {node_id} was removed from the library"
+        ));
+    }
+    Ok(recorded)
 }
 
 /// The image caches' retention limits on `node_id`: the library's
@@ -199,6 +226,10 @@ mod tests {
         refuse_removed_node(&store, &node_id)
             .await
             .expect("a registered node beats");
+        let heartbeat = NodeSampler::new(files.path()).sample();
+        record_removable_heartbeat(&store, &node_id, &heartbeat)
+            .await
+            .expect("a registered node's beat is kept");
         bookclerk_library::entities::nodes::Entity::delete_many()
             .filter(bookclerk_library::entities::nodes::Column::NodeId.eq(node_id.clone()))
             .exec(store.db())
@@ -208,6 +239,19 @@ mod tests {
             .await
             .expect_err("a removed node is refused");
         assert!(err.to_string().contains("removed"), "{err}");
+        // A removal that lands between the check and the write: the beat it
+        // wrote is taken back.
+        let err = record_removable_heartbeat(&store, &node_id, &heartbeat)
+            .await
+            .expect_err("a removed node's beat is taken back");
+        assert!(err.to_string().contains("removed"), "{err}");
+        assert!(
+            bookclerk_library::control_plane::load_node_status(&store, &node_id)
+                .await
+                .expect("status")
+                .is_none(),
+            "no status row is left behind"
+        );
     }
 
     #[tokio::test]

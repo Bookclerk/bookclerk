@@ -75,14 +75,15 @@ const BRANCH_ENTRY_PAGE: u64 = if cfg!(test) {
     FORWARDABLE_KEYS_MAX_PAGE
 };
 
-/// Passes in a row whose listing of one title's files may fail before
-/// the title is skipped like one not shareable as it stands: an hour at
-/// [`SYNC_INTERVAL`]. Until then the pass keeps its cursor before the title
-/// and does not end, so a destination that is briefly unreachable
-/// withdraws nothing; after it, a title that can never be listed (a prefix
-/// without permission, a folder this install cannot read) no longer stops
-/// every pass from ending.
-const MAX_UNLISTED_PASSES: u32 = 12;
+/// How long one title's files may keep failing to list before the title is
+/// skipped like one not shareable as it stands, provided other titles
+/// listed meanwhile ([`CatalogSync::listing_failed`]). Until then the pass
+/// keeps its cursor before the title and does not end, so a destination
+/// that is unreachable withdraws nothing however long it stays down;
+/// after it, a title that can never be listed (a prefix without
+/// permission, a folder this install cannot read) no longer stops every
+/// pass from ending.
+const UNLISTED_GRACE: Duration = Duration::from_secs(3600);
 
 /// Largest serialized `catalog.sync` batch (well under a frame).
 const MAX_BATCH_BYTES: usize = 768 * 1024;
@@ -171,6 +172,16 @@ struct Entry {
     source: Source,
 }
 
+/// The failed listings a [`CatalogSync`] remembers.
+#[derive(Debug, Default)]
+struct Unlisted {
+    /// Titles whose files could not be listed, each with its first failure
+    /// since it last listed.
+    failing: BTreeMap<CatalogRef, std::time::Instant>,
+    /// When a title's files last listed: the destination works.
+    last_listed: Option<std::time::Instant>,
+}
+
 /// The catalog sync of one link.
 pub struct CatalogSync<S> {
     /// This install's library.
@@ -181,10 +192,41 @@ pub struct CatalogSync<S> {
     handle: HostClientHandle,
     /// This install's files.
     shelf: S,
-    /// Titles whose files could not be listed, with the passes in a row
-    /// that failed to list them ([`MAX_UNLISTED_PASSES`]). Kept for the
-    /// process's life only: a restart gives each title its retries again.
-    unlisted: std::sync::Mutex<BTreeMap<CatalogRef, u32>>,
+    /// What this sync knows of failed listings
+    /// ([`CatalogSync::listing_failed`]). Kept for the process's life only:
+    /// a restart gives each title its grace again.
+    unlisted: std::sync::Mutex<Unlisted>,
+    /// How long a title may keep failing to list ([`UNLISTED_GRACE`]; a
+    /// test shortens it).
+    unlisted_grace: Duration,
+}
+
+/// The title a wanted reference names.
+///
+/// An exact match wins. A reference with no marketplace (a library from
+/// before references carried one) names the one title with its store and
+/// product id, when exactly one exists; with two marketplace copies it
+/// names neither, and the library asks again by the full reference.
+///
+/// # Arguments
+///
+/// * `by_ref` - this pass's titles by reference.
+/// * `reference` - the reference the library asked for.
+fn wanted_entry<'e>(
+    by_ref: &BTreeMap<CatalogRef, &'e Entry>,
+    reference: &CatalogRef,
+) -> Option<&'e Entry> {
+    if let Some(entry) = by_ref.get(reference) {
+        return Some(*entry);
+    }
+    if !reference.marketplace.is_empty() {
+        return None;
+    }
+    let mut same = by_ref.iter().filter(|(candidate, _)| {
+        candidate.store == reference.store && candidate.product_id == reference.product_id
+    });
+    let (_, entry) = same.next()?;
+    same.next().is_none().then_some(*entry)
 }
 
 /// Text for a store id: the book's plugin alias, lowercased.
@@ -353,33 +395,49 @@ impl<S: BranchShelf> CatalogSync<S> {
             library_id,
             handle,
             shelf,
-            unlisted: std::sync::Mutex::new(BTreeMap::new()),
+            unlisted: std::sync::Mutex::new(Unlisted::default()),
+            unlisted_grace: UNLISTED_GRACE,
         }
     }
 
-    /// Counts one more failed listing of `reference`'s files.
+    /// Records that `reference`'s files could not be listed.
     ///
     /// # Returns
     ///
-    /// `true` while the title still has retries left, so the pass keeps
-    /// its cursor before it; `false` once it has failed
-    /// [`MAX_UNLISTED_PASSES`] passes in a row, so it is skipped.
+    /// `true` while the title is kept, so the pass keeps its cursor before
+    /// it; `false` once it has failed for [`UNLISTED_GRACE`] while another
+    /// title listed after its first failure, so the destination works and
+    /// the title is skipped. A destination that lists nothing (it is down)
+    /// never makes a title run out of grace.
     fn listing_failed(&self, reference: &CatalogRef) -> bool {
+        let now = std::time::Instant::now();
         let mut unlisted = self
             .unlisted
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let failures = unlisted.entry(reference.clone()).or_insert(0);
-        *failures = failures.saturating_add(1);
-        *failures < MAX_UNLISTED_PASSES
+        let since = *unlisted.failing.entry(reference.clone()).or_insert(now);
+        let destination_works = unlisted.last_listed.is_some_and(|at| at > since);
+        !(destination_works && now.duration_since(since) >= self.unlisted_grace)
     }
 
-    /// Forgets the failed listings of `reference`, listed again.
+    /// Records that `reference`'s files listed: its failures are forgotten,
+    /// and the destination counts as working.
     fn listing_worked(&self, reference: &CatalogRef) {
+        let mut unlisted = self
+            .unlisted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        unlisted.failing.remove(reference);
+        unlisted.last_listed = Some(std::time::Instant::now());
+    }
+
+    /// Forgets the failures of titles a pass no longer lists.
+    fn forget_unlisted_except(&self, current: &BTreeMap<CatalogRef, &Entry>) {
         self.unlisted
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(reference);
+            .failing
+            .retain(|reference, _| current.contains_key(reference));
     }
 
     /// Runs passes until `shutdown` turns true: on each welcomed
@@ -604,6 +662,7 @@ impl<S: BranchShelf> CatalogSync<S> {
             .iter()
             .map(|entry| (entry.reference.clone(), entry))
             .collect();
+        self.forget_unlisted_except(&by_ref);
         // Resume: files recorded earlier that never arrived.
         let mut wanted: Vec<CatalogRef> = session.wanted.clone();
         let from_start = session.cursor.is_empty();
@@ -618,9 +677,9 @@ impl<S: BranchShelf> CatalogSync<S> {
         // Set once a title's files could not be listed: the cursor stays
         // before it (the titles after it are still sent) and the pass does
         // not end, so the library withdraws nothing it did not see and the
-        // next pass tries that title again, until it has failed
-        // `MAX_UNLISTED_PASSES` passes in a row. A title that is not
-        // shareable as it stands, or out of retries, is skipped for good,
+        // next pass tries that title again, until it has failed for
+        // `UNLISTED_GRACE` while other titles listed. A title that is not
+        // shareable as it stands, or out of grace, is skipped for good,
         // and withdrawn if shared before.
         let mut unlisted = false;
         for entry in pending {
@@ -682,8 +741,8 @@ impl<S: BranchShelf> CatalogSync<S> {
                 Err(err) => tracing::warn!(
                     product_id = %entry.reference.product_id,
                     error = %err,
-                    "a title is not shareable as it stands, or its files could not be \
-                     listed on too many passes in a row; skipped"
+                    "a title is not shareable as it stands, or its files have not \
+                     listed for an hour while others did; skipped"
                 ),
             }
             if !unlisted {
@@ -711,7 +770,7 @@ impl<S: BranchShelf> CatalogSync<S> {
             if !delivered.insert(reference.clone()) {
                 continue;
             }
-            let Some(entry) = by_ref.get(&reference) else {
+            let Some(entry) = wanted_entry(&by_ref, &reference) else {
                 continue;
             };
             // One title that cannot be read (its files gone, its row
