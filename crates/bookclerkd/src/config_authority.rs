@@ -4100,6 +4100,185 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
+    #[test]
+    fn guided_setup_failures_map_to_statuses() {
+        use axum::http::StatusCode;
+        use bookclerk_plugin_abi::{PluginError, PluginErrorCode};
+        use bookclerk_plugin_host::ProvisionRunError;
+
+        let grant = super::ProvisionGrantBody::ApiToken {
+            token: "s3cret".into(),
+        };
+        assert_eq!(format!("{grant:?}"), "ApiToken(<redacted>)");
+        let cases = [
+            (
+                ProvisionRunError::NotOffered("no".into()),
+                StatusCode::CONFLICT,
+            ),
+            (
+                ProvisionRunError::BadInput("no".into()),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                ProvisionRunError::Refused(PluginError::new(PluginErrorCode::Forbidden, "no")),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            (
+                ProvisionRunError::Refused(PluginError::new(PluginErrorCode::Internal, "no")),
+                StatusCode::BAD_GATEWAY,
+            ),
+            (
+                ProvisionRunError::Answer(
+                    bookclerk_plugin_abi::provision::ProvisionRefusal::TooManySecrets,
+                ),
+                StatusCode::BAD_GATEWAY,
+            ),
+            (
+                ProvisionRunError::Host("down".into()),
+                StatusCode::BAD_GATEWAY,
+            ),
+        ];
+        for (err, status) in cases {
+            let label = format!("{err:?}");
+            assert_eq!(super::provision_error("i", err).status(), status, "{label}");
+        }
+    }
+
+    #[tokio::test]
+    async fn guided_setup_routes_read_the_installed_plugin() {
+        use axum::http::StatusCode;
+        use axum::routing::{get, post};
+        use bookclerk_plugin_abi::{SettingKind, SettingSpec, SettingsSchema};
+        use serde_json::{json, Value};
+
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let (state, store, node, files) = daemon_state().await;
+        let root = files.path().join("plugins").join("guided");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("plugin.toml"),
+            r#"
+api_version = 3
+id = "guided"
+version = "0.1.0"
+runtime = "native"
+command = "./guided"
+entrypoints = ["storage", "provisioning"]
+
+[capabilities.network]
+mode = "deny"
+
+[provisioning]
+provider = "cloudflare"
+grants = ["api_token"]
+token_url = "https://example.com/tokens"
+token_permissions = ["Account > Storage > Edit"]
+inputs = ["bucket"]
+outputs = ["bucket"]
+
+[vars]
+
+[[settings]]
+key = "bucket"
+label = "Bucket"
+type = "string"
+"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("guided"), b"#!/bin/sh\n").unwrap();
+        let config = state.config.read().await.clone();
+        let key = bookclerk_plugin_host::discover_plugins(&config)
+            .unwrap()
+            .into_iter()
+            .find(|plugin| plugin.manifest.id == "guided")
+            .expect("discovered")
+            .plugin_key()
+            .canonical()
+            .to_string();
+        let schema = SettingsSchema::new(vec![SettingSpec {
+            key: "bucket".into(),
+            label: "Bucket".into(),
+            kind: SettingKind::String,
+            values: Vec::new(),
+            default: None,
+            required: false,
+            description: None,
+            columns: Vec::new(),
+            network: None,
+            default_port: None,
+        }]);
+        bookclerk_library::control_plane::pin_plugin_schema(
+            &store,
+            &bookclerk_library::control_plane::SchemaPin {
+                plugin_key: &key,
+                manifest_id: "guided",
+                package_version: "0.1.0",
+                schema: &schema,
+                node_id: &node,
+            },
+        )
+        .await
+        .unwrap();
+        let app = axum::Router::new()
+            .route(
+                "/api/config/plugin-instances",
+                post(super::post_plugin_instance),
+            )
+            .route(
+                "/api/config/plugin-instances/{id}/deprovision",
+                post(super::post_plugin_instance_deprovision),
+            )
+            .route(
+                "/api/config/plugin-instances/{id}/provisioning",
+                get(super::get_plugin_instance_provisioning),
+            )
+            .layer(axum::Extension(crate::auth::NodeAdminCaller::Operator))
+            .with_state(std::sync::Arc::clone(&state));
+        let (status, created) = send(
+            &app,
+            "POST",
+            "/api/config/plugin-instances",
+            json!({ "plugin_key": key }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{created}");
+        let id = created["plugin_instance_id"].as_str().unwrap().to_string();
+
+        let (status, view) = send(
+            &app,
+            "GET",
+            &format!("/api/config/plugin-instances/{id}/provisioning"),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{view}");
+        assert_eq!(view["plugin_instance_id"], id.as_str());
+        let table = &view["provisioning"];
+        assert_eq!(table["provider"], "cloudflare");
+        assert_eq!(table["grants"], json!(["api_token"]));
+        assert_eq!(table["token_url"], "https://example.com/tokens");
+        assert_eq!(table["inputs"], json!(["bucket"]));
+        assert_eq!(table["deprovision"], false);
+
+        // The plugin does not remove what it creates, so undo is refused
+        // before a guest starts; a malformed token is refused first.
+        let deprovision = format!("/api/config/plugin-instances/{id}/deprovision");
+        let (status, refused) = send(
+            &app,
+            "POST",
+            &deprovision,
+            json!({ "grant": { "kind": "api_token", "token": "two words" } }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+        let (status, refused) = send(&app, "POST", &deprovision, json!({})).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+        assert!(refused["error"]
+            .as_str()
+            .unwrap()
+            .contains("does not remove"));
+    }
+
     #[tokio::test]
     async fn plugin_instance_routes_return_typed_bodies() {
         use axum::http::StatusCode;

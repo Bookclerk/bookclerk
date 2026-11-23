@@ -375,4 +375,155 @@ mod tests {
         );
         assert!(overlay(&ExtensibleConfig::json(&serde_json::json!([1])), &inputs).is_err());
     }
+
+    #[tokio::test]
+    async fn settle_keeps_each_failure_apart() {
+        let elapsed = tokio::time::timeout(Duration::ZERO, std::future::pending::<()>())
+            .await
+            .expect_err("elapsed");
+        let late: Result<crate::Result<Result<(), PluginError>>, _> = Err(elapsed);
+        assert!(
+            matches!(settle(late, "the run"), Err(ProvisionRunError::Host(m)) if m.contains("120 s"))
+        );
+        let broken = Ok(Err(crate::PluginError::Message("gone".into())));
+        assert!(
+            matches!(settle::<()>(broken, "x"), Err(ProvisionRunError::Host(m)) if m == "gone")
+        );
+        let refused = Ok(Ok(Err(PluginError::new(
+            bookclerk_plugin_sdk::PluginErrorCode::Unauthorized,
+            "no",
+        ))));
+        let err = settle::<()>(refused, "x").expect_err("refused");
+        assert_eq!(err.to_string(), "the plugin refused: no");
+        assert_eq!(settle(Ok(Ok(Ok(7))), "x").expect("value"), 7);
+    }
+
+    /// A store with the host schema.
+    async fn memory_store() -> LibraryStore {
+        let db = bookclerk_plugin_database_sqlite::open_memory()
+            .await
+            .expect("memory store");
+        bookclerk_library::apply_host_schema(&db)
+            .await
+            .expect("host schema");
+        LibraryStore::from_connection(db)
+    }
+
+    /// A native plugin in `root` whose `[provisioning]` table removes what
+    /// it creates when `deprovision` is set.
+    fn plugin(root: &Path, provisioning: bool, deprovision: bool) -> DiscoveredPlugin {
+        let (entrypoints, table) = if provisioning {
+            (
+                r#"["storage", "provisioning"]"#,
+                format!(
+                    r#"
+[provisioning]
+provider = "cloudflare"
+grants = ["api_token"]
+inputs = ["bucket"]
+outputs = ["bucket", "access_key_id"]
+deprovision = {deprovision}
+"#
+                ),
+            )
+        } else {
+            (r#"["storage"]"#, String::new())
+        };
+        let toml = format!(
+            r#"
+api_version = 3
+id = "guided"
+version = "1.0.0"
+runtime = "native"
+command = "./guided"
+entrypoints = {entrypoints}
+
+[capabilities.network]
+mode = "deny"
+{table}
+[[settings]]
+key = "bucket"
+label = "Bucket"
+type = "string"
+
+[[settings]]
+key = "access_key_id"
+label = "Access key"
+type = "secret"
+
+[vars]
+
+[secrets]
+"#
+        );
+        std::fs::write(root.join("plugin.toml"), &toml).expect("manifest");
+        std::fs::write(root.join("guided"), b"#!/bin/sh\n").expect("command");
+        let manifest = crate::PluginManifest::parse(&toml).expect("manifest");
+        DiscoveredPlugin::try_new(manifest, root.to_path_buf(), root.join("guided"), None)
+            .expect("plugin")
+    }
+
+    #[tokio::test]
+    async fn runs_refuse_before_spawning_a_guest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = memory_store().await;
+        let config = Config::default();
+        let token = ProvisionToken::parse("tok").expect("token");
+        let missing = PluginInstanceId::mint();
+        let none = BTreeMap::new();
+
+        let bare = plugin(dir.path(), false, false);
+        let run = provision_instance(&store, &config, &bare, &missing, &token, &none).await;
+        assert!(
+            matches!(run, Err(ProvisionRunError::NotOffered(_))),
+            "{run:?}"
+        );
+        let undo = deprovision_instance(&store, &config, &bare, &missing, None).await;
+        assert!(
+            matches!(undo, Err(ProvisionRunError::NotOffered(_))),
+            "{undo:?}"
+        );
+
+        let kept = plugin(dir.path(), true, false);
+        let undo = deprovision_instance(&store, &config, &kept, &missing, Some(&token)).await;
+        assert!(
+            matches!(undo, Err(ProvisionRunError::NotOffered(_))),
+            "{undo:?}"
+        );
+        let stray = BTreeMap::from([("prefix".to_string(), Value::from("p/"))]);
+        let run = provision_instance(&store, &config, &kept, &missing, &token, &stray).await;
+        assert!(
+            matches!(run, Err(ProvisionRunError::BadInput(_))),
+            "{run:?}"
+        );
+        let long = BTreeMap::from([(
+            "bucket".to_string(),
+            Value::from("b".repeat(MAX_PROVISION_SETTINGS_BYTES as usize)),
+        )]);
+        let run = provision_instance(&store, &config, &kept, &missing, &token, &long).await;
+        assert!(
+            matches!(run, Err(ProvisionRunError::BadInput(_))),
+            "{run:?}"
+        );
+        let run = provision_instance(&store, &config, &kept, &missing, &token, &none).await;
+        assert!(
+            matches!(&run, Err(ProvisionRunError::Host(m)) if m.contains("was not found")),
+            "{run:?}"
+        );
+
+        let removes = plugin(dir.path(), true, true);
+        let other = bookclerk_library::control_plane::create_plugin_instance(
+            &store,
+            &bookclerk_library::control_plane::ConfigActor::Bootstrap,
+            "other",
+            "",
+        )
+        .await
+        .expect("instance");
+        let undo = deprovision_instance(&store, &config, &removes, &other.id, None).await;
+        assert!(
+            matches!(&undo, Err(ProvisionRunError::Host(m)) if m.contains("belongs to `other`")),
+            "{undo:?}"
+        );
+    }
 }

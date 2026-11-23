@@ -3424,6 +3424,63 @@ mod tests {
         }
     }
 
+    /// A plugin with a guided setup, its `token_url` line replaced.
+    fn provisioning_manifest(token_url: &str) -> Result<PluginManifest> {
+        PluginManifest::parse(&format!(
+            r#"
+api_version = 3
+id = "guided"
+version = "1.0.0"
+runtime = "native"
+command = "./guided"
+entrypoints = ["storage", "provisioning"]
+
+[capabilities.network]
+mode = "deny"
+
+[provisioning]
+provider = "cloudflare"
+grants = ["api_token"]
+{token_url}
+inputs = ["bucket"]
+outputs = ["bucket", "access_key_id"]
+
+[[settings]]
+key = "bucket"
+label = "Bucket"
+type = "string"
+
+[[settings]]
+key = "access_key_id"
+label = "Access key"
+type = "secret"
+
+[vars]
+
+[secrets]
+"#
+        ))
+    }
+
+    #[test]
+    fn guided_setup_outputs_split_into_settings_and_secrets() {
+        let manifest =
+            provisioning_manifest(r#"token_url = "https://example.com/tokens""#).expect("manifest");
+        let table = manifest.provisioning.as_ref().expect("table");
+        assert_eq!(table.grants[0].as_str(), "api_token");
+        let outputs = manifest.provision_outputs().expect("outputs");
+        assert!(outputs.settings.contains("bucket"));
+        assert!(outputs.secrets.contains("access_key_id"));
+        assert_eq!(outputs.settings.len() + outputs.secrets.len(), 2);
+        for bad in [
+            r#"token_url = "http://example.com/tokens""#,
+            r#"token_url = "https://example.com/two words""#,
+        ] {
+            let err = provisioning_manifest(bad).expect_err(bad).to_string();
+            assert!(err.contains("token_url"), "{err}");
+        }
+    }
+
     #[test]
     fn every_entrypoint_maps_to_its_family() {
         let families: Vec<PluginFamily> = ALL_ENTRYPOINTS.map(entrypoint_family).to_vec();
