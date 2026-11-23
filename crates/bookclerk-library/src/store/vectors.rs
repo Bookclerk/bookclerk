@@ -14,7 +14,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use sea_orm::sea_query::{Expr, OnConflict, Query};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QuerySelect, Set};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect, Set};
 
 use super::library_model::find_chunked;
 use super::{now_str, LibraryStore};
@@ -168,7 +168,12 @@ impl LibraryStore {
             text_hash: String,
         }
         let mut hashes = HashMap::with_capacity(target_ids.len());
-        for chunk in target_ids.chunks(self.lookup_chunk()) {
+        // One row per target in a space: a chunk no wider than one reply's
+        // rows fits it.
+        let width = self
+            .lookup_chunk()
+            .min(usize::try_from(super::keyset::result_page(self)).unwrap_or(usize::MAX));
+        for chunk in target_ids.chunks(width) {
             let rows = embeddings::Entity::find()
                 .select_only()
                 .column(embeddings::Column::TargetId)
@@ -234,20 +239,42 @@ impl LibraryStore {
             /// The group's newest `embeddings.updated_at`.
             newest: Option<String>,
         }
-        let rows = embeddings::Entity::find()
-            .select_only()
-            .column(embeddings::Column::Model)
-            .column(embeddings::Column::Revision)
-            .column_as(embeddings::Column::Packs.max(), "packs")
-            .column_as(embeddings::Column::Id.count(), "n")
-            .column_as(embeddings::Column::UpdatedAt.max(), "newest")
-            .filter(embeddings::Column::TargetKind.eq(VECTOR_KIND_WORK))
-            .group_by(embeddings::Column::Model)
-            .group_by(embeddings::Column::Revision)
-            .into_model::<Group>()
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+        // The groups are read in pages of at most one reply's rows, each
+        // starting after the last space of the one before.
+        let key = [embeddings::Column::Model, embeddings::Column::Revision];
+        let page = super::keyset::result_page(self);
+        let mut rows: Vec<Group> = Vec::new();
+        loop {
+            let mut query = embeddings::Entity::find()
+                .select_only()
+                .column(embeddings::Column::Model)
+                .column(embeddings::Column::Revision)
+                .column_as(embeddings::Column::Packs.max(), "packs")
+                .column_as(embeddings::Column::Id.count(), "n")
+                .column_as(embeddings::Column::UpdatedAt.max(), "newest")
+                .filter(embeddings::Column::TargetKind.eq(VECTOR_KIND_WORK));
+            if let Some(last) = rows.last() {
+                query = query.filter(super::keyset::after_key(
+                    &key,
+                    &[last.model.clone().into(), last.revision.clone().into()],
+                ));
+            }
+            let groups = query
+                .group_by(embeddings::Column::Model)
+                .group_by(embeddings::Column::Revision)
+                .order_by_asc(embeddings::Column::Model)
+                .order_by_asc(embeddings::Column::Revision)
+                .limit(page)
+                .into_model::<Group>()
+                .all(&self.db)
+                .await
+                .map_err(LibraryError::from_db_err)?;
+            let full = u64::try_from(groups.len()).unwrap_or(u64::MAX) >= page;
+            rows.extend(groups);
+            if !full {
+                break;
+            }
+        }
         Ok(rows
             .into_iter()
             .map(|group| SpaceCoverage {

@@ -8,7 +8,7 @@
 //! Wrapping the engine proxy in a [`BeginGate`] closes that gap.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use sea_orm::{DbErr, ProxyDatabaseTrait, ProxyExecResult, ProxyRow, Statement};
@@ -25,6 +25,9 @@ tokio::task_local! {
     /// Set while an atomic batch executor runs, so its own transaction is
     /// let through the gate.
     static BATCH_IN_PROGRESS: ();
+    /// Set while a test reads the tables for its own assertions, so the
+    /// read is not held to the plugin's result limits.
+    static READS_UNCAPPED: ();
 }
 
 /// Switch and counter shared between a [`BeginGate`] and its
@@ -35,6 +38,79 @@ struct GateState {
     refusing: AtomicBool,
     /// Refused `begin()` calls so far.
     refused: AtomicU32,
+    /// The result limits plain reads are held to, once set: rows, encoded
+    /// result bytes and cell bytes ([`ReadCaps`]).
+    read_caps: Mutex<Option<ReadCaps>>,
+}
+
+/// The result limits a database plugin holds a host's plain proxy read to.
+///
+/// A plugin that streams results answers a read up to its streamed budget;
+/// one that does not, up to its inline `maxResultRows` / `maxResultBytes`.
+/// Every cell is held to `maxCellBytes` either way. `0` is unlimited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ReadCaps {
+    /// Most rows one read returns.
+    pub max_rows: u32,
+    /// Most encoded JSON bytes of one read's rows.
+    pub max_bytes: u32,
+    /// Most UTF-8 (or base64 blob) bytes of one cell.
+    pub max_cell_bytes: u32,
+}
+
+impl ReadCaps {
+    /// The limits `caps` puts on a plain read: its streamed budget when it
+    /// streams, else its inline result limits.
+    #[must_use]
+    pub fn from_capabilities(caps: &bookclerk_plugin_abi::DbCapabilities) -> Self {
+        let read = caps.streamed().unwrap_or_else(|| caps.clone());
+        Self {
+            max_rows: read.max_result_rows,
+            max_bytes: read.max_result_bytes,
+            max_cell_bytes: caps.max_cell_bytes,
+        }
+    }
+
+    /// Checks `rows` against these limits, the way an adapter refuses a
+    /// reply: a typed `limit_exceeded` message naming the limit passed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbErr::Custom`] carrying the typed limit message.
+    pub fn check(&self, rows: &[ProxyRow]) -> Result<(), DbErr> {
+        use bookclerk_plugin_abi::LimitExceeded;
+        let count = u64::try_from(rows.len()).unwrap_or(u64::MAX);
+        if self.max_rows > 0 && count > u64::from(self.max_rows) {
+            return Err(DbErr::Custom(
+                LimitExceeded::new("maxResultRows", u64::from(self.max_rows), count).to_message(),
+            ));
+        }
+        let mut used = 0usize;
+        for row in rows {
+            if self.max_cell_bytes > 0 {
+                for (name, value) in &row.values {
+                    let n = crate::sea_cell_utf8_len(value);
+                    if n > usize::try_from(self.max_cell_bytes).unwrap_or(usize::MAX) {
+                        return Err(DbErr::Custom(format!(
+                            "{} (column `{name}`)",
+                            LimitExceeded::new(
+                                "maxCellBytes",
+                                u64::from(self.max_cell_bytes),
+                                u64::try_from(n).unwrap_or(u64::MAX),
+                            )
+                            .to_message()
+                        )));
+                    }
+                }
+            }
+            crate::note_encoded_result_bytes(
+                &mut used,
+                crate::encoded_proxy_row_len(&row.values),
+                self.max_bytes,
+            )?;
+        }
+        Ok(())
+    }
 }
 
 /// The test's handle on a [`BeginGate`]: the refusal switch and the count.
@@ -55,6 +131,17 @@ impl BeginGateHandle {
     #[must_use]
     pub fn refused(&self) -> u32 {
         self.0.refused.load(Ordering::SeqCst)
+    }
+
+    /// Holds every plain read outside an atomic batch to `caps` (`None`
+    /// lifts the limits). Batches are held to their own limits by their
+    /// executor.
+    pub fn cap_reads(&self, caps: Option<ReadCaps>) {
+        *self
+            .0
+            .read_caps
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = caps;
     }
 }
 
@@ -82,6 +169,16 @@ where
     F: std::future::Future<Output = T>,
 {
     BATCH_IN_PROGRESS.scope((), batch).await
+}
+
+/// Runs `read` with plain reads let past the [`ReadCaps`] set by
+/// [`BeginGateHandle::cap_reads`]: for a test's own look at the tables,
+/// which no plugin serves in production.
+pub async fn with_uncapped_reads<F, T>(read: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    READS_UNCAPPED.scope((), read).await
 }
 
 impl BeginGate {
@@ -125,7 +222,20 @@ impl ProxyDatabaseTrait for BeginGate {
         if is_txn_broken() {
             return Err(txn_broken_err());
         }
-        self.inner.query(statement).await
+        let rows = self.inner.query(statement).await?;
+        let caps = *self
+            .state
+            .read_caps
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(caps) = caps {
+            if BATCH_IN_PROGRESS.try_with(|()| ()).is_err()
+                && READS_UNCAPPED.try_with(|()| ()).is_err()
+            {
+                caps.check(&rows)?;
+            }
+        }
+        Ok(rows)
     }
 
     async fn execute(&self, statement: Statement) -> Result<ProxyExecResult, DbErr> {
@@ -328,5 +438,118 @@ mod tests {
         assert!(is_txn_broken(), "a fault the gate did not raise stays");
         let _ = take_txn_fault();
         assert_eq!(*engine.lock().unwrap(), ["rollback"]);
+    }
+
+    /// An engine stand-in whose every read answers `rows` copies of a
+    /// one-cell row holding `cell`.
+    #[derive(Debug)]
+    struct Rows {
+        /// Rows each read answers.
+        rows: usize,
+        /// The text of each row's one cell.
+        cell: String,
+    }
+
+    #[async_trait]
+    impl ProxyDatabaseTrait for Rows {
+        async fn query(&self, _: Statement) -> Result<Vec<ProxyRow>, DbErr> {
+            Ok(vec![one_cell(&self.cell); self.rows])
+        }
+
+        async fn execute(&self, _: Statement) -> Result<ProxyExecResult, DbErr> {
+            Ok(ProxyExecResult::default())
+        }
+    }
+
+    /// A row with one text cell `value`.
+    fn one_cell(value: &str) -> ProxyRow {
+        ProxyRow {
+            values: std::collections::BTreeMap::from([(
+                "v".to_string(),
+                sea_orm::Value::String(Some(value.to_string())),
+            )]),
+        }
+    }
+
+    /// A read statement for the stand-ins.
+    fn select() -> Statement {
+        Statement::from_string(sea_orm::DbBackend::Sqlite, "SELECT v FROM t")
+    }
+
+    /// The limit a refused read names.
+    fn refused_limit(err: &DbErr) -> String {
+        bookclerk_plugin_abi::LimitExceeded::from_message(&err.to_string())
+            .map(|limit| limit.limit)
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn read_caps_refuse_rows_bytes_and_cells_past_their_limits() {
+        let caps = ReadCaps {
+            max_rows: 2,
+            max_bytes: 64,
+            max_cell_bytes: 8,
+        };
+        assert!(caps.check(&[one_cell("a"), one_cell("b")]).is_ok());
+        let rows = caps
+            .check(&[one_cell("a"), one_cell("b"), one_cell("c")])
+            .unwrap_err();
+        assert_eq!(refused_limit(&rows), "maxResultRows");
+        let cell = caps.check(&[one_cell("123456789")]).unwrap_err();
+        assert_eq!(refused_limit(&cell), "maxCellBytes");
+        assert!(cell.to_string().contains("column `v`"));
+        let wide = ReadCaps {
+            max_rows: 0,
+            max_bytes: 40,
+            max_cell_bytes: 0,
+        };
+        let bytes = wide.check(&[one_cell(&"x".repeat(64))]).unwrap_err();
+        assert_eq!(refused_limit(&bytes), "maxResultBytes");
+        assert!(ReadCaps::default()
+            .check(&vec![one_cell(&"x".repeat(4096)); 512])
+            .is_ok());
+    }
+
+    #[test]
+    fn read_caps_follow_the_streamed_budget_when_the_plugin_streams() {
+        let inline = bookclerk_plugin_abi::DbCapabilities::host_minimum();
+        let caps = ReadCaps::from_capabilities(&inline);
+        assert_eq!(caps.max_rows, inline.max_result_rows);
+        assert_eq!(caps.max_bytes, inline.max_result_bytes);
+        assert_eq!(caps.max_cell_bytes, inline.max_cell_bytes);
+        let streaming = bookclerk_plugin_abi::DbCapabilities::advertised_sqlite();
+        let streamed = streaming.streamed().expect("the sqlite adapter streams");
+        let caps = ReadCaps::from_capabilities(&streaming);
+        assert_eq!(caps.max_rows, streamed.max_result_rows);
+        assert_eq!(caps.max_bytes, streamed.max_result_bytes);
+    }
+
+    #[tokio::test]
+    async fn capped_reads_are_refused_outside_batches_and_uncapped_reads() {
+        let (gate, handle) = BeginGate::new(Rows {
+            rows: 3,
+            cell: "a".into(),
+        });
+        assert_eq!(
+            gate.query(select()).await.unwrap().len(),
+            3,
+            "not capped yet"
+        );
+        handle.cap_reads(Some(ReadCaps {
+            max_rows: 1,
+            ..ReadCaps::default()
+        }));
+        let err = gate.query(select()).await.unwrap_err();
+        assert_eq!(refused_limit(&err), "maxResultRows");
+        let in_batch = with_batch_in_progress(gate.query(select())).await;
+        assert_eq!(
+            in_batch.unwrap().len(),
+            3,
+            "a batch is held by its executor"
+        );
+        let uncapped = with_uncapped_reads(gate.query(select())).await;
+        assert_eq!(uncapped.unwrap().len(), 3, "a test's own look");
+        handle.cap_reads(None);
+        assert_eq!(gate.query(select()).await.unwrap().len(), 3, "lifted");
     }
 }

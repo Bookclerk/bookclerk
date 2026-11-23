@@ -1053,11 +1053,17 @@ async fn branch_listings(
 ) -> Result<Vec<BranchListing>> {
     let editions = editions_of_works(store, work_ids).await?;
     let edition_ids: Vec<String> = editions.keys().cloned().collect();
-    let rows = read_chunked(store, &edition_ids, |part| {
-        store_listings::Entity::find()
-            .filter(store_listings::Column::EditionId.is_in(part))
-            .filter(store_listings::Column::PluginKey.starts_with(BRANCH_LISTING_PREFIX))
-    })
+    // Several branches can list one edition, so each chunk is read in pages.
+    let rows = crate::store::library_model::find_chunked_paged::<store_listings::Entity, _>(
+        store,
+        &edition_ids,
+        &[store_listings::Column::Id],
+        |part| {
+            store_listings::Entity::find()
+                .filter(store_listings::Column::EditionId.is_in(part.to_vec()))
+                .filter(store_listings::Column::PluginKey.starts_with(BRANCH_LISTING_PREFIX))
+        },
+    )
     .await?;
     let mut out = Vec::new();
     for row in rows {

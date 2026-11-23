@@ -559,14 +559,16 @@ mod tests {
 
     /// The dedup keys of the stored events of `event_type`.
     async fn event_keys(store: &LibraryStore, event_type: &str) -> Vec<String> {
-        let mut keys: Vec<String> = domain_events::Entity::find()
-            .filter(domain_events::Column::EventType.eq(event_type))
-            .all(&store.db)
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|e| e.dedup_key)
-            .collect();
+        let mut keys: Vec<String> = crate::test_support::uncapped(
+            domain_events::Entity::find()
+                .filter(domain_events::Column::EventType.eq(event_type))
+                .all(&store.db),
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|e| e.dedup_key)
+        .collect();
         keys.sort();
         keys
     }

@@ -910,7 +910,10 @@ mod tests {
     /// `(product id, holder)` of every holding, sorted.
     async fn held(store: &LibraryStore) -> Vec<(String, String)> {
         let mut out = Vec::new();
-        for h in holdings::Entity::find().all(&store.db).await.unwrap() {
+        for h in crate::test_support::uncapped(holdings::Entity::find().all(&store.db))
+            .await
+            .unwrap()
+        {
             let listing = store_listings::Entity::find_by_id(h.listing_id)
                 .one(&store.db)
                 .await
@@ -944,12 +947,14 @@ mod tests {
 
     /// Count of events of `event_type`.
     async fn count(store: &LibraryStore, event_type: &str) -> usize {
-        domain_events::Entity::find()
-            .filter(domain_events::Column::EventType.eq(event_type))
-            .all(&store.db)
-            .await
-            .unwrap()
-            .len()
+        crate::test_support::uncapped(
+            domain_events::Entity::find()
+                .filter(domain_events::Column::EventType.eq(event_type))
+                .all(&store.db),
+        )
+        .await
+        .unwrap()
+        .len()
     }
 
     fn ids(products: &[&str]) -> Vec<String> {
@@ -1410,11 +1415,13 @@ mod tests {
                 ],
                 "{profile:?}"
             );
-            let moved = holdings::Entity::find()
-                .filter(holdings::Column::AccountId.eq("a2"))
-                .all(&store.db)
-                .await
-                .unwrap();
+            let moved = crate::test_support::uncapped(
+                holdings::Entity::find()
+                    .filter(holdings::Column::AccountId.eq("a2"))
+                    .all(&store.db),
+            )
+            .await
+            .unwrap();
             assert!(moved.iter().all(|h| h.account_id.as_deref() == Some("a2")));
             // B1 and B2 each leave a1; only B1 is new for a2.
             assert_eq!(count(&store, HOLDING_REMOVED).await, 2, "{profile:?}");

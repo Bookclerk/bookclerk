@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, Condition, EntityTrait, PaginatorTrait,
-    QueryFilter, QueryOrder, QuerySelect,
+    QueryFilter,
 };
 
 use super::LibraryStore;
@@ -121,13 +121,17 @@ impl LibraryStore {
                     ),
             );
         }
-        let rows = query
-            .order_by_asc(storage_scan_rows::Column::MediaRank)
-            .order_by_asc(storage_scan_rows::Column::ObjectKey)
-            .limit(limit)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+        let rows = super::keyset::read_keyset_limit(
+            self,
+            query,
+            &[
+                storage_scan_rows::Column::MediaRank,
+                storage_scan_rows::Column::ObjectKey,
+            ],
+            super::keyset::KeyOrder::Ascending,
+            limit,
+        )
+        .await?;
         Ok(rows
             .into_iter()
             .map(|row| (row.object_key, row.media_rank))
@@ -162,12 +166,14 @@ impl LibraryStore {
         if let Some(after_key) = after_key {
             query = query.filter(storage_scan_rows::Column::ObjectKey.gt(after_key));
         }
-        let rows = query
-            .order_by_asc(storage_scan_rows::Column::ObjectKey)
-            .limit(limit)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+        let rows = super::keyset::read_keyset_limit(
+            self,
+            query,
+            &[storage_scan_rows::Column::ObjectKey],
+            super::keyset::KeyOrder::Ascending,
+            limit,
+        )
+        .await?;
         Ok(rows.into_iter().map(|row| row.object_key).collect())
     }
 
@@ -360,10 +366,12 @@ impl LibraryStore {
     ///
     /// Returns [`LibraryError::Orm`] when a read or delete fails.
     pub async fn storage_scan_reclaim_abandoned(&self, stale_before: &str) -> Result<u64> {
-        let rows = storage_scan_generations::Entity::find()
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+        let rows = super::keyset::read_keyset(
+            self,
+            storage_scan_generations::Entity::find(),
+            &[storage_scan_generations::Column::ScanId],
+        )
+        .await?;
         let mut removed = 0u64;
         for row in rows {
             let keep = if row.job_id.is_empty() {
@@ -397,12 +405,15 @@ impl LibraryStore {
                 return Ok(0);
             }
         }
-        let rows = storage_scan_generations::Entity::find()
-            .filter(storage_scan_generations::Column::JobId.eq(job_id))
-            .limit(32)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+        let rows = super::keyset::read_keyset_limit(
+            self,
+            storage_scan_generations::Entity::find()
+                .filter(storage_scan_generations::Column::JobId.eq(job_id)),
+            &[storage_scan_generations::Column::ScanId],
+            super::keyset::KeyOrder::Ascending,
+            32,
+        )
+        .await?;
         let mut removed = 0u64;
         for row in rows {
             self.storage_scan_delete(&row.scan_id).await?;
@@ -427,16 +438,18 @@ impl LibraryStore {
         limit: u64,
     ) -> Result<(u64, Option<String>)> {
         let limit = limit.clamp(1, 64);
-        let mut query = storage_scan_generations::Entity::find()
-            .order_by_asc(storage_scan_generations::Column::ScanId);
+        let mut query = storage_scan_generations::Entity::find();
         if let Some(after) = after_scan_id {
             query = query.filter(storage_scan_generations::Column::ScanId.gt(after));
         }
-        let rows = query
-            .limit(limit)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+        let rows = super::keyset::read_keyset_limit(
+            self,
+            query,
+            &[storage_scan_generations::Column::ScanId],
+            super::keyset::KeyOrder::Ascending,
+            limit,
+        )
+        .await?;
         let next = if rows.len() < usize::try_from(limit).unwrap_or(usize::MAX) {
             None
         } else {
