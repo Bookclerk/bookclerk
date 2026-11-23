@@ -60,6 +60,11 @@ name = "version.js"
 path = "version.js"
 type = "js"
 
+[[modules]]
+name = "ws.js"
+path = "ws.js"
+type = "js"
+
 [vars]
 
 [[settings]]

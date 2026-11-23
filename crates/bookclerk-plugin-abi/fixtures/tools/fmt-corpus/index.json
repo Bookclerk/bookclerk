@@ -11,6 +11,7 @@
   "crates__bookclerk-plugins__optional__metadata-audnexus.fmt.toml": "crates/bookclerk-plugins/optional/metadata-audnexus/plugin.toml",
   "crates__bookclerk-plugins__optional__metadata-files.fmt.toml": "crates/bookclerk-plugins/optional/metadata-files/plugin.toml",
   "crates__bookclerk-plugins__optional__metadata-openlibrary.fmt.toml": "crates/bookclerk-plugins/optional/metadata-openlibrary/plugin.toml",
+  "crates__bookclerk-plugins__optional__notifier-email.fmt.toml": "crates/bookclerk-plugins/optional/notifier-email/plugin.toml",
   "crates__bookclerk-plugins__optional__notifier-webhook.fmt.toml": "crates/bookclerk-plugins/optional/notifier-webhook/plugin.toml",
   "crates__bookclerk-plugins__optional__source-audible.fmt.toml": "crates/bookclerk-plugins/optional/source-audible/plugin.toml",
   "crates__bookclerk-plugins__optional__source-chirp.fmt.toml": "crates/bookclerk-plugins/optional/source-chirp/plugin.toml",
