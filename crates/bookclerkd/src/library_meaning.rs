@@ -407,7 +407,8 @@ pub(crate) async fn list_similar_works(
     // The scope and unheld works drop some of the nearest, so read them a
     // window at a time, nearest first, until the list is full.
     let wanted = query.limit.unwrap_or(DEFAULT_SIMILAR).clamp(1, MAX_SIMILAR);
-    let mut rows = Vec::with_capacity(wanted);
+    // Sized by the constant, not by the number the caller sent.
+    let mut rows = Vec::with_capacity(MAX_SIMILAR);
     for window in ranked.chunks(SIMILAR_WINDOW) {
         let ids: Vec<String> = window.iter().map(|s| s.work_id.clone()).collect();
         rows.extend(
