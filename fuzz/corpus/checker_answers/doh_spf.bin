@@ -1,0 +1,1 @@
+{"Status":0,"Answer":[{"type":16,"data":"\"v=spf1 include:_spf.example.net \" \"-all\""},{"type":5,"data":"cname."},{"type":16,"data":"\"say \\\"hi\\\"\""}]}

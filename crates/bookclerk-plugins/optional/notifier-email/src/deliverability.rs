@@ -93,8 +93,8 @@ fn number(value: &Value) -> Option<f64> {
 
 /// Reads Postmark's answer: `{"success": true, "score": "1.5", "rules":
 /// [{"score": "0.1", "description": "..."}], "report": "..."}`. Rule names
-/// come from the text report's table (`pts rule description`) when it lists
-/// the rule in the same position.
+/// come from the text report's table (`pts rule description`): the row with
+/// the rule's points and description, whatever its position.
 ///
 /// # Arguments
 ///
@@ -112,17 +112,24 @@ pub fn parse_spamcheck(body: &str) -> Result<SpamCheck, String> {
         .get("score")
         .and_then(number)
         .ok_or("the answer has no score")?;
-    let names: Vec<String> = json
+    // The report table names each rule (`0.8 DKIM_ADSP_NXDOMAIN  No valid
+    // author ...`); a JSON rule takes the name of the first unused row with
+    // its points and description, so order and extra rows do not matter.
+    let mut rows: Vec<(f64, String, String)> = json
         .get("report")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .lines()
+        .take(128)
         .filter_map(|line| {
-            let mut words = line.split_whitespace();
-            let points = words.next()?.parse::<f64>().ok()?;
-            let name = words.next()?;
-            (points.is_finite() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
-                .then(|| name.to_owned())
+            let line = line.trim_start();
+            let (points, rest) = line.split_once(char::is_whitespace)?;
+            let points = points.parse::<f64>().ok().filter(|p| p.is_finite())?;
+            let rest = rest.trim_start();
+            let (name, description) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            name.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                .then(|| (points, name.to_owned(), description.trim().to_owned()))
         })
         .collect();
     let rules = json
@@ -132,17 +139,40 @@ pub fn parse_spamcheck(body: &str) -> Result<SpamCheck, String> {
             rules
                 .iter()
                 .take(64)
-                .enumerate()
-                .filter_map(|(at, rule)| {
+                .filter_map(|rule| {
+                    let points = rule.get("score").and_then(number)?;
+                    let description = rule
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .trim()
+                        .to_owned();
+                    // SpamAssassin wraps long descriptions onto further
+                    // lines, so the row holds a prefix of the rule's; with
+                    // no description match, a row with the only matching
+                    // points will do.
+                    let same_points = |p: &f64| (p - points).abs() < 0.05;
+                    let by_description = rows.iter().position(|(p, _, d)| {
+                        same_points(p) && !d.is_empty() && description.starts_with(d.as_str())
+                    });
+                    let by_points = || {
+                        let mut found = rows
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, (p, _, _))| same_points(p));
+                        match (found.next(), found.next()) {
+                            (Some((at, _)), None) => Some(at),
+                            _ => None,
+                        }
+                    };
+                    let name = by_description
+                        .or_else(by_points)
+                        .map(|at| rows.remove(at).1)
+                        .unwrap_or_default();
                     Some(SpamRule {
-                        points: rule.get("score").and_then(number)?,
-                        name: names.get(at).cloned().unwrap_or_default(),
-                        description: rule
-                            .get("description")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .trim()
-                            .to_owned(),
+                        points,
+                        name,
+                        description,
                     })
                 })
                 .collect()
@@ -293,7 +323,8 @@ pub fn postmark_findings(
 ///
 /// # Returns
 ///
-/// The records, or `None` for a missing name (`NXDOMAIN`) or no records.
+/// The records; an empty list for a missing name (`NXDOMAIN`) or no
+/// records.
 ///
 /// # Errors
 ///
@@ -582,7 +613,8 @@ pub fn parse_mail_tester(body: &str) -> Result<MailTesterAnswer, String> {
     };
     // mail-tester writes marks as points off a 10 (`-1.5`) in some answers
     // and as the score in others.
-    let mark = if mark <= 0.0 { 10.0 + mark } else { mark }.clamp(0.0, 10.0);
+    // A mark of exactly 0 is the worst score, not a perfect one.
+    let mark = if mark < 0.0 { 10.0 + mark } else { mark }.clamp(0.0, 10.0);
     let mut findings = Vec::new();
     collect_findings(&json, 0, &mut findings);
     Ok(MailTesterAnswer::Ready { mark, findings })

@@ -755,3 +755,11 @@ input_from = "the operator's mail server; any signed-in patron (address)"
 # Only the email guest reads them.
 side = "guest"
 artifacts = ["bookclerk"]
+
+[targets.checker_answers]
+crate = "bookclerk-plugin-notifier-email"
+boundary = "What the email notifier's deliverability check reads from Postmark's spam check, Cloudflare's DNS-over-HTTPS resolver and mail-tester.com"
+input_from = "outside services the operator approved (Postmark, Cloudflare, mail-tester.com)"
+# Only the email guest reads them.
+side = "guest"
+artifacts = ["bookclerk"]

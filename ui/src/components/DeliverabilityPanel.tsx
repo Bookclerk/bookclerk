@@ -46,8 +46,11 @@ export function DeliverabilityReportView({ report }: DeliverabilityReportViewPro
         <section aria-label="Recommendations">
           <p className="text-xs font-medium text-ink/70">Recommendations</p>
           <ul className="mt-1 grid gap-2">
-            {report.advice.map((item) => (
-              <li key={item.title} className="rounded-md border border-ink/10 bg-card-strong p-2">
+            {report.advice.map((item, at) => (
+              <li
+                key={`${at}-${item.title}`}
+                className="rounded-md border border-ink/10 bg-card-strong p-2"
+              >
                 <div className="flex flex-wrap items-center gap-2">
                   <OutcomeChip outcome={item.outcome} />
                   <span className="text-sm font-medium text-ink">{item.title}</span>
@@ -62,8 +65,11 @@ export function DeliverabilityReportView({ report }: DeliverabilityReportViewPro
       <section aria-label="Checks">
         <p className="text-xs font-medium text-ink/70">Checks</p>
         <ul className="mt-1 grid gap-1">
-          {report.checks.map((check) => (
-            <li key={check.service} className="flex flex-wrap items-baseline gap-2 text-xs">
+          {report.checks.map((check, at) => (
+            <li
+              key={`${at}-${check.service}`}
+              className="flex flex-wrap items-baseline gap-2 text-xs"
+            >
               <OutcomeChip outcome={check.outcome} />
               <span className="font-medium text-ink">{check.service}</span>
               <span className="text-ink/70">{check.summary}</span>
@@ -129,8 +135,8 @@ export function DeliverabilityPanel({ plugin, onSessionExpired }: Deliverability
       <p className="mt-1 text-xs text-ink/70">
         Checks whether mail from this notifier is likely to reach inboxes: the message itself, the
         sending domain&apos;s DNS records and, when set up, a test delivery. Uses the saved settings
-        and can take up to two minutes. Each checker&apos;s host needs approval in the plugin&apos;s
-        network settings.
+        and can take up to two minutes, while sends wait. Each checker&apos;s host needs approval in
+        the plugin&apos;s network settings.
       </p>
       <div className="mt-2">
         <Button type="button" variant="secondary" disabled={busy} onClick={() => void run()}>

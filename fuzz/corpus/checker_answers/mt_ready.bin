@@ -1,0 +1,1 @@
+{"status":true,"mark":8.5,"signature":{"title":"Authenticated","statusClass":"warning","subtests":{"dkim":{"title":"Not signed with DKIM","statusClass":"failure"}}},"blacklists":{"list":[{"title":"Listed on Example BL","statusClass":"failure"}]}}

@@ -524,6 +524,8 @@ async fn a_deliverability_check_runs_every_checker_and_merges_advice() {
             calls: Rc::clone(&calls),
             mail_tester: RefCell::new(vec![
                 Ok(r#"{"status":false}"#.into()),
+                // One poll that fails to reach mail-tester does not end the run.
+                Err("www.mail-tester.com could not be reached".into()),
                 Ok(r#"{"mark":9.6,"signature":{"title":"Not signed with DKIM","statusClass":"warning"}}"#.into()),
             ]),
         }),
@@ -541,6 +543,7 @@ async fn a_deliverability_check_runs_every_checker_and_merges_advice() {
             "spamcheck",
             "txt example.com",
             "txt _dmarc.example.com",
+            "mail-tester acct-tok",
             "mail-tester acct-tok",
             "mail-tester acct-tok",
         ]
@@ -609,8 +612,22 @@ async fn a_check_without_an_account_skips_mail_tester_and_a_refused_send_is_advi
     assert_eq!(report.advice[0].outcome, NotifyCheckOutcome::Failed);
     assert!(!calls.borrow().iter().any(|c| c.starts_with("mail-tester")));
 
-    assert!(checked_settings("bad name!").is_err());
-    assert!(checked_settings(&"a".repeat(41)).is_err());
+    // A bad account name never stops sending; only the check reports it.
+    let bad = checked_settings("bad name!").expect("settings still usable");
+    assert!(bad.mail_tester_account.is_err());
+    assert!(checked_settings(&"a".repeat(41))
+        .expect("settings")
+        .mail_tester_account
+        .is_err());
+    let (client, _far) = duplex(64);
+    let notifier = EmailNotifier::new(Ok(bad), Pipe(RefCell::new(Some(client))))
+        .with_checkers(canned(&calls), "tok");
+    let report = notifier
+        .check_deliverability(NotifyDeliverabilityParams { message: message() })
+        .await
+        .unwrap();
+    assert_eq!(report.checks[2].outcome, NotifyCheckOutcome::Skipped);
+    assert!(report.checks[2].summary.contains("not an account name"));
     let unset = EmailNotifier::new(
         Err(PluginError::invalid_params("x")),
         Pipe(RefCell::new(None)),
@@ -619,4 +636,35 @@ async fn a_check_without_an_account_skips_mail_tester_and_a_refused_send_is_advi
         .check_deliverability(NotifyDeliverabilityParams { message: message() })
         .await
         .is_err());
+}
+
+#[tokio::test]
+async fn mail_tester_out_of_reach_on_every_poll_is_reported() {
+    let (client, far) = duplex(64 * 1024);
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let notifier = EmailNotifier::new(checked_settings("acct"), Pipe(RefCell::new(Some(client))))
+        .with_fixed("=_b", 1_795_410_000)
+        .with_checkers(
+            Box::new(Canned {
+                calls: Rc::clone(&calls),
+                mail_tester: RefCell::new(vec![Err(
+                    "www.mail-tester.com could not be reached".into()
+                )]),
+            }),
+            "tok",
+        );
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let (report, ()) = tokio::join!(
+        notifier.check_deliverability(NotifyDeliverabilityParams { message: message() }),
+        accepting(far, Rc::clone(&seen)),
+    );
+    let report = report.unwrap();
+    assert_eq!(report.checks[2].outcome, NotifyCheckOutcome::Skipped);
+    assert!(report.checks[2].summary.contains("could not be reached"));
+    let polls = calls
+        .borrow()
+        .iter()
+        .filter(|c| c.starts_with("mail-tester"))
+        .count();
+    assert_eq!(polls, 12);
 }

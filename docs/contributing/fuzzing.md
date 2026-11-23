@@ -93,6 +93,7 @@ boundary extends it.
 | `throttle_reason` | A store's refusal text, which the `audible` guest reads from a refused license request to tell throttling (which pauses the whole account) from a plain refusal | `bookclerk-storefront::is_throttle_reason` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
 | `smtp_session` | What the `email` guest reads from the operator's mail server (replies, multiline replies, EHLO capabilities, the STARTTLS answer) and the address documents and `to` setting it sends to | `bookclerk-plugin-notifier-email::smtp` (`read_reply`, `Session`, `parse_address`, `parse_recipients`) |
+| `checker_answers` | What the `email` guest's deliverability check reads from Postmark's spam check, Cloudflare's DNS-over-HTTPS resolver and mail-tester.com | `bookclerk-plugin-notifier-email::deliverability` (`parse_spamcheck`, `parse_doh_txt`, `parse_mail_tester`) |
 | `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their branch), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
 | `clerk_authorization` | A clerk's library card, the `Authorization: Bookclerk-Clerk <token>` header value that signs a request in as a person | `bookclerk-node-proto::parse_clerk_authorization` |
 | `clerk_authorize` | A clerk's authorization request, the `/oidc/authorize` query that decides whether the library shows its library card consent page and where it sends the code | `bookclerk-node-proto::parse_clerk_query`, `clerk_request_problem` |
@@ -1197,6 +1198,20 @@ only that. The others check:
   Seeds named after a step (`append-*`, `replace-*`, `complete-*`,
   `startover-*`, `retry-*`, `fail-*`) must take it. The shared oracle is
   `fuzz/oracles/download_resume.rs`, replayed from `bookclerk-plugin-sdk`.
+- **`checker_answers`**: byte 0 modulo 3 picks Postmark's spam check (0),
+  a DNS-over-HTTPS TXT answer (1) or a mail-tester result (2); the rest is
+  the answer body. A spam check is read exactly when it is a JSON object
+  with `"success": true` and a finite score; it keeps at most 64 rules,
+  each named only with a word from the report table, and its findings
+  never carry `skipped` advice. A DNS answer is read exactly when its
+  `Status` is 0 or 3, with one record per TXT answer among the first 64,
+  none longer than its data, and SPF and DMARC verdicts that name only the
+  DNS check. A mail-tester answer with `"access": false` is refused, one
+  with `"status": false` waits, and a read mark lies in 0 to 10 with at
+  most 24 findings and a check that links the report page. Merged advice
+  stays within its cap. The shared oracle is
+  `fuzz/oracles/checker_answers.rs`, replayed from
+  `bookclerk-plugin-notifier-email`.
 - **`smtp_session`**: byte 0 picks the case. A server's byte stream is
   read reply by reply against the oracle's own line splitter, which must
   agree on every prefix (incomplete, refused, or the same code, lines and

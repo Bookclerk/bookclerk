@@ -1,6 +1,6 @@
 //! The instance's settings and the `notifier` entrypoint.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use bookclerk_plugin_sdk::{
@@ -44,8 +44,9 @@ pub struct Settings {
     /// used.
     pub to: String,
     /// The operator's mail-tester.com account name, checked; `None` skips
-    /// that checker.
-    pub mail_tester_account: Option<String>,
+    /// that checker. A bad value is kept as its reason, which only the
+    /// deliverability check reports, so a typo never stops sending.
+    pub mail_tester_account: Result<Option<String>, String>,
 }
 
 /// Longest mail-tester account name accepted.
@@ -61,8 +62,8 @@ const MAX_MAIL_TESTER_ACCOUNT_CHARS: usize = 40;
 ///
 /// # Errors
 ///
-/// `invalid_params` for any other value.
-fn mail_tester_account(value: &str) -> Result<Option<String>, PluginError> {
+/// Why any other value is refused.
+fn mail_tester_account(value: &str) -> Result<Option<String>, String> {
     let value = value.trim();
     if value.is_empty() {
         return Ok(None);
@@ -72,9 +73,10 @@ fn mail_tester_account(value: &str) -> Result<Option<String>, PluginError> {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
     {
-        return Err(PluginError::invalid_params(
-            "the mail_tester_account setting holds characters an account name can't",
-        ));
+        return Err(
+            "the mail_tester_account setting is not an account name (letters, digits, '.', '_' and '-', at most 40)"
+                .to_owned(),
+        );
     }
     Ok(Some(value.to_owned()))
 }
@@ -161,20 +163,32 @@ impl Settings {
             )?,
             from_name: string_setting(config, "from_name").to_owned(),
             to: string_setting(config, "to").to_owned(),
-            mail_tester_account: mail_tester_account(string_setting(
-                config,
-                "mail_tester_account",
-            ))?,
+            mail_tester_account: mail_tester_account(string_setting(config, "mail_tester_account")),
         })
     }
 }
 
+/// How a mail-tester run says the operator's own server refused the test
+/// send; the check turns it into advice to fix the server settings.
+const MAIL_SERVER_REFUSED: &str = "the mail server did not accept the test message";
+
 /// Most times mail-tester is asked for a result.
 const MAIL_TESTER_POLLS: usize = 12;
 
-/// Wait before each mail-tester poll: 12 polls take a minute, inside the
-/// ABI's two-minute deadline with the other checks.
-const MAIL_TESTER_POLL_GAP: std::time::Duration = std::time::Duration::from_secs(5);
+/// Wait before each mail-tester poll: 12 polls take a minute.
+const MAIL_TESTER_POLL_GAP: Duration = Duration::from_secs(5);
+
+/// How long the whole check may run: well inside the ABI's two-minute
+/// deadline, so the report always gets back with what was found.
+const CHECK_BUDGET: Duration = Duration::from_secs(100);
+
+/// Longest one checker request takes ([`crate::checkers`]' timeout); a poll
+/// starts only when this much budget is left after its pause.
+const POLL_ROOM: Duration = Duration::from_secs(20);
+
+/// Budget mail-tester needs to be started: the test send's SMTP steps and
+/// one poll.
+const MAIL_TESTER_ROOM: Duration = Duration::from_secs(45);
 
 /// Why the settings are unusable when no mail server is set: a fresh
 /// install, which `health` reports as healthy but not configured yet.
@@ -332,15 +346,20 @@ impl<T: Transport> EmailNotifier<T> {
     /// * `settings` - The checked settings.
     /// * `message` - The host's sample.
     /// * `account` - The operator's mail-tester account.
+    /// * `deadline` - When the whole check must be done; no poll starts that
+    ///   could end after it.
     ///
     /// # Returns
     ///
-    /// The result page and the last answer, or why it could not run.
+    /// The result page and the last answer, or why it could not run. A poll
+    /// that fails to reach mail-tester is tried again on the next one; the
+    /// failure is the answer only when no poll got through.
     async fn mail_tester_run(
         &self,
         settings: &Settings,
         message: &NotificationMessage,
         account: &str,
+        deadline: Instant,
     ) -> (String, Result<Option<MailTesterAnswer>, String>) {
         let id = format!("{account}-{}", (self.token)());
         let report = format!("{MAIL_TESTER_URL}/{id}");
@@ -359,21 +378,31 @@ impl<T: Transport> EmailNotifier<T> {
         {
             return (
                 report,
-                Err(format!(
-                    "the mail server did not accept the test message ({})",
-                    err.message
-                )),
+                Err(format!("{MAIL_SERVER_REFUSED} ({})", err.message)),
             );
         }
+        let mut answered = false;
+        let mut unreachable = None;
         let mut last = Ok(Some(MailTesterAnswer::Waiting));
         for _ in 0..MAIL_TESTER_POLLS {
-            self.checkers.pause(MAIL_TESTER_POLL_GAP).await;
-            last = match self.checkers.mail_tester(&id).await {
-                Ok(body) => parse_mail_tester(&body).map(Some),
-                Err(why) => Err(why),
-            };
-            if !matches!(last, Ok(Some(MailTesterAnswer::Waiting))) {
+            if Instant::now() + MAIL_TESTER_POLL_GAP + POLL_ROOM > deadline {
                 break;
+            }
+            self.checkers.pause(MAIL_TESTER_POLL_GAP).await;
+            match self.checkers.mail_tester(&id).await {
+                Ok(body) => {
+                    answered = true;
+                    last = parse_mail_tester(&body).map(Some);
+                    if !matches!(last, Ok(Some(MailTesterAnswer::Waiting))) {
+                        break;
+                    }
+                }
+                Err(why) => unreachable = Some(why),
+            }
+        }
+        if !answered {
+            if let Some(why) = unreachable {
+                last = Err(why);
             }
         }
         (report, last)
@@ -442,6 +471,7 @@ impl<T: Transport> Notifier for EmailNotifier<T> {
         params: NotifyDeliverabilityParams,
     ) -> Result<NotifyDeliverabilityReport, PluginError> {
         let settings = self.settings()?;
+        let deadline = Instant::now() + CHECK_BUDGET;
         let mut checks = Vec::new();
         let mut advice: Vec<NotifyDeliverabilityAdvice> = Vec::new();
 
@@ -476,20 +506,25 @@ impl<T: Transport> Notifier for EmailNotifier<T> {
         checks.push(check);
         advice.extend(found);
 
-        let (report, answer) = match settings.mail_tester_account.as_deref() {
-            Some(account) => {
-                self.mail_tester_run(settings, &params.message, account)
+        let (report, answer) = match &settings.mail_tester_account {
+            Ok(Some(_)) if Instant::now() + MAIL_TESTER_ROOM > deadline => (
+                String::new(),
+                Err("the other checks took too long; run the check again".to_owned()),
+            ),
+            Ok(Some(account)) => {
+                self.mail_tester_run(settings, &params.message, account, deadline)
                     .await
             }
-            None => (String::new(), Ok(None)),
+            Ok(None) => (String::new(), Ok(None)),
+            Err(why) => (String::new(), Err(why.clone())),
         };
         if let Err(why) = &answer {
-            if why.starts_with("the mail server") {
+            if let Some(refusal) = why.strip_prefix(MAIL_SERVER_REFUSED) {
                 advice.push(NotifyDeliverabilityAdvice {
                     outcome: NotifyCheckOutcome::Failed,
                     title: "Fix the mail server settings".to_owned(),
                     detail: format!(
-                        "The server refused the test message: {why}. Check the server, connection security, user name, password and From address."
+                        "Your mail server did not accept the test message for mail-tester{refusal}. Check the server, connection security, user name, password and From address."
                     ),
                     sources: vec![MAIL_TESTER.to_owned()],
                 });

@@ -252,8 +252,12 @@ most urgent first:
 
 Each checker's host is a network grant you approve in the plugin's network
 settings; a checker whose grant is not approved is shown as not run. The
-check uses the saved settings and can take up to two minutes. Only
-administrators can run it.
+check uses the saved settings and takes at most about 100 seconds; when
+mail-tester has not scored the message by then, the report links its
+page so you can read the score there. The instance handles one call at a
+time, so sends and patrons' address checks wait while a check runs. An
+invalid `mail_tester_account` never stops mail: only the check reports
+it. Only administrators can run it.
 
 ### When a send fails
 

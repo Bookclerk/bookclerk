@@ -21,6 +21,12 @@ fn postmark_answers_are_read_with_rule_names() {
     assert!(parse_spamcheck(r#"{"success":false,"message":"x"}"#).is_err());
     assert!(parse_spamcheck(r#"{"success":true}"#).is_err());
     assert!(parse_spamcheck(r#"{"success":true,"score":"NaN"}"#).is_err());
+    // Names follow points and description, not row order; an extra row
+    // takes no name away from the rules after it.
+    let shuffled = r#"{"success":true,"score":"3.3","rules":[{"score":"2.5","description":"Message is all caps"},{"score":"0.8","description":"Unsigned"}],"report":" 0.0 EXTRA_ROW a rule the JSON omits\n 0.8 DKIM_ADSP_ALL Unsigned\n 2.5 ALL_CAPS Message is all caps\n"}"#;
+    let found = parse_spamcheck(shuffled).unwrap();
+    assert_eq!(found.rules[0].name, "ALL_CAPS");
+    assert_eq!(found.rules[1].name, "DKIM_ADSP_ALL");
     let bare = parse_spamcheck(r#"{"success":true,"score":3}"#).unwrap();
     assert!(bare.rules.is_empty());
 }
@@ -159,6 +165,13 @@ fn mail_tester_answers_are_read() {
         );
     }
     assert_eq!(findings.len(), 3);
+    // A zero mark is the worst score.
+    let MailTesterAnswer::Ready { mark, .. } =
+        parse_mail_tester(r#"{"status":true,"mark":0}"#).unwrap()
+    else {
+        panic!("not ready");
+    };
+    assert!(mark.abs() < 1e-9);
     // Points off a ten.
     let MailTesterAnswer::Ready { mark, .. } = parse_mail_tester(r#"{"mark":"-1.5"}"#).unwrap()
     else {
