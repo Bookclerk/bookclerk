@@ -681,6 +681,40 @@ pub(super) fn plan_write_credits(p: &CreditBatchParams, now: &str) -> Vec<SqlStm
             ],
         ));
     }
+    for event in &p.events {
+        // The event names its edition in its ordering key.
+        out.push(sql(
+            "INSERT OR IGNORE INTO domain_events (\
+                id, event_type, schema_version, occurred_at, account_id, source, \
+                correlation_id, causation_id, dedup_key, payload, ordering_key, \
+                dispatch_state, created_at, wake_pending\
+             ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 1 \
+             WHERE NOT EXISTS (\
+                SELECT 1 FROM domain_events \
+                WHERE queue_name = 'core.events' AND account_id = ? AND source = ? \
+                  AND event_type = ? AND dedup_key = ?\
+             ) AND EXISTS (SELECT 1 FROM editions WHERE id = ?)",
+            vec![
+                j_str(&event.id),
+                j_str(&event.event_type),
+                j_i64(1),
+                j_str(now),
+                j_str(&event.account_id),
+                j_str(&event.source),
+                j_str(&event.ordering_key),
+                j_str(""),
+                j_str(&event.dedup_key),
+                j_str(&event.payload),
+                j_str(&event.ordering_key),
+                j_str(now),
+                j_str(&event.account_id),
+                j_str(&event.source),
+                j_str(&event.event_type),
+                j_str(&event.dedup_key),
+                j_str(&event.ordering_key),
+            ],
+        ));
+    }
     out.push(sql(
         &format!("SELECT '{ok}' AS status", ok = atomic_status::OK),
         Vec::new(),

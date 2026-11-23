@@ -1479,6 +1479,12 @@ pub enum JobKind {
     /// reads the copy's audio from there; it runs only on a node that
     /// holds the library database.
     ChapterAlign,
+    /// Probe the audio files on one node's destinations that were never
+    /// probed (`file_probe`): files stored before probes were recorded, or
+    /// whose probe failed. Pinned by [`JobPayload::node_id`] to the node
+    /// whose destinations it reads; it runs only on a node that holds the
+    /// library database.
+    FileProbe,
     /// Terminal placeholder after an unreadable persisted command is rejected.
     Invalid,
 }
@@ -1486,7 +1492,7 @@ pub enum JobKind {
 impl JobKind {
     /// Every kind, in declaration order; the SQL plans derive their kind
     /// lists from it so a new kind cannot be left unclaimable.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::Scan,
         Self::Acquire,
         Self::ListenSync,
@@ -1503,6 +1509,7 @@ impl JobKind {
         Self::IngestBatch,
         Self::NotifySend,
         Self::ChapterAlign,
+        Self::FileProbe,
         Self::Invalid,
     ];
 
@@ -1526,6 +1533,7 @@ impl JobKind {
             Self::IngestBatch => "ingest_batch",
             Self::NotifySend => "notify_send",
             Self::ChapterAlign => "chapter_align",
+            Self::FileProbe => "file_probe",
             Self::Invalid => "invalid",
         }
     }
@@ -1550,6 +1558,7 @@ impl JobKind {
             "ingest_batch" => Some(Self::IngestBatch),
             "notify_send" => Some(Self::NotifySend),
             "chapter_align" => Some(Self::ChapterAlign),
+            "file_probe" => Some(Self::FileProbe),
             "invalid" => Some(Self::Invalid),
             _ => None,
         }
@@ -1674,6 +1683,11 @@ impl JobKind {
             Self::ChapterAlign => format!(
                 "chapter_align:edition={}",
                 payload.title.as_deref().unwrap_or("-")
+            ),
+            // One queued or running probe walk per node.
+            Self::FileProbe => format!(
+                "file_probe:node={}",
+                payload.node_id.as_deref().unwrap_or("-")
             ),
             Self::Invalid => "invalid".into(),
         }

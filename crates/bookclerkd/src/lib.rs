@@ -36,6 +36,7 @@ mod discover_events;
 mod discover_jobs;
 mod download_requests;
 mod event_worker;
+mod file_probes;
 mod heartbeat;
 mod http_error;
 mod ingress;

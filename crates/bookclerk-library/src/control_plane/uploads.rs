@@ -54,7 +54,7 @@ use crate::error::{LibraryError, Result};
 use crate::models::{is_downloadable, AcquireStatus, JobRecord};
 use crate::models::{JobKind, JobState};
 use crate::store::event_outbox::{
-    book_acquired_spec, prepare_publish_domain_event, AcquireEventTitle,
+    acquired_event_key, book_acquired_spec, prepare_publish_domain_event, AcquireEventTitle,
 };
 use crate::store::{AcquireTitle, EditionFile, FileOwner, FileProbe, FileRole, LibraryStore};
 
@@ -1922,11 +1922,18 @@ async fn commit_upload_checked(
         }
         // `book_acquired` names the uploading holding.
         {
-            let event = prepare_publish_domain_event(book_acquired_spec(
-                AcquireEventTitle::of_title(title),
+            let event_title = AcquireEventTitle::of_title(title);
+            let mut spec = book_acquired_spec(
+                event_title,
                 Some(&session.primary_key),
                 Some(&title.edition_id),
-            ))?;
+            );
+            if let Some(key) =
+                acquired_event_key(store.db(), event_title, &title.edition_id).await?
+            {
+                spec.dedup_key = key;
+            }
+            let event = prepare_publish_domain_event(spec)?;
             let mut binds = vec![
                 text(&event.id),
                 text(&event.event_type),

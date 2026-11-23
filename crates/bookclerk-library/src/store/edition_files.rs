@@ -25,7 +25,9 @@
 //! files are that edition's like any other.
 
 use sea_orm::sea_query::{Expr, OnConflict, Query};
-use sea_orm::{ActiveValue::Set, ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder};
+use sea_orm::{
+    ActiveValue::Set, ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
+};
 
 use super::{now_str, LibraryStore};
 use crate::entities::{
@@ -33,6 +35,18 @@ use crate::entities::{
 };
 use crate::error::{LibraryError, Result};
 use crate::models::AcquireStatus;
+
+/// An audio file that was never probed, from
+/// [`LibraryStore::unprobed_audio_files`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnprobedFile {
+    /// Output destination id.
+    pub destination: String,
+    /// Storage key on that destination.
+    pub storage_key: String,
+    /// The edition the file belongs to.
+    pub owner: FileOwner,
+}
 
 /// The `writer` of a key an acquire run on this node wrote.
 pub const ACQUIRE_WRITER: &str = "acquire";
@@ -1155,6 +1169,110 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?;
         Ok(rows.into_iter().map(probed_audio_file).collect())
+    }
+
+    /// One page of audio files (primary, parts and chapters) on
+    /// `destinations` that were never probed (`probed_at` is empty): files
+    /// stored before probes were recorded, or whose probe failed. In
+    /// `(destination, storage_key)` order, after `after`.
+    ///
+    /// # Arguments
+    ///
+    /// * `destinations` - Destination ids whose files the caller can read.
+    /// * `after` - The last `(destination, storage_key)` of the previous
+    ///   page; `None` to start.
+    /// * `limit` - Most rows to return, further capped at the database's
+    ///   result-row limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the read fails.
+    pub async fn unprobed_audio_files(
+        &self,
+        destinations: &[String],
+        after: Option<(&str, &str)>,
+        limit: u64,
+    ) -> Result<Vec<UnprobedFile>> {
+        if destinations.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut query = edition_files::Entity::find()
+            .filter(edition_files::Column::Destination.is_in(destinations.iter().cloned()))
+            .filter(edition_files::Column::ProbedAt.is_null())
+            .filter(edition_files::Column::Role.is_in([
+                FileRole::Audio.as_str(),
+                FileRole::Part.as_str(),
+                FileRole::Chapter.as_str(),
+            ]))
+            .order_by_asc(edition_files::Column::Destination)
+            .order_by_asc(edition_files::Column::StorageKey)
+            .limit(limit.max(1).min(self.result_row_cap()));
+        if let Some((destination, key)) = after {
+            query = query.filter(
+                Condition::any()
+                    .add(edition_files::Column::Destination.gt(destination))
+                    .add(
+                        Condition::all()
+                            .add(edition_files::Column::Destination.eq(destination))
+                            .add(edition_files::Column::StorageKey.gt(key)),
+                    ),
+            );
+        }
+        Ok(query
+            .all(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .filter_map(|row| {
+                Some(UnprobedFile {
+                    owner: FileOwner::from_row(&row.owner_kind, row.owner_id)?,
+                    destination: row.destination,
+                    storage_key: row.storage_key,
+                })
+            })
+            .collect())
+    }
+
+    /// The one storefront that holds `edition_id`: the plain plugin id of
+    /// its held listings when every holding is through the same store,
+    /// else `None` (two stores, none, or an id that is not a plain store
+    /// id). A probe of a file stored before probes were recorded takes its
+    /// source store from here, since the file does not say.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the read fails.
+    pub async fn sole_store_of_edition(&self, edition_id: &str) -> Result<Option<String>> {
+        let listings: Vec<String> = store_listings::Entity::find()
+            .filter(store_listings::Column::EditionId.eq(edition_id))
+            .filter(
+                store_listings::Column::Id.in_subquery(
+                    Query::select()
+                        .column(holdings::Column::ListingId)
+                        .from(holdings::Entity)
+                        .to_owned(),
+                ),
+            )
+            .order_by_asc(store_listings::Column::Id)
+            .all(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .map(|l| l.plugin_key)
+            .collect();
+        let mut stores = listings
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        if stores.len() != 1 {
+            return Ok(None);
+        }
+        let store = stores.pop_first().unwrap_or_default();
+        let plain = !store.is_empty()
+            && store.len() <= FileProbe::MAX_CONTENT_TYPE_BYTES
+            && store
+                .bytes()
+                .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' | b'.'));
+        Ok(plain.then_some(store))
     }
 
     /// What the last probe found in the file at `key` on `destination`;

@@ -403,6 +403,12 @@ pub(crate) struct WorkSummaryJson {
     /// RFC 3339 time of the newest purchase a store reported.
     #[schema(example = "2024-03-02T18:04:11Z")]
     purchased_at: Option<String>,
+    /// How many held editions an acquire would still queue: neither
+    /// acquired, queued nor downloading. The library offers Acquire while
+    /// it is above 0, even when `acquire_status` is `acquired` (an acquired
+    /// audio edition beside a held ebook, or a second narration).
+    #[schema(example = 1)]
+    acquirable_editions: u64,
 }
 
 /// A page of `GET /api/library/works`.
@@ -705,6 +711,7 @@ fn summary(row: LibraryWorkRow, cover_path: Option<String>) -> WorkSummaryJson {
         added_at: row.added_at,
         length_minutes: row.length_minutes,
         purchased_at: row.purchased_at,
+        acquirable_editions: row.acquirable_editions,
     }
 }
 

@@ -23,6 +23,24 @@ export function rowOffersPlay(work: WorkSummary): boolean {
 }
 
 /**
+ * Whether a library row offers an Acquire button.
+ *
+ * A work's summed state reads `acquired` once any edition is, so the row
+ * goes by how many held editions an acquire would still queue: an acquired
+ * audio edition beside a held ebook still offers Acquire. A row from a
+ * server that does not send the count falls back to the summed state.
+ *
+ * @param work - A works-page row.
+ * @returns True when the row should show Acquire.
+ */
+export function rowOffersAcquire(work: WorkSummary): boolean {
+  if (work.acquirable_editions !== undefined) {
+    return work.acquirable_editions > 0;
+  }
+  return work.acquire_status !== "acquired";
+}
+
+/**
  * The editions of a work the player could start.
  *
  * @param work - A work's detail.

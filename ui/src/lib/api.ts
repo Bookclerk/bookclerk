@@ -186,6 +186,11 @@ export interface WorkSummary {
   length_minutes?: number | null;
   /** When the newest purchase a store reported happened (ISO-8601). */
   purchased_at?: string | null;
+  /**
+   * Held editions an acquire would still queue (neither acquired, queued
+   * nor downloading); see {@link rowOffersAcquire}.
+   */
+  acquirable_editions?: number;
 }
 
 /** A page of works and the cursor of the next one. */

@@ -267,6 +267,17 @@ sample rate and duration are stored only for files an acquire on this
 node probed; an upload's row carries the sender's media type, bitrate,
 lossless flag and store, and the rest stays empty.
 
+A file stored before probes were recorded, or one whose probe failed (no
+media worker, or a file the tag reader could not parse), has no probe.
+Each node looks for such files on its own destinations once a day and,
+when it finds one, queues a `file_probe` job pinned to itself. The job
+reads each file's tags through the destination's ranged reads (the file
+is not downloaded whole), stores the probe and the stream values, and
+takes the source store from the edition's holdings when they are all
+through one store. A file it still cannot read is tried again by the
+next day's job; until then, comparing copies treats it as unknown
+quality.
+
 The row answers "what copy do we hold?" without opening the file again,
 so comparing two copies of one edition, or telling another install what
 is on offer, is a database read.

@@ -3,7 +3,7 @@ import { Download, Play } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { editionCoverUrl, type AcquireStatus, type MediaKind, type WorkSummary } from "@/lib/api";
-import { rowOffersPlay } from "@/lib/playTarget";
+import { rowOffersAcquire, rowOffersPlay } from "@/lib/playTarget";
 import { cn } from "@/lib/utils";
 
 const statusStyles: Record<AcquireStatus, string> = {
@@ -117,7 +117,7 @@ export function WorkRow({
             <span className="hidden sm:inline">Play</span>
           </Button>
         ) : null}
-        {showAcquire && work.acquire_status !== "acquired" ? (
+        {showAcquire && rowOffersAcquire(work) ? (
           <Button
             variant="secondary"
             className="px-2.5 py-1.5"

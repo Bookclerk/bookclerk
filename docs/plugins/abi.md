@@ -1030,7 +1030,10 @@ piling up work.
 (the account holding as `titleId`, the edition, storage key, product ids;
 never media bytes). The holding is also the event's correlation and
 ordering key. It sets the envelope `source` to the book's storefront
-plugin id.
+plugin id. Each acquire of a title publishes once: a write that only
+repeats an acquire already announced (no `edition_acquire_changed` for
+the edition since) is dropped as a duplicate, while a title acquired
+again after it was reset or failed publishes a new `book_acquired`.
 
 **`edition_acquire_changed`.** Any other acquire state change of a title
 (queued, downloading, failed, or reset to not acquired) writes
@@ -1059,7 +1062,9 @@ batch as its rows:
   too, with `edition_updated` for the edition the listing left; each pin
   publishes again, even back to an edition the listing sold before);
 - `edition_updated` (`editionId`) when the listing filled a missing
-  subtitle, publication date or duration on its edition;
+  subtitle, publication date or duration on its edition, and once a held
+  listing's credits and series (written in batches after the link) are
+  stored for a work, expression or edition that had none;
 - `edition_updated` (`editionId`, `fields: ["chapters"]`) when the
   chapters an edition plays change: a new chapter claim from an acquire,
   or an Administrator's edit or pin (see

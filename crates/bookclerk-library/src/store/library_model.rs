@@ -714,6 +714,45 @@ fn credit_batches(plan: &resolve::Plan) -> Vec<CreditBatchParams> {
     batches
 }
 
+/// `batches` with one `edition_updated` for the listing's edition after
+/// the last of them, so consumers that derive from credits and series see
+/// them once they are written: the link that refreshed the edition's work
+/// ran before them, in its own batch (#986). No credit batch, no event; a
+/// catalog listing nobody holds (a Discover or lookup answer) publishes
+/// none either, since nothing derived from a held work changed.
+fn announce_credits(
+    mut batches: Vec<CreditBatchParams>,
+    listing: &resolve::Listing,
+    plan: &resolve::Plan,
+) -> Vec<CreditBatchParams> {
+    if batches.is_empty() || plan.holding.is_none() || plan.listing.edition_id.is_empty() {
+        return batches;
+    }
+    let edition_id = plan.listing.edition_id.clone();
+    let id = Uuid::new_v4().to_string();
+    let event = LinkEvent {
+        event_type: resolve::Event::EditionUpdated {
+            edition_id: edition_id.clone(),
+        }
+        .event_type()
+        .to_string(),
+        account_id: String::new(),
+        source: listing.key.plugin_key.clone(),
+        dedup_key: format!("edition_updated:{edition_id}:{id}"),
+        payload: serde_json::json!({ "editionId": edition_id }).to_string(),
+        ordering_key: edition_id,
+        id,
+    };
+    match batches.last_mut() {
+        Some(last) if last.statement_count() < CREDIT_BATCH_STATEMENTS => last.events.push(event),
+        _ => batches.push(CreditBatchParams {
+            events: vec![event],
+            ..CreditBatchParams::default()
+        }),
+    }
+    batches
+}
+
 /// The structured listing a flat library row describes, for paths that
 /// only have a [`NewBook`] (imports, seeds, tests).
 ///
@@ -1423,7 +1462,7 @@ impl LibraryStore {
                     continue;
                 }
             }
-            for batch in credit_batches(&plan) {
+            for batch in announce_credits(credit_batches(&plan), listing, &plan) {
                 self.run_write_credits(batch).await?;
             }
             return Ok(Some(plan));

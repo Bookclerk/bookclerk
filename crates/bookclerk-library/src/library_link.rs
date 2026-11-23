@@ -358,12 +358,23 @@ pub struct CreditBatchParams {
     /// Series entries to insert when missing.
     #[serde(default)]
     pub series_entries: Vec<SeriesEntryRow>,
+    /// Events to publish once the rows above are written: the last batch
+    /// of a link carries one `edition_updated` for the listing's edition,
+    /// so consumers that derive from credits and series (the library page
+    /// index, the works search index) refresh after them. Each is
+    /// published while its edition exists.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<LinkEvent>,
 }
 
 impl CreditBatchParams {
     /// The number of insert statements the batch compiles to.
     #[must_use]
     pub fn statement_count(&self) -> usize {
-        self.contributors.len() + self.credits.len() + self.series.len() + self.series_entries.len()
+        self.contributors.len()
+            + self.credits.len()
+            + self.series.len()
+            + self.series_entries.len()
+            + self.events.len()
     }
 }

@@ -96,6 +96,7 @@ async fn beat(
         // Same ordering as the sweep: a node-pinned job only after the beat.
         crate::search_index::queue_rebuild_if_missing(state, &node_id).await;
         crate::library_index::queue_rebuild_if_missing(state).await;
+        crate::file_probes::queue_file_probe_if_due(state, &node_id).await;
         // The libraries this node is a branch of share what its budget
         // fits now.
         state.capacity.record_status(recorded);

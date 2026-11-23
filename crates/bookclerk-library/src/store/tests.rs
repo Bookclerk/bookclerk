@@ -94,9 +94,12 @@ async fn account_and_book_roundtrip() {
     let pending = next_event_of(&store, "book_acquired").await;
     assert_eq!(pending.event_type, "book_acquired");
     assert_eq!(pending.ordering_key, title.holding_id);
-    assert_eq!(
-        pending.dedup_key,
-        format!("book_acquired:{}", title.holding_id)
+    assert!(
+        pending
+            .dedup_key
+            .starts_with(&format!("book_acquired:{}:", title.holding_id)),
+        "{}",
+        pending.dedup_key
     );
     let payload: serde_json::Value = serde_json::from_str(&pending.payload).unwrap();
     let edition = store.edition_of_holding(&updated.holding_id).await.unwrap();
@@ -156,6 +159,99 @@ async fn a_status_other_than_acquired_publishes_its_edition_change() {
                 .await
                 .unwrap();
         }
+    }
+}
+
+#[tokio::test]
+async fn credits_written_after_a_link_publish_an_edition_update() {
+    use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
+    for store in [kit_store().await, in_process_store().await] {
+        store
+            .upsert_account("audible", "user-1", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let updates = |edition: String| {
+            let store = &store;
+            async move {
+                crate::entities::domain_events::Entity::find()
+                    .filter(crate::entities::domain_events::Column::EventType.eq("edition_updated"))
+                    .filter(crate::entities::domain_events::Column::OrderingKey.eq(edition))
+                    .count(store.db())
+                    .await
+                    .unwrap()
+            }
+        };
+        let mut credited = NewBook::minimal("B00C", "user-1", "us", "Credited");
+        credited.authors = Some("An Author".into());
+        let credited = store.upsert_book(&credited).await.unwrap();
+        let edition = store
+            .edition_of_holding(&credited.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            updates(edition.clone()).await,
+            1,
+            "the credits announce themselves"
+        );
+        // A rescan that finds the credits stored writes none and says nothing.
+        let mut again = NewBook::minimal("B00C", "user-1", "us", "Credited");
+        again.authors = Some("An Author".into());
+        store.upsert_book(&again).await.unwrap();
+        assert_eq!(updates(edition).await, 1);
+        // A title with no credits has nothing to announce.
+        let bare = store
+            .upsert_book(&NewBook::minimal("B00N", "user-1", "us", "Bare"))
+            .await
+            .unwrap();
+        let edition = store
+            .edition_of_holding(&bare.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updates(edition).await, 0);
+    }
+}
+
+#[tokio::test]
+async fn a_title_acquired_again_after_a_reset_publishes_again() {
+    use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
+    for store in [kit_store().await, in_process_store().await] {
+        store
+            .upsert_account("audible", "user-1", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let book = store
+            .upsert_book(&NewBook::minimal("B00R", "user-1", "us", "Again"))
+            .await
+            .unwrap();
+        let acquired = || async {
+            crate::entities::domain_events::Entity::find()
+                .filter(crate::entities::domain_events::Column::EventType.eq("book_acquired"))
+                .filter(crate::entities::domain_events::Column::OrderingKey.eq(&book.holding_id))
+                .count(store.db())
+                .await
+                .unwrap()
+        };
+        let write = |status| {
+            store.set_acquire_status("B00R", "user-1", status, Some("A/Again/a.m4b"), None)
+        };
+        write(AcquireStatus::Acquired).await.unwrap();
+        assert_eq!(acquired().await, 1);
+        // A repeat of the same acquire is the same event.
+        write(AcquireStatus::Acquired).await.unwrap();
+        assert_eq!(acquired().await, 1, "a repeated acquire publishes once");
+        // A reset, then a new acquire, is a new event.
+        write(AcquireStatus::NotAcquired).await.unwrap();
+        write(AcquireStatus::Queued).await.unwrap();
+        write(AcquireStatus::Acquired).await.unwrap();
+        assert_eq!(
+            acquired().await,
+            2,
+            "an acquire after a reset publishes again"
+        );
+        write(AcquireStatus::Acquired).await.unwrap();
+        assert_eq!(acquired().await, 2);
     }
 }
 

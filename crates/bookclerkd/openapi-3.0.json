@@ -60083,6 +60083,7 @@
           "ingest_batch",
           "notify_send",
           "chapter_align",
+          "file_probe",
           "invalid"
         ]
       },
@@ -76607,7 +76608,8 @@
           "acquire_status",
           "edition_count",
           "holding_count",
-          "added_at"
+          "added_at",
+          "acquirable_editions"
         ],
         "properties": {
           "id": {
@@ -76705,6 +76707,13 @@
             "description": "RFC 3339 time of the newest purchase a store reported.",
             "example": "2024-03-02T18:04:11Z",
             "nullable": true
+          },
+          "acquirable_editions": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many held editions an acquire would still queue: neither\nacquired, queued nor downloading. The library offers Acquire while\nit is above 0, even when `acquire_status` is `acquired` (an acquired\naudio edition beside a held ebook, or a second narration).",
+            "example": 1,
+            "minimum": 0
           }
         }
       },

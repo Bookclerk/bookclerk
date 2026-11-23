@@ -298,6 +298,10 @@ pub fn claimant_may_run(claimant: Claimant, job: &JobRecord) -> bool {
     if job.kind == JobKind::ChapterAlign {
         return claimant == Claimant::Local;
     }
+    // A probe walk reads the library's file rows and writes their probes.
+    if job.kind == JobKind::FileProbe {
+        return claimant == Claimant::Local;
+    }
     claimant == Claimant::Local
         || !(job.kind == JobKind::Acquire
             && (job.payload.force

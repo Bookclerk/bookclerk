@@ -264,7 +264,7 @@ pub use store::{
     LostCopies, NewBook, NewListeningProgress, NewTitleRequest, NewTitleRequestSource,
     NodeHoldingSelection, ProbedAudioFile, QueueRank, SavedFilterRecord, ScannedTitle, SeedScope,
     SeenObject, StoreCallHit, StoredCandidate, StoredDiscoverTaste, StoredFeed, StoredQueueRank,
-    TitleHolding, UserBookFields, WishWork, ACQUIRED_KEYS_MAX_PAGE, ACQUIRE_WRITER,
+    TitleHolding, UnprobedFile, UserBookFields, WishWork, ACQUIRED_KEYS_MAX_PAGE, ACQUIRE_WRITER,
     COPY_RETRY_BASE_DELAY, COPY_RETRY_MAX_DELAY, HOLDING_REMOVED, MAX_COPY_ATTEMPTS,
     MAX_QUEUE_REASONS, OBJECT_TOMBSTONE_DAYS,
 };

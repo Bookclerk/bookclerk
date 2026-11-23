@@ -1,0 +1,92 @@
+//! Tests for the `file_probe` walk.
+
+use bookclerk_library::{FileOwner, FileRole, NewBook};
+
+use super::*;
+
+/// A file stored before probes were recorded is probed by the walk, with
+/// the edition's one store as its source; a file that cannot be read stays
+/// unprobed for the next walk.
+#[tokio::test]
+async fn the_walk_probes_files_stored_without_a_probe() {
+    bookclerk_media::replace_pool(bookclerk_media::MediaPool::new(
+        bookclerk_media::MediaPoolConfig {
+            confinement: bookclerk_media::Confinement::Off,
+            ..bookclerk_media::MediaPoolConfig::default()
+        },
+    ));
+    let files = tempfile::tempdir().expect("tempdir");
+    let storage = tempfile::tempdir().expect("tempdir");
+    let (state, library) = crate::node_api::tests::test_state(&files).await;
+    crate::node_api::uploads::set_test_destination(files.path(), storage.path());
+    library
+        .upsert_account("audible", "acct", "us", None, true, "audible")
+        .await
+        .expect("account");
+    let book = library
+        .upsert_book(&NewBook::minimal("B0PROBE1", "acct", "us", "Old Copy"))
+        .await
+        .expect("book");
+    let edition = library
+        .edition_of_holding(&book.holding_id)
+        .await
+        .expect("read")
+        .expect("edition");
+    let owner = FileOwner::Edition(edition.clone());
+    std::fs::create_dir_all(storage.path().join("Old Copy")).expect("dir");
+    std::fs::write(
+        storage.path().join("Old Copy/Old Copy.m4b"),
+        bookclerk_tags::fixtures::tagged_m4b(),
+    )
+    .expect("write");
+    std::fs::write(storage.path().join("Old Copy/part 2.mp3"), b"not audio").expect("write");
+    for (key, role) in [
+        ("Old Copy/Old Copy.m4b", FileRole::Audio),
+        ("Old Copy/part 2.mp3", FileRole::Part),
+    ] {
+        assert!(library
+            .record_edition_file("local", key, &owner, role)
+            .await
+            .expect("record"));
+    }
+
+    // The heartbeat queues one walk, and no other inside the interval.
+    queue_file_probe_if_due(&state, "node-a").await;
+    let key = JobKind::FileProbe.dedup_key(&probe_payload("node-a"));
+    assert!(library
+        .job_admitted_since(&key, Utc::now() - chrono::Duration::minutes(1))
+        .await
+        .expect("read"));
+    let AdmitJob::Duplicate(_) = enqueue_file_probe(&state, "node-a").await.expect("admit") else {
+        panic!("the queued walk absorbs another");
+    };
+
+    let summary = run_file_probe(&state, None).await.expect("walk");
+    assert!(
+        summary.starts_with("1 file(s) probed, 1 could not"),
+        "{summary}"
+    );
+    let stored = library.edition_audio_files(&edition).await.expect("files");
+    let audio = stored
+        .iter()
+        .find(|f| f.storage_key == "Old Copy/Old Copy.m4b")
+        .expect("the audio row");
+    let probe = audio.probe.as_ref().expect("probed");
+    assert_eq!(probe.content_type, "audio/mp4");
+    assert_eq!(probe.source_store.as_deref(), Some("audible"));
+    assert!(audio.stream.duration_ms.is_some());
+    let part = stored
+        .iter()
+        .find(|f| f.storage_key == "Old Copy/part 2.mp3")
+        .expect("the part row");
+    assert!(
+        part.probe.is_none(),
+        "an unreadable file stays for the next walk"
+    );
+    let left = library
+        .unprobed_audio_files(&["local".to_string()], None, 10)
+        .await
+        .expect("read");
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].storage_key, "Old Copy/part 2.mp3");
+}
