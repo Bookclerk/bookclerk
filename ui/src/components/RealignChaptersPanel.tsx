@@ -54,8 +54,8 @@ export function RealignChaptersPanel({ editions }: RealignChaptersPanelProps) {
 
   return (
     <section className="space-y-2 border-t border-ink/10 pt-3" aria-label="Chapters">
-      <p className="text-xs font-semibold uppercase tracking-wide text-ink/45">Chapters</p>
-      <p className="text-xs text-ink/55">
+      <p className="text-xs font-semibold uppercase tracking-wide text-ink/70">Chapters</p>
+      <p className="text-xs text-ink/70">
         Gets the chapter list again from your metadata sources and lines it up with the stored
         audio. A chapter list you set by hand stays in place.
       </p>
