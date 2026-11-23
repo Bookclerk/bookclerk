@@ -426,7 +426,14 @@ pub fn parse_token_reply(body: &[u8]) -> Result<BearerToken> {
             "the registry's token reply is too large",
         ));
     }
-    let reply: TokenReply = is_json_object(body)
+    // The derived reader skips the fields it does not know without
+    // checking them, and so would take a reply that is not JSON (bytes that
+    // are not UTF-8, or half a surrogate pair, inside another field's
+    // string). Reading the whole reply as a value first refuses those; the
+    // derived reader then refuses a `token` given twice.
+    let whole =
+        serde_json::from_slice::<serde_json::Value>(body).is_ok_and(|reply| reply.is_object());
+    let reply: TokenReply = whole
         .then(|| serde_json::from_slice(body).ok())
         .flatten()
         .ok_or_else(|| CatalogError::message("the registry's token reply holds no token"))?;
