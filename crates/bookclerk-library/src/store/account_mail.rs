@@ -180,7 +180,7 @@ impl LibraryStore {
     /// kind for the user was recorded after `since`.
     ///
     /// With `since`, the batch first takes the user's `bookclerk_slots`
-    /// write lock for that kind ([`account_mail_slot`]), so on every
+    /// write lock for that kind (`account_mail_slot`), so on every
     /// database profile (`READ COMMITTED` PostgreSQL included) the guard
     /// reads what an overlapping request committed, and two overlapping
     /// requests cannot both pass it.
