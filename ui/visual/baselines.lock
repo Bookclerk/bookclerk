@@ -392,6 +392,26 @@ desktop/primitives-input--invalid--dark.png 8d05420908dfd07e138cb0fc8cc825be243b
 
 desktop/primitives-input--invalid--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
+desktop/settings-modelpicker--does-not-fit--dark.png 5684cc82b1014a654f90dab8e48896eb065314c3
+
+desktop/settings-modelpicker--does-not-fit--light.png 5684cc82b1014a654f90dab8e48896eb065314c3
+
+desktop/settings-modelpicker--downloading--dark.png 5684cc82b1014a654f90dab8e48896eb065314c3
+
+desktop/settings-modelpicker--downloading--light.png 5684cc82b1014a654f90dab8e48896eb065314c3
+
+desktop/settings-modelpicker--failed--dark.png 5684cc82b1014a654f90dab8e48896eb065314c3
+
+desktop/settings-modelpicker--failed--light.png 5684cc82b1014a654f90dab8e48896eb065314c3
+
+desktop/settings-modelpicker--installed--dark.png 5684cc82b1014a654f90dab8e48896eb065314c3
+
+desktop/settings-modelpicker--installed--light.png 5684cc82b1014a654f90dab8e48896eb065314c3
+
+desktop/settings-modelpicker--switching--dark.png 5684cc82b1014a654f90dab8e48896eb065314c3
+
+desktop/settings-modelpicker--switching--light.png 5684cc82b1014a654f90dab8e48896eb065314c3
+
 desktop/setup-recoverycopysetupstep--needs-copy--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 desktop/setup-recoverycopysetupstep--needs-copy--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
@@ -879,6 +899,26 @@ phone/primitives-input--filled--light.png 8d05420908dfd07e138cb0fc8cc825be243b00
 phone/primitives-input--invalid--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 phone/primitives-input--invalid--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/settings-modelpicker--does-not-fit--dark.png 5684cc82b1014a654f90dab8e48896eb065314c3
+
+phone/settings-modelpicker--does-not-fit--light.png 5684cc82b1014a654f90dab8e48896eb065314c3
+
+phone/settings-modelpicker--downloading--dark.png 5684cc82b1014a654f90dab8e48896eb065314c3
+
+phone/settings-modelpicker--downloading--light.png 5684cc82b1014a654f90dab8e48896eb065314c3
+
+phone/settings-modelpicker--failed--dark.png 5684cc82b1014a654f90dab8e48896eb065314c3
+
+phone/settings-modelpicker--failed--light.png 5684cc82b1014a654f90dab8e48896eb065314c3
+
+phone/settings-modelpicker--installed--dark.png 5684cc82b1014a654f90dab8e48896eb065314c3
+
+phone/settings-modelpicker--installed--light.png 5684cc82b1014a654f90dab8e48896eb065314c3
+
+phone/settings-modelpicker--switching--dark.png 5684cc82b1014a654f90dab8e48896eb065314c3
+
+phone/settings-modelpicker--switching--light.png 5684cc82b1014a654f90dab8e48896eb065314c3
 
 phone/setup-recoverycopysetupstep--needs-copy--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
