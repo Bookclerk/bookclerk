@@ -8101,7 +8101,7 @@ async fn top_level_work_pages_walk_the_parent_index_in_order() {
 }
 
 #[tokio::test]
-async fn works_page_by_id_and_embedding_hashes_read_in_bulk_under_every_profile() {
+async fn works_page_by_id_and_vectors_read_in_bulk_under_every_profile() {
     for profile in crate::test_support::Profile::ALL {
         let kit = crate::test_support::sqlite::memory(profile).await;
         let store = kit.store();
@@ -8139,42 +8139,137 @@ async fn works_page_by_id_and_embedding_hashes_read_in_bulk_under_every_profile(
         }
         assert_eq!(walked, expected, "{name}");
 
+        let space = |model: &str, revision: &str| crate::VectorSpace {
+            model: model.into(),
+            revision: revision.into(),
+            packs: "en,de".into(),
+        };
+        let m = space("m", "r1");
+        let vector = |target_id: &'static str, text_hash: &'static str| crate::NewVector {
+            target_id,
+            vector: &[0, 0, 128, 63],
+            text_hash,
+        };
+        let work = |index: usize, text_hash: &'static str| crate::NewVector {
+            target_id: Box::leak(expected[index].clone().into_boxed_str()),
+            vector: &[0, 0, 128, 63],
+            text_hash,
+        };
         store
-            .upsert_embedding("work", &expected[0], "m", 2, &[0, 0], "h0")
+            .put_vectors("work", &m, 1, &[work(0, "h0"), work(1, "old")])
+            .await
+            .unwrap();
+        // A second write replaces the target's vector in the space.
+        store
+            .put_vectors("work", &m, 1, &[work(1, "h1"), vector("gone", "hg")])
+            .await
+            .unwrap();
+        // Another model, and another revision of the same model, are
+        // other spaces.
+        store
+            .put_vectors("work", &space("other", "r1"), 1, &[work(1, "x")])
             .await
             .unwrap();
         store
-            .upsert_embedding("work", &expected[1], "m", 2, &[0, 0], "h1")
-            .await
-            .unwrap();
-        store
-            .upsert_embedding("work", &expected[1], "other", 2, &[0, 0], "x")
-            .await
-            .unwrap();
-        store
-            .upsert_embedding("work", "gone", "m", 2, &[0, 0], "hg")
+            .put_vectors("work", &space("m", "r2"), 1, &[work(1, "y")])
             .await
             .unwrap();
         let hashes = store
-            .embedding_text_hashes("work", "m", &expected)
+            .vector_text_hashes("work", &m, &expected)
             .await
             .unwrap();
         assert_eq!(hashes.len(), 2, "{name}");
         assert_eq!(hashes[&expected[0]], "h0", "{name}");
         assert_eq!(hashes[&expected[1]], "h1", "{name}");
+        let read = store.vectors("work", &m, &expected).await.unwrap();
+        assert_eq!(read.len(), 2, "{name}");
+        assert_eq!(read[&expected[0]], vec![0, 0, 128, 63], "{name}");
 
+        assert_eq!(store.count_works().await.unwrap(), 5, "{name}");
         assert_eq!(
-            store.prune_orphan_work_embeddings().await.unwrap(),
+            store.prune_orphan_work_vectors().await.unwrap(),
             1,
             "{name}"
         );
         assert_eq!(
-            store.prune_orphan_work_embeddings().await.unwrap(),
+            store.prune_orphan_work_vectors().await.unwrap(),
+            0,
+            "{name}"
+        );
+        let mut spaces = store.work_vector_spaces().await.unwrap();
+        spaces.sort_by(|a, b| {
+            (&a.space.model, &a.space.revision).cmp(&(&b.space.model, &b.space.revision))
+        });
+        let seen: Vec<(&str, &str, u64)> = spaces
+            .iter()
+            .map(|s| (s.space.model.as_str(), s.space.revision.as_str(), s.works))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![("m", "r1", 2), ("m", "r2", 1), ("other", "r1", 1)],
+            "{name}"
+        );
+        assert!(
+            spaces
+                .iter()
+                .all(|s| s.space.packs == "en,de" && s.newest.is_some()),
+            "{name}"
+        );
+
+        // Text vectors are pruned by last use, and a touch keeps one.
+        store
+            .put_vectors(
+                "text",
+                &m,
+                1,
+                &[vector("t-kept", "t-kept"), vector("t-old", "t-old")],
+            )
+            .await
+            .unwrap();
+        let later = chrono::Utc::now() + chrono::Duration::hours(1);
+        let much_later = later + chrono::Duration::hours(1);
+        store
+            .touch_text_vectors(&m, &[String::from("t-kept")], later)
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .prune_text_vectors(chrono::Utc::now() - chrono::Duration::hours(1))
+                .await
+                .unwrap(),
+            0,
+            "{name}"
+        );
+        let texts = [String::from("t-kept"), String::from("t-old")];
+        assert_eq!(
+            store.vectors("text", &m, &texts).await.unwrap().len(),
+            2,
+            "{name}"
+        );
+
+        // Leaving for `m` at `r1` removes the other spaces' old vectors,
+        // of every kind, and nothing of `m` at `r1`.
+        assert_eq!(
+            store
+                .prune_vectors_outside(&m, chrono::Utc::now() - chrono::Duration::hours(1))
+                .await
+                .unwrap(),
             0,
             "{name}"
         );
         assert_eq!(
-            store.list_embeddings("work", "m").await.unwrap().len(),
+            store.prune_vectors_outside(&m, much_later).await.unwrap(),
+            2,
+            "{name}"
+        );
+        assert_eq!(store.work_vector_spaces().await.unwrap().len(), 1, "{name}");
+        assert_eq!(
+            store.prune_text_vectors(much_later).await.unwrap(),
+            2,
+            "{name}"
+        );
+        assert_eq!(
+            store.vectors("work", &m, &expected).await.unwrap().len(),
             2,
             "{name}"
         );

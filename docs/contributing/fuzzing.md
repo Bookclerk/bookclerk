@@ -32,6 +32,7 @@ boundary extends it.
 | `setting_destination` | Operator-entered values of network settings: the one destination each grants | `bookclerk-plugin-manifest::derive_setting_destination` |
 | `cron_schedule` | `[triggers] crons` parse and fire-time search | `bookclerk-plugin-manifest::CronSchedule` |
 | `abi_decode` | Every generated Cap'n Proto `read_*` codec, the database envelope decoders, and the reply helpers every payload-free guest reply and guest error goes through (`read_empty`, `read_error`) | `bookclerk-plugin-abi` |
+| `provision_reply` | A plugin's answer to its guided setup (`Provisioning.provision`): the Cap'n Proto reply, then the settings JSON, credentials and summary checked against the manifest's `[provisioning] outputs` before anything is stored or sealed | `bookclerk-plugin-abi::provision` |
 | `db_stream` | `executeStreamed` frames an adapter sends, reassembled by the host and the SDKs under the streamed result budget. The TypeScript and Python SDK tests replay the same corpus as shared vectors against their own decoders | `bookclerk-plugin-abi::ExecuteStreamDecoder` |
 | `cover_sink_key` | The key a cover fetcher writes each image under, mapped to a URL slot | `bookclerk-plugin-abi::cover_sink_slot` |
 | `cover_process` | Cover images from any public website: sniff, decode under limits, resize, re-encode | `bookclerk-cover::process` |
@@ -62,6 +63,7 @@ boundary extends it.
 | `storage_reply` | A storage plugin's replies to intent operations: `moveMany`, `deleteMany`, `headMany`, `translateKeys` and `changes` replies and the hinted `list` page, checked against the request that asked for them | `bookclerk-plugin-abi::validate_move_many_page` and siblings |
 | `s3_event` | Messages on an S3 bucket's notification queue, which the `s3` guest turns into change-feed entries: S3 event notifications, SNS envelopes and EventBridge events, the percent-encoded keys of S3 and SNS records, buckets and prefixes | `bookclerk-storage::s3_events` |
 | `r2_event` | What the `r2` guest reads from Cloudflare to serve its change feed: Queues HTTP pull replies (the envelope, lease ids and base64 or text bodies) and the R2 event notifications in them, with their accounts, buckets and prefixes | `bookclerk-storage::r2_events` |
+| `cloudflare_api` | What the `r2` guest's guided setup reads from the Cloudflare API: the v4 envelope and its errors, account lists, bucket create replies, permission group lists and token create replies, and the bucket names it sends | `bookclerk-storage::cloudflare_api` |
 | `b2_reply` | What the `b2` guest reads from Backblaze B2: native API replies (authorization, buckets, upload URLs, file versions, file-name and file-version listings, uploaded parts, errors) and download headers, and the percent-encoding of file names | `bookclerk-storage::b2_api` |
 | `b2_event` | What the `b2` guest reads to serve its change feed: B2 event notification webhook bodies (event types, buckets, object names, times) and `b2_get_bucket_notification_rules` / `b2_set_bucket_notification_rules` replies | `bookclerk-storage::b2_events` |
 | `socket_request` | A plugin's host-brokered socket request (`Sockets.connect`): its URL (`ws://`, `wss://` or `tls://host:port`), headers, subprotocols or ALPN ids, heartbeat pairs, attachment and trust anchors' DER shape, and the `SocketMessage` the host delivers to a socket handler | `bookclerk-plugin-abi::sockets` |
@@ -75,7 +77,7 @@ boundary extends it.
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
 | `node_frame` | Node-to-node frames on the library socket, including the public origin a branch reports in its heartbeat | `bookclerk-node-proto::Frame`, `BranchOrigin::parse` |
-| `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, a branch offers its library (`accounts.add`), and a sign-in a keeping branch pushes there (`accounts.update`) | `bookclerk-node-proto::parse_account_bundle` |
+| `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, a branch offers its library (`accounts.add`), and a sign-in a keeping branch pushes there (`accounts.update`) or the library answers its first push with (`reconcile`) | `bookclerk-node-proto::parse_account_bundle` |
 | `destination_filter` | A storage destination's filter: the body of `PUT /api/config/plugin-instances/{id}/filter` and the stored `core.destination` document | `bookclerk-config::parse_destination_filter` |
 | `intake_settings` | A drop folder's settings: the body of `PUT /api/config/plugin-instances/{id}/intake` and the stored `core.intake` document | `bookclerk-config::parse_intake_settings` |
 | `intake_items` | A drop folder's listing: object keys, sizes and change signatures grouped into items and settled | `bookclerk-intake::ItemGrouper`, `step` |
@@ -90,6 +92,7 @@ boundary extends it.
 | `download_resume` | A store CDN's `Content-Range` and status when a guest resumes an interrupted download, which decide whether the body is appended to the bytes already on disk | `bookclerk-plugin-sdk::resume` (`parse_content_range`, `next_step`) |
 | `throttle_reason` | A store's refusal text, which the `audible` guest reads from a refused license request to tell throttling (which pauses the whole account) from a plain refusal | `bookclerk-storefront::is_throttle_reason` |
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
+| `smtp_session` | What the `email` guest reads from the operator's mail server (replies, multiline replies, EHLO capabilities, the STARTTLS answer) and the address documents and `to` setting it sends to | `bookclerk-plugin-notifier-email::smtp` (`read_reply`, `Session`, `parse_address`, `parse_recipients`) |
 | `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their branch), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
 | `clerk_authorization` | A clerk's library card, the `Authorization: Bookclerk-Clerk <token>` header value that signs a request in as a person | `bookclerk-node-proto::parse_clerk_authorization` |
 | `clerk_authorize` | A clerk's authorization request, the `/oidc/authorize` query that decides whether the library shows its library card consent page and where it sends the code | `bookclerk-node-proto::parse_clerk_query`, `clerk_request_problem` |
@@ -106,8 +109,8 @@ boundary extends it.
 | `branch_request` | An interlibrary request, the body of `POST /api/branch-requests`, and a request that the library download a book it holds, the body of `POST /api/download-requests` | `bookclerk-library::control_plane::parse_branch_request`, `parse_download_request` |
 | `members_books_request` | A library operator's "Acquire all of this branch's members' books" choice, the body of `PUT /api/config/branches/members-books` | `bookclerk-library::control_plane::parse_members_books_request` |
 | `upload_manifest` | What a patron sends to start and fill an upload: the body of `POST /api/uploads` and the `Upload-Offset` header of each `PATCH /api/uploads/{id}/files/{member_no}` | `bookclerk-library::control_plane::parse_upload_manifest`, `parse_upload_offset` |
-| `member_controls_request` | Member controls an Owner or Administrator sets: the bodies of `PUT /api/users/default-controls` and `PUT /api/users/{id}/controls` | `bookclerk-library::control_plane::parse_member_controls`, `parse_user_controls_request` |
-| `patron_scope_request` | A patron scope an Owner or Administrator sets: the bodies of `PUT /api/users/default-scope` and `PUT /api/users/{id}/scope` | `bookclerk-library::control_plane::parse_patron_scope`, `parse_user_scope_request` |
+| `member_controls_request` | Member controls an Owner or Administrator changes: the bodies of `PATCH /api/users/default-controls` and `PATCH /api/users/{id}/controls` | `bookclerk-library::control_plane::parse_default_controls_patch`, `parse_user_controls_patch` |
+| `patron_scope_request` | A patron scope an Owner or Administrator sets: the bodies of `PUT /api/users/default-scope` and `PUT /api/users/{id}/scope` | `bookclerk-library::control_plane::parse_default_scope_request`, `parse_user_scope_request` |
 | `chapter_request` | An Administrator's chapter list for an edition or the claim to pin, the bodies of `PUT /api/library/editions/{id}/chapters` and `PUT /api/library/editions/{id}/chapters/pin` | `bookclerk-library::parse_chapter_edit_request`, `parse_chapter_pin_request` |
 | `work_split_request` | An Administrator's choice of expressions to move out of a wrongly merged work, the body of `POST /api/library/works/{id}/split` | `bookclerk-library::parse_work_split_request` |
 | `playback_request` | What a player sends the playback routes: the bodies of `POST /api/playback/sessions`, `.../{id}/sync` and `.../close`, `PUT /api/playback/progress/{edition_id}`, `POST /api/library/editions/{id}/bookmarks` and `PUT /api/playback/bookmarks/{id}`, the `cursor` of `GET /api/playback/progress`, and the path of `GET /api/playback/sessions/{id}/tracks/{n}` | `bookclerk-library::parse_playback_sync_request`, `parse_progress_cursor`, `parse_open_session_request`, `parse_progress_edit_request`, `parse_new_bookmark_request`, `parse_bookmark_edit_request`, `parse_track_path` |
@@ -637,6 +640,34 @@ only that. The others check:
   sending back the rules that are not the destination's own keeps each one
   as listed without B2's computed fields. The shared oracle is
   `fuzz/oracles/b2_event.rs`, replayed from `bookclerk-storage`.
+- **`cloudflare_api`**: byte 0 modulo 6 picks the reader: the bare
+  envelope (0), an account list (1), a bucket create reply (2), a
+  permission group list searched for the bucket item group (3), a token
+  create reply (4) or a bucket name (5). Reading never panics and answers
+  the same twice; a reply over 1 MiB is refused as too large. A refusal
+  keeps at most 4 errors, each message within 160 characters without
+  control characters, and only for a reply whose `success` is not `true`.
+  An accepted reply says `success: true` and agrees with an independent
+  walk of the same JSON: account, group and token ids are the reply's own
+  32 hex digits, lowercased; a token value is the reply's own printable
+  value, and its S3 secret is the oracle's own SHA-256 of it; a bucket
+  create counts as already owned exactly when the reply refused with
+  code 10004. A bucket name passes exactly when the oracle's own reading
+  of R2's naming rules accepts it. The shared oracle is
+  `fuzz/oracles/cloudflare_api.rs`, replayed from `bookclerk-storage`.
+- **`provision_reply`**: byte 0 bit 0 picks the form (clear: a Cap'n
+  Proto `ProvisionReply`; set: NUL-separated settings JSON, credential
+  pairs up to `--`, then summary lines) and bit 1 whether the run had a
+  grant token. Decoding and checking never panic and answer the same
+  twice, and a decoded reply round-trips. An accepted answer stores only
+  declared, distinct keys whose values agree with an independent
+  `serde_json::Value` read: settings are short single-line strings,
+  numbers or booleans; credentials are non-empty, single-line, trimmed and
+  within 1,024 bytes, at most 16; the summary is at most 8 lines of 200
+  bytes; and no credential or grant token appears in a setting or summary
+  line. A refusal names a key that really breaks the rule it reports. The
+  shared oracle is `fuzz/oracles/provision_reply.rs`, replayed from
+  `bookclerk-plugin-abi`.
 - **`socket_request`**: byte 0 modulo 3 picks a socket URL (0), a Cap'n
   Proto `SocketConnectRequest` (1) or a `SocketMessage` (2). Every URL the
   parser accepts is one a WHATWG URL parser (the `url` crate) reads as the
@@ -781,7 +812,7 @@ only that. The others check:
   (at most 512 bytes, no `.` or `..` segment, backslash, control
   character or drive prefix), each at most 1 TiB, exactly one of them the
   primary audio. The `copy_*` seeds' names say whether the receiver takes
-  the frame, and the replay test checks each against its name. Seeds cover `accounts.update`, `accounts.updated`,
+  the frame, and the replay test checks each against its name. Seeds cover `accounts.update` (with and without `keeps_own`), `accounts.updated` (with a `reconcile` answer),
   `scan.removed`, `scan.pass_end`, a `work` frame with scan tokens,
   `deployments.list` and `acquire.plan` with and without a cursor, paged
   and out-of-order `deployments`, `release` with the old `resumed` flag
@@ -991,15 +1022,14 @@ only that. The others check:
   `bookclerk-library`.
 - **`member_controls_request`**: the first byte picks the body (`d` for
   the default, `u` for a patron's overrides) and the oracle reads the rest
-  as an untyped JSON value. The default is accepted exactly when it is one
-  object with no repeated keys whose keys are among `link_accounts`,
-  `download`, `edit_metadata`, `upload`, `request_books` and `see_prices`,
-  each a boolean; a control left out is allowed. A patron's body is
-  accepted exactly when it is one object with no repeated keys and exactly
-  the key `overrides`, an object of those keys with boolean or `null`
-  values; a control left out or `null` follows the default. The parser
-  then returns exactly those values, and otherwise refuses the body as
-  `Invalid`. The shared oracle is `fuzz/oracles/member_controls_request.rs`,
+  as an untyped JSON value. Each body is accepted exactly when it is one
+  object with no repeated keys and exactly the key `changes`, an object
+  with no repeated keys whose keys are among `link_accounts`, `download`,
+  `edit_metadata`, `upload`, `request_books` and `see_prices`. In the
+  default's changes each value is a boolean or `null`; in a patron's, the
+  string `on`, `off` or `default`, or `null`. A control left out or `null`
+  is not changed. The parser then returns exactly those changes, and
+  otherwise refuses the body as `Invalid`. The shared oracle is `fuzz/oracles/member_controls_request.rs`,
   replayed from `bookclerk-library`.
 - **`patron_scope_request`**: the first byte picks the body (`d` for the
   default scope, `u` for a user's) and the oracle reads the rest as an
@@ -1009,9 +1039,12 @@ only that. The others check:
   `narrator`), `value` (a string, 1 to 256 bytes once trimmed, no NUL) and
   `effect` (`include` or `exclude`), with no two rules sharing field,
   effect and lowercase trimmed value, and the trimmed rules come to at
-  most 1,024 bytes as compact JSON. A user's body is at most the key
-  `scope`, `null` or such a scope. The parser then returns the rules in
-  order with trimmed values, and otherwise refuses the body as `Invalid`.
+  most 1,024 bytes as compact JSON. Both bodies carry `expected_version`,
+  32 lowercase hex digits. The default's body is exactly `scope`, such a
+  scope, and `expected_version`; a user's body is `expected_version` and
+  at most the key `scope`, `null` or such a scope. The parser then returns
+  the rules in order with trimmed values and the version, and otherwise
+  refuses the body as `Invalid`.
   The shared oracle is `fuzz/oracles/patron_scope_request.rs`, replayed
   from `bookclerk-library`.
 - **`chapter_request`**: an input's first byte picks the route (even:
@@ -1157,6 +1190,20 @@ only that. The others check:
   Seeds named after a step (`append-*`, `replace-*`, `complete-*`,
   `startover-*`, `retry-*`, `fail-*`) must take it. The shared oracle is
   `fuzz/oracles/download_resume.rs`, replayed from `bookclerk-plugin-sdk`.
+- **`smtp_session`**: byte 0 picks the case. A server's byte stream is
+  read reply by reply against the oracle's own line splitter, which must
+  agree on every prefix (incomplete, refused, or the same code, lines and
+  length), and each reply drives a session in one of the three security
+  modes. Every write is ASCII ending in CRLF with no bare CR or LF in a
+  command; only `EHLO` and `STARTTLS` go out before TLS when the mode
+  needs it; `AUTH` and the password go out only over TLS; `MAIL`, `RCPT`
+  and `DATA` keep the protocol's order; the payload is the dot-stuffed
+  message; and the session ends at most once. An address document is
+  accepted exactly when the oracle's own address rules accept its one
+  `email` field, and the saved document parses back unchanged; the `to`
+  setting yields at most 10 valid addresses without repeats. The shared
+  oracle is `fuzz/oracles/smtp_session.rs`, replayed from
+  `bookclerk-plugin-notifier-email`.
 - **`throttle_reason`**: restates the throttle words byte by byte. Refusal
   text is a throttle exactly when it contains `throttl`, `rate limit`,
   `rate-limit`, `ratelimit`, `too many requests` or `429`, ignoring ASCII
@@ -1319,7 +1366,8 @@ The tests live in `scripts/tests/`, and each corpus beside them.
 
 The upstream model files the builder reads are not a boundary of this
 kind: each is refused unless its size and SHA-256 match the pin in
-`scripts/model-packs/models.json` before anything parses it.
+`scripts/model-packs/models.json` before anything parses it. That holds
+for a copy restored from the workflow's cache as for a download.
 
 ### Tool versions bump (Python)
 
@@ -2092,6 +2140,51 @@ another run.
   those RFC 6455 lets an endpoint send (1000 to 1003, 1007 to 1014, 3000
   to 4999) with at most 123 bytes of reason. An accepted frame encodes
   back to the same bytes.
+
+### ngrok guest
+
+The `ngrok` guest parses everything on its agent connection: muxado
+frames and RPC replies from ngrok's servers, and, inside each proxied
+stream, the proxy header and the HTTP/1.1 request any internet client
+sends, and the WebSocket frames that client sends after an upgrade.
+`crates/bookclerk-plugins/optional/ingress-ngrok/test/fuzz.test.ts`
+replays `fuzz/frame/`, `fuzz/chunked/`, `fuzz/proxy/`, `fuzz/rpc/` and
+`fuzz/wsframe/` (hex bytes) and `fuzz/head/` (a JSON string per head), and runs seeded byte and
+text mutations in `npm test` (the `workerd_guests` check); `FUZZ_SEED` and
+`FUZZ_ITERATIONS` pick another run.
+
+- **Frames** (`FrameReader` in `src/mux.ts`). Oracle: an independent
+  decoder of muxado's framing (a 24-bit length up to the 256 KiB window, a
+  type and flag nibble, a 31-bit stream id; RST and WNDINC carry one
+  32-bit word, GOAWAY at least two; no DATA on stream 0; unknown types
+  skipped). The reader gives the same frames and leftover bytes whatever
+  the chunk boundaries.
+- **Request heads** (`parseRequestHead` in `src/http1.ts`). Oracle, written
+  from RFC 9110 and RFC 9112: an accepted head has a token method other
+  than `CONNECT`, an origin-form target, `HTTP/1.1` or `HTTP/1.0`, at most
+  128 lowercase token field names and values without CR, LF, NUL or
+  surrounding spaces; its body framing matches an independent restatement
+  of section 6 (Transfer-Encoding with Content-Length refused, only a lone
+  `chunked` coding, one decimal Content-Length); bytes after the head
+  change nothing.
+- **Chunked bodies** (`ChunkedDecoder`). Oracle: an independent decoder of
+  section 7.1 (hex sizes of at most 8 digits with extensions, CRLF after
+  each chunk, trailers to an empty line). The decoder gives the same body
+  and trailing bytes whatever the chunk boundaries, and never accepts what
+  the oracle refuses.
+- **Proxy headers** (`parseProxyHeader` in `src/messages.ts`). Oracle: an
+  independent little-endian length read (at most 16 KiB, high word zero)
+  and `JSON.parse` of an object; an accepted header survives
+  `encodeProxyHeader` and a second parse.
+- **RPC replies** (`parseRpcObject`). Oracle: `JSON.parse` of the same
+  UTF-8 text, with only JSON's own whitespace around it.
+- **WebSocket frames** (`FrameDecoder` in `src/ws.ts`). Oracle: an
+  independent decoder of RFC 6455 section 5 over the whole input (masked
+  client frames, no reserved bits, minimal lengths, final control frames
+  of at most 125 bytes, continuation only inside a message, UTF-8 text and
+  close reasons, close codes from the wire set, a message cap checked as
+  each header arrives). The decoder gives the same messages and the same
+  close code whatever the chunk boundaries.
 
 ### Webhook notifier guest
 

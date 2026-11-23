@@ -1497,6 +1497,19 @@ export interface UserScope {
   own: boolean;
   /** False for an Owner or Administrator, who always see everything. */
   applies: boolean;
+  /**
+   * The version of the patron's scope; a write sends it back as
+   * `expected_version` and is refused (409) when the scope changed since.
+   */
+  version: string;
+}
+
+/** The library's default scope as `GET`/`PUT /api/users/default-scope` report it. */
+export interface DefaultScope {
+  /** The scope patrons without their own follow. */
+  scope: PatronScope;
+  /** The version of the default; a write sends it back as `expected_version`. */
+  version: string;
 }
 
 /**
@@ -1614,18 +1627,24 @@ export async function getUserScope(id: number): Promise<UserScope> {
 
 /**
  * Gives a patron their own scope, or with `null` returns them to the
- * library's default.
+ * library's default, if their scope is still at `expectedVersion`.
  *
  * @param id - The user.
  * @param scope - Their own scope, or `null`.
+ * @param expectedVersion - The `version` the scope was read at.
  * @returns The scope after the change.
+ * @throws ApiError With status 409 when someone changed the scope since it was read.
  */
-export async function putUserScope(id: number, scope: PatronScope | null): Promise<UserScope> {
+export async function putUserScope(
+  id: number,
+  scope: PatronScope | null,
+  expectedVersion: string,
+): Promise<UserScope> {
   const res = await fetch(`/api/users/${encodeURIComponent(String(id))}/scope`, {
     method: "PUT",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ scope }),
+    body: JSON.stringify({ scope, expected_version: expectedVersion }),
   });
   return parseJson(res);
 }
@@ -1635,23 +1654,29 @@ export async function putUserScope(id: number, scope: PatronScope | null): Promi
  *
  * @returns The default.
  */
-export async function getDefaultScope(): Promise<{ scope: PatronScope }> {
+export async function getDefaultScope(): Promise<DefaultScope> {
   const res = await fetch("/api/users/default-scope", { credentials: "include" });
   return parseJson(res);
 }
 
 /**
- * Replaces the library's default patron scope.
+ * Replaces the library's default patron scope, if it is still at
+ * `expectedVersion`.
  *
  * @param scope - The new default.
+ * @param expectedVersion - The `version` the default was read at.
  * @returns The default after the change.
+ * @throws ApiError With status 409 when someone changed the default since it was read.
  */
-export async function putDefaultScope(scope: PatronScope): Promise<{ scope: PatronScope }> {
+export async function putDefaultScope(
+  scope: PatronScope,
+  expectedVersion: string,
+): Promise<DefaultScope> {
   const res = await fetch("/api/users/default-scope", {
     method: "PUT",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(scope),
+    body: JSON.stringify({ scope, expected_version: expectedVersion }),
   });
   return parseJson(res);
 }
@@ -1698,23 +1723,28 @@ export async function getUserControls(id: number): Promise<UserControls> {
   return parseJson(res);
 }
 
+/** What a change does to one of a patron's controls. */
+export type ControlChoice = "on" | "off" | "default";
+
 /**
- * Sets the controls that differ for one patron; the rest follow the
- * library's default.
+ * Changes some controls for one patron.
+ *
+ * Only the named controls change, so a concurrent edit of another control
+ * is kept.
  *
  * @param id - The user.
- * @param overrides - The controls set for them alone (`{}` for none).
+ * @param changes - `on` or `off` for them alone, or `default` to follow the library's default.
  * @returns The controls after the change.
  */
-export async function putUserControls(
+export async function patchUserControls(
   id: number,
-  overrides: ControlOverrides,
+  changes: Partial<Record<MemberControl, ControlChoice>>,
 ): Promise<UserControls> {
   const res = await fetch(`/api/users/${encodeURIComponent(String(id))}/controls`, {
-    method: "PUT",
+    method: "PATCH",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ overrides }),
+    body: JSON.stringify({ changes }),
   });
   return parseJson(res);
 }
@@ -1730,19 +1760,22 @@ export async function getDefaultControls(): Promise<{ controls: MemberControls }
 }
 
 /**
- * Replaces the library's default member controls.
+ * Changes some of the library's default member controls.
  *
- * @param controls - The new default.
+ * Only the named controls change, so a concurrent edit of another control
+ * is kept.
+ *
+ * @param changes - The controls to change and their new values.
  * @returns The default after the change.
  */
-export async function putDefaultControls(
-  controls: MemberControls,
+export async function patchDefaultControls(
+  changes: Partial<MemberControls>,
 ): Promise<{ controls: MemberControls }> {
   const res = await fetch("/api/users/default-controls", {
-    method: "PUT",
+    method: "PATCH",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(controls),
+    body: JSON.stringify({ changes }),
   });
   return parseJson(res);
 }
@@ -2890,6 +2923,119 @@ export async function deletePluginPlacement(
   const res = await fetch(
     `/api/config/plugin-instances/${encodeURIComponent(instanceId)}/placement`,
     { method: "DELETE", credentials: "include" },
+  );
+  return parseJson(res);
+}
+
+/**
+ * A plugin's guided setup (`[provisioning]` in its `plugin.toml`), as
+ * `GET /api/config/plugin-instances/{id}/provisioning` returns it.
+ */
+export interface ProvisioningView {
+  /** The provider the grant is for, lowercase (`cloudflare`). */
+  provider: string;
+  /** Grants the plugin accepts (`api_token`). */
+  grants: string[];
+  /** Where the operator creates a token at the provider. */
+  token_url?: string | null;
+  /** Permissions a pasted token needs, one line each. */
+  token_permissions: string[];
+  /** Setting keys the screen asks for before running. */
+  inputs: string[];
+  /** Setting keys the plugin may write back. */
+  outputs: string[];
+  /** Whether the plugin removes what it created before the instance goes. */
+  deprovision: boolean;
+}
+
+/**
+ * Reads whether an instance's plugin offers a guided setup on this server.
+ *
+ * @param instanceId - Plugin instance id.
+ * @returns The plugin's `[provisioning]` table, or `null` when it has none.
+ */
+export async function fetchPluginInstanceProvisioning(
+  instanceId: string,
+): Promise<ProvisioningView | null> {
+  const res = await fetch(
+    `/api/config/plugin-instances/${encodeURIComponent(instanceId)}/provisioning`,
+    { credentials: "include" },
+  );
+  const body = await parseJson<{
+    plugin_instance_id: string;
+    provisioning?: ProvisioningView | null;
+  }>(res);
+  return body.provisioning ?? null;
+}
+
+/**
+ * What a guided setup run stored.
+ */
+export interface PluginInstanceProvisioned {
+  plugin_instance_id: string;
+  /** Revision after the write. */
+  revision: number;
+  /** Scalar settings now stored. */
+  settings: Record<string, InstanceSettingValue>;
+  /** Secret refs now stored (names only). */
+  secret_refs: { key: string; name: string }[];
+  /** What the plugin did, one line each. */
+  summary: string[];
+}
+
+/**
+ * Runs an instance's guided setup with a pasted API token.
+ *
+ * The token is used for this run only; the server never stores or echoes it.
+ *
+ * @param instanceId - Plugin instance id.
+ * @param body - The revision last seen, the token and the operator's inputs.
+ * @returns The stored settings and the plugin's summary.
+ */
+export async function provisionPluginInstance(
+  instanceId: string,
+  body: {
+    expected_revision: number;
+    token: string;
+    inputs: Record<string, InstanceSettingValue>;
+  },
+): Promise<PluginInstanceProvisioned> {
+  const res = await fetch(
+    `/api/config/plugin-instances/${encodeURIComponent(instanceId)}/provision`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        expected_revision: body.expected_revision,
+        grant: { kind: "api_token", token: body.token },
+        inputs: body.inputs,
+      }),
+    },
+  );
+  return parseJson(res);
+}
+
+/**
+ * Asks an instance's plugin to remove what its guided setup created.
+ *
+ * @param instanceId - Plugin instance id.
+ * @param token - A fresh API token when the stored credentials cannot do it;
+ *   omitted to use them.
+ * @returns Confirmation that the plugin removed it.
+ */
+export async function deprovisionPluginInstance(
+  instanceId: string,
+  token?: string,
+): Promise<{ plugin_instance_id: string; deprovisioned: boolean }> {
+  const res = await fetch(
+    `/api/config/plugin-instances/${encodeURIComponent(instanceId)}/deprovision`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(token ? { grant: { kind: "api_token", token } } : {}),
+    },
   );
   return parseJson(res);
 }

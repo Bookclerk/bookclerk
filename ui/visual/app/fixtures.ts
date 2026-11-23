@@ -822,6 +822,20 @@ const PLUGINS = [
 ];
 
 /**
+ * The S3 destination's guided setup: pick a bucket and region, paste a key
+ * that may create buckets, and it fills in the rest.
+ */
+const S3_SETUP = {
+  provider: "aws",
+  grants: ["api_token"],
+  token_url: "https://console.aws.amazon.com/iam/home#/security_credentials",
+  token_permissions: ["s3:CreateBucket", "iam:CreateAccessKey"],
+  inputs: ["bucket", "region"],
+  outputs: ["bucket", "region", "secret_access_key"],
+  deprovision: true,
+};
+
+/**
  * What the collector holds for a sent diagnostics report.
  *
  * @param id - The report id.
@@ -1256,7 +1270,9 @@ function signedIn(viewer: "owner" | "operator"): Routes {
         },
       },
     }),
-    "GET /api/users/default-scope": () => ({ json: { scope: { rules: [] } } }),
+    "GET /api/users/default-scope": () => ({
+      json: { scope: { rules: [] }, version: "0123456789abcdef0123456789abcdef" },
+    }),
     "GET /api/library/collections": () => ({
       json: { collections: [{ name: "Classics", prefixes: ["Classics/"] }] },
     }),
@@ -1581,6 +1597,14 @@ export function answer(
       const id = decodeURIComponent(consent[1] ?? "");
       // Only the storefront still waits for approval.
       return { json: { ...ECHO_CONSENT, plugin_id: id, plugin_key: id, covered: id !== "echo" } };
+    }
+    const setup = /^\/api\/config\/plugin-instances\/([^/]+)\/provisioning$/.exec(pathname);
+    if (method === "GET" && setup) {
+      const id = decodeURIComponent(setup[1] ?? "");
+      // Only the S3 destination offers a guided setup.
+      return {
+        json: { plugin_instance_id: id, provisioning: id === "s3-default" ? S3_SETUP : null },
+      };
     }
     const report = /^\/api\/diagnostics\/reports\/([^/]+)$/.exec(pathname);
     if (method === "GET" && report)

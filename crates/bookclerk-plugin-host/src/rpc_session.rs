@@ -93,6 +93,9 @@ type NotifierCall = EntrypointCall<dyn bookclerk_plugin_sdk::Notifier>;
 /// Typed call against the opened `ai` entrypoint.
 type AiCall = EntrypointCall<dyn bookclerk_plugin_sdk::AiModels>;
 
+/// Typed call against the opened `provisioning` entrypoint.
+type ProvisioningCall = EntrypointCall<dyn bookclerk_plugin_abi::Provisioning>;
+
 /// Typed call against the opened `ingress` entrypoint.
 type IngressCall = EntrypointCall<dyn bookclerk_plugin_abi::Ingress>;
 
@@ -221,6 +224,11 @@ enum Work {
     Ai {
         /// Typed call; replies through the sender it captured.
         call: AiCall,
+    },
+    /// One typed `provisioning` method on the opened primary entrypoints.
+    Provisioning {
+        /// Typed call; replies through the sender it captured.
+        call: ProvisioningCall,
     },
     /// One typed `ingress` method on the opened primary entrypoints.
     Ingress {
@@ -1543,6 +1551,28 @@ impl PluginSession {
         self.entrypoint_call(call, |call| Work::Ai { call }).await
     }
 
+    /// One typed `provisioning` method (`provision` or `deprovision`) on
+    /// the opened primary entrypoints. Open the session with
+    /// [`bookclerk_plugin_sdk::InvocationPurpose::Provision`] first.
+    ///
+    /// `call` runs on the vat thread; its output crosses back to the caller's
+    /// runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin error when the guest did not export `provisioning`
+    /// or the method fails.
+    pub async fn provisioning<T, F, Fut>(&self, call: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(Box<dyn bookclerk_plugin_abi::Provisioning>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = std::result::Result<T, bookclerk_plugin_sdk::PluginError>>
+            + 'static,
+    {
+        self.entrypoint_call(call, |call| Work::Provisioning { call })
+            .await
+    }
+
     /// One typed `ingress` method (`start`, `health` or `stop`) on the
     /// opened primary entrypoints.
     ///
@@ -2302,8 +2332,7 @@ fn map_abi(err: bookclerk_plugin_sdk::PluginError) -> PluginError {
             message: err.message,
         };
     }
-    let code = err.wire_str().to_string();
-    PluginError::from_abi(Some(&code), err.message)
+    PluginError::from_abi_error(err)
 }
 
 /// Collects an adapter's streamed reply into one [`ExecuteReply`] under
@@ -2335,8 +2364,14 @@ async fn collect_streamed(
 /// [`bookclerk_plugin_abi::PluginErrorCode`].
 pub(crate) fn host_err_to_abi(err: PluginError) -> bookclerk_plugin_abi::PluginError {
     match err {
-        PluginError::Abi { code, message } => {
-            bookclerk_plugin_abi::PluginError::from_wire(&code, message)
+        PluginError::Abi {
+            code,
+            message,
+            details,
+        } => {
+            let mut err = bookclerk_plugin_abi::PluginError::from_wire(&code, message);
+            err.details = details;
+            err
         }
         PluginError::Unavailable(message) => {
             bookclerk_plugin_abi::PluginError::unavailable(message)
@@ -2749,7 +2784,10 @@ async fn primary_entrypoints<'a>(
             network: primary.network.clone(),
             ..BindingValues::default()
         });
-        let invocation = new_invocation(account_id, uuid::Uuid::new_v4().to_string(), 0);
+        let invocation = Invocation {
+            purpose: want.purpose,
+            ..new_invocation(account_id, uuid::Uuid::new_v4().to_string(), 0)
+        };
         let entrypoints = client
             .open(
                 &invocation,
@@ -3734,6 +3772,23 @@ fn vat_thread(
                                 |eps| {
                                     eps.ai.clone().map(|stub| {
                                         Box::new(stub) as Box<dyn bookclerk_plugin_sdk::AiModels>
+                                    })
+                                },
+                                call,
+                            );
+                            let _ = with_session(&session_cancel, &mut child, &mut guest, open)
+                                .await;
+                        }
+                        Work::Provisioning { call } => {
+                            let open = run_entrypoint_call(
+                                &client,
+                                &account_id,
+                                &mut primary,
+                                "provisioning",
+                                |eps| {
+                                    eps.provisioning.clone().map(|stub| {
+                                        Box::new(stub)
+                                            as Box<dyn bookclerk_plugin_abi::Provisioning>
                                     })
                                 },
                                 call,
@@ -4822,16 +4877,16 @@ impl PluginStorage {
 
     fn map_err(err: PluginError) -> StorageError {
         match err {
-            PluginError::Abi { code, message } if code == "not_found" => {
+            PluginError::Abi { code, message, .. } if code == "not_found" => {
                 StorageError::NotFound(message)
             }
-            PluginError::Abi { code, message } if code == "payload_too_large" => {
+            PluginError::Abi { code, message, .. } if code == "payload_too_large" => {
                 StorageError::PayloadTooLarge(message)
             }
-            PluginError::Abi { code, message } if code == "invalid_cursor" => {
+            PluginError::Abi { code, message, .. } if code == "invalid_cursor" => {
                 StorageError::InvalidCursor(message)
             }
-            PluginError::Abi { code, message } if code == "conflict" => {
+            PluginError::Abi { code, message, .. } if code == "conflict" => {
                 StorageError::Conflict(message)
             }
             PluginError::Abi { message, .. } if message.starts_with("integrity:") => {
@@ -5275,6 +5330,30 @@ fn meta_to_probe(meta: ObjectMetadata) -> bookclerk_storage::Result<ObjectProbe>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guest_error_details_survive_the_host_error_type() {
+        let mut details = serde_json::Map::new();
+        details.insert("engineCode".into(), serde_json::Value::from("SQLITE_BUSY"));
+        let mut guest = bookclerk_sdk_error("conflict", "busy");
+        guest.details = Some(details.clone());
+        let host = map_abi(guest);
+        assert!(matches!(
+            &host,
+            PluginError::Abi { code, details: Some(d), .. } if code == "conflict" && *d == details
+        ));
+        let back = host_err_to_abi(host);
+        assert_eq!(back.wire_str(), "conflict");
+        assert_eq!(back.message, "busy");
+        assert_eq!(back.details, Some(details));
+        let unknown = map_abi(bookclerk_sdk_error("brand_new_code", "later"));
+        assert_eq!(host_err_to_abi(unknown).wire_str(), "brand_new_code");
+    }
+
+    /// A guest ABI error with `code` and `message`.
+    fn bookclerk_sdk_error(code: &str, message: &str) -> bookclerk_plugin_sdk::PluginError {
+        bookclerk_plugin_sdk::PluginError::from_wire(code, message)
+    }
 
     /// The `media` line a test manifest with `entrypoints` needs: storefronts
     /// and metadata providers must declare their media; other plugins must not.

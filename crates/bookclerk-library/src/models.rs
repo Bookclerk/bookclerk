@@ -1444,6 +1444,11 @@ pub enum JobKind {
     /// ranking (`discover_request_queue`); no network. One job serves
     /// everyone, since the queue is not personalized.
     DiscoverRequestQueue,
+    /// Embed every work with the model one node serves for text embeddings
+    /// (`discover_embed`), after the model lands there or changes; only
+    /// the node named by [`JobPayload::node_id`] claims it, since another
+    /// node may not have the model yet.
+    DiscoverEmbed,
     /// Sweep one node's image caches and its orphaned job scratch
     /// (`cache_sweep`); only the node named by [`JobPayload::node_id`]
     /// claims it.
@@ -1502,6 +1507,7 @@ impl JobKind {
         Self::DiscoverCandidates,
         Self::DiscoverFeed,
         Self::DiscoverRequestQueue,
+        Self::DiscoverEmbed,
         Self::CacheSweep,
         Self::SearchIndexRebuild,
         Self::LibraryIndexRebuild,
@@ -1526,6 +1532,7 @@ impl JobKind {
             Self::DiscoverCandidates => "discover_candidates",
             Self::DiscoverFeed => "discover_feed",
             Self::DiscoverRequestQueue => "discover_request_queue",
+            Self::DiscoverEmbed => "discover_embed",
             Self::CacheSweep => "cache_sweep",
             Self::SearchIndexRebuild => "search_index_rebuild",
             Self::LibraryIndexRebuild => "library_index_rebuild",
@@ -1551,6 +1558,7 @@ impl JobKind {
             "discover_candidates" => Some(Self::DiscoverCandidates),
             "discover_feed" => Some(Self::DiscoverFeed),
             "discover_request_queue" => Some(Self::DiscoverRequestQueue),
+            "discover_embed" => Some(Self::DiscoverEmbed),
             "cache_sweep" => Some(Self::CacheSweep),
             "search_index_rebuild" => Some(Self::SearchIndexRebuild),
             "library_index_rebuild" => Some(Self::LibraryIndexRebuild),
@@ -1647,6 +1655,12 @@ impl JobKind {
             // One active ranking of the shared queue: a burst of taste
             // events folds into the job already queued.
             Self::DiscoverRequestQueue => "discover_request_queue".into(),
+            // One queued or running embedding per node: a second model
+            // change folds into the pass already waiting.
+            Self::DiscoverEmbed => format!(
+                "discover_embed:node={}",
+                payload.node_id.as_deref().unwrap_or("-")
+            ),
             // One queued or running sweep per node: a heartbeat that finds
             // another sweep due folds into it.
             Self::CacheSweep => format!(

@@ -4321,6 +4321,7 @@ mod tests {
                 | JobKind::DiscoverCandidates
                 | JobKind::DiscoverFeed
                 | JobKind::DiscoverRequestQueue
+                | JobKind::DiscoverEmbed
                 | JobKind::CacheSweep
                 | JobKind::SearchIndexRebuild
                 | JobKind::LibraryIndexRebuild
@@ -4339,6 +4340,7 @@ mod tests {
                     JobKind::DiscoverCandidates,
                     JobKind::DiscoverFeed,
                     JobKind::DiscoverRequestQueue,
+                    JobKind::DiscoverEmbed,
                     JobKind::CacheSweep,
                     JobKind::SearchIndexRebuild,
                     JobKind::LibraryIndexRebuild,

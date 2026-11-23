@@ -29,7 +29,10 @@ A native guest implements `PluginWorker` (`describe`, and
 stdin and stdout Cap'n Proto runner. The entrypoints it returns are the
 same named entrypoints the other SDKs export as classes: storefront,
 storage, remote library, database adapter, CLI, OIDC, metadata, covers,
-metadata files, notifier and model plugin (`ai`). The
+metadata files, notifier, guided setup (`provisioning`) and model plugin
+(`ai`). In a guided setup run, `invocation.purpose` is `Provision` and
+`open` returns only `provisioning`; see
+[Guided setup](../../abi.md#guided-setup-provisioning). The
 crate root re-exports the DTOs and helpers a guest needs; prefer
 `use bookclerk_plugin_sdk::…` over reaching into submodules.
 
@@ -64,6 +67,15 @@ and multiplexes CONNECT streams over it with the `mux` module; `net`
 opens mediated TCP sockets, the equivalent of Workers `connect()`, and
 the `http` feature puts an HTTPS client on top. Only hosts the plugin's
 `[capabilities.network]` grants name are reachable.
+
+A protocol that starts in the clear and upgrades (SMTP's `STARTTLS`) or
+speaks TLS without HTTP takes the socket with `Socket::into_stream` and
+calls `http::start_tls(hostname, stream)`, which checks the server's
+certificate against the Mozilla roots. A destination the operator types
+into a `network = "tcp"` setting arrives in `Bindings::network`
+(`NetworkGrant`, with a `SettingGrantState` of approved, pending, unset or
+invalid for each setting); the first-party email notifier reads its mail
+server that way.
 
 ### Large downloads
 

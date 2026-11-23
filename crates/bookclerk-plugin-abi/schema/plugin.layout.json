@@ -4696,6 +4696,26 @@
         }
       ]
     },
+    "DeprovisionRequest": {
+      "name": "DeprovisionRequest",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "grant",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "ProvisionGrant"
+          },
+          "offset": 0
+        }
+      ]
+    },
     "DescribeReply": {
       "name": "DescribeReply",
       "file": "plugin.capnp",
@@ -5590,7 +5610,7 @@
       "name": "Entrypoints",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 18,
+      "pointerCount": 19,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -5773,6 +5793,16 @@
             "name": "WebhookHandler"
           },
           "offset": 17
+        },
+        {
+          "name": "provisioning",
+          "codeOrder": 18,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "Provisioning"
+          },
+          "offset": 18
         }
       ]
     },
@@ -8116,7 +8146,7 @@
     "Invocation": {
       "name": "Invocation",
       "file": "plugin.capnp",
-      "dataWords": 1,
+      "dataWords": 2,
       "pointerCount": 4,
       "discriminantCount": 0,
       "discriminantOffset": 0,
@@ -8165,6 +8195,16 @@
             "kind": "text"
           },
           "offset": 3
+        },
+        {
+          "name": "purpose",
+          "codeOrder": 5,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "InvocationPurpose"
+          },
+          "offset": 4
         }
       ]
     },
@@ -13660,6 +13700,255 @@
         }
       ]
     },
+    "ProvisionGrant": {
+      "name": "ProvisionGrant",
+      "file": "plugin.capnp",
+      "dataWords": 2,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "kind",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "ProvisionGrantKind"
+          },
+          "offset": 0
+        },
+        {
+          "name": "token",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "expiresAtUnixMs",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint64"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "ProvisionReply": {
+      "name": "ProvisionReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "Provisioned"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "ProvisionRequest": {
+      "name": "ProvisionRequest",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "grant",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "ProvisionGrant"
+          },
+          "offset": 0
+        },
+        {
+          "name": "inputsJson",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "Provisioned": {
+      "name": "Provisioned",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "settingsJson",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "secrets",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "ProvisionedSecret"
+            }
+          },
+          "offset": 1
+        },
+        {
+          "name": "summary",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 2
+        }
+      ]
+    },
+    "ProvisionedSecret": {
+      "name": "ProvisionedSecret",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "key",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "value",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "Provisioning.deprovision$Params": {
+      "name": "Provisioning.deprovision$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "request",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "DeprovisionRequest"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Provisioning.deprovision$Results": {
+      "name": "Provisioning.deprovision$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EmptyReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Provisioning.provision$Params": {
+      "name": "Provisioning.provision$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "request",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "ProvisionRequest"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Provisioning.provision$Results": {
+      "name": "Provisioning.provision$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "ProvisionReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
     "PublishOk": {
       "name": "PublishOk",
       "file": "plugin.capnp",
@@ -17984,7 +18273,8 @@
         "metadataFiles",
         "notifier",
         "ingress",
-        "ai"
+        "ai",
+        "provisioning"
       ]
     },
     "Explicitness": {
@@ -18036,6 +18326,14 @@
         "sub",
         "mul",
         "abs"
+      ]
+    },
+    "InvocationPurpose": {
+      "name": "InvocationPurpose",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "serve",
+        "provision"
       ]
     },
     "IsolationReq": {
@@ -18188,6 +18486,15 @@
         "isbn",
         "asin",
         "title"
+      ]
+    },
+    "ProvisionGrantKind": {
+      "name": "ProvisionGrantKind",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "none",
+        "apiToken",
+        "oauthAccessToken"
       ]
     },
     "RemoteMedia": {
@@ -18989,6 +19296,24 @@
         }
       ]
     },
+    "Provisioning": {
+      "name": "Provisioning",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "provision",
+          "ordinal": 0,
+          "params": "Provisioning.provision$Params",
+          "results": "Provisioning.provision$Results"
+        },
+        {
+          "name": "deprovision",
+          "ordinal": 1,
+          "params": "Provisioning.deprovision$Params",
+          "results": "Provisioning.deprovision$Results"
+        }
+      ]
+    },
     "QueueConsumer": {
       "name": "QueueConsumer",
       "file": "plugin.capnp",
@@ -19462,6 +19787,36 @@
       "name": "maxPluginMigrationTotalOps",
       "file": "plugin.capnp",
       "value": 2048
+    },
+    "maxProvisionSecretBytes": {
+      "name": "maxProvisionSecretBytes",
+      "file": "plugin.capnp",
+      "value": 4096
+    },
+    "maxProvisionSecrets": {
+      "name": "maxProvisionSecrets",
+      "file": "plugin.capnp",
+      "value": 16
+    },
+    "maxProvisionSettingsBytes": {
+      "name": "maxProvisionSettingsBytes",
+      "file": "plugin.capnp",
+      "value": 16384
+    },
+    "maxProvisionSummaryLineBytes": {
+      "name": "maxProvisionSummaryLineBytes",
+      "file": "plugin.capnp",
+      "value": 200
+    },
+    "maxProvisionSummaryLines": {
+      "name": "maxProvisionSummaryLines",
+      "file": "plugin.capnp",
+      "value": 8
+    },
+    "maxProvisionTokenBytes": {
+      "name": "maxProvisionTokenBytes",
+      "file": "plugin.capnp",
+      "value": 4096
     },
     "maxRefreshedCredentialBytes": {
       "name": "maxRefreshedCredentialBytes",

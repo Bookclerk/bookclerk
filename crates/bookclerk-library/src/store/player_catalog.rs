@@ -103,37 +103,48 @@ impl LibraryStore {
         &self,
         work_ids: &[String],
     ) -> Result<HashMap<String, String>> {
-        let expressions = find_chunked_paged::<expressions::Entity, _>(self, work_ids, |part| {
-            expressions::Entity::find()
-                .filter(expressions::Column::WorkId.is_in(part.iter().cloned()))
-                .order_by_asc(expressions::Column::Id)
-        })
+        let expressions = find_chunked_paged::<expressions::Entity, _>(
+            self,
+            work_ids,
+            &[expressions::Column::Id],
+            |part| {
+                expressions::Entity::find()
+                    .filter(expressions::Column::WorkId.is_in(part.iter().cloned()))
+            },
+        )
         .await?;
         let work_of: HashMap<String, String> =
             expressions.into_iter().map(|e| (e.id, e.work_id)).collect();
         let expression_ids: Vec<String> = work_of.keys().cloned().collect();
-        let editions = find_chunked_paged::<editions::Entity, _>(self, &expression_ids, |part| {
-            editions::Entity::find()
-                .filter(editions::Column::ExpressionId.is_in(part.iter().cloned()))
-                .filter(editions::Column::MediaKind.eq(MediaKind::Audio.as_str()))
-                .order_by_asc(editions::Column::Id)
-        })
+        let editions = find_chunked_paged::<editions::Entity, _>(
+            self,
+            &expression_ids,
+            &[editions::Column::Id],
+            |part| {
+                editions::Entity::find()
+                    .filter(editions::Column::ExpressionId.is_in(part.iter().cloned()))
+                    .filter(editions::Column::MediaKind.eq(MediaKind::Audio.as_str()))
+            },
+        )
         .await?;
         let edition_work: HashMap<String, String> = editions
             .into_iter()
             .filter_map(|e| work_of.get(&e.expression_id).map(|w| (e.id, w.clone())))
             .collect();
         let edition_ids: Vec<String> = edition_work.keys().cloned().collect();
-        let acquired =
-            find_chunked_paged::<edition_acquisitions::Entity, _>(self, &edition_ids, |part| {
+        let acquired = find_chunked_paged::<edition_acquisitions::Entity, _>(
+            self,
+            &edition_ids,
+            &[edition_acquisitions::Column::EditionId],
+            |part| {
                 edition_acquisitions::Entity::find()
                     .filter(edition_acquisitions::Column::EditionId.is_in(part.iter().cloned()))
                     .filter(
                         edition_acquisitions::Column::Status.eq(AcquireStatus::Acquired.as_str()),
                     )
-                    .order_by_asc(edition_acquisitions::Column::EditionId)
-            })
-            .await?;
+            },
+        )
+        .await?;
         let mut best: HashMap<String, (String, String)> = HashMap::new();
         for row in acquired {
             let Some(work) = edition_work.get(&row.edition_id) else {
@@ -158,14 +169,19 @@ impl LibraryStore {
     /// Returns [`LibraryError::Orm`] when a read fails.
     pub async fn player_items(&self, edition_ids: &[String]) -> Result<Vec<PlayerItem>> {
         let acquired: HashMap<String, edition_acquisitions::Model> =
-            find_chunked_paged::<edition_acquisitions::Entity, _>(self, edition_ids, |part| {
-                edition_acquisitions::Entity::find()
-                    .filter(edition_acquisitions::Column::EditionId.is_in(part.iter().cloned()))
-                    .filter(
-                        edition_acquisitions::Column::Status.eq(AcquireStatus::Acquired.as_str()),
-                    )
-                    .order_by_asc(edition_acquisitions::Column::EditionId)
-            })
+            find_chunked_paged::<edition_acquisitions::Entity, _>(
+                self,
+                edition_ids,
+                &[edition_acquisitions::Column::EditionId],
+                |part| {
+                    edition_acquisitions::Entity::find()
+                        .filter(edition_acquisitions::Column::EditionId.is_in(part.iter().cloned()))
+                        .filter(
+                            edition_acquisitions::Column::Status
+                                .eq(AcquireStatus::Acquired.as_str()),
+                        )
+                },
+            )
             .await?
             .into_iter()
             .map(|a| (a.edition_id.clone(), a))
@@ -175,25 +191,32 @@ impl LibraryStore {
             .filter(|id| acquired.contains_key(*id))
             .cloned()
             .collect();
-        let editions: HashMap<String, editions::Model> =
-            find_chunked_paged::<editions::Entity, _>(self, &ids, |part| {
+        let editions: HashMap<String, editions::Model> = find_chunked_paged::<editions::Entity, _>(
+            self,
+            &ids,
+            &[editions::Column::Id],
+            |part| {
                 editions::Entity::find()
                     .filter(editions::Column::Id.is_in(part.iter().cloned()))
                     .filter(editions::Column::MediaKind.eq(MediaKind::Audio.as_str()))
-                    .order_by_asc(editions::Column::Id)
-            })
-            .await?
-            .into_iter()
-            .map(|e| (e.id.clone(), e))
-            .collect();
+            },
+        )
+        .await?
+        .into_iter()
+        .map(|e| (e.id.clone(), e))
+        .collect();
         let expression_ids: Vec<String> =
             editions.values().map(|e| e.expression_id.clone()).collect();
         let expressions: HashMap<String, expressions::Model> =
-            find_chunked_paged::<expressions::Entity, _>(self, &expression_ids, |part| {
-                expressions::Entity::find()
-                    .filter(expressions::Column::Id.is_in(part.iter().cloned()))
-                    .order_by_asc(expressions::Column::Id)
-            })
+            find_chunked_paged::<expressions::Entity, _>(
+                self,
+                &expression_ids,
+                &[expressions::Column::Id],
+                |part| {
+                    expressions::Entity::find()
+                        .filter(expressions::Column::Id.is_in(part.iter().cloned()))
+                },
+            )
             .await?
             .into_iter()
             .map(|e| (e.id.clone(), e))
@@ -202,10 +225,8 @@ impl LibraryStore {
         work_ids.sort();
         work_ids.dedup();
         let works: HashMap<String, works::Model> =
-            find_chunked_paged::<works::Entity, _>(self, &work_ids, |part| {
-                works::Entity::find()
-                    .filter(works::Column::Id.is_in(part.iter().cloned()))
-                    .order_by_asc(works::Column::Id)
+            find_chunked_paged::<works::Entity, _>(self, &work_ids, &[works::Column::Id], |part| {
+                works::Entity::find().filter(works::Column::Id.is_in(part.iter().cloned()))
             })
             .await?
             .into_iter()
@@ -222,23 +243,33 @@ impl LibraryStore {
         top_ids.sort();
         top_ids.dedup();
         let rows: HashMap<String, library_work_rows::Model> =
-            find_chunked_paged::<library_work_rows::Entity, _>(self, &top_ids, |part| {
-                library_work_rows::Entity::find()
-                    .filter(library_work_rows::Column::WorkId.is_in(part.iter().cloned()))
-                    .order_by_asc(library_work_rows::Column::WorkId)
-            })
+            find_chunked_paged::<library_work_rows::Entity, _>(
+                self,
+                &top_ids,
+                &[library_work_rows::Column::WorkId],
+                |part| {
+                    library_work_rows::Entity::find()
+                        .filter(library_work_rows::Column::WorkId.is_in(part.iter().cloned()))
+                },
+            )
             .await?
             .into_iter()
             .map(|r| (r.work_id.clone(), r))
             .collect();
         let mut facets: HashMap<String, BTreeMap<&'static str, Vec<PlayerFacet>>> = HashMap::new();
-        for row in find_chunked_paged::<library_work_facets::Entity, _>(self, &top_ids, |part| {
-            library_work_facets::Entity::find()
-                .filter(library_work_facets::Column::WorkId.is_in(part.iter().cloned()))
-                .order_by_asc(library_work_facets::Column::WorkId)
-                .order_by_asc(library_work_facets::Column::Facet)
-                .order_by_asc(library_work_facets::Column::Key)
-        })
+        for row in find_chunked_paged::<library_work_facets::Entity, _>(
+            self,
+            &top_ids,
+            &[
+                library_work_facets::Column::WorkId,
+                library_work_facets::Column::Facet,
+                library_work_facets::Column::Key,
+            ],
+            |part| {
+                library_work_facets::Entity::find()
+                    .filter(library_work_facets::Column::WorkId.is_in(part.iter().cloned()))
+            },
+        )
         .await?
         {
             let Some(facet) = [
@@ -264,14 +295,21 @@ impl LibraryStore {
                 });
         }
         let mut identifiers: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
-        for row in find_chunked_paged::<edition_identifiers::Entity, _>(self, &ids, |part| {
-            edition_identifiers::Entity::find()
-                .filter(edition_identifiers::Column::EditionId.is_in(part.iter().cloned()))
-                .filter(edition_identifiers::Column::Scheme.is_in(["isbn", "asin"]))
-                .order_by_asc(edition_identifiers::Column::EditionId)
-                .order_by_asc(edition_identifiers::Column::Scheme)
-                .order_by_asc(edition_identifiers::Column::Value)
-        })
+        for row in find_chunked_paged::<edition_identifiers::Entity, _>(
+            self,
+            &ids,
+            &[
+                edition_identifiers::Column::EditionId,
+                edition_identifiers::Column::Scheme,
+                edition_identifiers::Column::Value,
+                edition_identifiers::Column::Marketplace,
+            ],
+            |part| {
+                edition_identifiers::Entity::find()
+                    .filter(edition_identifiers::Column::EditionId.is_in(part.iter().cloned()))
+                    .filter(edition_identifiers::Column::Scheme.is_in(["isbn", "asin"]))
+            },
+        )
         .await?
         {
             let entry = identifiers.entry(row.edition_id).or_default();

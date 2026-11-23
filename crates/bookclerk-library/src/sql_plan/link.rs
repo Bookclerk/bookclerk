@@ -466,6 +466,26 @@ pub(super) fn plan_link_listing(p: &ListingLinkParams, now: &str) -> Vec<SqlStmt
             ),
             binds,
         ));
+        // A listing moved to another edition: the files its node holdings
+        // delivered belong to the edition it sold before, so none of them
+        // reads as delivered any more (nor is forwarded on that proof);
+        // each is asked for again for the edition it now sells. Applied
+        // only once the listing sells the planned edition.
+        if p.stored_edition_id
+            .as_deref()
+            .is_some_and(|stored| stored != p.edition_id)
+        {
+            let mut binds = vec![j_str(now), j_str(&p.listing_id)];
+            binds.extend(linked_binds.clone());
+            out.push(sql(
+                &format!(
+                    "UPDATE holdings SET delivered_digest = NULL, updated_at = ? \
+                     WHERE listing_id = ? AND holder_kind = 'node' \
+                     AND delivered_digest IS NOT NULL AND {is_linked}"
+                ),
+                binds,
+            ));
+        }
     }
     if let Some(h) = &p.holding {
         // The typed holder columns follow from the stored key; a holding is

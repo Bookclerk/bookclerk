@@ -1,0 +1,48 @@
+api_version = 3
+id = "echo_native_python"
+name = "Echo Integration (native Python)"
+version = "0.1.0"
+runtime = "workerd"
+entrypoints = ["cli"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+compatibility_flags = [
+    "python_workers",
+    "disable_python_external_sdk",
+]
+main_module = "plugin.py"
+modules_dir = "modules"
+entrypoint = "default"
+
+[workerd.limits]
+cpu_ms = 30000
+subrequests = 50
+
+[[modules]]
+name = "plugin.py"
+path = "plugin.py"
+type = "python"
+
+[[events.consumers]]
+type = "book_acquired"
+schema_versions = [1]
+supports_suspend = false
+resource_class = "network"
+
+[vars]
+
+[capabilities.network]
+mode = "deny"
+
+[[cli.commands]]
+name = "ping"
+about = "Probe echo plugin"
+
+[[cli.commands.args]]
+name = "message"
+long = "message"
+kind = "string"
+required = false
+default = "hi"
+positional = false

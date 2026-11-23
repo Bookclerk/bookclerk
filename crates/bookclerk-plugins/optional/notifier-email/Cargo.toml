@@ -1,0 +1,39 @@
+[package]
+name = "bookclerk-plugin-notifier-email"
+description = "Email notifier plugin over SMTP: native guest binary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+keywords = ["bookclerk", "bookclerk-plugin", "bookclerk-notifier", "email", "smtp"]
+
+[package.metadata.bookclerk]
+api_version = 3
+kind = "notifier"
+id = "email"
+display_name = "Email (SMTP)"
+
+[lib]
+name = "bookclerk_plugin_notifier_email"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bookclerk-plugin-notifier-email"
+path = "src/main.rs"
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+bookclerk-plugin-sdk = { workspace = true, features = ["http"] }
+serde_json.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "io-util", "time", "test-util"] }
+
+[lints]
+workspace = true

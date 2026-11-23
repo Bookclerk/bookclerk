@@ -319,7 +319,32 @@ the bucket's changes through a Cloudflare Queue instead of Amazon SQS.
 | `access_key_id`, `secret_access_key` | none | Required secrets: an R2 API token's S3 keys |
 | `queue_api_token` | none | Secret: a Cloudflare API token, needed only with a queue |
 
-### Set up an R2 bucket
+### Set up an R2 bucket with the guided setup
+
+The guided setup creates the bucket (or uses yours, if you already own
+one of that name) and an API token that can read and write that one
+bucket's files and nothing else. It fills in the account, bucket and keys.
+
+1. In the Cloudflare dashboard, create an account API token with
+   **Workers R2 Storage: Edit** and **Account API Tokens: Edit**. The
+   setup uses it once and does not store it; you can delete it afterwards.
+2. In **Settings**, open the R2 instance, choose a bucket name (and a
+   jurisdiction, if you need one), paste the token and select **Run guided
+   setup**. Leave the account ID empty when the token can see only one
+   account.
+3. Approve the plugin's network access and deploy it, as in steps 4 and 5
+   below.
+
+Running the setup again creates a fresh bucket token and deletes the old
+one. Before you delete the instance, **Remove what setup created** deletes
+the bucket token; it needs a token like the one in step 1. It never deletes
+the bucket or your books.
+
+> [!NOTE]
+> The guided setup runs under the plugin's normal network grant: it calls
+> `api.cloudflare.com`, which the plugin already lists for the queue.
+
+### Set up an R2 bucket by hand
 
 1. In the Cloudflare dashboard, create an R2 API token with **Object Read
    & Write** on the bucket, and note its access key ID and secret access
@@ -625,7 +650,11 @@ folder of its own at the top of the destination, named after the copy:
 limits on path lengths shorten the book's own folders before it. If two
 copies would still land in one folder (a destination template that
 repeats a copy's name, or a path limit so tight it shortens two names
-alike), the acquire stops with an error before it stores anything. Give
+alike), the acquire stops with an error before it stores anything. A
+path limit that shortens a part or chapter file's longer name further
+than the planned folder is caught as the files are written instead: a
+copy never writes a file where another copy of the same acquire wrote
+one, on any destination, so that copy fails and is retried. Give
 each destination one copy with filters
 when a player scans the whole destination, so it doesn't see the book
 twice.
@@ -642,6 +671,11 @@ quality, beside the probe of each audio file (see
 [Media](media.md)). The main output's file is the one the library records
 as the title's storage key, and the only one offered to a branch that
 asks for the library's copy.
+
+A destination counts as holding a book only when it holds every copy it
+takes. When a copy failed after the main output was stored, the next
+acquire of the book downloads it again for that destination, rather than
+skipping the book because the main output is there.
 
 > [!NOTE]
 > Copies in `output.copies` are made when a book is acquired. A copy added
@@ -778,7 +812,7 @@ When some destinations already have a title and others don't,
 
 | Policy | What happens |
 | --- | --- |
-| `sync_missing` (default) | Copies from a destination that has the title to those that don't, without downloading again. It copies the main output's copy only, so a destination whose copy rules refuse that copy gets nothing. A plain multi-part download is not matched on a destination by name, so it is downloaded again for the destination that lacks it |
+| `sync_missing` (default) | Copies from a destination that has the title to those that don't, without downloading again. It copies the main output's copy only, so a destination whose copy rules refuse that copy gets nothing, and a destination missing the title that takes another copy too (`output.copies`) is downloaded again instead. A plain multi-part download is not matched on a destination by name, so it is downloaded again for the destination that lacks it |
 | `refetch_missing` | Downloads and encodes again, and writes only to the destinations missing the title |
 | `refetch_all` | Downloads and encodes again, and writes to every destination |
 

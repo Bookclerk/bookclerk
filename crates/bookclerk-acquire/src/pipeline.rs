@@ -39,7 +39,7 @@ use crate::naming::{
     NamingContext,
 };
 use crate::reconcile::{find_existing_for_request, StorageIndex};
-use crate::record::{recording_copy_destinations, recording_destinations};
+use crate::record::{recording_copy_destinations, recording_destinations, AcquireRun};
 use crate::split::split_audio_by_chapters;
 
 mod convert_copy;
@@ -89,6 +89,11 @@ pub struct AcquireRequest {
     pub job_id: Option<String>,
     /// Refuse a new scratch dir when registered temps already exceed this.
     pub temp_quota_bytes: Option<u64>,
+    /// Set when the job running this acquire is cancelled or loses its
+    /// fence: the store fetch in flight is stopped
+    /// ([`FetchOptions::cancel`]) rather than run to its end. `None` for an
+    /// acquire nothing cancels.
+    pub cancel: Option<Arc<AtomicBool>>,
     /// The `<call number>` to name the title by instead of its edition in
     /// `library`: a host acquiring for a shared node names the title as the
     /// owner does, since its scratch library's edition ids are its own.
@@ -293,12 +298,17 @@ pub async fn acquire_book_indexed(
     let owner = file_owner_of_request(library, &req).await?;
     pin_call_number(&mut req, owner.as_ref());
     req.library_copies = req.library_copies.for_one_acquire();
+    // Every write of this acquire is recorded under one run, so a failed
+    // write releases only this run's record and no copy writes at a key
+    // another of its copies wrote.
+    let run = AcquireRun::new();
     let recorded = recording_destinations(
         library,
         destinations,
         owner.as_ref(),
         &req.source,
         req.library_copies.stored_from(),
+        &run,
     );
     let copies: Vec<CopyTarget> = destinations
         .copy_plan()
@@ -311,6 +321,7 @@ pub async fn acquire_book_indexed(
                 &req.source,
                 req.library_copies.stored_from(),
                 &copy,
+                &run,
             ),
             copy,
         })
@@ -339,6 +350,8 @@ enum StoredCopies {
     /// failed for good, and whether those two cover every destination in
     /// the target set.
     Tracked {
+        /// The edition (`editions.id`) whose copies these are.
+        edition: String,
         /// Destinations holding the edition, with their keys.
         present: Vec<(DestinationId, String)>,
         /// Destinations whose copy is `failed` or `missing`: an acquire leaves them
@@ -367,6 +380,14 @@ impl StoredCopies {
         match self {
             Self::Untracked => false,
             Self::Tracked { held, .. } => held.contains(destination),
+        }
+    }
+
+    /// The edition whose copies these are; `None` for an untracked title.
+    fn edition(&self) -> Option<&str> {
+        match self {
+            Self::Untracked => None,
+            Self::Tracked { edition, .. } => Some(edition),
         }
     }
 
@@ -402,6 +423,7 @@ async fn stored_copies(
         .is_some_and(|acquisition| acquisition.status == AcquireStatus::Acquired);
     if !acquired {
         return Ok(StoredCopies::Tracked {
+            edition: edition.to_owned(),
             present: Vec::new(),
             held: Vec::new(),
             complete: false,
@@ -434,6 +456,7 @@ async fn stored_copies(
         .collect();
     let complete = present.len() + held.len() == destinations.items.len();
     Ok(StoredCopies::Tracked {
+        edition: edition.to_owned(),
         present,
         held,
         complete,
@@ -623,8 +646,15 @@ async fn acquire_book_recorded(
         // may be another edition's (two editions whose short ids collide),
         // and adopting it would point this edition at that recording.
         check_edition_paths(library, destinations, &req).await?;
-        match plan_existing_destinations(library, destinations, &req, index.as_deref(), stored)
-            .await?
+        match plan_existing_destinations(
+            library,
+            destinations,
+            copies,
+            &req,
+            index.as_deref(),
+            stored,
+        )
+        .await?
         {
             ExistingPlan::Skip {
                 primary_key,
@@ -1046,7 +1076,19 @@ fn counted_in_scratch(cache_dir: &Path, work_dir: &Path) -> bool {
         .any(|name| work_dir.starts_with(cache_dir.join(name)))
 }
 
-/// Fetches a title while a watchdog cancels the source if the cache exceeds quota.
+/// Fetches a title while a watchdog cancels the source if the cache exceeds
+/// quota or the acquire is cancelled ([`AcquireRequest::cancel`]).
+///
+/// The source gets the remaining budget and a cancel flag
+/// ([`FetchOptions`]): a source whose download lands elsewhere (an external
+/// guest writes its jail-granted scratch, not `work_dir`) enforces both on
+/// its own directory and stops the call in flight. The watchdog here covers
+/// a source that writes into `work_dir`.
+///
+/// # Errors
+///
+/// Returns the source's error, or [`AcquireError::Other`] when the scratch
+/// quota is exceeded or the acquire is cancelled.
 async fn fetch_title_enforcing_quota(
     library: &LibraryStore,
     req: &AcquireRequest,
@@ -1060,21 +1102,32 @@ async fn fetch_title_enforcing_quota(
         )));
     }
     let bounded = remaining != u64::MAX;
+    let cancelled = || {
+        req.cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::SeqCst))
+    };
+    if cancelled() {
+        return Err(AcquireError::Other(anyhow::anyhow!(
+            "the acquire was cancelled"
+        )));
+    }
     let cancel = Arc::new(AtomicBool::new(false));
+    let watched = bounded || req.cancel.is_some();
     let opts = FetchOptions {
         download: req.options.clone(),
         cache_dir: work_dir.to_path_buf(),
         files_dir: req.files_dir.clone(),
         max_cache_bytes: bounded.then_some(remaining),
-        cancel: bounded.then(|| cancel.clone()),
+        cancel: watched.then(|| cancel.clone()),
     };
     let scope = bookclerk_source::source_scope(library, source);
     let fetch_fut = source.fetch_title(&scope, &req.account_id, &req.asin, &opts);
-    let fetch = if bounded {
+    let fetch = if watched {
         let watchdog = async {
             loop {
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                if dir_size(work_dir).await > remaining {
+                if cancelled() || (bounded && dir_size(work_dir).await > remaining) {
                     cancel.store(true, Ordering::SeqCst);
                     break;
                 }
@@ -1086,20 +1139,30 @@ async fn fetch_title_enforcing_quota(
         tokio::select! {
             result = fetch_fut => result?,
             () = watchdog => {
-                return Err(AcquireError::Other(anyhow::anyhow!(
-                    "acquire scratch quota exceeded during fetch ({remaining} byte budget)"
-                )));
+                return Err(stopped_fetch(cancelled(), remaining));
             }
         }
     } else {
         fetch_fut.await?
     };
-    if cancel.load(Ordering::SeqCst) || dir_size(work_dir).await > remaining {
-        return Err(AcquireError::Other(anyhow::anyhow!(
-            "acquire scratch quota exceeded during fetch ({remaining} byte budget)"
-        )));
+    if cancelled() || cancel.load(Ordering::SeqCst) || dir_size(work_dir).await > remaining {
+        return Err(stopped_fetch(cancelled(), remaining));
     }
     Ok(fetch)
+}
+
+/// The error of a fetch the watchdog stopped: cancelled when the acquire
+/// was, else over its `remaining` scratch budget.
+fn stopped_fetch(cancelled: bool, remaining: u64) -> AcquireError {
+    if cancelled {
+        AcquireError::Other(anyhow::anyhow!(
+            "the acquire was cancelled during the fetch"
+        ))
+    } else {
+        AcquireError::Other(anyhow::anyhow!(
+            "acquire scratch quota exceeded during fetch ({remaining} byte budget)"
+        ))
+    }
 }
 
 /// Runs a temp-producing stage and fails if `work_dir` exceeds the remaining budget.
@@ -1235,13 +1298,21 @@ enum ExistingPlan {
 }
 
 /// Inspects each destination for an existing object and chooses skip, sync, or fetch.
+///
+/// A destination counts as holding the title only when it holds every copy
+/// it receives (`copies`): the main output's, found as before, and each
+/// other copy ([`ExtraCopies::missing_on`]). One that lacks a copy is
+/// fetched again, never synced, since a copy between destinations moves
+/// only the main output's file.
 async fn plan_existing_destinations(
     library: &LibraryStore,
     destinations: &AcquireDestinations,
+    copies: &[CopyTarget],
     req: &AcquireRequest,
     index: Option<&StorageIndex>,
     stored: &StoredCopies,
 ) -> Result<ExistingPlan> {
+    let extra = ExtraCopies::of(library, copies, req, stored).await?;
     if destinations.len() == 1 {
         let dest = destinations.primary_destination();
         if let Some(key) = stored_key_present(stored, dest).await {
@@ -1263,6 +1334,10 @@ async fn plan_existing_destinations(
             match find_existing_for_request(lookup, dest.backend.as_ref(), library, &dest_req)
                 .await?
             {
+                Some(_) if extra.missing_on(library, req, dest).await => ExistingPlan::Fetch {
+                    only_ids: None,
+                    present: Vec::new(),
+                },
                 Some(primary_key) => ExistingPlan::Skip {
                     present: vec![(dest.id.clone(), primary_key.clone())],
                     primary_key,
@@ -1317,6 +1392,12 @@ async fn plan_existing_destinations(
                 None
             }
         };
+        // The main output's file alone does not make the title present:
+        // a copy that failed after it was stored is made again.
+        let found = match found {
+            Some(_) if extra.missing_on(library, req, dest).await => None,
+            found => found,
+        };
         if let Some(key) = found {
             if dest.id == destinations.primary {
                 primary_key = Some(key.clone());
@@ -1366,12 +1447,16 @@ async fn plan_existing_destinations(
         .or_else(|| present.first().map(|(_, k)| k.clone()))
         .unwrap_or_else(|| missing[0].1.clone());
 
+    // A destination that receives a copy beside the main output's is
+    // fetched again: a copy between destinations would bring it only the
+    // main output's file.
+    let wants_extra = missing.iter().any(|(id, _)| extra.receives(id));
     match destinations.multi_destination {
         // A copy between destinations moves one file: an edition stored as
         // several audio files (parts or chapters) is fetched again for the
         // destinations that lack it instead.
         MultiDestinationMode::SyncMissing
-            if !single_audio_file(library, req, &present[0].0).await? =>
+            if wants_extra || !single_audio_file(library, req, &present[0].0).await? =>
         {
             Ok(ExistingPlan::Fetch {
                 only_ids: Some(missing.into_iter().map(|(k, _)| k).collect()),
@@ -1404,6 +1489,97 @@ async fn plan_existing_destinations(
             only_ids: None,
             present: Vec::new(),
         }),
+    }
+}
+
+/// The copies an acquire makes beside the main output's
+/// (`output.copies`), as [`plan_existing_destinations`] checks them.
+struct ExtraCopies<'a> {
+    /// Every copy other than the main output's, with its destinations.
+    targets: Vec<&'a CopyTarget>,
+    /// The edition's recorded audio files, each naming its copy; empty for
+    /// an untracked title or one with no other copy.
+    recorded: Vec<bookclerk_library::ProbedAudioFile>,
+}
+
+impl<'a> ExtraCopies<'a> {
+    /// The copies of `copies` that are not the main output's
+    /// ([`bookclerk_source::DownloadOptions::copies_to_make`] on `req`),
+    /// with the edition's recorded audio files when there are any.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the recorded files cannot be read.
+    async fn of(
+        library: &LibraryStore,
+        copies: &'a [CopyTarget],
+        req: &AcquireRequest,
+        stored: &StoredCopies,
+    ) -> Result<Self> {
+        let main = req.options.copies_to_make().into_iter().next();
+        let targets: Vec<&CopyTarget> = copies
+            .iter()
+            .filter(|target| main.as_ref() != Some(&target.copy))
+            .collect();
+        let recorded = match stored.edition() {
+            Some(edition) if !targets.is_empty() => library.edition_audio_files(edition).await?,
+            Some(_) | None => Vec::new(),
+        };
+        Ok(Self { targets, recorded })
+    }
+
+    /// True when destination `id` receives any of these copies.
+    fn receives(&self, id: &DestinationId) -> bool {
+        self.targets
+            .iter()
+            .any(|target| target.destinations.destination(id).is_some())
+    }
+
+    /// True when `dest` receives one of these copies and lacks it.
+    ///
+    /// A copy is there when an audio file recorded for it on `dest` is
+    /// still present, or, for an untracked title or a file recorded before
+    /// copies were named, when its planned key is. A destination that
+    /// cannot answer lacks it, so the write there fails or succeeds on its
+    /// own.
+    async fn missing_on(
+        &self,
+        library: &LibraryStore,
+        req: &AcquireRequest,
+        dest: &AcquireDestination,
+    ) -> bool {
+        for target in &self.targets {
+            let Some(copy_dest) = target.destinations.destination(&dest.id) else {
+                continue;
+            };
+            let mut there = false;
+            for file in self.recorded.iter().filter(|file| {
+                file.destination == dest.id.as_str()
+                    && file.role == bookclerk_library::FileRole::Audio
+                    && file.copy.as_ref() == Some(&target.copy)
+            }) {
+                if matches!(dest.backend.exists(&file.storage_key).await, Ok(true)) {
+                    there = true;
+                    break;
+                }
+            }
+            if !there {
+                let copy_req = request_for_destination(req, copy_dest);
+                let ext = fallback_audio_ext(&copy_req.options);
+                let key = planned_storage_key_for(library, &copy_req, ext).await;
+                there = matches!(dest.backend.exists(&key).await, Ok(true));
+            }
+            if !there {
+                tracing::info!(
+                    asin = %req.asin,
+                    destination = %dest.id,
+                    copy = %target.copy,
+                    "a copy the destination receives is missing; fetching it again"
+                );
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -2453,7 +2629,8 @@ async fn offered_copy(library: &LibraryStore, req: &AcquireRequest) -> Option<Of
 /// ([`crate::LibraryCopy::taken`], before anything is stored).
 ///
 /// A copy that cannot be downloaded whole within the scratch budget, read
-/// by the confined tag reader, or recorded as taken is not used: what the
+/// by the confined tag reader, or recorded as taken is not used, nor is a
+/// same-store copy whose audio the request's output cannot decode: what the
 /// attempt left in `work_dir` is removed and the caller uses the store's
 /// download.
 ///
@@ -2494,6 +2671,19 @@ async fn take_library_copy(
         }
     };
     if offer.same_store {
+        // A copy from the title's own store is taken without a store
+        // download to compare: one whose audio the output must decode but
+        // the media worker cannot (a FLAC, say) would fail at packaging, so
+        // the store's download is used instead ([`output_can_decode`]).
+        if !output_can_decode(req, taken.codec) {
+            tracing::warn!(
+                id = %status_key(req),
+                codec = ?taken.codec,
+                "this output cannot decode the library's copy; using the store's download"
+            );
+            remove_library_copy(&dir).await;
+            return None;
+        }
         return record_taken(req, offer, &dir).await.then_some(taken);
     }
     // A copy from another store is recorded by the caller, once this
@@ -4646,6 +4836,7 @@ pub async fn acquire_pdf_only(
         owner.as_ref(),
         &req.source,
         req.library_copies.stored_from(),
+        &AcquireRun::new(),
     );
     acquire_pdf_only_recorded(library, &recorded, &req, source).await
 }
@@ -5130,6 +5321,7 @@ mod tests {
             placement: None,
             job_id,
             temp_quota_bytes: quota,
+            cancel: None,
             call_number: None,
             parent_call_number: None,
             metadata: AcquireMetadata::default(),
@@ -6371,7 +6563,9 @@ mod tests {
                 .unwrap()
                 .expect("the upsert resolves the book to an edition");
             assert_eq!(recorded.owner, owner);
-            assert_eq!(recorded.writer, bookclerk_library::ACQUIRE_WRITER);
+            assert!(bookclerk_library::AcquireWriter::is_acquire(
+                &recorded.writer
+            ));
             assert_eq!(fetches.load(Ordering::SeqCst), 1);
 
             // Crash window: destination succeeded and the book is acquired, but
@@ -6968,6 +7162,7 @@ mod tests {
             "audible",
             &crate::library_copies::StoredFrom::default(),
             Arc::clone(&media),
+            &crate::record::AcquireRun::new(),
         );
         let backend = &recorded.primary_destination().backend;
 
@@ -7025,6 +7220,7 @@ mod tests {
             "Odd Store!",
             &crate::library_copies::StoredFrom::default(),
             Arc::clone(&media),
+            &crate::record::AcquireRun::new(),
         );
         odd.primary_destination()
             .backend
@@ -7048,6 +7244,7 @@ mod tests {
             "audible",
             &stored_from,
             media,
+            &crate::record::AcquireRun::new(),
         );
         stored_from.set("libro");
         replaced
@@ -7071,6 +7268,7 @@ mod tests {
             Some(&owner),
             "audible",
             &crate::library_copies::StoredFrom::default(),
+            &crate::record::AcquireRun::new(),
         );
         unconfined
             .primary_destination()
@@ -7411,6 +7609,7 @@ mod tests {
                     "audible",
                     &crate::library_copies::StoredFrom::default(),
                     &copy,
+                    &crate::record::AcquireRun::new(),
                 ),
                 copy,
             })
@@ -7489,6 +7688,332 @@ mod tests {
         assert_eq!(hits.load(Ordering::SeqCst), 2, "no PDF is fetched again");
     }
 
+    /// A destination that holds the main output but lacks another copy it
+    /// receives is fetched again, not skipped; it is skipped once that
+    /// copy's file is there, at its planned key or at a key recorded for
+    /// the copy.
+    #[tokio::test]
+    async fn a_missing_extra_copy_is_fetched_again() {
+        use bookclerk_library::FileRole;
+
+        let store = test_store().await;
+        let uuid = edition_book(&store, "B00EXTRA", "user-1", "Twin", None).await;
+        let owner = store.file_owner_of_holding(&uuid).await.unwrap().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        let root = tmp.path().join("local");
+        let mut destinations = title_named_destinations(&root, Arc::default());
+        destinations.items[0].options.copies = vec![output_copy("mp3:64k-mono")];
+        let run = crate::record::AcquireRun::new();
+        let copies: Vec<CopyTarget> = destinations
+            .copy_plan()
+            .into_iter()
+            .map(|(copy, targets)| CopyTarget {
+                destinations: recording_copy_destinations(
+                    &store,
+                    &targets,
+                    Some(&owner),
+                    "audible",
+                    &crate::library_copies::StoredFrom::default(),
+                    &copy,
+                    &run,
+                ),
+                copy,
+            })
+            .collect();
+        assert_eq!(copies.len(), 2);
+        let job = job_id(&store).await;
+        let mut req = edition_req(&cache, job, "B00EXTRA", "user-1");
+        req.options = destinations.primary_destination().options.clone();
+        pin_call_number(&mut req, Some(&owner));
+        let stored = stored_copies(&store, owner.id(), &destinations)
+            .await
+            .unwrap();
+        macro_rules! plan {
+            ($copies:expr) => {
+                plan_existing_destinations(&store, &destinations, $copies, &req, None, &stored)
+            };
+        }
+
+        let main_req = request_for_destination(&req, destinations.primary_destination());
+        let main_key = planned_storage_key_for(&store, &main_req, "m4b").await;
+        std::fs::create_dir_all(root.join(&main_key).parent().unwrap()).unwrap();
+        std::fs::write(root.join(&main_key), b"main").unwrap();
+        let fetched = plan!(&copies).await.unwrap();
+        assert!(
+            matches!(fetched, ExistingPlan::Fetch { only_ids: None, .. }),
+            "{fetched:?}"
+        );
+        // With the main output's copy alone, the title is stored.
+        assert!(matches!(
+            plan!(&copies[..1]).await.unwrap(),
+            ExistingPlan::Skip { .. }
+        ));
+
+        let extra_req = request_for_destination(&req, copies[1].destinations.primary_destination());
+        let extra_key =
+            planned_storage_key_for(&store, &extra_req, fallback_audio_ext(&extra_req.options))
+                .await;
+        assert_ne!(extra_key, main_key);
+        std::fs::create_dir_all(root.join(&extra_key).parent().unwrap()).unwrap();
+        std::fs::write(root.join(&extra_key), b"extra").unwrap();
+        let skipped = plan!(&copies).await.unwrap();
+        assert!(matches!(skipped, ExistingPlan::Skip { .. }), "{skipped:?}");
+
+        // A file recorded for the copy counts wherever it lies.
+        std::fs::remove_file(root.join(&extra_key)).unwrap();
+        let elsewhere = format!("{extra_key}.renamed.mp3");
+        std::fs::write(root.join(&elsewhere), b"extra").unwrap();
+        assert!(matches!(
+            plan!(&copies).await.unwrap(),
+            ExistingPlan::Fetch { .. }
+        ));
+        store
+            .record_edition_copy_file(
+                "local",
+                &elsewhere,
+                &owner,
+                FileRole::Audio,
+                Some(&copies[1].copy),
+            )
+            .await
+            .unwrap();
+        let stored = stored_copies(&store, owner.id(), &destinations)
+            .await
+            .unwrap();
+        let skipped =
+            plan_existing_destinations(&store, &destinations, &copies, &req, None, &stored)
+                .await
+                .unwrap();
+        assert!(matches!(skipped, ExistingPlan::Skip { .. }), "{skipped:?}");
+    }
+
+    /// A destination that lacks a copy beside the main output's is fetched
+    /// again even when the library syncs missing destinations: a sync
+    /// would bring it only the main output's file.
+    #[tokio::test]
+    async fn a_destination_missing_an_extra_copy_is_not_synced() {
+        let store = test_store().await;
+        let uuid = edition_book(&store, "B00SYNC", "user-1", "Twin", None).await;
+        let owner = store.file_owner_of_holding(&uuid).await.unwrap().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        let local = tmp.path().join("local");
+        let mut destinations = title_named_destinations(&local, Arc::default());
+        destinations.items[0].options.copies = vec![output_copy("mp3:64k")];
+        let mut second = title_named_destinations(&tmp.path().join("second"), Arc::default())
+            .items
+            .remove(0);
+        second.id = DestinationId::new("second").unwrap();
+        second.options.copies = vec![output_copy("mp3:64k")];
+        destinations.items.push(second);
+        destinations.multi_destination = MultiDestinationMode::SyncMissing;
+        let run = crate::record::AcquireRun::new();
+        let copies: Vec<CopyTarget> = destinations
+            .copy_plan()
+            .into_iter()
+            .map(|(copy, targets)| CopyTarget {
+                destinations: recording_copy_destinations(
+                    &store,
+                    &targets,
+                    Some(&owner),
+                    "audible",
+                    &crate::library_copies::StoredFrom::default(),
+                    &copy,
+                    &run,
+                ),
+                copy,
+            })
+            .collect();
+        let job = job_id(&store).await;
+        let mut req = edition_req(&cache, job, "B00SYNC", "user-1");
+        req.options = destinations.primary_destination().options.clone();
+        pin_call_number(&mut req, Some(&owner));
+        let stored = stored_copies(&store, owner.id(), &destinations)
+            .await
+            .unwrap();
+        // `local` holds both copies; `second` holds nothing.
+        for target in &copies {
+            let dest = target
+                .destinations
+                .destination(&destinations.primary)
+                .unwrap();
+            let copy_req = request_for_destination(&req, dest);
+            let ext = if target.copy == copies[0].copy {
+                "m4b"
+            } else {
+                fallback_audio_ext(&copy_req.options)
+            };
+            let key = planned_storage_key_for(&store, &copy_req, ext).await;
+            std::fs::create_dir_all(local.join(&key).parent().unwrap()).unwrap();
+            std::fs::write(local.join(&key), b"audio").unwrap();
+        }
+        let plan = plan_existing_destinations(&store, &destinations, &copies, &req, None, &stored)
+            .await
+            .unwrap();
+        let ExistingPlan::Fetch {
+            only_ids: Some(ids),
+            present,
+        } = plan
+        else {
+            panic!("{plan:?}");
+        };
+        assert_eq!(ids, [DestinationId::new("second").unwrap()]);
+        assert_eq!(present.len(), 1);
+    }
+
+    /// A same-store copy whose audio the output must decode, but the
+    /// media worker cannot, is not taken: the store's download is used.
+    /// Kept as delivered, the same copy is taken.
+    #[tokio::test]
+    async fn a_same_store_copy_the_output_cannot_decode_is_not_taken() {
+        use crate::library_copies::tests::{MemoryCopy, OneCopy};
+        use bookclerk_library::FileRole;
+
+        let store = test_store().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let job = job_id(&store).await;
+        let uuid = edition_book(&store, "B00AC4", "user-1", "Twin", None).await;
+        // AC-4 audio: no build of the media worker decodes it.
+        let audio = bookclerk_tags::fixtures::tagged_m4b_with_sample_entry(b"ac-4", &[]);
+        let copy = MemoryCopy::new(Some("audible"), vec![("Twin.m4b", FileRole::Audio, audio)]);
+        let (fetched, taken) = (copy.fetched.clone(), copy.taken.clone());
+        let mut req = copy_req(&store, &cache, job, "B00AC4", &uuid, OneCopy::of(copy)).await;
+        req.options.format = bookclerk_config::OutputFormat::SingleMp3;
+        let work_dir = cache.join("acquire").join("ac4");
+        tokio::fs::create_dir_all(&work_dir).await.unwrap();
+        let offer = offered_copy(&store, &req)
+            .await
+            .expect("the library offers its copy");
+        assert!(offer.same_store);
+        assert!(
+            take_library_copy(&store, &req, &work_dir, &offer, CopyCover::Take)
+                .await
+                .is_none()
+        );
+        assert_eq!(fetched.load(Ordering::SeqCst), 1, "downloaded and read");
+        assert_eq!(taken.load(Ordering::SeqCst), 0, "but not taken");
+        assert!(!work_dir.join(LIBRARY_COPY_DIR).exists());
+
+        req.options.format = bookclerk_config::OutputFormat::None;
+        assert!(
+            take_library_copy(&store, &req, &work_dir, &offer, CopyCover::Take)
+                .await
+                .is_some()
+        );
+        assert_eq!(taken.load(Ordering::SeqCst), 1);
+    }
+
+    /// A write that fails releases the record this run made of its key,
+    /// so a later upload of the title may claim it; a record the edition
+    /// already held stays, since its earlier file may still be there.
+    #[tokio::test]
+    async fn a_failed_write_releases_only_the_record_it_made() {
+        use bookclerk_library::FileRole;
+
+        let store = test_store().await;
+        let uuid = edition_book(&store, "B00FAIL", "user-1", "Failed", None).await;
+        let owner = store.file_owner_of_holding(&uuid).await.unwrap().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("dest");
+        let destinations = counting_destinations(&root, Arc::default());
+        // Every write under the destination fails: its root is a file.
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::write(&root, b"not a folder").unwrap();
+        let recorded = recording_destinations(
+            &store,
+            &destinations,
+            Some(&owner),
+            "audible",
+            &crate::library_copies::StoredFrom::default(),
+            &crate::record::AcquireRun::new(),
+        );
+        let src = tmp.path().join("audio.m4b");
+        std::fs::write(&src, b"audio").unwrap();
+        let key = "Failed/Failed.m4b";
+        let backend = &recorded.primary_destination().backend;
+
+        assert!(backend
+            .put_file(key, &src, ObjectMeta::default())
+            .await
+            .is_err());
+        assert_eq!(store.edition_file("local", key).await.unwrap(), None);
+
+        store
+            .record_edition_file("local", key, &owner, FileRole::Audio)
+            .await
+            .unwrap();
+        assert!(backend
+            .put_file(key, &src, ObjectMeta::default())
+            .await
+            .is_err());
+        let kept = store.edition_file("local", key).await.unwrap().unwrap();
+        assert_eq!(kept.owner, owner);
+        assert!(bookclerk_library::AcquireWriter::is_acquire(&kept.writer));
+    }
+
+    /// Within one acquire run, a copy never writes at a key another copy
+    /// of the run wrote, on the same destination or another: the library
+    /// tells a copy's files apart by key. Another run may write it.
+    #[tokio::test]
+    async fn a_copy_never_writes_where_another_copy_of_the_run_wrote() {
+        let store = test_store().await;
+        let uuid = edition_book(&store, "B00KEYS", "user-1", "Keys", None).await;
+        let owner = store.file_owner_of_holding(&uuid).await.unwrap().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let main_dest = counting_destinations(&tmp.path().join("local"), Arc::default());
+        let mut phone = counting_destinations(&tmp.path().join("phone"), Arc::default());
+        phone.items[0].id = DestinationId::new("phone").unwrap();
+        phone.primary = DestinationId::new("phone").unwrap();
+        let run = crate::record::AcquireRun::new();
+        let wrap = |destinations: &AcquireDestinations, copy: &str, run| {
+            recording_copy_destinations(
+                &store,
+                destinations,
+                Some(&owner),
+                "audible",
+                &crate::library_copies::StoredFrom::default(),
+                &output_copy(copy),
+                run,
+            )
+        };
+        let main = wrap(&main_dest, "m4b:original", &run);
+        let extra = wrap(&phone, "mp3:64k", &run);
+        let src = tmp.path().join("audio.m4b");
+        std::fs::write(&src, b"audio").unwrap();
+        let key = "Keys/Keys.m4b";
+
+        main.primary_destination()
+            .backend
+            .put_file(key, &src, ObjectMeta::default())
+            .await
+            .unwrap();
+        let refused = extra
+            .primary_destination()
+            .backend
+            .put_file(key, &src, ObjectMeta::default())
+            .await
+            .expect_err("another copy of the run wrote the key");
+        assert!(refused.to_string().contains("copy's file"), "{refused}");
+        assert!(!tmp.path().join("phone").join(key).exists());
+        // The same copy may write the key again.
+        main.primary_destination()
+            .backend
+            .put_file(key, &src, ObjectMeta::default())
+            .await
+            .unwrap();
+
+        let later = wrap(&phone, "mp3:64k", &crate::record::AcquireRun::new());
+        later
+            .primary_destination()
+            .backend
+            .put_file(key, &src, ObjectMeta::default())
+            .await
+            .unwrap();
+    }
+
     /// A later copy that no destination stores leaves the main output
     /// stored: the acquire succeeds and the copy is pending where it was to
     /// go.
@@ -7531,6 +8056,7 @@ mod tests {
                     "audible",
                     &crate::library_copies::StoredFrom::default(),
                     &copy,
+                    &crate::record::AcquireRun::new(),
                 ),
                 copy,
             })
@@ -7676,6 +8202,7 @@ mod tests {
                     "audible",
                     &crate::library_copies::StoredFrom::default(),
                     &copy,
+                    &crate::record::AcquireRun::new(),
                 ),
                 copy,
             })

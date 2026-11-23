@@ -148,10 +148,10 @@ async fn admit_into(
 ) -> anyhow::Result<AdmitJob> {
     if spec.payload.requires.is_empty() {
         let bound = if spec.kind == JobKind::Acquire {
-            // Discovered keys plus instance keys, like the sweep: a node
-            // without the `local` plugin installed must not admit an
-            // acquire as claimable everywhere.
-            sweep_node_bound_output_keys(state, library).await?
+            // The same keys the sweep uses, whatever is installed here: a
+            // node without the `local` plugin must not admit an acquire as
+            // claimable everywhere.
+            node_bound_output_keys(library).await?
         } else {
             std::collections::BTreeSet::new()
         };
@@ -171,75 +171,28 @@ async fn admit_into(
     Ok(outcome.into())
 }
 
-/// Plugin keys of the outputs that live on one node's disk.
+/// Plugin keys of the outputs that live on one node's disk, for acquire
+/// admission and the library-wide requirements sweep.
 ///
-/// Today that is the verified first-party `local` destination. An acquire
-/// writes to every deployed one, so it is routed to a node running them
-/// (see `control_plane::resolve_job_requirements`).
-async fn node_bound_output_keys(
-    state: &AppState,
-    library: &bookclerk_library::LibraryStore,
-) -> anyhow::Result<std::collections::BTreeSet<String>> {
-    let config = state.config.read().await.clone();
-    if config.paths.is_none() {
-        // A config that was not loaded from disk has no plugin directories.
-        return Ok(std::collections::BTreeSet::new());
-    }
-    // Discovery walks and hashes every installed plugin: keep it off the
-    // async workers, as the settings and event paths do.
-    let discovered =
-        tokio::task::spawn_blocking(move || bookclerk_plugin_host::discover_plugins(&config))
-            .await
-            .map_err(|err| anyhow::anyhow!("plugin discovery task failed: {err}"))?;
-    node_bound_output_keys_from(discovered, library).await
-}
-
-/// Node-bound output keys from a discovery result.
-///
-/// A failed discovery (an unrelated plugin with a duplicate alias, a missing
-/// binary, an I/O error) must not admit an acquire that any node may claim:
-/// that node would skip `local` outputs it does not run. Instead every
-/// instance whose key names the first-party `local` destination is treated
-/// as node-bound. Without discovery the install's provenance cannot be
-/// checked, so this may route more than the verified path would, which only
-/// narrows the nodes that can claim the acquire; on a single node that runs
-/// its outputs nothing changes.
+/// Today that is the first-party `local` destination. An acquire writes to
+/// every deployed one, so it is routed to a node running them (see
+/// `control_plane::resolve_job_requirements`). The keys come from the
+/// library's instance list, not from this node's installed plugins:
+/// requirements only ever name deployed instances, and an instance is
+/// matched by its plugin key, so a discovered install adds nothing an
+/// instance key does not already name. Reading the instance list keeps
+/// admission free of plugin discovery (which hashes every installed
+/// tree), and gives admission and the sweep the same answer on every node,
+/// whatever is installed there. Matching by key cannot check provenance,
+/// so a look-alike key on a first-party scheme would also route, which
+/// only narrows the nodes that can claim the acquire.
 ///
 /// # Errors
 ///
-/// Returns an error when discovery failed and the instance list cannot be
-/// read.
-async fn node_bound_output_keys_from(
-    discovered: bookclerk_plugin_host::Result<Vec<bookclerk_plugin_host::DiscoveredPlugin>>,
-    library: &bookclerk_library::LibraryStore,
-) -> anyhow::Result<std::collections::BTreeSet<String>> {
-    match discovered {
-        Ok(plugins) => Ok(plugins
-            .iter()
-            .filter(|plugin| bookclerk_plugin_host::is_first_party_local_output(plugin))
-            .map(|plugin| plugin.plugin_key().to_string())
-            .collect()),
-        Err(err) => {
-            warn!(
-                error = %err,
-                "plugin discovery failed; routing acquire by the instances' `local` plugin keys"
-            );
-            local_output_keys_from_instances(library).await
-        }
-    }
-}
-
-/// Plugin keys of the instances whose key names the first-party `local`
-/// destination, read from the library's instance list.
-///
-/// This does not depend on what is installed on this node, so it is the
-/// fallback when discovery fails and the floor of what the requirements
-/// sweep treats as node-bound.
-///
-/// # Errors
-///
-/// Returns an error when the instance list cannot be read.
-async fn local_output_keys_from_instances(
+/// Returns an error when the instance list cannot be read; admission
+/// fails and the sweep skips its pass rather than sweeping with a partial
+/// set.
+pub(crate) async fn node_bound_output_keys(
     library: &bookclerk_library::LibraryStore,
 ) -> anyhow::Result<std::collections::BTreeSet<String>> {
     let instances = bookclerk_library::control_plane::list_all_plugin_instances(library).await?;
@@ -251,31 +204,6 @@ async fn local_output_keys_from_instances(
         })
         .map(|instance| instance.plugin_key)
         .collect())
-}
-
-/// Node-bound output keys for acquire admission and the library-wide
-/// requirements sweep.
-///
-/// Admission and the sweep must agree, or an acquire admitted on a node
-/// without the `local` plugin would be claimable by any node until the next
-/// sweep. The sweep runs on whichever node holds its lease, and it drops recorded
-/// requirements that its keys no longer cover, so a sweeping node that
-/// lacks the `local` plugin, or whose discovery failed, must not read as
-/// "no node-bound outputs". The result is this node's discovered keys
-/// ([`node_bound_output_keys`]) plus every instance key that names the
-/// first-party `local` destination, whatever is installed here.
-///
-/// # Errors
-///
-/// Returns an error when the instance list cannot be read; the caller skips
-/// the sweep pass rather than sweeping with a partial set.
-pub(crate) async fn sweep_node_bound_output_keys(
-    state: &AppState,
-    library: &bookclerk_library::LibraryStore,
-) -> anyhow::Result<std::collections::BTreeSet<String>> {
-    let mut keys = node_bound_output_keys(state, library).await?;
-    keys.extend(local_output_keys_from_instances(library).await?);
-    Ok(keys)
 }
 
 /// True when the fence asked to stop or the row is flagged cancelled.
@@ -1244,6 +1172,7 @@ pub async fn run_acquire(
             placement: Some(placement_facts(&library, &book).await?),
             job_id: ctx.map(|c| c.fence.job_id.clone()),
             temp_quota_bytes: Some(cfg.jobs.temp_quota_bytes),
+            cancel: ctx.map(|c| Arc::clone(&c.cancel)),
             call_number: None,
             parent_call_number: None,
             metadata: metadata.clone(),
@@ -1612,6 +1541,7 @@ async fn convert_titles(
             placement: Some(placement_facts(&library, &book).await?),
             job_id: ctx.map(|c| c.fence.job_id.clone()),
             temp_quota_bytes: Some(cfg.jobs.temp_quota_bytes),
+            cancel: ctx.map(|c| Arc::clone(&c.cancel)),
             call_number: None,
             parent_call_number: None,
             metadata: crate::covers::acquire_metadata(state).await,
@@ -3073,10 +3003,12 @@ mod tests {
         assert!(skipped.is_empty());
     }
 
-    /// A failed plugin discovery still routes an acquire to the node that runs
-    /// the `local` output, instead of admitting it for any node to claim.
+    /// An acquire is routed to the node that runs the `local` output from
+    /// the instance list alone (no plugin discovery), and neither the S3
+    /// destination nor a look-alike `local` key off a first-party scheme
+    /// counts as node-bound.
     #[tokio::test]
-    async fn discovery_failure_still_routes_acquire_to_local_outputs() {
+    async fn acquire_routes_to_local_outputs_from_the_instance_list() {
         use bookclerk_library::control_plane::{
             create_plugin_instance, ensure_plugin_deployment, resolve_job_requirements,
             ConfigActor, DesiredState,
@@ -3108,10 +3040,7 @@ mod tests {
             }
         }
 
-        let failed = Err(bookclerk_plugin_host::PluginError::message(
-            "duplicate plugin alias `echo`",
-        ));
-        let bound = node_bound_output_keys_from(failed, &store).await.unwrap();
+        let bound = node_bound_output_keys(&store).await.unwrap();
         assert_eq!(bound, std::collections::BTreeSet::from([LOCAL.to_string()]));
 
         let payload = JobPayload {

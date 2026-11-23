@@ -561,6 +561,7 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
             fence,
             store,
             product_id,
+            marketplace,
             files,
         } => {
             super::host_catalog::upload(
@@ -568,7 +569,11 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
                 host,
                 id.clone(),
                 fence,
-                (store, product_id),
+                &bookclerk_node_proto::CatalogRef {
+                    store,
+                    product_id,
+                    marketplace,
+                },
                 files,
             )
             .await
@@ -582,8 +587,13 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
         } => {
             super::host_accounts::remove(library, host, id.clone(), &plugin_key, &account_id).await
         }
-        Body::AccountsUpdate { sealed, revision } => {
-            super::host_accounts::update(library, host, id.clone(), &sealed, revision).await
+        Body::AccountsUpdate {
+            sealed,
+            revision,
+            keeps_own,
+        } => {
+            super::host_accounts::update(library, host, id.clone(), &sealed, revision, keeps_own)
+                .await
         }
         Body::CatalogQuestions {} => super::host_lookup::questions(library, host, id.clone()).await,
         Body::CatalogFound { answers, missing } => {

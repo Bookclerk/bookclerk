@@ -897,7 +897,15 @@ fn brand_from_abi(brand: Option<&bookclerk_plugin_sdk::Brand>) -> Option<Brand> 
 fn abi_error(err: crate::PluginError) -> bookclerk_plugin_sdk::PluginError {
     use bookclerk_plugin_sdk::PluginError as AbiError;
     match err {
-        crate::PluginError::Abi { code, message } => AbiError::from_wire(&code, message),
+        crate::PluginError::Abi {
+            code,
+            message,
+            details,
+        } => {
+            let mut err = AbiError::from_wire(&code, message);
+            err.details = details;
+            err
+        }
         crate::PluginError::RateLimited {
             retry_after,
             message,

@@ -955,13 +955,12 @@ impl LibraryStore {
             let credits = super::library_model::find_chunked_paged::<credits::Entity, _>(
                 self,
                 &[id.to_string()],
+                &[credits::Column::Position, credits::Column::ContributorId],
                 |part| {
                     credits::Entity::find()
                         .filter(credits::Column::TargetKind.eq(kind))
                         .filter(credits::Column::TargetId.is_in(part.iter().cloned()))
                         .filter(credits::Column::Role.eq(role))
-                        .order_by_asc(credits::Column::Position)
-                        .order_by_asc(credits::Column::ContributorId)
                 },
             )
             .await?;
@@ -973,10 +972,10 @@ impl LibraryStore {
                 super::library_model::find_chunked_paged::<contributors::Entity, _>(
                     self,
                     &ids,
+                    &[contributors::Column::Id],
                     |part| {
                         contributors::Entity::find()
                             .filter(contributors::Column::Id.is_in(part.iter().cloned()))
-                            .order_by_asc(contributors::Column::Id)
                     },
                 )
                 .await?
@@ -1483,10 +1482,8 @@ impl LibraryStore {
         use library_work_rows::Column as C;
         self.ensure_scope_keys(query.scope.as_ref()).await?;
         let mut found: HashMap<String, LibraryWorkRow> =
-            find_chunked_paged::<library_work_rows::Entity, _>(self, ids, |part| {
-                filtered_rows(query)
-                    .filter(C::WorkId.is_in(part.iter().cloned()))
-                    .order_by_asc(C::WorkId)
+            find_chunked_paged::<library_work_rows::Entity, _>(self, ids, &[C::WorkId], |part| {
+                filtered_rows(query).filter(C::WorkId.is_in(part.iter().cloned()))
             })
             .await?
             .into_iter()

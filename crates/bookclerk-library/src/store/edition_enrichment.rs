@@ -12,9 +12,10 @@ use std::collections::{HashMap, HashSet};
 use sea_orm::{ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter};
 use sea_orm::{QueryOrder, QuerySelect};
 
-use super::{now_str, LibraryStore};
+use super::{now_str, parse_dt, LibraryStore};
 use crate::entities::{
-    edition_identifiers, editions, expressions, holdings, store_listings, works,
+    edition_enrich_attempts, edition_identifiers, editions, expressions, holdings, store_listings,
+    works,
 };
 use crate::error::{LibraryError, Result};
 use crate::store::library_model::{find_chunked, find_chunked_paged};
@@ -100,6 +101,30 @@ pub struct EditionEnrichment {
     pub confidence: f64,
 }
 
+/// How a gap-fill attempt that left an edition's gaps open ended
+/// (`edition_enrich_attempts.outcome`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnrichAttemptOutcome {
+    /// A record filled some of the gaps, and others stay open.
+    Partial,
+    /// Every enricher answered, and no record matched or filled a gap.
+    Unmatched,
+}
+
+impl EnrichAttemptOutcome {
+    /// Every outcome, in the order the table's check lists them.
+    pub const ALL: [Self; 2] = [Self::Partial, Self::Unmatched];
+
+    /// The stored spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Partial => "partial",
+            Self::Unmatched => "unmatched",
+        }
+    }
+}
+
 /// `value` unless it is missing or blank.
 fn present(value: Option<String>) -> Option<String> {
     value.filter(|v| !v.trim().is_empty())
@@ -158,26 +183,32 @@ impl LibraryStore {
 
         let edition_ids: Vec<String> = page.iter().map(|e| e.id.clone()).collect();
         // An edition may have more listings than one read returns.
-        let mut listings =
-            find_chunked_paged::<store_listings::Entity, _>(self, &edition_ids, |part| {
+        let mut listings = find_chunked_paged::<store_listings::Entity, _>(
+            self,
+            &edition_ids,
+            &[store_listings::Column::Id],
+            |part| {
                 store_listings::Entity::find()
                     .filter(store_listings::Column::EditionId.is_in(part.to_vec()))
-                    .order_by_asc(store_listings::Column::Id)
-            })
-            .await?;
+            },
+        )
+        .await?;
         listings.sort_by(|a, b| a.id.cmp(&b.id));
         let listing_ids: Vec<String> = listings.iter().map(|l| l.id.clone()).collect();
         // A listing may have more holdings than one read returns.
-        let held: HashSet<String> =
-            find_chunked_paged::<holdings::Entity, _>(self, &listing_ids, |part| {
+        let held: HashSet<String> = find_chunked_paged::<holdings::Entity, _>(
+            self,
+            &listing_ids,
+            &[holdings::Column::Id],
+            |part| {
                 super::holdings::find_holdings()
                     .filter(holdings::Column::ListingId.is_in(part.to_vec()))
-                    .order_by_asc(holdings::Column::Id)
-            })
-            .await?
-            .into_iter()
-            .map(|h| h.listing_id)
-            .collect();
+            },
+        )
+        .await?
+        .into_iter()
+        .map(|h| h.listing_id)
+        .collect();
         let mut by_edition: HashMap<&str, Vec<&store_listings::Model>> = HashMap::new();
         for listing in &listings {
             by_edition
@@ -218,17 +249,22 @@ impl LibraryStore {
         let held_ids: Vec<String> = held_editions.iter().map(|e| e.id.clone()).collect();
         // The smallest ISBN and ASIN of each edition, keyed by scheme.
         let mut smallest: HashMap<(String, String), String> = HashMap::new();
-        for identifier in
-            find_chunked_paged::<edition_identifiers::Entity, _>(self, &held_ids, |part| {
+        for identifier in find_chunked_paged::<edition_identifiers::Entity, _>(
+            self,
+            &held_ids,
+            &[
+                edition_identifiers::Column::EditionId,
+                edition_identifiers::Column::Scheme,
+                edition_identifiers::Column::Value,
+                edition_identifiers::Column::Marketplace,
+            ],
+            |part| {
                 edition_identifiers::Entity::find()
                     .filter(edition_identifiers::Column::EditionId.is_in(part.to_vec()))
                     .filter(edition_identifiers::Column::Scheme.is_in(["isbn", "asin"]))
-                    .order_by_asc(edition_identifiers::Column::EditionId)
-                    .order_by_asc(edition_identifiers::Column::Scheme)
-                    .order_by_asc(edition_identifiers::Column::Value)
-                    .order_by_asc(edition_identifiers::Column::Marketplace)
-            })
-            .await?
+            },
+        )
+        .await?
         {
             let entry = smallest
                 .entry((identifier.edition_id, identifier.scheme))
@@ -360,6 +396,82 @@ impl LibraryStore {
         am.enrich_updated_at = Set(Some(now.clone()));
         am.updated_at = Set(now);
         am.update(self.db()).await.map_err(LibraryError::Orm)?;
+        Ok(())
+    }
+
+    /// The editions among `edition_ids` that `enricher` tried at or after
+    /// `since` without filling every gap
+    /// ([`LibraryStore::record_enrich_attempt`]).
+    ///
+    /// # Arguments
+    ///
+    /// * `enricher` - Which enricher asked (such as `metadata`).
+    /// * `edition_ids` - The editions to check.
+    /// * `since` - Attempts before this time no longer count.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn enrich_attempted_since(
+        &self,
+        enricher: &str,
+        edition_ids: &[String],
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<HashSet<String>> {
+        let rows = find_chunked::<edition_enrich_attempts::Entity, _>(self, edition_ids, |part| {
+            edition_enrich_attempts::Entity::find()
+                .filter(edition_enrich_attempts::Column::Enricher.eq(enricher))
+                .filter(edition_enrich_attempts::Column::EditionId.is_in(part.iter().cloned()))
+        })
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter(|row| parse_dt(&row.attempted_at) >= since)
+            .map(|row| row.edition_id)
+            .collect())
+    }
+
+    /// Records that `enricher` tried `edition_id` now and left gaps open,
+    /// replacing its earlier attempt.
+    ///
+    /// # Arguments
+    ///
+    /// * `edition_id` - The edition asked about.
+    /// * `enricher` - Which enricher asked (such as `metadata`).
+    /// * `outcome` - How the attempt ended.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the write fails (an edition that
+    /// is gone fails its foreign key).
+    pub async fn record_enrich_attempt(
+        &self,
+        edition_id: &str,
+        enricher: &str,
+        outcome: EnrichAttemptOutcome,
+    ) -> Result<()> {
+        use sea_orm::sea_query::OnConflict;
+        let am = edition_enrich_attempts::ActiveModel {
+            edition_id: Set(edition_id.to_string()),
+            enricher: Set(enricher.to_string()),
+            outcome: Set(outcome.as_str().to_string()),
+            attempted_at: Set(now_str()),
+        };
+        edition_enrich_attempts::Entity::insert(am)
+            .on_conflict(
+                OnConflict::columns([
+                    edition_enrich_attempts::Column::EditionId,
+                    edition_enrich_attempts::Column::Enricher,
+                ])
+                .update_columns([
+                    edition_enrich_attempts::Column::Outcome,
+                    edition_enrich_attempts::Column::AttemptedAt,
+                ])
+                .to_owned(),
+            )
+            .exec_without_returning(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
         Ok(())
     }
 

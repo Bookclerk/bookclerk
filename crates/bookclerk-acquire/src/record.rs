@@ -8,13 +8,22 @@
 //! chapter or part files and sidecars, so this record is what lets the
 //! owner refuse a host upload another title's files in a folder titles
 //! share, wherever the acquire wrote them.
+//!
+//! Every backend of one acquire run shares an [`AcquireRun`]: the run's own
+//! writer id ([`AcquireWriter`]), so a write that fails releases exactly the
+//! record this run made for it, and the keys each of the run's copies
+//! (`output.copies`) wrote, so no copy writes at a key another copy of the
+//! same run wrote, on any destination.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use bookclerk_library::{AudioStream, FileOwner, FileProbe, FileRole, LibraryStore};
+use bookclerk_library::{
+    AcquireWriter, AudioStream, FileOwner, FileProbe, FileRole, LibraryStore, RecordedFile,
+};
 use bookclerk_storage::{
     ByteRange, ListPage, ObjectInfo, ObjectMeta, ObjectProbe, PutStreamResult, StorageBackend,
     StorageError,
@@ -26,6 +35,50 @@ use bookclerk_config::{DestinationId, OutputCopy};
 
 use crate::destinations::{AcquireDestination, AcquireDestinations};
 use crate::library_copies::StoredFrom;
+
+/// What every recording backend of one acquire run shares.
+#[derive(Debug)]
+pub(crate) struct AcquireRun {
+    /// The writer id the run records its keys under.
+    writer: AcquireWriter,
+    /// Each key a copy of this run wrote (or is writing), with that copy.
+    /// Keys are compared across destinations: the library finds a copy's
+    /// files by key, so two copies at one key, even on two destinations,
+    /// would let it take one for the other.
+    copy_keys: Mutex<BTreeMap<String, OutputCopy>>,
+}
+
+impl AcquireRun {
+    /// A new run with a writer id of its own.
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            writer: AcquireWriter::for_run(),
+            copy_keys: Mutex::default(),
+        })
+    }
+
+    /// Claims `key` for `copy` within this run.
+    ///
+    /// # Returns
+    ///
+    /// The other copy of this run that already wrote `key`, when there is
+    /// one; `key` is then left to it.
+    fn claim_for_copy(&self, key: &str, copy: &OutputCopy) -> Option<OutputCopy> {
+        // A poisoned lock still holds the keys it last stored.
+        let mut keys = self
+            .copy_keys
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match keys.get(key) {
+            Some(other) if other != copy => Some(other.clone()),
+            Some(_) => None,
+            None => {
+                keys.insert(key.to_owned(), copy.clone());
+                None
+            }
+        }
+    }
+}
 
 /// One destination's backend whose writes are recorded for one edition.
 pub(crate) struct RecordingBackend {
@@ -53,6 +106,8 @@ pub(crate) struct RecordingBackend {
     /// The library copy (`output.copies`) this run writes here, named on
     /// the row of each audio file; `None` names no copy.
     copy: Option<OutputCopy>,
+    /// What the run's backends share.
+    run: Arc<AcquireRun>,
 }
 
 impl RecordingBackend {
@@ -167,15 +222,30 @@ impl RecordingBackend {
     }
 
     /// Records `key` for the edition before it is written, with the role
-    /// [`Self::role_of`] gives it.
+    /// [`Self::role_of`] gives it, under the run's writer.
+    ///
+    /// # Returns
+    ///
+    /// The role, and whether the record is new
+    /// ([`RecordedFile::New`]: [`Self::release`] it when the write fails).
     ///
     /// # Errors
     ///
     /// Returns [`StorageError::Other`] when the record cannot be written,
-    /// or when another live edition holds `key`; the write is then not
-    /// attempted, so no file goes unrecorded and no edition's file is
-    /// replaced by another's.
-    async fn record(&self, key: &str) -> bookclerk_storage::Result<FileRole> {
+    /// when another live edition holds `key`, or when another copy of this
+    /// run already wrote `key` ([`AcquireRun::claim_for_copy`]); the write
+    /// is then not attempted, so no file goes unrecorded and no edition's
+    /// or copy's file is replaced by another's.
+    async fn record(&self, key: &str) -> bookclerk_storage::Result<(FileRole, RecordedFile)> {
+        if let Some(copy) = &self.copy {
+            if let Some(other) = self.run.claim_for_copy(key, copy) {
+                return Err(StorageError::Other(anyhow::anyhow!(
+                    "{key} is the {other} copy's file; the {copy} copy would replace it \
+                     (give the destinations templates or path limits that keep each \
+                     copy's folder apart)"
+                )));
+            }
+        }
         let role = self.role_of(key);
         let copy = match role {
             FileRole::Audio | FileRole::Part | FileRole::Chapter => self.copy.as_ref(),
@@ -187,18 +257,65 @@ impl RecordingBackend {
         };
         let recorded = self
             .library
-            .record_edition_copy_file(self.destination.as_str(), key, &self.owner, role, copy)
+            .record_run_edition_file(
+                self.destination.as_str(),
+                key,
+                &self.owner,
+                role,
+                copy,
+                &self.run.writer,
+            )
             .await
             .map_err(|err| {
                 StorageError::Other(anyhow::anyhow!("could not record a title's file: {err}"))
             })?;
-        if recorded {
-            Ok(role)
-        } else {
-            Err(StorageError::Other(anyhow::anyhow!(
+        match recorded {
+            RecordedFile::New | RecordedFile::TakenOver => Ok((role, recorded)),
+            RecordedFile::Refused => Err(StorageError::Other(anyhow::anyhow!(
                 "{key} is another edition's file; refusing to replace it"
-            )))
+            ))),
         }
+    }
+
+    /// After a write of `key` failed: releases the record [`Self::record`]
+    /// made when it was new, so a later host upload of the same title may
+    /// claim the key. A record that was already the edition's stays, since
+    /// its earlier file may still be there. Best effort: a release that
+    /// fails is logged, and the write's own error is what the caller sees.
+    async fn release(&self, key: &str, recorded: RecordedFile) {
+        match recorded {
+            RecordedFile::New => {}
+            RecordedFile::TakenOver | RecordedFile::Refused => return,
+        }
+        if let Err(err) = self
+            .library
+            .release_run_edition_file(self.destination.as_str(), key, &self.run.writer)
+            .await
+        {
+            tracing::warn!(key, error = %err, "could not release a failed write's file record");
+        }
+    }
+
+    /// Records `key`, runs `write`, and releases a new record when the
+    /// write fails ([`Self::release`]).
+    ///
+    /// # Returns
+    ///
+    /// The role the key was recorded with.
+    ///
+    /// # Errors
+    ///
+    /// Returns the record's refusal or the write's error.
+    async fn recorded_write<F>(&self, key: &str, write: F) -> bookclerk_storage::Result<FileRole>
+    where
+        F: std::future::Future<Output = bookclerk_storage::Result<()>>,
+    {
+        let (role, recorded) = self.record(key).await?;
+        if let Err(err) = write.await {
+            self.release(key, recorded).await;
+            return Err(err);
+        }
+        Ok(role)
     }
 }
 
@@ -224,6 +341,7 @@ pub(crate) fn recording_destinations(
     owner: Option<&FileOwner>,
     source: &str,
     stored_from: &StoredFrom,
+    run: &Arc<AcquireRun>,
 ) -> AcquireDestinations {
     recording_destinations_probed_by(
         library,
@@ -232,6 +350,7 @@ pub(crate) fn recording_destinations(
         source,
         stored_from,
         bookclerk_media::pool(),
+        run,
     )
 }
 
@@ -245,6 +364,7 @@ pub(crate) fn recording_copy_destinations(
     source: &str,
     stored_from: &StoredFrom,
     copy: &OutputCopy,
+    run: &Arc<AcquireRun>,
 ) -> AcquireDestinations {
     recording_with(
         library,
@@ -254,6 +374,7 @@ pub(crate) fn recording_copy_destinations(
         stored_from,
         bookclerk_media::pool(),
         Some(copy),
+        run,
     )
 }
 
@@ -266,6 +387,7 @@ pub(crate) fn recording_destinations_probed_by(
     source: &str,
     stored_from: &StoredFrom,
     media: Arc<bookclerk_media::MediaPool>,
+    run: &Arc<AcquireRun>,
 ) -> AcquireDestinations {
     recording_with(
         library,
@@ -275,11 +397,13 @@ pub(crate) fn recording_destinations_probed_by(
         stored_from,
         media,
         None,
+        run,
     )
 }
 
 /// The recording wrap of [`recording_destinations_probed_by`], naming
-/// `copy` on audio rows.
+/// `copy` on audio rows, for the run `run`.
+#[allow(clippy::too_many_arguments)]
 fn recording_with(
     library: &LibraryStore,
     destinations: &AcquireDestinations,
@@ -288,6 +412,7 @@ fn recording_with(
     stored_from: &StoredFrom,
     media: Arc<bookclerk_media::MediaPool>,
     copy: Option<&OutputCopy>,
+    run: &Arc<AcquireRun>,
 ) -> AcquireDestinations {
     let items = destinations
         .items
@@ -305,6 +430,7 @@ fn recording_with(
                     media: Arc::clone(&media),
                     primary: Arc::default(),
                     copy: copy.cloned(),
+                    run: Arc::clone(run),
                 }),
                 None => item.backend.clone_box(),
             },
@@ -344,12 +470,14 @@ impl StorageBackend for RecordingBackend {
             media: Arc::clone(&self.media),
             primary: Arc::clone(&self.primary),
             copy: self.copy.clone(),
+            run: Arc::clone(&self.run),
         })
     }
 
     async fn put(&self, key: &str, data: Bytes, meta: ObjectMeta) -> bookclerk_storage::Result<()> {
-        self.record(key).await?;
-        self.inner.put(key, data, meta).await
+        self.recorded_write(key, self.inner.put(key, data, meta))
+            .await
+            .map(|_| ())
     }
 
     async fn put_file(
@@ -358,8 +486,9 @@ impl StorageBackend for RecordingBackend {
         path: &Path,
         meta: ObjectMeta,
     ) -> bookclerk_storage::Result<()> {
-        let role = self.record(key).await?;
-        self.inner.put_file(key, path, meta).await?;
+        let role = self
+            .recorded_write(key, self.inner.put_file(key, path, meta))
+            .await?;
         self.probe(key, path, role).await?;
         Ok(())
     }
@@ -385,13 +514,15 @@ impl StorageBackend for RecordingBackend {
     }
 
     async fn copy(&self, from: &str, to: &str) -> bookclerk_storage::Result<()> {
-        self.record(to).await?;
-        self.inner.copy(from, to).await
+        self.recorded_write(to, self.inner.copy(from, to))
+            .await
+            .map(|_| ())
     }
 
     async fn rename(&self, from: &str, to: &str) -> bookclerk_storage::Result<()> {
-        self.record(to).await?;
-        self.inner.rename(from, to).await
+        self.recorded_write(to, self.inner.rename(from, to))
+            .await
+            .map(|_| ())
     }
 
     async fn delete(&self, key: &str) -> bookclerk_storage::Result<()> {
@@ -425,8 +556,14 @@ impl StorageBackend for RecordingBackend {
         body: Pin<Box<dyn AsyncRead + Send>>,
         meta: ObjectMeta,
     ) -> bookclerk_storage::Result<PutStreamResult> {
-        self.record(key).await?;
-        self.inner.put_stream(key, body, meta).await
+        let (_, recorded) = self.record(key).await?;
+        match self.inner.put_stream(key, body, meta).await {
+            Ok(put) => Ok(put),
+            Err(err) => {
+                self.release(key, recorded).await;
+                Err(err)
+            }
+        }
     }
 
     fn supports_server_copy(&self) -> bool {

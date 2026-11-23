@@ -49,6 +49,99 @@ use crate::rpc_session::{PluginSession, SessionServices, HOST_SHARED_ACCOUNT};
 use crate::CredentialSharing;
 use crate::Result;
 
+/// How often a guest's `fetchTitle` is checked against the acquire's
+/// cancel flag and scratch budget ([`FetchStop`]).
+const FETCH_STOP_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// What stops a guest's `fetchTitle` before it answers: the acquire's
+/// cooperative cancel (a cancelled job, a lost fence, the host's own quota
+/// watchdog) and its scratch budget, measured on the directory the guest
+/// actually writes (its jail-granted fetch scratch), not the host's
+/// download cache.
+///
+/// The check runs on the plugin's vat thread, racing the call there, so
+/// stopping drops the in-flight request: the guest is told the call is
+/// over and the session is free for the next call.
+#[derive(Debug, Clone)]
+struct FetchStop {
+    /// The acquire's cancel flag, when it has one.
+    cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// The guest's fetch scratch directory.
+    dir: PathBuf,
+    /// Most bytes the fetch may add to `dir`, when bounded.
+    max_bytes: Option<u64>,
+}
+
+impl FetchStop {
+    /// The stop for one fetch with `opts`, measuring `dir`.
+    fn new(opts: &FetchOptions, dir: PathBuf) -> Self {
+        Self {
+            cancel: opts.cancel.clone(),
+            dir,
+            max_bytes: opts.max_cache_bytes,
+        }
+    }
+
+    /// Waits until the fetch must stop.
+    ///
+    /// Calls on one plugin session run one at a time, so what `dir`
+    /// gains while this call runs is this fetch's own: the budget counts
+    /// growth from the size `dir` had when the call started, and leaves
+    /// out files an earlier fetch left there.
+    ///
+    /// # Returns
+    ///
+    /// The error the call ends with: [`bookclerk_plugin_sdk::PluginError::cancelled`]
+    /// or, over budget, [`bookclerk_plugin_sdk::PluginError::limit_exceeded`].
+    async fn wait(self) -> bookclerk_plugin_sdk::PluginError {
+        let start = match self.max_bytes {
+            Some(_) => dir_bytes(&self.dir).await,
+            None => 0,
+        };
+        loop {
+            tokio::time::sleep(FETCH_STOP_POLL).await;
+            if self
+                .cancel
+                .as_ref()
+                .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
+            {
+                return bookclerk_plugin_sdk::PluginError::cancelled("the acquire was cancelled");
+            }
+            if let Some(max) = self.max_bytes {
+                let used = dir_bytes(&self.dir).await.saturating_sub(start);
+                if used > max {
+                    return bookclerk_plugin_sdk::PluginError::limit_exceeded(
+                        bookclerk_plugin_abi::LimitExceeded::new("acquire scratch", max, used),
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Bytes the files under `root` take together; a directory that cannot be
+/// read, or a file that vanishes while it is walked, counts as empty.
+async fn dir_bytes(root: &std::path::Path) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(mut entries) = tokio::fs::read_dir(&dir).await else {
+            continue;
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let Ok(meta) = entry.metadata().await else {
+                continue;
+            };
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else {
+                total = total.saturating_add(meta.len());
+            }
+        }
+    }
+    total
+}
+
 /// Longest a guest may spend signing an account out at the store before the
 /// host deletes the account's credentials without it.
 ///
@@ -947,6 +1040,7 @@ impl ContentSource for ExternalSource {
             dir
         };
         let sent = credentials.clone().unwrap_or_default();
+        let stop = FetchStop::new(opts, cache_dir.clone());
         let params = FetchTitleParams {
             plugin_data_dir: self.plugin_data_dir.display().to_string(),
             account_id: account_id.to_string(),
@@ -959,9 +1053,18 @@ impl ContentSource for ExternalSource {
         // The store's "slow down" reaches the acquire as `RateLimited`, so
         // the host pauses automatic downloads on the account instead of
         // retrying into the throttle (`bookclerk_library::pacing`).
+        // The cancel flag and the scratch budget are checked beside the
+        // call on the vat thread, so a stop drops the guest's request
+        // rather than only the host's wait for it.
         let mut plain = match self
             .session
-            .storefront(move |src| async move { src.fetch_title(params).await })
+            .storefront(move |src| async move {
+                tokio::select! {
+                    biased;
+                    stopped = stop.wait() => Err(stopped),
+                    out = src.fetch_title(params) => out,
+                }
+            })
             .await
         {
             Ok(plain) => plain,
@@ -2200,5 +2303,40 @@ mod tests {
         let listed: Vec<&str> = rows.iter().map(|b| b.product_id.as_str()).collect();
         assert_eq!(listed, ["p2", "p3"]);
         assert_eq!(removed, ids(&["p1"]));
+    }
+
+    /// A guest fetch stops once the acquire is cancelled, and once the
+    /// guest's own scratch grows past the budget; files already there when
+    /// the call started do not count against it.
+    #[tokio::test(start_paused = true)]
+    async fn a_guest_fetch_stops_on_cancel_and_over_its_budget() {
+        use bookclerk_plugin_sdk::PluginErrorCode;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("earlier.bin"), [0u8; 64]).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let opts = |max| FetchOptions {
+            download: bookclerk_source::DownloadOptions::default(),
+            cache_dir: PathBuf::from("/unused"),
+            files_dir: PathBuf::from("/unused"),
+            max_cache_bytes: max,
+            cancel: Some(Arc::clone(&cancel)),
+        };
+
+        let stop = tokio::spawn(FetchStop::new(&opts(Some(16)), dir.path().to_path_buf()).wait());
+        tokio::time::sleep(FETCH_STOP_POLL * 3).await;
+        assert!(!stop.is_finished(), "earlier files are not this fetch's");
+        std::fs::create_dir(dir.path().join("title")).unwrap();
+        std::fs::write(dir.path().join("title").join("part.bin"), [0u8; 17]).unwrap();
+        let over = stop.await.unwrap();
+        assert_eq!(over.code, PluginErrorCode::LimitExceeded, "{over}");
+
+        let stop = tokio::spawn(FetchStop::new(&opts(None), dir.path().to_path_buf()).wait());
+        tokio::time::sleep(FETCH_STOP_POLL * 3).await;
+        assert!(!stop.is_finished(), "an unbounded fetch runs on");
+        cancel.store(true, Ordering::SeqCst);
+        let cancelled = stop.await.unwrap();
+        assert_eq!(cancelled.code, PluginErrorCode::Cancelled, "{cancelled}");
     }
 }

@@ -208,6 +208,7 @@ stateDiagram-v2
 | `plugin_scheduled` | `plugin_scheduled:instance={id}:cron={schedule}` | `network` | `scheduled(controller)` on the instance (`run_plugin_scheduled`) |
 | `discover_candidates` | `discover_candidates:subject={key}` | `network` | `run_discover_candidates`, then admits the subject's `discover_feed` |
 | `discover_feed` | `discover_feed:subject={key}` | `network` | `run_discover_feed` (no network; ranks stored candidates) |
+| `discover_embed` | `discover_embed:node={id}` | `network` | `run_discover_embed` on the node whose plugin serves the text embedding model (pinned by `payload.node_id`); embeds works whose vector is missing or stale, then admits every stored feed's `discover_feed` (see [Embedding the library](discovery.md#embedding-the-library)) |
 | `discover_request_queue` | `discover_request_queue` | `network` | `run_discover_request_queue` (no network; ranks the shared request queue) |
 | `cache_sweep` | `cache_sweep:node={id}` | `network` | `run_cache_sweep` (no network; one node's image caches and job scratch) |
 | `search_index_rebuild` | `search_index_rebuild:node={id}` | `network` | `run_search_index_rebuild` (no network; rebuilds one node's search index) |
@@ -575,7 +576,17 @@ libraries scan` ([Libraries and branch nodes](../server/branches.md)).
   discovered during audio acquire) are bounded by the remaining quota: sources
   can call `FetchOptions::enforce_cache_budget`, the pipeline watchdog cancels
   a stage that crosses the budget, and PDF bodies are streamed with an
-  explicit remaining-byte cap.
+  explicit remaining-byte cap. An external guest downloads into its own
+  jail-granted scratch (`plugin-state/<PluginKey fs-id>/tmp/fetch`), not
+  the acquire's scratch dir, so the host measures that directory while the
+  guest's `fetchTitle` runs: what it gains during the call counts against
+  the remaining quota (files an earlier fetch left there do not).
+- Cancelling an acquire job, or losing its fence, stops the store fetch in
+  flight, not only the work between titles. The job's cancel flag reaches
+  the guest's `fetchTitle` call, which the host drops on the plugin's own
+  thread, as it drops a call over the scratch quota; the job then fails or
+  is cancelled as usual. A branch running a library's acquire passes the
+  job's cancel flag the same way.
 
 Scan, listen-sync, and integration-scan retries are idempotent (upserts /
 remote rescan). Acquire retries skip titles already `acquired`, except when
@@ -693,12 +704,13 @@ node that runs it needs. At admission the daemon records
   nowhere is not recorded, so the job is claimed anywhere and fails there as
   before instead of waiting forever.
 - An acquire requires every deployed instance of a node-bound output (today
-  the verified first-party `local` destination), because it writes to every
-  deployed destination and a `local` output is the disk of the nodes it is
-  deployed to. If plugin discovery fails on the admitting node (say an
-  unrelated plugin has a duplicate alias), every instance whose plugin key
-  names the first-party `local` package is required instead, unverified, so
-  the acquire is never left claimable by a node without those outputs.
+  the first-party `local` destination), because it writes to every deployed
+  destination and a `local` output is the disk of the nodes it is deployed
+  to. The node-bound keys are read from the library's instance list (every
+  instance whose plugin key names the first-party `local` package,
+  `jobs::node_bound_output_keys`), not from the plugins installed on the
+  admitting node, so admission runs no plugin discovery and every node
+  admits the same requirements, whatever it has installed.
 - Everything else (unpinned scans, listen sync, integration scans,
   `plugin_copy`) has no requirements and is claimable on any node.
 
@@ -734,13 +746,12 @@ or retired, or the scheduler moves a replica. Each daemon runs a sweep loop
 A pass runs every 30 s, on a deployment or install wakeup on this node, and
 after a scheduler pass that moved replicas. A wakeup waits until wakeups have
 been quiet for 0.5 s (at most 3 s), so a burst of deployment changes, such
-as enabling several plugins at once, is swept once. Discovery runs on a
-blocking thread. It re-resolves the requirements
-of every pending acquire, pinned job, or job that already has requirements,
-with the node-bound output keys the daemon discovers plus every instance
-keyed as the first-party `local` destination (so a sweeping node without
-that plugin, or whose discovery failed, never strips them; a pass that cannot
-read the instance list is skipped), and:
+as enabling several plugins at once, is swept once. It re-resolves the
+requirements of every pending acquire, pinned job, or job that already has
+requirements, with the same node-bound output keys admission uses (every
+instance keyed as the first-party `local` destination, so a sweeping node
+without that plugin never strips them; a pass that cannot read the instance
+list is skipped), and:
 
 - **applies at once** a set that is unchanged or only gains instances when
   some node is deployed to run all of them (a newly deployed `local` output

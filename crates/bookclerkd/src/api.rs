@@ -1415,6 +1415,15 @@ fn operator_only_routes() -> OpenApiRouter<Arc<AppState>> {
             crate::config_authority::put_plugin_instance_config
         ))
         .routes(routes!(
+            crate::config_authority::post_plugin_instance_provision
+        ))
+        .routes(routes!(
+            crate::config_authority::post_plugin_instance_deprovision
+        ))
+        .routes(routes!(
+            crate::config_authority::get_plugin_instance_provisioning
+        ))
+        .routes(routes!(
             crate::config_authority::get_destination_filter,
             crate::config_authority::put_destination_filter
         ))
@@ -1765,11 +1774,11 @@ fn public_routes() -> OpenApiRouter<Arc<AppState>> {
         ))
         .routes(routes!(
             crate::patron_scopes::get_default_controls,
-            crate::patron_scopes::put_default_controls
+            crate::patron_scopes::patch_default_controls
         ))
         .routes(routes!(
             crate::patron_scopes::get_user_controls,
-            crate::patron_scopes::put_user_controls
+            crate::patron_scopes::patch_user_controls
         ))
         .routes(routes!(
             crate::admin_controls::get_default_admin_controls,

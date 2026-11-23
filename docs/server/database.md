@@ -802,7 +802,7 @@ Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `operator_sessions`, `account_links`, `patron_controls`, `admin_controls`, `patron_scopes`,
 `patron_scope_keys`, `account_shares`, `account_credential_revisions`, `listening_progress`, `title_requests`, `title_request_sources`,
 `embeddings`, `discover_candidates`, `discover_store_calls`,
-`discover_store_call_hits`, `discover_feeds`, `discover_tastes`, `discover_fetches`,
+`discover_store_call_hits`, `discover_feeds`, `discover_feed_parts`, `discover_tastes`, `discover_fetches`,
 `discover_request_queue`,
 `playback_progress`, `playback_sessions`, `bookmarks`,
 `player_passwords`, `player_cards`, `player_card_tokens`,
@@ -848,8 +848,9 @@ library holds as works, expressions and editions:
 - `works`, `expressions` and `editions`, with `work_identifiers` and
   `edition_identifiers` (a strong identifier is unique through
   `strong_key`); an edition records which metadata provider last filled
-  its gaps (`enrich_source`, `enrich_confidence`, `enrich_updated_at`), so
-  gap-filling skips it next time
+  its gaps (`enrich_source`, `enrich_confidence`, `enrich_updated_at`), and
+  `edition_enrich_attempts` records an ask that left gaps open
+  (`partial` or `unmatched`), so gap-filling waits before asking again
   ([Metadata gap-fill](../internals/discovery.md#metadata-gap-fill-open-library-compliance));
 - `store_listings` (one per plugin, marketplace and product, with the
   store's own text for it: synopsis, cover, credits as printed, series and
@@ -913,7 +914,12 @@ library holds as works, expressions and editions:
   as `m4b` or `mp3`, and `copy_quality`, such as `original` or
   `64k-mono`; see [Keeping several
   copies](output.md#keeping-several-copies)); both are empty for
-  sidecars, the PDF and uploads.
+  sidecars, the PDF and uploads. `writer` is the host upload that
+  claimed the key last, or the acquire run that wrote it
+  (`acquire:<32 hex>`, one id per run; `acquire` for a title a branch
+  imports from a library it joined). An acquire records each key just
+  before writing it, and when the write fails it removes a record it
+  had just made, so a later upload of the same title may claim the key.
 - `edition_copies`: each edition's copy on each destination: `stored`
   with the edition's primary audio key there, `pending` with the last
   error and when the next background attempt is due, `failed` after 8

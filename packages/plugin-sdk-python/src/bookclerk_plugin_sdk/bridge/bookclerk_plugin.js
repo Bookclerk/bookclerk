@@ -72,6 +72,7 @@ var NOTIFICATION_ALERT_ACTIONS = ["none", "trigger", "resolve"];
 var NOTIFY_DESTINATION_KINDS = ["channel", "personal"];
 var AI_TASKS = ["textEmbeddings"];
 var AI_TEXT_ROLES = ["document", "query"];
+var PROVISION_GRANT_KINDS = ["none", "apiToken", "oauthAccessToken"];
 var DB_TYPES = ["unspecified", "bool", "int64", "float64", "text", "bytes"];
 var DB_STATEMENT_KINDS = ["execute", "select", "returning"];
 var DB_RESULT_SELECTIONS = ["discard", "affectedRows", "rows"];
@@ -6245,6 +6246,136 @@ var WebhookDeliveredCodec = {
     };
   }
 };
+var ProvisionGrantCodec = {
+  dataWords: 2,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setUint16(0, ord(PROVISION_GRANT_KINDS, v.kind ?? PROVISION_GRANT_KINDS[0], "ProvisionGrantKind"));
+    if (v.token !== void 0) {
+      s.setText(0, v.token ?? "");
+    }
+    if (v.expiresAtUnixMs !== void 0) {
+      s.setUint64(1, BigInt(v.expiresAtUnixMs ?? 0));
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const out = {
+      kind: fromOrd(PROVISION_GRANT_KINDS, s.getUint16(0), "ProvisionGrantKind")
+    };
+    const tokenValue = s.getText(0);
+    if (!(tokenValue === "")) {
+      out.token = tokenValue;
+    }
+    const expiresAtUnixMsValue = Number(s.getUint64(1));
+    if (!(expiresAtUnixMsValue === 0)) {
+      out.expiresAtUnixMs = expiresAtUnixMsValue;
+    }
+    return out;
+  }
+};
+var ProvisionRequestCodec = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    if (v.grant != null) {
+      ProvisionGrantCodec.write(s.initStruct(0, 2, 1), v.grant, caps);
+    }
+    s.setText(1, v.inputsJson ?? "");
+  },
+  read(s, caps) {
+    return {
+      grant: ProvisionGrantCodec.read(s.getStruct(0, 2, 1), caps),
+      inputsJson: s.getText(1)
+    };
+  }
+};
+var ProvisionedSecretCodec = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.key ?? "");
+    s.setText(1, v.value ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      key: s.getText(0),
+      value: s.getText(1)
+    };
+  }
+};
+var ProvisionedCodec = {
+  dataWords: 0,
+  pointerCount: 3,
+  write(s, v, caps) {
+    s.setText(0, v.settingsJson ?? "");
+    {
+      const list = v.secrets ?? [];
+      const items = s.initStructList(1, list.length, 0, 2);
+      for (let i = 0; i < items.length; i++) {
+        ProvisionedSecretCodec.write(items[i], list[i], caps);
+      }
+    }
+    s.setTextList(2, v.summary ?? []);
+  },
+  read(s, caps) {
+    return {
+      settingsJson: s.getText(0),
+      secrets: s.getStructList(1, 0, 2).map((item) => ProvisionedSecretCodec.read(item, caps)),
+      summary: s.getTextList(2)
+    };
+  }
+};
+var ProvisionReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          ProvisionedCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("ProvisionReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: ProvisionedCodec.read(s.getStruct(0, 0, 3), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("ProvisionReply", disc);
+    }
+  }
+};
+var DeprovisionRequestCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.grant != null) {
+      ProvisionGrantCodec.write(s.initStruct(0, 2, 1), v.grant, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      grant: ProvisionGrantCodec.read(s.getStruct(0, 2, 1), caps)
+    };
+  }
+};
 var DbValueCodec = {
   dataWords: 2,
   pointerCount: 1,
@@ -7935,6 +8066,62 @@ var IngressStopParamsCodec = {
   }
 };
 var IngressStopResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var ProvisioningProvisionParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.request != null) {
+      ProvisionRequestCodec.write(s.initStruct(0, 0, 2), v.request, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      request: ProvisionRequestCodec.read(s.getStruct(0, 0, 2), caps)
+    };
+  }
+};
+var ProvisioningProvisionResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      ProvisionReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: ProvisionReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var ProvisioningDeprovisionParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.request != null) {
+      DeprovisionRequestCodec.write(s.initStruct(0, 0, 1), v.request, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      request: DeprovisionRequestCodec.read(s.getStruct(0, 0, 1), caps)
+    };
+  }
+};
+var ProvisioningDeprovisionResultsCodec = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
@@ -11203,6 +11390,17 @@ var okAiModels = (value) => {
   }
   return okValue({ models: v.models });
 };
+var okProvisioned = (value) => {
+  const out = value ?? {};
+  return okValue({
+    settingsJson: typeof out.settingsJson === "string" ? out.settingsJson : "{}",
+    secrets: asList(out.secrets).map((secret) => ({
+      key: String(secret.key ?? ""),
+      value: String(secret.value ?? "")
+    })),
+    summary: asList(out.summary).map(String)
+  });
+};
 var okAiRun = (value) => {
   const out = (value ?? {}).output?.textEmbeddings;
   if (!out || !(out.vectors instanceof Uint8Array)) {
@@ -11664,6 +11862,22 @@ var METHODS = {
     health: withoutParams("ai", "health", AiModelsHealthParamsCodec, AiModelsHealthResultsCodec, okHealth),
     models: withoutParams("ai", "models", AiModelsModelsParamsCodec, AiModelsModelsResultsCodec, okAiModels),
     run: withParams("ai", "run", AiModelsRunParamsCodec, AiModelsRunResultsCodec, okAiRun)
+  },
+  Provisioning: {
+    provision: spec({
+      params: ProvisioningProvisionParamsCodec,
+      results: ProvisioningProvisionResultsCodec,
+      stub: "provisioning",
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "provision", [p.request ?? {}]),
+      ok: okProvisioned
+    }),
+    deprovision: spec({
+      params: ProvisioningDeprovisionParamsCodec,
+      results: ProvisioningDeprovisionResultsCodec,
+      stub: "provisioning",
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "deprovision", [p.request ?? {}]),
+      ok: okEmpty
+    })
   },
   Notifier: {
     health: withoutParams("notifier", "health", NotifierHealthParamsCodec, NotifierHealthResultsCodec, okHealth),
@@ -12724,6 +12938,31 @@ var AdapterDatabaseSession = class extends RpcTarget {
     return Promise.reject(unsupported("assertRestoreConstraints"));
   }
 };
+var EVENTS_METHODS = ["publish", "read"];
+var NOTIFY_METHODS = ["raise"];
+var AI_METHODS = ["run"];
+var QUEUE_METHODS = ["send", "sendBatch"];
+var KV_METHODS = ["get", "getWithMetadata", "put", "delete", "list"];
+function unwrapGrantedReply(reply) {
+  if (reply && typeof reply === "object") {
+    if ("err" in reply && reply.err && typeof reply.err === "object") {
+      return throwGranted(reply.err);
+    }
+    if ("ok" in reply)
+      return reply.ok;
+  }
+  throw PluginError.fromWire("internal", "granted binding reply has neither ok nor err");
+}
+function throwGranted(err) {
+  throw PluginError.fromWire(typeof err.code === "string" && err.code ? err.code : "internal", typeof err.message === "string" ? err.message : "", typeof err.details === "string" ? err.details : "");
+}
+function settledBinding(transport, methods) {
+  const binding = {};
+  for (const method of methods) {
+    binding[method] = async (...args) => unwrapGrantedReply(await transport.settle(method, args));
+  }
+  return Object.freeze(binding);
+}
 function decodeExtensibleConfig(cfg) {
   if (cfg == null)
     return {};
@@ -12778,12 +13017,14 @@ function invocationEnv(rawEnv, context) {
       merged.SECRETS = decodeExtensibleConfig(context.secrets);
     if (context.storage)
       merged.WORK_FS = context.storage;
-    if (context.events)
-      merged.EVENTS = context.events;
-    if (context.notify)
-      merged.NOTIFY = context.notify;
+    if (context.events) {
+      merged.EVENTS = settledBinding(context.events, EVENTS_METHODS);
+    }
+    if (context.notify) {
+      merged.NOTIFY = settledBinding(context.notify, NOTIFY_METHODS);
+    }
     if (context.ai)
-      merged.AI = context.ai;
+      merged.AI = settledBinding(context.ai, AI_METHODS);
     if (Array.isArray(context.databases)) {
       for (const entry of context.databases) {
         if (!entry || typeof entry.name !== "string" || !entry.name)
@@ -12799,14 +13040,14 @@ function invocationEnv(rawEnv, context) {
       for (const entry of context.queues) {
         if (!entry || typeof entry.name !== "string" || !entry.name || !entry.queue)
           continue;
-        merged[entry.name] = entry.queue;
+        merged[entry.name] = settledBinding(entry.queue, QUEUE_METHODS);
       }
     }
     if (Array.isArray(context.kv)) {
       for (const entry of context.kv) {
         if (!entry || typeof entry.name !== "string" || !entry.name || !entry.kv)
           continue;
-        merged[entry.name] = entry.kv;
+        merged[entry.name] = settledBinding(entry.kv, KV_METHODS);
       }
     }
     const sockets = socketsTransportOf(context);
@@ -12861,7 +13102,8 @@ function invocationOf(context) {
     accountId: String(inv.accountId ?? ""),
     deadlineUnixMs: Number(inv.deadlineUnixMs ?? 0) || 0,
     correlationId: String(inv.correlationId ?? ""),
-    causationId: String(inv.causationId ?? "")
+    causationId: String(inv.causationId ?? ""),
+    purpose: inv.purpose === "provision" ? "provision" : "serve"
   });
 }
 function unixMs(value) {
@@ -14240,6 +14482,40 @@ var AiEntrypoint = class extends NamedEntrypoint {
     return Promise.reject(unsupported("run"));
   }
 };
+var ProvisioningEntrypoint = class extends NamedEntrypoint {
+  static bookclerkMethods = Object.freeze(["provision", "deprovision"]);
+  /**
+   * Creates (or updates) what the instance needs.
+   *
+   * @param request - The operator's grant and choices (`inputsJson`, a JSON
+   *   object keyed by `[provisioning] inputs`).
+   * @returns Settings to store (`settingsJson`), credentials to seal and
+   *   summary lines for the setup screen; see {@link provisioned}.
+   */
+  provision(request) {
+    void request;
+    return Promise.reject(unsupported("provision"));
+  }
+  /**
+   * Removes what `provision` created. Removing what is already gone is not
+   * an error.
+   *
+   * @param request - The operator's grant, or kind `none` to use the stored
+   *   secrets.
+   * @returns Resolves once the resources are gone.
+   */
+  deprovision(request) {
+    void request;
+    return Promise.reject(unsupported("deprovision"));
+  }
+};
+function provisioned(answer) {
+  return {
+    settingsJson: JSON.stringify(answer.settings ?? {}),
+    secrets: Object.entries(answer.secrets ?? {}).map(([key, value]) => ({ key, value })),
+    summary: answer.summary ?? []
+  };
+}
 var NotifierEntrypoint = class extends NamedEntrypoint {
   static bookclerkMethods = Object.freeze(["health", "send", "validateDestination"]);
   /**
@@ -14315,7 +14591,8 @@ var ENTRYPOINT_BINDINGS = Object.freeze({
   metadataFiles: "PLUGIN_METADATA_FILES",
   notifier: "PLUGIN_NOTIFIER",
   ingress: "PLUGIN_INGRESS",
-  ai: "PLUGIN_AI"
+  ai: "PLUGIN_AI",
+  provisioning: "PLUGIN_PROVISIONING"
 });
 var ENTRYPOINT_CLASSES = Object.freeze({
   storefront: "Storefront",
@@ -14329,7 +14606,8 @@ var ENTRYPOINT_CLASSES = Object.freeze({
   metadataFiles: "MetadataFiles",
   notifier: "Notifier",
   ingress: "Ingress",
-  ai: "Ai"
+  ai: "Ai",
+  provisioning: "Provisioning"
 });
 function exactLengthBody(body, expected) {
   if (body == null || expected == null || !Number.isFinite(expected)) {
@@ -14483,7 +14761,52 @@ function unpackEmbeddingVectors(bytes, dimensions) {
   }
   return out;
 }
-var GrantedAi = class extends RpcTarget {
+function grantedError(error) {
+  return PluginError.fromWire(error.code || "internal", error.message || "", typeof error.details === "string" ? error.details : "");
+}
+var SettledTarget = class extends RpcTarget {
+  /** Binding the methods run on. */
+  #inner;
+  /** Method names `settle` may run. */
+  #methods;
+  /**
+   * @param inner - Granted binding implementation.
+   * @param methods - Method names the author may call.
+   */
+  constructor(inner, methods) {
+    super();
+    this.#inner = inner;
+    this.#methods = new Set(methods);
+  }
+  /**
+   * Run one binding method.
+   *
+   * @param method - Allow-listed method name.
+   * @param args - Its arguments.
+   * @returns `{ ok }` with the value, or `{ err }`; never throws.
+   */
+  async settle(method, args) {
+    if (typeof method !== "string" || !this.#methods.has(method)) {
+      return {
+        err: { code: "unsupported", message: `binding has no method \`${String(method)}\`` }
+      };
+    }
+    try {
+      const fn = this.#inner[method];
+      const value = await fn.apply(this.#inner, Array.isArray(args) ? args : []);
+      return { ok: value };
+    } catch (err) {
+      if (err instanceof PluginError) {
+        const details = err.detailsText;
+        return {
+          err: { code: err.wireCode, message: err.message, ...details ? { details } : {} }
+        };
+      }
+      return { err: { code: "internal", message: errorMessage(err) } };
+    }
+  }
+};
+var GrantedAi = class {
   #granted;
   #auth;
   /**
@@ -14491,7 +14814,6 @@ var GrantedAi = class extends RpcTarget {
    * @param auth - Bearer header for the ai grant.
    */
   constructor(granted, auth) {
-    super();
     this.#granted = granted;
     this.#auth = auth;
   }
@@ -14523,7 +14845,7 @@ var GrantedAi = class extends RpcTarget {
     });
     const value = await resp.json().catch(() => ({}));
     if (value && value.error) {
-      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+      throw grantedError(value.error);
     }
     if (!resp.ok) {
       throw PluginError.fromWire("internal", `ai run HTTP ${resp.status}`);
@@ -14552,7 +14874,7 @@ function notifyFields(fields) {
   }
   return Object.entries(fields).map(([name, value]) => ({ name, value: String(value) }));
 }
-var GrantedNotify = class extends RpcTarget {
+var GrantedNotify = class {
   #granted;
   #auth;
   /**
@@ -14560,7 +14882,6 @@ var GrantedNotify = class extends RpcTarget {
    * @param auth - Bearer header for the notify grant.
    */
   constructor(granted, auth) {
-    super();
     this.#granted = granted;
     this.#auth = auth;
   }
@@ -14590,7 +14911,7 @@ var GrantedNotify = class extends RpcTarget {
     });
     const value = await resp.json().catch(() => ({}));
     if (value && value.error) {
-      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+      throw grantedError(value.error);
     }
     if (!resp.ok) {
       throw PluginError.fromWire("internal", `notify raise HTTP ${resp.status}`);
@@ -14598,7 +14919,7 @@ var GrantedNotify = class extends RpcTarget {
     return { notificationId: String(value.notificationId ?? "") };
   }
 };
-var GrantedEvents = class extends RpcTarget {
+var GrantedEvents = class {
   #granted;
   #auth;
   /**
@@ -14606,7 +14927,6 @@ var GrantedEvents = class extends RpcTarget {
    * @param auth - Bearer header for the events grant.
    */
   constructor(granted, auth) {
-    super();
     this.#granted = granted;
     this.#auth = auth;
   }
@@ -14640,7 +14960,7 @@ var GrantedEvents = class extends RpcTarget {
     });
     const value = await resp.json().catch(() => ({}));
     if (value && value.error) {
-      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+      throw grantedError(value.error);
     }
     if (!resp.ok) {
       throw PluginError.fromWire("internal", `events publish HTTP ${resp.status}`);
@@ -14679,7 +14999,7 @@ var GrantedEvents = class extends RpcTarget {
       return {};
     });
     if (value && value.error) {
-      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+      throw grantedError(value.error);
     }
     if (!resp.ok) {
       throw PluginError.fromWire("internal", `events read HTTP ${resp.status}`);
@@ -14714,7 +15034,7 @@ function queueBodyBytes(body, contentType) {
   }
   return { body: new TextEncoder().encode(JSON.stringify(body ?? null)), contentType: kind };
 }
-var GrantedQueue = class extends RpcTarget {
+var GrantedQueue = class {
   #granted;
   #auth;
   /**
@@ -14722,7 +15042,6 @@ var GrantedQueue = class extends RpcTarget {
    * @param auth - Bearer header for the queue grant.
    */
   constructor(granted, auth) {
-    super();
     this.#granted = granted;
     this.#auth = auth;
   }
@@ -14772,7 +15091,7 @@ var GrantedQueue = class extends RpcTarget {
     });
     const value = await resp.json().catch(() => ({}));
     if (value && value.error) {
-      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+      throw grantedError(value.error);
     }
     if (!resp.ok) {
       throw PluginError.fromWire("internal", `queue send HTTP ${resp.status}`);
@@ -14810,7 +15129,7 @@ function decodeKvValue(bytes, type) {
     return JSON.parse(text);
   return text;
 }
-var GrantedKv = class extends RpcTarget {
+var GrantedKv = class {
   #granted;
   #auth;
   /**
@@ -14818,7 +15137,6 @@ var GrantedKv = class extends RpcTarget {
    * @param auth - Bearer header for the kv grant.
    */
   constructor(granted, auth) {
-    super();
     this.#granted = granted;
     this.#auth = auth;
   }
@@ -14830,7 +15148,7 @@ var GrantedKv = class extends RpcTarget {
     });
     const value = await resp.json().catch(() => ({}));
     if (value && value.error) {
-      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+      throw grantedError(value.error);
     }
     if (!resp.ok) {
       throw PluginError.fromWire("internal", `kv ${op} HTTP ${resp.status}`);
@@ -15392,19 +15710,13 @@ function createInvocationAdapter() {
       const bound = rest;
       const granted = this.env.GRANTED;
       if (typeof eventsToken === "string" && eventsToken && granted) {
-        bound.events = new GrantedEvents(granted, {
-          Authorization: `Bearer ${eventsToken}`
-        });
+        bound.events = new SettledTarget(new GrantedEvents(granted, { Authorization: `Bearer ${eventsToken}` }), EVENTS_METHODS);
       }
       if (typeof notifyToken === "string" && notifyToken && granted) {
-        bound.notify = new GrantedNotify(granted, {
-          Authorization: `Bearer ${notifyToken}`
-        });
+        bound.notify = new SettledTarget(new GrantedNotify(granted, { Authorization: `Bearer ${notifyToken}` }), NOTIFY_METHODS);
       }
       if (typeof aiToken === "string" && aiToken && granted) {
-        bound.ai = new GrantedAi(granted, {
-          Authorization: `Bearer ${aiToken}`
-        });
+        bound.ai = new SettledTarget(new GrantedAi(granted, { Authorization: `Bearer ${aiToken}` }), AI_METHODS);
       }
       if (databases && typeof databases === "object" && !Array.isArray(databases) && granted) {
         const named2 = [];
@@ -15426,7 +15738,7 @@ function createInvocationAdapter() {
             continue;
           named2.push({
             name,
-            queue: new GrantedQueue(granted, { Authorization: `Bearer ${token}` })
+            queue: new SettledTarget(new GrantedQueue(granted, { Authorization: `Bearer ${token}` }), QUEUE_METHODS)
           });
         }
         if (named2.length > 0)
@@ -15437,7 +15749,10 @@ function createInvocationAdapter() {
         for (const [name, token] of Object.entries(kv)) {
           if (!name || typeof token !== "string" || !token)
             continue;
-          named2.push({ name, kv: new GrantedKv(granted, { Authorization: `Bearer ${token}` }) });
+          named2.push({
+            name,
+            kv: new SettledTarget(new GrantedKv(granted, { Authorization: `Bearer ${token}` }), KV_METHODS)
+          });
         }
         if (named2.length > 0)
           bound.kv = named2;
@@ -16042,6 +16357,7 @@ export {
   PRODUCT_API_VERSION,
   PluginError,
   ProgressSink,
+  ProvisioningEntrypoint,
   QueueBatch,
   QueueMessage,
   RemoteLibraryEntrypoint,
@@ -16082,6 +16398,7 @@ export {
   jsonPayload,
   packEmbeddingVectors,
   parseDbValue,
+  provisioned,
   queueBatchResults,
   rawStreamCeiling,
   requirePluginMigrationRegistration,

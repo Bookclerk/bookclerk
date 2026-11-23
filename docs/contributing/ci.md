@@ -1064,7 +1064,11 @@ These run outside `CI Gate`:
   embedding models, checks them against the published ones and, on `main`,
   publishes them (see [Model packs](packaging.md#model-packs)). A pull
   request runs it only when it changes the builder, the pack layout, the
-  tokenizer or the `embedder` plugin, and skips drafts.
+  tokenizer or the `embedder` plugin, and skips drafts. It keeps the pinned
+  upstream model files in the Actions cache, keyed by their pins, so an
+  unchanged model is not downloaded again, and reuses the pack `main` built
+  while the build recipe is unchanged, so only a change to the recipe
+  compiles the tokenizer converter and builds the pack again.
 
 ### CodeQL
 

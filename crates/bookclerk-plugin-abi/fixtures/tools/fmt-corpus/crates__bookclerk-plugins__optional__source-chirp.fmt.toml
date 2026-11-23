@@ -1,0 +1,45 @@
+api_version = 3
+id = "chirp"
+name = "Chirp"
+version = "0.1.0"
+logo = "https://www.google.com/s2/favicons?domain=chirpbooks.com&sz=128"
+runtime = "native"
+command = "./bookclerk-plugin-source-chirp"
+entrypoints = ["storefront"]
+credentials = "shareable"
+
+[[databases]]
+binding = "SCAN_STATE"
+
+[vars]
+
+[[settings]]
+key = "graphql_url"
+label = "GraphQL URL"
+type = "string"
+description = "Override the Chirp GraphQL endpoint (testing only)."
+
+[secrets]
+
+[work_fs]
+
+[media]
+works = ["book"]
+lists = ["audio"]
+fetches = ["audio"]
+
+[acquire]
+downloads_per_day = 100
+min_gap_seconds = 10
+cooldown_seconds = 3600
+
+[capabilities.network]
+mode = "outbound"
+
+[[capabilities.network.tcp]]
+host = "*.chirpbooks.com"
+ports = [443]
+
+[capabilities.network.own_user_agent]
+hosts = ["*.chirpbooks.com"]
+reason = "Chirp's API expects the HTTP client of the Chirp Android app."

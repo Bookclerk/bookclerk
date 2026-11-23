@@ -1448,7 +1448,7 @@ type PartsKey = (BookKey, String);
 
 /// Cuts `json` into pieces of at most `width` bytes (never below 4, the
 /// widest character), each ending on a character boundary.
-fn cut(json: &str, width: usize) -> Vec<&str> {
+pub(crate) fn cut(json: &str, width: usize) -> Vec<&str> {
     let width = width.max(4);
     let mut pieces = Vec::new();
     let mut rest = json;

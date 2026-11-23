@@ -2269,6 +2269,13 @@ fn fill_entrypoints(mut b: entrypoints::Builder<'_>, eps: Entrypoints, window: u
             inner: Arc::from(x),
         }));
     }
+    if let Some(x) = eps.provisioning {
+        b.set_provisioning(capnp_rpc::new_client(
+            provisioning_glue::ProvisioningServer {
+                inner: Arc::from(x),
+            },
+        ));
+    }
 }
 
 /// Encode plugin OIDC client templates into a Cap'n Proto `oidcClients` ok payload.
@@ -4324,6 +4331,8 @@ pub struct OpenedEntrypoints {
     pub ingress: Option<IngressClient>,
     /// `ai` entrypoint.
     pub ai: Option<AiModelsClient>,
+    /// `provisioning` entrypoint.
+    pub provisioning: Option<ProvisioningClient>,
 }
 
 /// Host bootstrap client for a plugin vat.
@@ -4620,6 +4629,11 @@ impl PluginClient {
             },
             ai: if eps.has_ai() {
                 Some(AiModelsClient::new(eps.get_ai()?))
+            } else {
+                None
+            },
+            provisioning: if eps.has_provisioning() {
+                Some(ProvisioningClient::new(eps.get_provisioning()?))
             } else {
                 None
             },
@@ -6381,6 +6395,10 @@ where
 #[path = "rpc_origin.rs"]
 mod origin_glue;
 pub use origin_glue::{IngressClient, NoOrigin, OriginClient};
+
+#[path = "rpc_provisioning.rs"]
+mod provisioning_glue;
+pub use provisioning_glue::ProvisioningClient;
 
 #[path = "rpc_sockets.rs"]
 mod sockets_glue;
@@ -9926,6 +9944,7 @@ mod tests {
                             },
                         ],
                     },
+                    purpose: crate::InvocationPurpose::Serve,
                 };
                 let err = match client
                     .open(

@@ -77,7 +77,10 @@ async function main(argv: string[]): Promise<number> {
         const text = fs.readFileSync(file, "utf8");
         const m = parseToml(text) as Manifest;
         validateManifest(m);
-        const formatted = formatManifest(m);
+        // A second parse keeps integers apart from floats (`1` vs `1.0`) in
+        // free-form values, which the host writes back as it read them.
+        const exact = parseToml(text, { integersAsBigInt: true }) as unknown as Manifest;
+        const formatted = formatManifest(exact, { integersAsBigInt: true });
         if (checkOnly) {
           const norm = (s: string) =>
             s.replace(/\r\n/g, "\n").endsWith("\n")

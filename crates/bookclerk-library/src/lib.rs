@@ -196,8 +196,8 @@ pub use store::work_tags::{
 pub use store::{
     apply_user_states,
     catalog_listings::{
-        CatalogListing, CatalogListingRecord, ListingDetail, ListingOffer, OfferAudience,
-        RecordedListings, CATALOG_LISTING_REFRESH,
+        CatalogListing, CatalogListingRecord, ListedProduct, ListingDetail, ListingOffer,
+        OfferAudience, RecordedListings, CATALOG_LISTING_REFRESH,
     },
     chapters::{
         copy_source_id, resolve_chapters, Chapter, ChapterCheck, ChapterClaim, ChapterClaimWrite,
@@ -257,17 +257,19 @@ pub use store::{
         parse_work_split_request, SplitOutcome, WorkSplitBody, WorkSplitRequest,
         MAX_SPLIT_EXPRESSIONS, MAX_SPLIT_EXPRESSION_ID_BYTES,
     },
-    AcquireTitle, AcquireTitlePage, AcquiredTitleKey, AcquiredTitleKeyPage, AudioStream,
-    CandidateRef, ChangedObject, CopyState, DestinationFeed, DiscoverSubject, EditionAcquisition,
-    EditionAsin, EditionCopy, EditionEnrichment, EditionFile, EnrichCandidate, EnrichCandidatePage,
-    FeedState, FileOwner, FileProbe, FileRole, HeldIdentifiers, HoldingSelection, LibraryStore,
-    LostCopies, NewBook, NewListeningProgress, NewTitleRequest, NewTitleRequestSource,
-    NodeHoldingSelection, ProbedAudioFile, QueueRank, SavedFilterRecord, ScannedTitle, SeedScope,
+    AcquireTitle, AcquireTitlePage, AcquireWriter, AcquiredTitleKey, AcquiredTitleKeyPage,
+    AudioStream, CandidateRef, ChangedObject, CopyState, DestinationFeed, DiscoverSubject,
+    EditionAcquisition, EditionAsin, EditionCopy, EditionEnrichment, EditionFile,
+    EnrichAttemptOutcome, EnrichCandidate, EnrichCandidatePage, FeedState, FileOwner, FileProbe,
+    FileRole, HeldIdentifiers, HoldingSelection, LibraryStore, LostCopies, NewBook,
+    NewListeningProgress, NewTitleRequest, NewTitleRequestSource, NodeHoldingSelection,
+    ProbedAudioFile, QueueRank, RecordedFile, SavedFilterRecord, ScannedTitle, SeedScope,
     SeenObject, StoreCallHit, StoredCandidate, StoredDiscoverTaste, StoredFeed, StoredQueueRank,
     TitleHolding, UnprobedFile, UserBookFields, WishWork, ACQUIRED_KEYS_MAX_PAGE, ACQUIRE_WRITER,
     COPY_RETRY_BASE_DELAY, COPY_RETRY_MAX_DELAY, HOLDING_REMOVED, MAX_COPY_ATTEMPTS,
     MAX_QUEUE_REASONS, OBJECT_TOMBSTONE_DAYS,
 };
+pub use store::{NewVector, SpaceCoverage, VectorSpace, VECTOR_KIND_TEXT, VECTOR_KIND_WORK};
 pub use store::{NotifyCursor, NotifyPage, NotifyQueueLimits, MAX_NOTIFY_PAGE};
 pub use token_hash::{
     derive_claim_password_fingerprint, derive_claim_session_token, hash_token,

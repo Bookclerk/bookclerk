@@ -1069,6 +1069,7 @@ pub(super) async fn open_upload_session(
         (Some(FileOwner::Edition(edition)), true) => Some(edition.clone()),
         (Some(FileOwner::Edition(_)) | None, _) => None,
     };
+    let reserved_edition = catalog_edition.clone();
     let manifest = serde_json::to_string(&Manifest {
         destinations: if req.holding_id.is_empty() {
             Vec::new()
@@ -1130,6 +1131,34 @@ pub(super) async fn open_upload_session(
             Ok(false) => {
                 undo_grant(store, &upload_id, &claimed).await;
                 return Ok(UploadGrant::Refused("key_of_another_title"));
+            }
+            Err(err) => {
+                undo_grant(store, &upload_id, &claimed).await;
+                return Err(err);
+            }
+        }
+    }
+    // A catalog title's edition is delivered once. The caller checked
+    // that no other writer holds audio for it, but two branches can pass
+    // that check for one edition at the same moment under different keys,
+    // where no key claim conflicts. Each grant therefore checks again now
+    // that its own claims are committed: of two overlapping grants, the
+    // later check always sees the other's claims, so at most one goes on
+    // (on an exact tie both are refused, and each branch asks again on
+    // its next delivery pass).
+    if let Some(edition) = &reserved_edition {
+        match super::branch_catalog::edition_has_other_audio(
+            store,
+            node_id,
+            edition,
+            req.holding_id,
+        )
+        .await
+        {
+            Ok(false) => {}
+            Ok(true) => {
+                undo_grant(store, &upload_id, &claimed).await;
+                return Ok(UploadGrant::Refused("edition_has_files"));
             }
             Err(err) => {
                 undo_grant(store, &upload_id, &claimed).await;

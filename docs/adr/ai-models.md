@@ -53,6 +53,7 @@ text plus the model revision that made them. New tasks are new members,
 so the entrypoint does not change when one is added.
 
 The host never loads a model. With no plugin serving text embeddings,
+or until the model has embedded every work,
 Discover keeps ranking with the hash embedder, a few lines of arithmetic
 over the words of a text that carries no meaning, and semantic search
 reports that it is unavailable. Hash vectors are stored under their own
@@ -125,10 +126,13 @@ it.
   who needs it.
 - Each node keeps the vectors it searches in a flat in-memory index,
   rebuilt from the table and kept current from events. No engine
-  specific vector type or vector database is used.
+  specific vector type or vector database is used. (The index arrives
+  with semantic search; Discover reads the vectors of one ranking from
+  the table.)
 - Vectors from different model revisions are never compared. Changing
   the model re-embeds in a background job while the old vectors keep
-  serving.
+  serving (see
+  [Which space serves](../internals/discovery.md#which-space-serves)).
 
 ## Consequences
 

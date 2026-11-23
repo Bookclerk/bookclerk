@@ -721,6 +721,7 @@ async fn an_instance_runs_only_where_an_up_guest_has_a_live_database_node() {
     let beat = |node: &'static str| {
         let store = store.clone();
         async move {
+            crate::test_support::register_test_node(&store, node).await;
             crate::control_plane::node_status::record_node_heartbeat(
                 &store,
                 node,

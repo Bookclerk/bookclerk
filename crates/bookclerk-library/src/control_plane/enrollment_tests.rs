@@ -719,7 +719,7 @@ async fn shared_node_removal_is_one_batch_without_an_interactive_transaction() {
         assert_eq!(kit.refused_begins(), 0, "{}", profile.name());
         assert_eq!(
             &kit.batch_sizes()[batches_before..],
-            [7],
+            [8],
             "{}",
             profile.name()
         );
@@ -734,8 +734,8 @@ async fn shared_node_removal_is_one_batch_without_an_interactive_transaction() {
         let subscribers = event_subscriber_nodes_for(&store).await;
         assert_eq!(subscribers, vec![this_node.clone()], "{}", profile.name());
 
-        // No status row at all: five statements, each guarded on none
-        // having appeared, and the counter bump.
+        // No status row at all: the row lock, five statements each
+        // guarded on none having appeared, and the counter bump.
         let minted = mint_enrollment_link(&store, &operator(), owner, "rack-2", None)
             .await
             .unwrap();
@@ -749,11 +749,126 @@ async fn shared_node_removal_is_one_batch_without_an_interactive_transaction() {
             .unwrap();
         assert_eq!(
             &kit.batch_sizes()[batches_before..],
-            [6],
+            [7],
             "{}",
             profile.name()
         );
         assert_eq!(kit.refused_begins(), 0, "{}", profile.name());
+    }
+}
+
+/// A node's first heartbeat and the removal of that node order themselves
+/// on the node's `nodes` row on PostgreSQL (`READ COMMITTED`): with both
+/// queued behind a lock on that row, the node never ends up removed while
+/// a fresh status row says it is live. Before the row lock, the heartbeat
+/// inserted its first status row unseen by the removal's guard and both
+/// committed.
+#[tokio::test]
+#[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
+async fn postgres_removal_and_a_first_heartbeat_order_on_the_node_row() {
+    use sea_orm::TransactionTrait;
+    /// Waits (up to 30 s) until `count` other sessions of this test's own
+    /// database wait on a lock, as seen from the session holding it.
+    ///
+    /// # Panics
+    ///
+    /// Panics when they don't within the time, or the read fails.
+    async fn waiters_on_the_row(holder: &sea_orm::DatabaseTransaction, count: i64) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            // A transaction keeps its first view of `pg_stat_activity` until
+            // the view is cleared.
+            holder
+                .execute_unprepared("SELECT pg_stat_clear_snapshot()")
+                .await
+                .expect("clear the activity snapshot");
+            let row = holder
+                .query_one_raw(sea_orm::Statement::from_string(
+                    holder.get_database_backend(),
+                    "SELECT count(*)::bigint AS waiting FROM pg_stat_activity \
+                     WHERE datname = current_database() AND pid <> pg_backend_pid() \
+                     AND wait_event_type = 'Lock'",
+                ))
+                .await
+                .expect("read pg_stat_activity")
+                .expect("one row");
+            let waiting: i64 = row.try_get("", "waiting").expect("waiting");
+            if waiting >= count {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{waiting} of {count} sessions wait on the node row"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+    if !super::tests::postgres_tests_enabled() {
+        return;
+    }
+    let _guard = master_key_test_lock_async().await;
+    let (store_a, store_b) = super::tests::postgres_stores().await;
+    let dir = tempfile::tempdir().unwrap();
+    bootstrap(&store_a, &dir).await;
+    let this_node = load_or_create_node_identity(dir.path()).unwrap().node_id;
+    let owner = user(&store_a, UserRole::Owner, "Morgan").await;
+    let as_owner = EnrollmentActor::User { user_id: owner };
+    for seed in [7_u8, 9] {
+        let minted = mint_enrollment_link(&store_a, &operator(), owner, "rack", None)
+            .await
+            .unwrap();
+        let enrolled =
+            redeem_enrollment_link_as(&store_a, &redeem_request(&minted, seed), NodeKind::Shared)
+                .await
+                .unwrap();
+        let node_id = enrolled.node_id.clone();
+        assert!(load_node_status(&store_a, &node_id)
+            .await
+            .unwrap()
+            .is_none());
+        // Hold the node's row so that the removal and the heartbeat both
+        // start and wait on it, the removal first. The hold only locks the
+        // row: an update would leave a newer row version that the two
+        // waiters then race to lock, in no set order.
+        #[allow(clippy::disallowed_methods)]
+        let holder = store_b.db().begin().await.expect("hold the node row");
+        holder
+            .execute_unprepared(&format!(
+                "SELECT 1 FROM nodes WHERE node_id = '{node_id}' FOR UPDATE"
+            ))
+            .await
+            .unwrap();
+        let removal = {
+            let (store, node, this) = (store_a.clone(), node_id.clone(), this_node.clone());
+            let actor = as_owner.clone();
+            tokio::spawn(async move { remove_shared_node(&store, &actor, &node, &this).await })
+        };
+        // Wait until the removal waits on the row, so it is queued first
+        // however slow the runner is.
+        waiters_on_the_row(&holder, 1).await;
+        let heartbeat = {
+            let (store, node) = (store_b.clone(), node_id.clone());
+            let beat = NodeSampler::new(dir.path()).sample();
+            tokio::spawn(async move { record_node_heartbeat(&store, &node, &beat).await })
+        };
+        waiters_on_the_row(&holder, 2).await;
+        holder.commit().await.unwrap();
+        let removed = removal.await.unwrap();
+        let beat = heartbeat.await.unwrap();
+        let node_left = load_node(&store_a, &node_id).await.is_ok();
+        let status_left = load_node_status(&store_a, &node_id)
+            .await
+            .unwrap()
+            .is_some();
+        assert!(
+            node_left || !status_left,
+            "seed {seed}: removed {removed:?}, heartbeat {beat:?}: a status row outlived its node"
+        );
+        // The removal queued first, so it wins and the heartbeat writes
+        // nothing.
+        removed.unwrap();
+        assert!(matches!(beat, Err(LibraryError::NotFound(_))), "{beat:?}");
+        assert!(!node_left && !status_left);
     }
 }
 

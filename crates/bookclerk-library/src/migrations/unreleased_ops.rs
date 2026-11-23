@@ -584,22 +584,36 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_trs_listing ON title_request_sources(listing_id)",
     ),
+    // Text vectors, the one durable copy (`store::vectors`). A row is the
+    // vector of one target in one vector space: `model` names what made it
+    // (`@<plugin id>/<model id>`, or `local-hash-v1` for the stand-in) and
+    // `revision` is that model's digest of everything that decides its
+    // output, so vectors are compared only inside one (`model`, `revision`).
+    // `packs` lists the languages the model was loaded for (informational:
+    // the revision already covers them). `target_kind` is `work` (the
+    // target is a `works.id`) or `text` (the target is the SHA-256 of the
+    // embedded text, shared by every candidate with that text);
+    // `text_hash` is the SHA-256 of the input, so an unchanged target is
+    // not embedded again. `updated_at` is when the vector was written or,
+    // for a `text` row, last used: unused ones are pruned by it.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS embeddings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         target_kind TEXT NOT NULL,
         target_id TEXT NOT NULL,
         model TEXT NOT NULL,
+        revision TEXT NOT NULL DEFAULT '',
+        packs TEXT NOT NULL DEFAULT '',
         dims INTEGER NOT NULL,
         vector BLOB NOT NULL,
         text_hash TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        UNIQUE(target_kind, target_id, model)
+        UNIQUE(target_kind, target_id, model, revision)
     )",
     ),
     MigrationOp::Schema(
-        r"CREATE INDEX IF NOT EXISTS idx_embeddings_target ON embeddings(target_kind, target_id)",
+        r"CREATE INDEX IF NOT EXISTS idx_embeddings_space ON embeddings(target_kind, model, revision, updated_at)",
     ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS user_preferences (
@@ -674,7 +688,23 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         feed_json TEXT NOT NULL,
         seed_scope TEXT NOT NULL,
         candidates_fetched_at TEXT,
-        computed_at TEXT NOT NULL
+        computed_at TEXT NOT NULL,
+        feed_version TEXT,
+        feed_parts INTEGER
+    )",
+    ),
+    // A stored feed too wide for one statement or cell of the database
+    // plugin, cut into pieces joined again in `seq` order. The pieces go in
+    // first under a new `version`; the subject's `discover_feeds` row then
+    // names that version and its piece count (its `feed_json` empty), and
+    // pieces no row names are dropped after each write.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS discover_feed_parts (
+        subject_key TEXT NOT NULL,
+        version TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        body TEXT NOT NULL,
+        PRIMARY KEY (subject_key, version, seq)
     )",
     ),
     // One subject's stored taste: what their books, listening and wishes say
@@ -1590,7 +1620,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // titles share. A title a branch shares here is a node holding, so its
     // keys are its edition's too. `writer` is the host upload id that
     // claimed the key last (a branch's catalog upload included), or
-    // `acquire` for an acquire run on the node itself. `role` says what the file is. The probe
+    // `acquire:<32 hex>` for the acquire run on the node itself that wrote
+    // it (`acquire` for a branch's import of its owner's title). `role` says what the file is. The probe
     // result (`content_type`, `bitrate_kbps`, `lossless`, set at
     // `probed_at`) and the storefront the copy came from (`source_store`)
     // decide whether a later copy of the same edition replaces it, and tell
@@ -2519,6 +2550,22 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         FOREIGN KEY (plugin_instance_id) REFERENCES plugin_instances(plugin_instance_id) ON DELETE CASCADE
     )",
     ),
+    // Metadata gap-fill attempts that left an edition's gaps open
+    // (`store::edition_enrichment`): a record that filled only some gaps
+    // (`partial`) or no record that matched (`unmatched`). Gap-filling
+    // skips the edition until `attempted_at` is old enough, so titles that
+    // never match do not spend every run's request budget, and a partial
+    // fill is asked again later for the rest. One row per edition and
+    // enricher; a newer attempt replaces it.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS edition_enrich_attempts (
+        edition_id TEXT NOT NULL REFERENCES editions(id) ON DELETE CASCADE,
+        enricher TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK (outcome IN ('partial', 'unmatched')),
+        attempted_at TEXT NOT NULL,
+        PRIMARY KEY (edition_id, enricher)
+    )",
+    ),
 ];
 
 #[cfg(test)]
@@ -2650,6 +2697,15 @@ mod tests {
             "metadata_claims",
             "quality",
             crate::ClaimQuality::ALL.iter().map(|k| k.as_str()),
+        );
+    }
+
+    #[test]
+    fn enrich_attempt_outcomes_match_the_check() {
+        assert_check(
+            "edition_enrich_attempts",
+            "outcome",
+            crate::EnrichAttemptOutcome::ALL.iter().map(|o| o.as_str()),
         );
     }
 

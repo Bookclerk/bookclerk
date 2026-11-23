@@ -87,7 +87,6 @@ pub use admin_controls::{
     AdminSwitchChoice, AssignedAdminControls, DefaultSwitchChanges, OverrideSwitchChanges,
     ADMIN_CONTROLS_NAMESPACE,
 };
-#[cfg(test)]
 pub(crate) use artifacts::chunk_bytes;
 pub use artifacts::{load_artifact_blob, put_artifact_blob, MAX_ARTIFACT_BLOB_BYTES};
 pub use branch_catalog::{
@@ -210,11 +209,11 @@ pub use ingress::{
 pub use instance_config::{
     import_instance_config_if_absent, load_instance_config, parse_setting_text,
     reconcile_instance_configs_to_schema, replace_instance_config, resolve_instance_bindings,
-    seal_instance_secret, set_secret_ref, set_setting, InstanceBindingGrant,
-    InstanceConfigDocument, InstanceConfigReplace, InstanceSecretRefV1, PluginInstanceConfigV1,
-    PrunedInstanceConfig, ResolvedInstanceBindings, SettingCell, SettingValue,
-    MAX_INSTANCE_SECRET_REFS, MAX_INSTANCE_SETTINGS, MAX_INSTANCE_SETTING_BYTES,
-    PLUGIN_INSTANCE_CONFIG_SCHEMA_VERSION,
+    resolve_instance_bindings_with, seal_instance_secret, set_secret_ref, set_setting,
+    InstanceBindingGrant, InstanceConfigDocument, InstanceConfigReplace, InstanceSecretRefV1,
+    PluginInstanceConfigV1, PrunedInstanceConfig, RequiredSettings, ResolvedInstanceBindings,
+    SettingCell, SettingValue, MAX_INSTANCE_SECRET_REFS, MAX_INSTANCE_SETTINGS,
+    MAX_INSTANCE_SETTING_BYTES, PLUGIN_INSTANCE_CONFIG_SCHEMA_VERSION,
 };
 pub use instances::{
     create_node_local_instance, create_plugin_instance, default_instance_for_key,
@@ -238,8 +237,9 @@ pub use job_routing::{
     ACCOUNT_SEMAPHORE_LIMIT, ROUTED_CLAIM_CANDIDATES,
 };
 pub use keeper::{
-    apply_keeper_update, confirmed_keeping_branch, keeping_branch, keeps_for_link, kept_shares,
-    record_pushed_revision, sign_in_revision, KeeperUpdate, KeptShare, SignIn,
+    adopt_library_sign_in, apply_keeper_update, confirmed_keeping_branch, keeper_reconcile,
+    keeping_branch, keeps_for_link, kept_shares, record_pushed_revision, sign_in_revision,
+    still_as_received, KeeperUpdate, KeptShare, SignIn,
 };
 pub use leases::{
     acquire_lease, acquire_lease_on, list_leases, load_lease, load_lease_on, release_lease,
@@ -266,12 +266,13 @@ pub(crate) use live::{
 };
 pub use live::{changed_topics, live_revisions, LiveRevision, LiveRevisions, LiveTopic};
 pub use member_controls::{
-    assigned_member_controls, default_member_controls, effective_controls,
-    load_default_member_controls, member_control_overrides, parse_member_controls,
-    parse_user_controls_request, role_follows_default_controls, role_has_controls,
+    assigned_member_controls, change_default_member_controls, change_member_control_overrides,
+    change_member_control_overrides_for, default_member_controls, effective_controls,
+    load_default_member_controls, member_control_overrides, parse_default_controls_patch,
+    parse_user_controls_patch, role_follows_default_controls, role_has_controls,
     set_default_member_controls, set_member_control_overrides, set_member_control_overrides_for,
-    user_may, AssignedControls, ControlOverrides, MemberControl, MemberControls, PutUserControls,
-    MEMBER_CONTROLS_NAMESPACE,
+    user_may, AssignedControls, ControlChanges, ControlChoice, ControlOverrides, MemberControl,
+    MemberControls, PatchDefaultControls, PatchUserControls, MEMBER_CONTROLS_NAMESPACE,
 };
 pub use node_queue::{
     is_node_consumer_id, is_valid_node_id, node_consumer_id, node_queue_name, publish_node_message,
@@ -293,10 +294,11 @@ pub use output::{
 pub use ownership::{nodes_owned_by, set_node_owner, verify_node_owner};
 pub use patron_scope::{
     assigned_patron_scope, default_patron_scope, default_work_scope, load_default_patron_scope,
-    parse_patron_scope, parse_user_scope_request, role_is_scoped, scope_for_user,
-    set_default_patron_scope, set_patron_scope, verify_patron_administrator, work_scope_for_user,
-    AssignedScope, ExplicitContent, PatronScope, PutUserScope, RuleEffect, ScopeField, ScopeRule,
-    EXPLICIT_FACET_KEY, MAX_SCOPE_JSON_BYTES, MAX_SCOPE_RULES, MAX_SCOPE_VALUE_BYTES,
+    parse_default_scope_request, parse_user_scope_request, replace_default_patron_scope,
+    replace_patron_scope, role_is_scoped, scope_for_user, set_default_patron_scope,
+    set_patron_scope, verify_patron_administrator, work_scope_for_user, AssignedScope,
+    ExplicitContent, PatronScope, PutDefaultScope, PutUserScope, RuleEffect, ScopeField, ScopeRule,
+    ScopeVersion, EXPLICIT_FACET_KEY, MAX_SCOPE_JSON_BYTES, MAX_SCOPE_RULES, MAX_SCOPE_VALUE_BYTES,
     PATRON_SCOPE_NAMESPACE,
 };
 pub use pending_joins::{
@@ -379,6 +381,7 @@ pub use webhooks::{
     WebhookStoreOutcome, WebhookTarget, WebhookUrlToken, MAX_WAITING_WEBHOOK_DELIVERIES,
     MAX_WEBHOOK_PULL_PAGE_BYTES,
 };
+pub(crate) use window_books::cut as cut_text;
 pub use window_books::{
     clear_window_books, discard_window_read, finish_window_read, person_books_page,
     record_window_page, window_books_page, window_read_stamp, window_view, WindowEntry,

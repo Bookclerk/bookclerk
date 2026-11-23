@@ -103,6 +103,7 @@ pub use sockets::{
 };
 
 pub use bookclerk_plugin_abi::ai;
+pub use bookclerk_plugin_abi::provision;
 pub use bookclerk_plugin_abi::{
     byte_source_from_async_read, canonical_execute_request_hash, connect_plugin,
     database_adapter_config_from_bindings, decode_db_value_bytes, decode_execute_request_bytes,
@@ -159,6 +160,15 @@ pub use bookclerk_plugin_abi::{
     AiRunParams, AiRunner, AiRunnerClient, AiTask, AiTextEmbeddingsInput, AiTextEmbeddingsOutput,
     AiTextRole, MAX_AI_EMBED_DIMENSIONS, MAX_AI_EMBED_TEXTS, MAX_AI_EMBED_TEXT_BYTES,
     MAX_AI_LANGUAGES, MAX_AI_MODELS, MAX_AI_MODEL_NAME_BYTES,
+};
+pub use bookclerk_plugin_abi::{
+    DeprovisionRequest, InvocationPurpose, ProvisionGrant, ProvisionGrantKind, ProvisionRequest,
+    Provisioned, ProvisionedSecret, Provisioning, ProvisioningClient, MAX_PROVISION_SECRETS,
+    MAX_PROVISION_SECRET_BYTES, MAX_PROVISION_SETTINGS_BYTES, MAX_PROVISION_SUMMARY_LINES,
+    MAX_PROVISION_SUMMARY_LINE_BYTES, MAX_PROVISION_TOKEN_BYTES,
+};
+pub use bookclerk_plugin_abi::{
+    NetworkGrant, SettingGrantState, SettingNetwork, SettingNetworkGrant, MAX_NETWORK_GRANT_ENTRIES,
 };
 pub use bookclerk_plugin_abi::{
     WebhookAckRequest, WebhookDelivered, WebhookDelivery, WebhookHandler, WebhookHeader,
