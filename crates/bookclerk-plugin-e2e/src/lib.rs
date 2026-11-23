@@ -44,6 +44,7 @@ pub const OPTIONAL_PLUGINS: &[&str] = &[
     "cloudflare_relay",
     "ngrok",
     "cloudflare_tunnel",
+    "cloudflare_dns",
     "webhook",
     "email",
 ];
