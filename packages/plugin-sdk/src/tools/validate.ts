@@ -92,6 +92,26 @@ export type Manifest = {
     kind?: string;
   };
   /**
+   * `[provisioning]` — the guided setup a `provisioning` plugin offers.
+   * Required for that entrypoint, forbidden for others.
+   */
+  provisioning?: {
+    /** The provider the grant is for (`cloudflare`). */
+    provider?: string;
+    /** Grant kinds the plugin accepts (`api_token`); never empty. */
+    grants?: string[];
+    /** Where the operator creates a token at the provider (`https://`). */
+    token_url?: string;
+    /** The permissions a pasted token needs, one line each. */
+    token_permissions?: string[];
+    /** Non-secret setting keys the setup screen asks for before running. */
+    inputs?: string[];
+    /** Setting keys, secret or not, the plugin may write; never empty. */
+    outputs?: string[];
+    /** Whether the plugin can remove what it created. */
+    deprovision?: boolean;
+  };
+  /**
    * `[ai]` — model tasks the plugin serves on its `ai` entrypoint and the
    * tasks it calls through `env.AI`.
    */
@@ -765,6 +785,133 @@ function validateIngress(m: Manifest): void {
   }
 }
 
+/** Keys a `[provisioning]` table may carry. */
+const PROVISIONING_KEYS = new Set([
+  "provider",
+  "grants",
+  "token_url",
+  "token_permissions",
+  "inputs",
+  "outputs",
+  "deprovision",
+]);
+
+/** Grant kinds a `[provisioning]` table may list. */
+const PROVISION_GRANTS = new Set(["api_token"]);
+
+/**
+ * Whether `text` holds a control character (Unicode `Cc`).
+ *
+ * @param text - Text to check.
+ * @returns True when any character is a control character.
+ */
+function hasControl(text: string): boolean {
+  return /\p{Cc}/u.test(text);
+}
+
+/**
+ * Checks `[provisioning]` against the entrypoints and settings, with the
+ * host's rules and messages (`manifest-cases.json`).
+ *
+ * @param m - Manifest under validation.
+ * @throws {Error} When a `provisioning` plugin has no table or another plugin
+ *   has one, or the provider, grants, token URL, token permissions, inputs or
+ *   outputs break their rules.
+ */
+function validateProvisioning(m: Manifest): void {
+  const exported = ((m.entrypoints ?? []) as readonly string[]).includes("provisioning");
+  const table = m.provisioning;
+  if (table == null) {
+    if (exported) {
+      throw new Error(
+        "plugin.toml: `[provisioning]` is required for a plugin with the `provisioning` entrypoint",
+      );
+    }
+    return;
+  }
+  if (!exported) {
+    throw new Error("plugin.toml: `[provisioning]` needs the `provisioning` entrypoint");
+  }
+  for (const key of Object.keys(table)) {
+    if (!PROVISIONING_KEYS.has(key)) {
+      throw new Error(`plugin.toml: \`[provisioning]\` has unknown key \`${key}\``);
+    }
+  }
+  if (typeof table.provider !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(table.provider)) {
+    throw new Error("plugin.toml: `[provisioning].provider` must match ^[a-z][a-z0-9-]{0,31}$");
+  }
+  const grants = table.grants;
+  if (
+    !Array.isArray(grants) ||
+    grants.length === 0 ||
+    grants.some((grant) => !PROVISION_GRANTS.has(grant)) ||
+    new Set(grants).size !== grants.length
+  ) {
+    throw new Error(
+      "plugin.toml: `[provisioning].grants` must list each grant kind once and not be empty",
+    );
+  }
+  const url = table.token_url;
+  if (
+    url != null &&
+    (typeof url !== "string" ||
+      !url.startsWith("https://") ||
+      new TextEncoder().encode(url).length > 2048 ||
+      /\s/u.test(url) ||
+      hasControl(url))
+  ) {
+    throw new Error("plugin.toml: `[provisioning].token_url` must be an https:// URL");
+  }
+  const permissions = table.token_permissions ?? [];
+  if (
+    !Array.isArray(permissions) ||
+    permissions.length > 16 ||
+    !permissions.every(
+      (line) =>
+        typeof line === "string" &&
+        line.trim() !== "" &&
+        [...line].length <= 120 &&
+        !hasControl(line),
+    )
+  ) {
+    throw new Error(
+      "plugin.toml: `[provisioning].token_permissions` takes at most 16 non-empty lines of at most 120 characters",
+    );
+  }
+  const kinds = new Map<string, string>();
+  for (const setting of m.settings ?? []) kinds.set(String(setting.key), String(setting.type));
+  const seenInputs = new Set<string>();
+  for (const key of table.inputs ?? []) {
+    const kind = kinds.get(key);
+    if (!["string", "bool", "integer", "enum"].includes(kind ?? "") || seenInputs.has(key)) {
+      throw new Error(
+        `plugin.toml: \`[provisioning].inputs\` entry \`${key}\` must be a declared setting that is not a secret or a table, listed once`,
+      );
+    }
+    seenInputs.add(key);
+  }
+  const outputs = table.outputs ?? [];
+  if (outputs.length === 0) {
+    throw new Error("plugin.toml: `[provisioning].outputs` must not be empty");
+  }
+  const seenOutputs = new Set<string>();
+  for (const key of outputs) {
+    const kind = kinds.get(key);
+    if (
+      !["string", "bool", "integer", "enum", "secret"].includes(kind ?? "") ||
+      seenOutputs.has(key)
+    ) {
+      throw new Error(
+        `plugin.toml: \`[provisioning].outputs\` entry \`${key}\` must be a declared setting that is not a table, listed once`,
+      );
+    }
+    seenOutputs.add(key);
+  }
+  if (table.deprovision != null && typeof table.deprovision !== "boolean") {
+    throw new Error("plugin.toml: `[provisioning].deprovision` must be a boolean");
+  }
+}
+
 /**
  * Checks `[metadata_files]` against the entrypoints, with the host's rules and
  * messages (`manifest-cases.json`).
@@ -1202,6 +1349,7 @@ export const ENTRYPOINT_NAMES = [
   "notifier",
   "ingress",
   "ai",
+  "provisioning",
 ] as const;
 
 const LOGO_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico"] as const;
@@ -1356,6 +1504,7 @@ export function validateManifest(m: Manifest): void {
   validateNotifier(m);
   validateNotificationTypes(m);
   validateIngress(m);
+  validateProvisioning(m);
   validateAi(m);
   validateSurface(m);
   validateSettings(m);

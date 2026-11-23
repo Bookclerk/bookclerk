@@ -22,6 +22,7 @@ from bookclerk_plugin_sdk.workerd import (
     MetadataFilesEntrypoint,
     NotifierEntrypoint,
     PluginError,
+    ProvisioningEntrypoint,
     ScheduledController,
     StorageEntrypoint,
     StorefrontEntrypoint,
@@ -30,6 +31,7 @@ from bookclerk_plugin_sdk.workerd import (
     event_batch_results,
     job_outcome_for,
     json_payload,
+    provisioned,
 )
 
 
@@ -450,6 +452,34 @@ class DatabaseAdapterSessionTests(unittest.IsolatedAsyncioTestCase):
 
         images = await Covers().bookclerkInvoke({}, "fetchCovers", {"urls": ["https://a/"]}, "sink")
         self.assertEqual(images, [{"url": "https://a/", "stored": False, "error": "'sink'"}])
+
+    async def test_provisioning_defaults_and_dispatch(self) -> None:
+        """ProvisioningEntrypoint refuses by default and dispatches overrides."""
+        setup = ProvisioningEntrypoint()
+        for method in (setup.provision, setup.deprovision):
+            with self.assertRaises(PluginError) as ctx:
+                await method({})
+            self.assertEqual(ctx.exception.code, "unsupported")
+
+        class Bucket(ProvisioningEntrypoint):
+            async def provision(self, request: dict) -> dict:
+                return provisioned(
+                    settings={"bucket": "books", "port": 443},
+                    secrets={"access_key_id": request["grant"]["token"]},
+                    summary=["Created bucket books"],
+                )
+
+        done = await Bucket().bookclerkInvoke(
+            {}, "provision", {"grant": {"kind": "apiToken", "token": "id-1"}, "inputsJson": "{}"}
+        )
+        self.assertEqual(
+            done,
+            {
+                "settingsJson": '{"bucket":"books","port":443}',
+                "secrets": [{"key": "access_key_id", "value": "id-1"}],
+                "summary": ["Created bucket books"],
+            },
+        )
 
     async def test_ingress_defaults_and_dispatch(self) -> None:
         """IngressEntrypoint refuses start, reports serving, stops, and dispatches overrides."""

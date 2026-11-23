@@ -107,6 +107,25 @@ pub const MAX_WEBHOOK_NAME_BYTES: u32 = crate::plugin_capnp::MAX_WEBHOOK_NAME_BY
 
 /// Longest kept request header value, in bytes.
 pub const MAX_WEBHOOK_HEADER_VALUE_BYTES: u32 = crate::plugin_capnp::MAX_WEBHOOK_HEADER_VALUE_BYTES;
+
+/// Longest [`crate::ProvisionGrant`] token, in bytes.
+pub const MAX_PROVISION_TOKEN_BYTES: u32 = crate::plugin_capnp::MAX_PROVISION_TOKEN_BYTES;
+
+/// Longest [`crate::ProvisionedSecret`] value, in bytes.
+pub const MAX_PROVISION_SECRET_BYTES: u32 = crate::plugin_capnp::MAX_PROVISION_SECRET_BYTES;
+
+/// Most credentials one [`crate::Provisioned`] returns.
+pub const MAX_PROVISION_SECRETS: u32 = crate::plugin_capnp::MAX_PROVISION_SECRETS;
+
+/// Largest provisioning settings or inputs JSON text, in bytes.
+pub const MAX_PROVISION_SETTINGS_BYTES: u32 = crate::plugin_capnp::MAX_PROVISION_SETTINGS_BYTES;
+
+/// Most lines in [`crate::Provisioned::summary`].
+pub const MAX_PROVISION_SUMMARY_LINES: u32 = crate::plugin_capnp::MAX_PROVISION_SUMMARY_LINES;
+
+/// Longest line of [`crate::Provisioned::summary`], in bytes.
+pub const MAX_PROVISION_SUMMARY_LINE_BYTES: u32 =
+    crate::plugin_capnp::MAX_PROVISION_SUMMARY_LINE_BYTES;
 /// Most URLs in one `CoverFetcher.fetchCovers` call.
 pub const MAX_COVER_URLS: u32 = crate::plugin_capnp::MAX_COVER_URLS;
 

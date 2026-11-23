@@ -12,6 +12,7 @@ import { LibraryConsentsPanel } from "@/components/LibraryConsentsPanel";
 import { NodesPanel } from "@/components/NodesPanel";
 import { OidcSettingsPanel } from "@/components/OidcSettingsPanel";
 import { OutputSettingsPanel } from "@/components/OutputSettingsPanel";
+import { GuidedSetupPanel } from "@/components/GuidedSetupPanel";
 import { PlacementBadge, PlacementPanel } from "@/components/PlacementPanel";
 import { RecoveryCopyReminder } from "@/components/RecoveryCopy";
 import { StorageSyncBadge } from "@/components/StorageSyncBadge";
@@ -2252,6 +2253,13 @@ export function SettingsPage({
                                           })}
                                         </div>
                                       )}
+                                      {instanceGroup ? (
+                                        <GuidedSetupPanel
+                                          plugin={plugin}
+                                          onChanged={reloadSettings}
+                                          onSessionExpired={onSessionExpired}
+                                        />
+                                      ) : null}
                                       {instanceGroup ? (
                                         <PlacementPanel
                                           plugin={plugin}

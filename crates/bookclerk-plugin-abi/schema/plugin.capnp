@@ -175,6 +175,19 @@ const maxWebhookHeaders :UInt32 = 16;
 const maxWebhookNameBytes :UInt32 = 32;
 # Longest kept request header value, in bytes.
 const maxWebhookHeaderValueBytes :UInt32 = 8192;
+# Longest `ProvisionGrant.token`, in bytes.
+const maxProvisionTokenBytes :UInt32 = 4096;
+# Longest `ProvisionedSecret.value`, in bytes.
+const maxProvisionSecretBytes :UInt32 = 1024;
+# Most credentials one `Provisioned` returns.
+const maxProvisionSecrets :UInt32 = 16;
+# Largest `Provisioned.settingsJson` and `ProvisionRequest.inputsJson`, in
+# bytes.
+const maxProvisionSettingsBytes :UInt32 = 16384;
+# Most lines in `Provisioned.summary`.
+const maxProvisionSummaryLines :UInt32 = 8;
+# Longest line of `Provisioned.summary`, in bytes.
+const maxProvisionSummaryLineBytes :UInt32 = 200;
 # Largest `KvNamespace` metadata JSON text in bytes.
 const maxKvMetadataBytes :UInt32 = 1024;
 # Most entries in each list of a `NetworkGrant` (fetch hosts, TCP
@@ -768,6 +781,8 @@ struct Entrypoints {
   ai @16 :AiModels;
   # `[[webhooks]]` handler: called after the host stores deliveries.
   webhookHandler @17 :WebhookHandler;
+  # `provisioning` entrypoint: guided setup.
+  provisioning @18 :Provisioning;
 }
 
 # Result union of `PluginWorker.open`.
@@ -1612,6 +1627,26 @@ interface Ingress {
   stop @2 () -> (result :EmptyReply);
 }
 
+# Guided setup (`Entrypoints.provisioning`). The host collects a
+# short-lived grant from the operator (a pasted API token, or an OAuth access
+# token), opens the instance with `Invocation.purpose = provision` and hands
+# the grant over. The plugin creates what it needs at the provider and
+# returns settings and narrowly scoped credentials; the host checks them
+# against `[provisioning] outputs` and the pinned settings schema, writes the
+# settings, seals the credentials and drops the grant.
+interface Provisioning {
+  # Create (or, when `CONFIG` holds earlier outputs, update or rotate) what
+  # the instance needs.
+  provision @0 (
+      request :ProvisionRequest  # The grant and the operator's choices.
+  ) -> (result :ProvisionReply);
+  # Remove what `provision` created. Removing what is already gone is not an
+  # error.
+  deprovision @1 (
+      request :DeprovisionRequest  # A grant, or none to use stored secrets.
+  ) -> (result :EmptyReply);
+}
+
 # Host-served inbound webhooks, granted through `Bindings.webhooks`.
 #
 # The host serves each `[[webhooks]]` row at a secret URL under the
@@ -1970,6 +2005,8 @@ enum Entrypoint {
   ingress @10;
   # Model serving: `models` and `run` (`AiModels`).
   ai @11;
+  # Guided setup: `provision` and `deprovision` (`Provisioning`).
+  provisioning @12;
 }
 
 # One declared event consumer: a `[[events.consumers]]` row the default
@@ -3341,6 +3378,19 @@ struct Invocation {
   correlationId @3 :Text;
   # Id of the event or command that caused this invocation; empty when none.
   causationId @4 :Text;
+  # What the host opens the entrypoints for. `provision` opens an instance
+  # that may not be configured yet: `CONFIG` and `SECRETS` hold what is
+  # stored so far, required settings may be missing, and the host calls
+  # only `Entrypoints.provisioning`.
+  purpose @5 :InvocationPurpose;
+}
+
+# Why the host opens a plugin's entrypoints (`Invocation.purpose`).
+enum InvocationPurpose {
+  # Ordinary work: every required setting is set.
+  serve @0;
+  # Guided setup (`Entrypoints.provisioning`): settings may be incomplete.
+  provision @1;
 }
 
 # One message on a Workers-style queue, delivered by `QueueConsumer.queue`.
@@ -4560,6 +4610,75 @@ struct WebhookDelivered {
   name @0 :Text;
   # Deliveries waiting for this webhook when the host called.
   waiting @1 :UInt32;
+}
+
+# What kind of grant the operator gave a guided setup (`ProvisionGrant`).
+enum ProvisionGrantKind {
+  # No grant: `deprovision` uses the instance's stored secrets.
+  none @0;
+  # An API token the operator created at the provider and pasted.
+  apiToken @1;
+  # An OAuth access token from the provider's sign-in.
+  oauthAccessToken @2;
+}
+
+# A short-lived credential for one guided setup run. The host never stores
+# or logs it; the plugin uses it only during the call.
+struct ProvisionGrant {
+  # Kind of grant.
+  kind @0 :ProvisionGrantKind;
+  # The token; empty for `none`. At most `maxProvisionTokenBytes`.
+  token @1 :Text $optional;
+  # When the token expires (UTC Unix milliseconds); zero when unknown or it
+  # does not expire.
+  expiresAtUnixMs @2 :UInt64 $optional;
+}
+
+# Arguments of `Provisioning.provision`.
+struct ProvisionRequest {
+  # The operator's grant; never `none`.
+  grant @0 :ProvisionGrant;
+  # The operator's choices as a JSON object keyed by `[provisioning] inputs`
+  # setting keys (`{"bucket": "books"}`); `{}` when none were asked for.
+  inputsJson @1 :Text;
+}
+
+# One credential a guided setup returns for the host to seal.
+struct ProvisionedSecret {
+  # A `secret` setting key listed in `[provisioning] outputs`.
+  key @0 :Text;
+  # The credential, at most `maxProvisionSecretBytes`.
+  value @1 :Text;
+}
+
+# Success payload of `Provisioning.provision`.
+struct Provisioned {
+  # Non-secret settings to store, as a JSON object keyed by setting keys
+  # listed in `[provisioning] outputs`; at most `maxProvisionSettingsBytes`.
+  settingsJson @0 :Text;
+  # Credentials to seal; each key at most once.
+  secrets @1 :List(ProvisionedSecret);
+  # Short lines for the setup screen ("Created bucket books"), at most
+  # `maxProvisionSummaryLines` of `maxProvisionSummaryLineBytes`. Never a
+  # credential.
+  summary @2 :List(Text);
+}
+
+# Result union of `Provisioning.provision`.
+struct ProvisionReply {
+  union {
+    # Success: what to store.
+    ok @0 :Provisioned;
+    # Typed failure: `invalid_params` for a refused choice, `unauthorized`
+    # or `forbidden` when the grant cannot do what is needed.
+    err @1 :PluginError;
+  }
+}
+
+# Arguments of `Provisioning.deprovision`.
+struct DeprovisionRequest {
+  # The operator's grant, or kind `none` to use the stored secrets.
+  grant @0 :ProvisionGrant;
 }
 
 # --- rust-generated: end ---

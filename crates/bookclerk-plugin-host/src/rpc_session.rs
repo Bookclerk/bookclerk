@@ -93,6 +93,9 @@ type NotifierCall = EntrypointCall<dyn bookclerk_plugin_sdk::Notifier>;
 /// Typed call against the opened `ai` entrypoint.
 type AiCall = EntrypointCall<dyn bookclerk_plugin_sdk::AiModels>;
 
+/// Typed call against the opened `provisioning` entrypoint.
+type ProvisioningCall = EntrypointCall<dyn bookclerk_plugin_abi::Provisioning>;
+
 /// Typed call against the opened `ingress` entrypoint.
 type IngressCall = EntrypointCall<dyn bookclerk_plugin_abi::Ingress>;
 
@@ -221,6 +224,11 @@ enum Work {
     Ai {
         /// Typed call; replies through the sender it captured.
         call: AiCall,
+    },
+    /// One typed `provisioning` method on the opened primary entrypoints.
+    Provisioning {
+        /// Typed call; replies through the sender it captured.
+        call: ProvisioningCall,
     },
     /// One typed `ingress` method on the opened primary entrypoints.
     Ingress {
@@ -1543,6 +1551,28 @@ impl PluginSession {
         self.entrypoint_call(call, |call| Work::Ai { call }).await
     }
 
+    /// One typed `provisioning` method (`provision` or `deprovision`) on
+    /// the opened primary entrypoints. Open the session with
+    /// [`bookclerk_plugin_sdk::InvocationPurpose::Provision`] first.
+    ///
+    /// `call` runs on the vat thread; its output crosses back to the caller's
+    /// runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns a plugin error when the guest did not export `provisioning`
+    /// or the method fails.
+    pub async fn provisioning<T, F, Fut>(&self, call: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(Box<dyn bookclerk_plugin_abi::Provisioning>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = std::result::Result<T, bookclerk_plugin_sdk::PluginError>>
+            + 'static,
+    {
+        self.entrypoint_call(call, |call| Work::Provisioning { call })
+            .await
+    }
+
     /// One typed `ingress` method (`start`, `health` or `stop`) on the
     /// opened primary entrypoints.
     ///
@@ -2754,7 +2784,10 @@ async fn primary_entrypoints<'a>(
             network: primary.network.clone(),
             ..BindingValues::default()
         });
-        let invocation = new_invocation(account_id, uuid::Uuid::new_v4().to_string(), 0);
+        let invocation = Invocation {
+            purpose: want.purpose,
+            ..new_invocation(account_id, uuid::Uuid::new_v4().to_string(), 0)
+        };
         let entrypoints = client
             .open(
                 &invocation,
@@ -3739,6 +3772,23 @@ fn vat_thread(
                                 |eps| {
                                     eps.ai.clone().map(|stub| {
                                         Box::new(stub) as Box<dyn bookclerk_plugin_sdk::AiModels>
+                                    })
+                                },
+                                call,
+                            );
+                            let _ = with_session(&session_cancel, &mut child, &mut guest, open)
+                                .await;
+                        }
+                        Work::Provisioning { call } => {
+                            let open = run_entrypoint_call(
+                                &client,
+                                &account_id,
+                                &mut primary,
+                                "provisioning",
+                                |eps| {
+                                    eps.provisioning.clone().map(|stub| {
+                                        Box::new(stub)
+                                            as Box<dyn bookclerk_plugin_abi::Provisioning>
                                     })
                                 },
                                 call,

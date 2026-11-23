@@ -102,6 +102,8 @@ paths = [
     "fuzz/oracles/ai_run.rs",
     "fuzz/corpus/event_read/**",
     "fuzz/oracles/event_read.rs",
+    "fuzz/corpus/provision_reply/**",
+    "fuzz/oracles/provision_reply.rs",
     "fuzz/corpus/socket_request/**",
     "fuzz/oracles/socket_request.rs",
     "fuzz/corpus/storage_reply/**",
@@ -280,6 +282,8 @@ paths = [
     "fuzz/oracles/b2_reply.rs",
     "fuzz/corpus/b2_event/**",
     "fuzz/oracles/b2_event.rs",
+    "fuzz/corpus/cloudflare_api/**",
+    "fuzz/oracles/cloudflare_api.rs",
 ]
 
 [[test_input]]
