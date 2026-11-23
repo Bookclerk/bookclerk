@@ -222,8 +222,7 @@ pub async fn run(
             store_label(applied.store)
         );
         println!(
-            "set database.d1.account_id={} and database.d1.database_id={} in {}",
-            outputs.account_id,
+            "set database.d1.account_id and database.d1.database_id={} in {}",
             outputs.database_id,
             applied.config_file.display()
         );

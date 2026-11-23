@@ -9,9 +9,9 @@ use tempfile::tempdir;
 use super::*;
 use crate::master_key::{master_key_test_lock, MasterKey};
 
-/// A fixed test DEK.
-fn dek(byte: u8) -> MasterKey {
-    MasterKey::from_test_bytes([byte; 32])
+/// A fresh random test DEK; each call returns a different key.
+fn dek() -> MasterKey {
+    MasterKey::from_test_bytes(rand::random())
 }
 
 /// In-memory stores for credential items, installed process-wide while the
@@ -85,7 +85,7 @@ fn a_file_install_keeps_the_sealed_token_in_the_file() {
     let stores = Stores::install();
     let dir = tempdir().unwrap();
     write_master_key(dir.path(), KeyStoreKind::File);
-    let key = dek(1);
+    let key = dek();
 
     assert!(load_database_credential(dir.path(), &key)
         .unwrap()
@@ -110,7 +110,7 @@ fn a_keychain_install_keeps_only_a_pointer_in_the_file() {
     let stores = Stores::install();
     let dir = tempdir().unwrap();
     write_master_key(dir.path(), KeyStoreKind::Keychain);
-    let key = dek(2);
+    let key = dek();
 
     let kind = store_database_credential(dir.path(), &key, &credential("first")).unwrap();
     assert_eq!(kind, KeyStoreKind::Keychain);
@@ -136,7 +136,7 @@ fn a_systemd_creds_install_seals_the_item_with_the_tpm_store() {
     let stores = Stores::install();
     let dir = tempdir().unwrap();
     write_master_key(dir.path(), KeyStoreKind::SystemdCreds);
-    let key = dek(3);
+    let key = dek();
 
     let kind = store_database_credential(dir.path(), &key, &credential("tpm-token")).unwrap();
     assert_eq!(kind, KeyStoreKind::SystemdCreds);
@@ -154,10 +154,10 @@ fn reading_fails_closed() {
     let stores = Stores::install();
     let dir = tempdir().unwrap();
     write_master_key(dir.path(), KeyStoreKind::Keychain);
-    let key = dek(4);
+    let key = dek();
     store_database_credential(dir.path(), &key, &credential("tok")).unwrap();
 
-    let other = load_database_credential(dir.path(), &dek(5)).unwrap_err();
+    let other = load_database_credential(dir.path(), &dek()).unwrap_err();
     assert!(
         other.to_string().contains("different master key"),
         "{other}"
@@ -193,7 +193,7 @@ fn a_store_that_refuses_the_item_leaves_the_old_credential() {
     let stores = Stores::install();
     let dir = tempdir().unwrap();
     write_master_key(dir.path(), KeyStoreKind::Keychain);
-    let key = dek(6);
+    let key = dek();
     store_database_credential(dir.path(), &key, &credential("kept")).unwrap();
 
     stores
@@ -210,7 +210,7 @@ fn storing_needs_a_master_key() {
     let _lock = master_key_test_lock();
     let _stores = Stores::install();
     let dir = tempdir().unwrap();
-    let err = store_database_credential(dir.path(), &dek(7), &credential("tok")).unwrap_err();
+    let err = store_database_credential(dir.path(), &dek(), &credential("tok")).unwrap_err();
     assert!(err.to_string().contains("no master key"), "{err}");
 }
 
@@ -220,7 +220,7 @@ fn the_credential_follows_the_master_key_to_another_store() {
     let stores = Stores::install();
     let dir = tempdir().unwrap();
     write_master_key(dir.path(), KeyStoreKind::File);
-    let key = dek(8);
+    let key = dek();
     store_database_credential(dir.path(), &key, &credential("moving")).unwrap();
 
     // Already where the key is: nothing changes.
@@ -271,7 +271,7 @@ fn the_d1_token_comes_from_the_environment_or_the_stored_credential() {
     let _stores = Stores::install();
     let dir = tempdir().unwrap();
     write_master_key(dir.path(), KeyStoreKind::File);
-    let key = dek(9);
+    let key = dek();
     let missing = resolve_d1_token_with(None, dir.path(), Some(&key)).unwrap_err();
     assert!(
         missing.to_string().contains("database setup d1"),
