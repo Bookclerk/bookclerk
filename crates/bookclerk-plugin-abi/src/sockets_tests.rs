@@ -275,3 +275,35 @@ fn a_tls_stream_carries_binary_frames_only() {
     let big = SocketFrame::Binary(vec![0; MAX_SOCKET_FRAME_BYTES as usize + 1]);
     assert!(check_socket_frame_for(SocketScheme::Tls, &big).is_err());
 }
+
+#[test]
+fn trust_anchors_are_for_tls_only_and_shaped_like_certificates() {
+    let short = vec![0x30, 0x03, 0x02, 0x01, 0x00];
+    let mut long = vec![0x30, 0x82, 0x01, 0x00];
+    long.resize(4 + 256, 0);
+    let mut medium = vec![0x30, 0x81, 0x80];
+    medium.resize(3 + 128, 0);
+    let mut req = request("tls://connect.example.com:443");
+    req.trust_anchors = vec![short.clone(), long.clone(), medium];
+    assert!(validate_socket_connect(&req).is_ok());
+    let mut ws = request("wss://a.example/");
+    ws.trust_anchors = vec![short.clone()];
+    assert!(validate_socket_connect(&ws).is_err(), "websocket anchors");
+    req.trust_anchors = vec![short.clone(); MAX_SOCKET_TRUST_ANCHORS as usize + 1];
+    assert!(validate_socket_connect(&req).is_err(), "too many");
+    let mut oversized = vec![0x30, 0x82, 0x20, 0x00];
+    oversized.resize(4 + 0x2000, 0);
+    for bad in [
+        Vec::new(),
+        vec![0x31, 0x00],
+        vec![0x30],
+        vec![0x30, 0x05, 0x00],
+        vec![0x30, 0x81, 0x05, 0, 0, 0, 0, 0],
+        vec![0x30, 0x82, 0x00, 0x01, 0x00],
+        vec![0x30, 0x83, 0x00, 0x00, 0x01, 0x00],
+        oversized,
+    ] {
+        assert!(!is_der_certificate_shape(&bad), "{bad:02x?} accepted");
+    }
+    assert!(is_der_certificate_shape(&long));
+}

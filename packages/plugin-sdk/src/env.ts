@@ -67,6 +67,14 @@ export interface SocketConnectOptions {
    * store it.
    */
   attachment?: unknown;
+  /**
+   * `tls://` only: root certificates the server's chain must end in instead
+   * of Mozilla's roots, for a service that signs its endpoint with its own
+   * CA. Each is DER bytes or one PEM `CERTIFICATE` block; at most
+   * `MAX_SOCKET_TRUST_ANCHORS`, each at most `MAX_SOCKET_TRUST_ANCHOR_BYTES`
+   * of DER.
+   */
+  trustAnchors?: Array<Uint8Array | string>;
 }
 
 /**

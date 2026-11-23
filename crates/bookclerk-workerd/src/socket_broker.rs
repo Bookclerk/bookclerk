@@ -14,7 +14,8 @@
 //!   addresses the policy allows, with no redirects;
 //! - `wss://` uses rustls on the hosts' one provider with Mozilla's roots;
 //! - a `tls://host:port` stream needs a TCP grant for its host and port,
-//!   offers the guest's ALPN ids, and carries bytes: each read becomes a
+//!   offers the guest's ALPN ids, checks the server against the guest's own
+//!   trust anchors when it sends any (else Mozilla's roots), and carries bytes: each read becomes a
 //!   binary message and each binary frame the guest sends is written as is;
 //!   the peer ending the stream is a clean close (1000);
 //! - heartbeat frames the guest declared at connect are answered here and
@@ -46,7 +47,7 @@ use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
-use tokio_rustls::rustls::pki_types::ServerName;
+use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName};
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
 use tokio_tungstenite::tungstenite::http::header::{
@@ -499,7 +500,8 @@ fn upgrade_request(
 ///
 /// # Errors
 ///
-/// `forbidden` for an egress refusal; `unavailable` for a network, TLS or
+/// `invalid_params` for an unusable `tls://` trust anchor; `forbidden` for
+/// an egress refusal; `unavailable` for a network, TLS or
 /// handshake failure or a server that refused the upgrade;
 /// `deadline_exceeded` when a step timed out.
 async fn dial(
@@ -507,10 +509,13 @@ async fn dial(
     request: &SocketConnectRequest,
     target: &SocketTarget,
 ) -> Result<(Conn, Option<String>)> {
-    let stream = dial_tcp(shared, target).await?;
     if target.scheme.is_stream() {
-        return secure_stream(shared, request, target, stream).await;
+        // Settle the TLS settings first, so a bad trust anchor costs no dial.
+        let config = stream_tls(shared, request)?;
+        let stream = dial_tcp(shared, target).await?;
+        return secure_stream(config, request, target, stream).await;
     }
+    let stream = dial_tcp(shared, target).await?;
     let upgrade = upgrade_request(&shared.policy, request, target)?;
     let handshake = async {
         let io: Box<dyn BrokerIo> = if target.scheme.uses_tls() {
@@ -555,8 +560,7 @@ async fn dial(
     Ok((Conn::Ws(Box::new(socket)), protocol))
 }
 
-/// Secures a `tls://` stream: TLS with Mozilla's roots, offering the
-/// guest's ALPN ids instead of `http/1.1`.
+/// Secures a `tls://` stream with the settings [`stream_tls`] chose.
 ///
 /// # Returns
 ///
@@ -567,17 +571,11 @@ async fn dial(
 /// `unavailable` for a TLS failure or an ALPN id the guest did not offer;
 /// `deadline_exceeded` when the handshake timed out.
 async fn secure_stream(
-    shared: &Shared,
+    config: ClientConfig,
     request: &SocketConnectRequest,
     target: &SocketTarget,
     stream: Box<dyn BrokerIo>,
 ) -> Result<(Conn, Option<String>)> {
-    let mut config = (*shared.tls).clone();
-    config.alpn_protocols = request
-        .protocols
-        .iter()
-        .map(|p| p.as_bytes().to_vec())
-        .collect();
     let name = ServerName::try_from(target.host.clone())
         .map_err(|err| PluginError::invalid_params(format!("TLS name: {err}")))?;
     let handshake = tokio_rustls::TlsConnector::from(Arc::new(config)).connect(name, stream);
@@ -598,6 +596,48 @@ async fn secure_stream(
         }
     }
     Ok((Conn::Stream(Box::new(tls)), protocol))
+}
+
+/// TLS settings for a `tls://` stream: Mozilla's roots, or only the guest's
+/// trust anchors when it sent any, offering the guest's ALPN ids.
+///
+/// # Errors
+///
+/// `invalid_params` when an anchor is not a usable root certificate.
+fn stream_tls(shared: &Shared, request: &SocketConnectRequest) -> Result<ClientConfig> {
+    let mut config = if request.trust_anchors.is_empty() {
+        (*shared.tls).clone()
+    } else {
+        anchored_tls(&request.trust_anchors)?
+    };
+    config.alpn_protocols = request
+        .protocols
+        .iter()
+        .map(|p| p.as_bytes().to_vec())
+        .collect();
+    Ok(config)
+}
+
+/// TLS settings that trust only the guest's own roots, for a `tls://`
+/// service that signs its endpoint with a private CA.
+///
+/// # Errors
+///
+/// `invalid_params` when an anchor is not a usable root certificate.
+fn anchored_tls(anchors: &[Vec<u8>]) -> Result<ClientConfig> {
+    let mut roots = RootCertStore::empty();
+    for der in anchors {
+        roots
+            .add(CertificateDer::from(der.clone()))
+            .map_err(|err| PluginError::invalid_params(format!("trust anchor: {err}")))?;
+    }
+    Ok(
+        ClientConfig::builder_with_provider(bookclerk_tls::crypto_provider())
+            .with_safe_default_protocol_versions()
+            .map_err(|err| PluginError::internal(format!("TLS settings: {err}")))?
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    )
 }
 
 /// Connects TCP for one socket, through the host's tunnel in production.

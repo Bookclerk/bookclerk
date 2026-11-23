@@ -166,6 +166,12 @@ MAX_SOCKET_AUTO_RESPONSES: int = 4
 MAX_SOCKET_AUTO_RESPONSE_BYTES: int = 256
 """Largest heartbeat request or response frame, in bytes."""
 
+MAX_SOCKET_TRUST_ANCHORS: int = 4
+"""Most trust anchors one `tls://` `Sockets.connect` may supply."""
+
+MAX_SOCKET_TRUST_ANCHOR_BYTES: int = 8192
+"""Largest DER certificate in `SocketConnectRequest.trustAnchors`, in bytes."""
+
 MAX_SOCKET_URL_BYTES: int = 2048
 """Longest `SocketConnectRequest.url`, in bytes."""
 
@@ -552,6 +558,8 @@ __all__ = [
     "MAX_ORIGIN_SOCKETS_PER_INSTANCE",
     "MAX_SOCKET_AUTO_RESPONSES",
     "MAX_SOCKET_AUTO_RESPONSE_BYTES",
+    "MAX_SOCKET_TRUST_ANCHORS",
+    "MAX_SOCKET_TRUST_ANCHOR_BYTES",
     "MAX_SOCKET_URL_BYTES",
     "MAX_SOCKET_HEADERS",
     "MAX_ORIGIN_HEADERS",

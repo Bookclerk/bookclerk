@@ -457,6 +457,27 @@ function wireQueueMessage(overrides = {}) {
     () => byId.send("x"),
     (err) => err instanceof PluginError && err.wireCode === "not_found",
   );
+  // A tls:// connect sends trust anchors as base64 DER, from bytes or PEM.
+  const connects = [];
+  const tlsBinding = sockets.socketsBinding({
+    async call(op, body) {
+      connects.push(body);
+      return { ok: { socket: "s1", url: body.url, protocol: "x-tunnel" } };
+    },
+  });
+  const opened = await tlsBinding.connect("tls://connect.example.com:443", {
+    protocols: ["x-tunnel"],
+    trustAnchors: [
+      new Uint8Array([0x30, 3, 2, 1, 0]),
+      "junk\n-----BEGIN CERTIFICATE-----\nMAMC\nAQA=\n-----END CERTIFICATE-----\n",
+    ],
+  });
+  assert.equal(opened.protocol, "x-tunnel");
+  assert.deepEqual(connects[0].trustAnchors, ["MAMCAQA=", "MAMCAQA="]);
+  await assert.rejects(
+    () => tlsBinding.connect("tls://connect.example.com:443", { trustAnchors: ["no pem"] }),
+    (err) => err instanceof PluginError && err.wireCode === "invalid_params",
+  );
   assert.equal(sockets.socketMessageData(undefined), "");
   assert.equal(sockets.socketMessageData({ kind: "text", value: "t" }), "t");
 }

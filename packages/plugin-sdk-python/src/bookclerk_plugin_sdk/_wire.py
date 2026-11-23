@@ -5865,6 +5865,7 @@ def _write_socket_connect_request(s: _CapnpStruct, v: Any, caps: _CapTable) -> N
     for item, elem in zip(items, v["autoResponses"], strict=True):
         _socket_auto_response_codec.write(item, elem, caps)
     s.set_data(4, v["attachment"])
+    s.set_data_list(5, v["trustAnchors"])
 
 
 def _read_socket_connect_request(s: _StructReader, caps: _CapTable) -> Any:
@@ -5874,11 +5875,12 @@ def _read_socket_connect_request(s: _StructReader, caps: _CapTable) -> Any:
         "headers": [_socket_header_codec.read(item, caps) for item in s.get_struct_list(2, 0, 2)],
         "autoResponses": [_socket_auto_response_codec.read(item, caps) for item in s.get_struct_list(3, 0, 2)],
         "attachment": s.get_data(4),
+        "trustAnchors": s.get_data_list(5),
     }
 
 
-_socket_connect_request_codec = _Codec(0, 5, _write_socket_connect_request, _read_socket_connect_request)
-"""Wire codec for ``SocketConnectRequest`` (0 data words, 5 pointers)."""
+_socket_connect_request_codec = _Codec(0, 6, _write_socket_connect_request, _read_socket_connect_request)
+"""Wire codec for ``SocketConnectRequest`` (0 data words, 6 pointers)."""
 
 
 def _write_socket_info(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -8332,12 +8334,12 @@ _kv_namespace_list_results_codec = _Codec(0, 1, _write_kv_namespace_list_results
 
 def _write_sockets_connect_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("request") is not None:
-        _socket_connect_request_codec.write(s.init_struct(0, 0, 5), v["request"], caps)
+        _socket_connect_request_codec.write(s.init_struct(0, 0, 6), v["request"], caps)
 
 
 def _read_sockets_connect_params(s: _StructReader, caps: _CapTable) -> Any:
     return {
-        "request": _socket_connect_request_codec.read(s.get_struct(0, 0, 5), caps),
+        "request": _socket_connect_request_codec.read(s.get_struct(0, 0, 6), caps),
     }
 
 

@@ -11,7 +11,8 @@
 use crate::generated::{SocketAutoResponse, SocketConnectRequest, SocketFrame};
 use crate::limits::{
     MAX_SOCKET_ATTACHMENT_BYTES, MAX_SOCKET_AUTO_RESPONSES, MAX_SOCKET_AUTO_RESPONSE_BYTES,
-    MAX_SOCKET_FRAME_BYTES, MAX_SOCKET_HEADERS, MAX_SOCKET_URL_BYTES,
+    MAX_SOCKET_FRAME_BYTES, MAX_SOCKET_HEADERS, MAX_SOCKET_TRUST_ANCHORS,
+    MAX_SOCKET_TRUST_ANCHOR_BYTES, MAX_SOCKET_URL_BYTES,
 };
 use crate::{PluginError, Result};
 
@@ -456,6 +457,11 @@ pub fn validate_socket_connect(request: &SocketConnectRequest) -> Result<SocketT
         }
     }
     check_auto_responses(&request.auto_responses)?;
+    if !request.trust_anchors.is_empty() {
+        return Err(PluginError::invalid_params(
+            "trust anchors are for tls:// sockets only",
+        ));
+    }
     check_socket_attachment(&request.attachment)?;
     Ok(target)
 }
@@ -493,8 +499,61 @@ fn validate_stream_connect(
             "a tls:// socket takes no heartbeats",
         ));
     }
+    check_trust_anchors(&request.trust_anchors)?;
     check_socket_attachment(&request.attachment)?;
     Ok(target)
+}
+
+/// Checks a `tls://` request's trust anchors: at most
+/// [`MAX_SOCKET_TRUST_ANCHORS`], each a DER certificate of at most
+/// [`MAX_SOCKET_TRUST_ANCHOR_BYTES`] whose outer SEQUENCE spans exactly its
+/// bytes. The broker's certificate parser decides the rest.
+///
+/// # Errors
+///
+/// `invalid_params` naming the first problem.
+pub fn check_trust_anchors(anchors: &[Vec<u8>]) -> Result<()> {
+    if anchors.len() > MAX_SOCKET_TRUST_ANCHORS as usize {
+        return Err(PluginError::invalid_params(format!(
+            "{} trust anchors exceed {MAX_SOCKET_TRUST_ANCHORS}",
+            anchors.len()
+        )));
+    }
+    if anchors.iter().any(|der| !is_der_certificate_shape(der)) {
+        return Err(PluginError::invalid_params(format!(
+            "a trust anchor must be one DER certificate of at most \
+             {MAX_SOCKET_TRUST_ANCHOR_BYTES} bytes"
+        )));
+    }
+    Ok(())
+}
+
+/// True when `der` is at most [`MAX_SOCKET_TRUST_ANCHOR_BYTES`] and is one
+/// DER SEQUENCE (tag `0x30`, definite minimal length) covering all of it.
+#[must_use]
+pub fn is_der_certificate_shape(der: &[u8]) -> bool {
+    if der.len() > MAX_SOCKET_TRUST_ANCHOR_BYTES as usize {
+        return false;
+    }
+    let Some((&0x30, rest)) = der.split_first() else {
+        return false;
+    };
+    let Some((&first, rest)) = rest.split_first() else {
+        return false;
+    };
+    let (len, rest) = match first {
+        0..=0x7f => (usize::from(first), rest),
+        0x81 => match rest.split_first() {
+            Some((&len, rest)) if len >= 0x80 => (usize::from(len), rest),
+            _ => return false,
+        },
+        0x82 => match rest {
+            [hi, lo, rest @ ..] if *hi != 0 => (usize::from(*hi) << 8 | usize::from(*lo), rest),
+            _ => return false,
+        },
+        _ => return false,
+    };
+    len == rest.len()
 }
 
 /// True when `id` is an ALPN protocol id the broker offers: 1 to

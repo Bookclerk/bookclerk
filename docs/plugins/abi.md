@@ -633,7 +633,12 @@ are UTF-8 JSON, so any SDK reads what another stored. See the
   no heartbeats, and carries binary frames only: each frame the plugin
   sends is written as is, and each read (up to 64 KiB) arrives as one
   binary message, so the plugin does its own framing. The server ending
-  the stream is a clean close with code 1000. Closing a stream sends TLS
+  the stream is a clean close with code 1000. A service that signs its
+  endpoint with its own CA (ngrok's and Cloudflare Tunnel's agent
+  endpoints do) can be reached by sending up to 4 trust anchors, DER
+  root certificates of at most 8 KiB each: the server's chain must then
+  end in one of them, and Mozilla's roots don't count for that socket.
+  Only a `tls://` socket takes trust anchors. Closing a stream sends TLS
   `close_notify` and waits up to 5 seconds for the server to end its
   side; the close reports the plugin's code.
 - **Handler.** A plugin that declares `[sockets]` may return a
@@ -674,7 +679,8 @@ are UTF-8 JSON, so any SDK reads what another stored. See the
   request) or have a `tcp` entry for its port; a `tls://` stream needs
   the `tcp` entry. The broker connects only to resolved addresses the
   grant allows, with no redirects. `wss://` and `tls://` are checked
-  against Mozilla's root certificates. The broker sends the
+  against Mozilla's root certificates, or a `tls://` socket's own trust
+  anchors. The broker sends the
   host's `User-Agent` (see [User-Agent](capabilities.md#user-agent)) and
   gives up on a connection after 10 seconds, a handshake after 15, a
   frame write after 10 and a close after 5.

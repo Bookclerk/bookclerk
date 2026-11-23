@@ -4574,6 +4574,13 @@ export interface SocketConnectRequest {
   autoResponses: SocketAutoResponse[];
   /** Initial attachment, at most `maxSocketAttachmentBytes`. */
   attachment: Uint8Array;
+  /**
+   * `tls://` only: DER root certificates, at most `maxSocketTrustAnchors` of
+   * at most `maxSocketTrustAnchorBytes` each, that the server's chain must
+   * end in instead of Mozilla's roots, for a service that signs its own
+   * (an ngrok or Cloudflare Tunnel agent endpoint). Empty uses Mozilla's.
+   */
+  trustAnchors: Uint8Array[];
 }
 
 /** One open host-brokered socket. */

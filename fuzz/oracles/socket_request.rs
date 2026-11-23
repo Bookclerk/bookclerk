@@ -18,7 +18,9 @@
 //! - [`validate_socket_connect`] accepts a decoded request exactly when the
 //!   URL parses and the independent restatement of the header, subprotocol,
 //!   heartbeat and attachment rules below holds (for `tls://`: ALPN ids of
-//!   1 to 255 visible ASCII bytes, no headers and no heartbeats);
+//!   1 to 255 visible ASCII bytes, no headers and no heartbeats, and trust
+//!   anchors that are each one DER SEQUENCE of at most 8 KiB, which a
+//!   WebSocket may not send);
 //! - [`check_socket_frame_for`] refuses text on a `tls://` stream and
 //!   otherwise agrees with the frame size check;
 //! - [`auto_response_for`] answers exactly the frames equal (same kind, same
@@ -36,7 +38,8 @@ use bookclerk_plugin_abi::{
     roundtrip_socket_message, RoundTripFailure, SocketAutoResponse, SocketCodec,
     SocketConnectRequest, SocketFrame, SocketWireMessage, MAX_SOCKET_ATTACHMENT_BYTES,
     MAX_SOCKET_AUTO_RESPONSES, MAX_SOCKET_AUTO_RESPONSE_BYTES, MAX_SOCKET_FRAME_BYTES,
-    MAX_SOCKET_HEADERS, MAX_SOCKET_URL_BYTES,
+    MAX_SOCKET_HEADERS, MAX_SOCKET_TRUST_ANCHORS, MAX_SOCKET_TRUST_ANCHOR_BYTES,
+    MAX_SOCKET_URL_BYTES,
 };
 
 /// Largest input worth parsing; a real connect request is under 64 KiB.
@@ -84,6 +87,29 @@ fn stream_rules_hold(request: &SocketConnectRequest) -> bool {
         && request.headers.is_empty()
         && request.auto_responses.is_empty()
         && request.attachment.len() <= MAX_SOCKET_ATTACHMENT_BYTES as usize
+        && request.trust_anchors.len() <= MAX_SOCKET_TRUST_ANCHORS as usize
+        && request.trust_anchors.iter().all(|der| der_shape(der))
+}
+
+/// One DER SEQUENCE covering all of `der`, restated with a general
+/// definite-length reader and the size cap.
+fn der_shape(der: &[u8]) -> bool {
+    if der.len() > MAX_SOCKET_TRUST_ANCHOR_BYTES as usize || der.len() < 2 || der[0] != 0x30 {
+        return false;
+    }
+    let first = der[1];
+    if first < 0x80 {
+        return usize::from(first) == der.len() - 2;
+    }
+    let count = usize::from(first & 0x7f);
+    if count == 0 || count > 4 || der.len() < 2 + count || der[2] == 0 {
+        return false;
+    }
+    let len = der[2..2 + count]
+        .iter()
+        .fold(0usize, |acc, &b| (acc << 8) | usize::from(b));
+    // DER: the long form only for lengths the short form can't carry.
+    len >= 0x80 && len == der.len() - 2 - count
 }
 
 /// The non-URL connect rules restated.
@@ -113,7 +139,7 @@ fn connect_rules_hold(request: &SocketConnectRequest, scheme: SocketScheme) -> b
             })
         });
     let attachment_ok = request.attachment.len() <= MAX_SOCKET_ATTACHMENT_BYTES as usize;
-    protocols_ok && headers_ok && heartbeats_ok && attachment_ok
+    protocols_ok && headers_ok && heartbeats_ok && attachment_ok && request.trust_anchors.is_empty()
 }
 
 /// Checks an accepted URL against the WHATWG parse.

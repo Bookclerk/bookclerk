@@ -283,7 +283,25 @@ function connectBody(
       response: routeFrame(pair.response),
     })),
     attachment: toBase64(encodeAttachment(options?.attachment)),
+    trustAnchors: (options?.trustAnchors ?? []).map((anchor) =>
+      typeof anchor === "string" ? pemBody(anchor) : toBase64(anchor),
+    ),
   };
+}
+
+/**
+ * The base64 body of one PEM `CERTIFICATE` block, which is the DER's base64.
+ *
+ * @param pem - The PEM text.
+ * @returns The base64 DER.
+ * @throws PluginError `invalid_params` when it holds no certificate block.
+ */
+function pemBody(pem: string): string {
+  const match = /-----BEGIN CERTIFICATE-----([A-Za-z0-9+/=\s]+)-----END CERTIFICATE-----/.exec(pem);
+  if (!match) {
+    throw new PluginError("invalid_params", "a trust anchor PEM holds no CERTIFICATE block");
+  }
+  return match[1].replace(/\s+/g, "");
 }
 
 /**

@@ -4268,6 +4268,12 @@ pub struct SocketConnectRequest {
     /// Initial attachment, at most `maxSocketAttachmentBytes`.
     #[serde(default, with = "crate::json_bytes::b64")]
     pub attachment: Vec<u8>,
+    /// `tls://` only: DER root certificates, at most `maxSocketTrustAnchors` of
+    /// at most `maxSocketTrustAnchorBytes` each, that the server's chain must
+    /// end in instead of Mozilla's roots, for a service that signs its own
+    /// (an ngrok or Cloudflare Tunnel agent endpoint). Empty uses Mozilla's.
+    #[serde(default)]
+    pub trust_anchors: Vec<Vec<u8>>,
 }
 
 /// One open host-brokered socket.
@@ -10094,6 +10100,14 @@ pub fn write_socket_connect_request(
         }
     }
     b.set_attachment(&v.attachment);
+    {
+        let mut items = b
+            .reborrow()
+            .init_trust_anchors(list_len(v.trust_anchors.len())?);
+        for (i, item) in v.trust_anchors.iter().enumerate() {
+            items.set(list_len(i)?, item);
+        }
+    }
     Ok(())
 }
 
@@ -10119,6 +10133,11 @@ pub fn read_socket_connect_request(
             .map(|item| read_socket_auto_response(item))
             .collect::<capnp::Result<Vec<_>>>()?,
         attachment: r.get_attachment()?.to_vec(),
+        trust_anchors: r
+            .get_trust_anchors()?
+            .iter()
+            .map(|d| d.map(<[u8]>::to_vec))
+            .collect::<capnp::Result<Vec<_>>>()?,
     })
 }
 

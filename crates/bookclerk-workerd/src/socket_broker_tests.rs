@@ -174,6 +174,7 @@ fn request(port: u16) -> SocketConnectRequest {
             response: SocketFrame::Text("3".into()),
         }],
         attachment: b"cursor".to_vec(),
+        trust_anchors: Vec::new(),
     }
 }
 
@@ -680,13 +681,18 @@ fn a_fetch_entry_grants_its_own_port_or_the_web_ports() {
     assert!(!target_granted(&on, &target(8081)));
 }
 
+/// A local TLS server's port, client settings that trust it, its
+/// certificate (DER) and its script's result.
+type TlsServer = (
+    u16,
+    Arc<ClientConfig>,
+    Vec<u8>,
+    tokio::task::JoinHandle<Vec<u8>>,
+);
+
 /// A one-connection TLS server for `127.0.0.1` offering `alpn`, running
-/// `script` on the stream; returns its port, client settings that trust it,
-/// and the script's result.
-async fn serve_tls_once<F, Fut>(
-    alpn: &[&str],
-    script: F,
-) -> (u16, Arc<ClientConfig>, tokio::task::JoinHandle<Vec<u8>>)
+/// `script` on the stream.
+async fn serve_tls_once<F, Fut>(alpn: &[&str], script: F) -> TlsServer
 where
     F: FnOnce(tokio_rustls::server::TlsStream<TcpStream>) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = Vec<u8>> + Send,
@@ -704,6 +710,7 @@ where
         .with_single_cert(vec![cert.clone()], key)
         .expect("server config");
     server.alpn_protocols = alpn.iter().map(|p| p.as_bytes().to_vec()).collect();
+    let der = cert.to_vec();
     let mut roots = RootCertStore::empty();
     roots.add(cert).expect("root");
     let client = ClientConfig::builder_with_provider(bookclerk_tls::crypto_provider())
@@ -721,7 +728,7 @@ where
             Err(_) => Vec::new(),
         }
     });
-    (port, Arc::new(client), task)
+    (port, Arc::new(client), der, task)
 }
 
 /// A policy with a TCP grant for loopback `port` only.
@@ -758,14 +765,15 @@ async fn a_tls_stream_carries_bytes_both_ways_and_the_peer_ends_it_cleanly() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let (port, tls, server) = serve_tls_once(&["x-tunnel"], |mut stream| async move {
-                let mut got = vec![0_u8; 4];
-                stream.read_exact(&mut got).await.expect("read");
-                stream.write_all(b"pong").await.expect("write");
-                stream.shutdown().await.expect("close_notify");
-                got
-            })
-            .await;
+            let (port, tls, _der, server) =
+                serve_tls_once(&["x-tunnel"], |mut stream| async move {
+                    let mut got = vec![0_u8; 4];
+                    stream.read_exact(&mut got).await.expect("read");
+                    stream.write_all(b"pong").await.expect("write");
+                    stream.shutdown().await.expect("close_notify");
+                    got
+                })
+                .await;
             let (broker, seen) = new_tls_broker(tcp_policy_on(port), tls);
             let info = broker
                 .connect(tls_request(port, &["h2", "x-tunnel"]))
@@ -799,7 +807,7 @@ async fn a_guest_close_ends_a_tls_stream_with_close_notify() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let (port, tls, server) = serve_tls_once(&[], |mut stream| async move {
+            let (port, tls, _der, server) = serve_tls_once(&[], |mut stream| async move {
                 let mut got = Vec::new();
                 // Ends at the broker's close_notify.
                 stream.read_to_end(&mut got).await.expect("read to end");
@@ -843,7 +851,7 @@ async fn a_tls_stream_needs_a_tcp_grant_and_a_trusted_certificate() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let (port, tls, _server) =
+            let (port, tls, _der, _server) =
                 serve_tls_once(&[], |_stream| async move { Vec::new() }).await;
             // A fetch grant for the same host and port does not cover it.
             let target = SocketTarget {
@@ -868,6 +876,39 @@ async fn a_tls_stream_needs_a_tcp_grant_and_a_trusted_certificate() {
                 .expect_err("untrusted");
             assert_eq!(err.code, PluginErrorCode::Unavailable);
             assert!(broker.shared.table.borrow().is_empty(), "no pending leak");
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_tls_stream_may_trust_only_the_guests_own_root() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (port, _tls, der, server) = serve_tls_once(&[], |mut stream| async move {
+                let mut got = vec![0_u8; 2];
+                stream.read_exact(&mut got).await.expect("read");
+                let _ = stream.shutdown().await;
+                got
+            })
+            .await;
+            // Mozilla's roots alone, as in production; the request names
+            // the server's own root.
+            let (broker, seen) = new_broker(tcp_policy_on(port));
+            let mut bad = tls_request(port, &[]);
+            bad.trust_anchors = vec![vec![0x30, 0x03, 0x02, 0x01, 0x00]];
+            let err = broker.connect(bad).await.expect_err("not a certificate");
+            assert_eq!(err.code, PluginErrorCode::InvalidParams);
+            let mut req = tls_request(port, &[]);
+            req.trust_anchors = vec![der];
+            let info = broker.connect(req).await.expect("anchored connect");
+            broker
+                .send(info.socket, SocketFrame::Binary(b"hi".to_vec()))
+                .await
+                .expect("send");
+            assert_eq!(server.await.expect("server"), b"hi");
+            let events = wait_for(&seen, 1).await;
+            assert_eq!(events, vec!["closed 1000  true"]);
         })
         .await;
 }

@@ -6895,6 +6895,11 @@ class SocketConnectRequest(TypedDict):
         autoResponses: Heartbeats the broker answers, at most `maxSocketAutoResponses`;
             none on `tls://`.
         attachment: Initial attachment, at most `maxSocketAttachmentBytes`.
+        trustAnchors: `tls://` only: DER root certificates, at most
+            `maxSocketTrustAnchors` of at most `maxSocketTrustAnchorBytes` each, that
+            the server's chain must end in instead of Mozilla's roots, for a service
+            that signs its own (an ngrok or Cloudflare Tunnel agent endpoint). Empty
+            uses Mozilla's.
     """
 
     url: str
@@ -6902,6 +6907,7 @@ class SocketConnectRequest(TypedDict):
     headers: list[SocketHeader]
     autoResponses: list[SocketAutoResponse]
     attachment: bytes
+    trustAnchors: list[bytes]
 
 
 class SocketInfo(TypedDict):

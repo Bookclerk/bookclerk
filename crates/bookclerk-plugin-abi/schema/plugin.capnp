@@ -138,6 +138,10 @@ const maxOriginSocketsPerInstance :UInt32 = 256;
 const maxSocketAutoResponses :UInt32 = 4;
 # Largest heartbeat request or response frame, in bytes.
 const maxSocketAutoResponseBytes :UInt32 = 256;
+# Most trust anchors one `tls://` `Sockets.connect` may supply.
+const maxSocketTrustAnchors :UInt32 = 4;
+# Largest DER certificate in `SocketConnectRequest.trustAnchors`, in bytes.
+const maxSocketTrustAnchorBytes :UInt32 = 8192;
 # Longest `SocketConnectRequest.url`, in bytes.
 const maxSocketUrlBytes :UInt32 = 2048;
 # Most request headers, and separately subprotocols, on one `Sockets.connect`.
@@ -4260,6 +4264,11 @@ struct SocketConnectRequest {
   autoResponses @3 :List(SocketAutoResponse);
   # Initial attachment, at most `maxSocketAttachmentBytes`.
   attachment @4 :Data;
+  # `tls://` only: DER root certificates, at most `maxSocketTrustAnchors` of
+  # at most `maxSocketTrustAnchorBytes` each, that the server's chain must
+  # end in instead of Mozilla's roots, for a service that signs its own
+  # (an ngrok or Cloudflare Tunnel agent endpoint). Empty uses Mozilla's.
+  trustAnchors @5 :List(Data);
 }
 
 # One open host-brokered socket.
