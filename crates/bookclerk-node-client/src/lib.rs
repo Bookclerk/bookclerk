@@ -83,8 +83,8 @@ pub use endpoint::{
 };
 pub use enroll::{check_join_ancestry, join_library, refuse_cycle, JoinError};
 pub use jobs::{
-    GrantedCopy, HandedSecrets, HostJob, HostJobCtx, HostJobError, HostJobRunner, HostUpload,
-    OwnerCallError, WriteBackError,
+    AcquirePlan, GrantedCopy, HandedSecrets, HostJob, HostJobCtx, HostJobError, HostJobRunner,
+    HostUpload, OwnerCallError, WriteBackError,
 };
 pub use shared_branch::{
     apply_shared_branch_bootstrap, bootstrap_database_kind, checked_d1_api_base,

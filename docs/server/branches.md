@@ -696,7 +696,11 @@ when it commits the upload.
    It also carries the store listing the acquire needs (store, product id,
    marketplace, title, people, series and dates), read from the owner's
    holdings and editions, and a podcast episode carries its show's
-   listing the same way.
+   listing the same way. One answer carries at most 100 titles and looks
+   at most 500 of the job's titles. When the owner stopped before it
+   looked at them all, the answer's `next` says where to ask again from,
+   even if it lists no title (the titles it looked at were already in
+   the library).
 3. The host acquires each title into a per-title outbox, with one
    sub-directory per owner destination. So each destination's file names
    come out exactly as a local acquire on the owner would name them.

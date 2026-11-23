@@ -64,7 +64,7 @@ use anyhow::Context as _;
 use bookclerk_config::DestinationId;
 use bookclerk_library::control_plane::{self, LinkImportOutcome};
 use bookclerk_library::{AcquireTitle, JobKind, LibraryStore, NewBook};
-use bookclerk_node_client::{HostJobCtx, LocalFileSource, OwnerCallError};
+use bookclerk_node_client::{AcquirePlan, HostJobCtx, LocalFileSource, OwnerCallError};
 use bookclerk_node_proto::{
     target_destinations_problem, AcquireTarget, FileCopy, PlanDestination, TargetTitle, UploadFile,
     UploadProbe, MAX_SCAN_BATCH_ROWS, MAX_SCAN_REMOVED_IDS, MAX_SCAN_ROW_BYTES, MAX_UPLOAD_FILES,
@@ -1511,7 +1511,11 @@ async fn acquire_titles<G: HostGuests>(
         sweep_stale_copies(guests, ledger).await;
     }
     'plan: loop {
-        let (targets, planned) = with_retries(|| host.acquire_plan(cursor.as_deref()))
+        let AcquirePlan {
+            targets,
+            destinations: planned,
+            next,
+        } = with_retries(|| host.acquire_plan(cursor.as_deref()))
             .await
             .map_err(|err| owner_error("the acquire plan", &err))?;
         if planned.is_empty() {
@@ -1522,7 +1526,16 @@ async fn acquire_titles<G: HostGuests>(
             .cloned()
             .map(HostDestination::from_plan)
             .collect::<anyhow::Result<Vec<_>>>()?;
-        if let Some(last) = targets.iter().map(|target| &target.holding_id).max() {
+        // The cursor only moves forward, so an owner's `next` that does
+        // not is ignored and the run cannot loop on one window.
+        let before = cursor.clone();
+        for last in targets
+            .iter()
+            .map(|target| &target.holding_id)
+            .max()
+            .into_iter()
+            .chain(next.as_ref())
+        {
             if cursor.as_ref().is_none_or(|cursor| last > cursor) {
                 cursor = Some(last.clone());
             }
@@ -1532,6 +1545,11 @@ async fn acquire_titles<G: HostGuests>(
             .filter(|target| !attempted.contains(&target.holding_id))
             .collect();
         if fresh.is_empty() {
+            // The owner looked at titles that needed no fetch and has more
+            // to look at: ask again from where it stopped.
+            if next.is_some() && cursor > before {
+                continue 'plan;
+            }
             return Ok((acquired, failed));
         }
         let mut fresh = fresh.into_iter();

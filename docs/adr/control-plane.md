@@ -1563,14 +1563,18 @@ the handed credentials only. There is no in-process fallback.
   once as a full pass; tokens that name only store state (Audible's)
   carry over.
 - **Acquire plan.** `acquire.plan` answers `acquire.targets {targets,
-  destinations}`: the titles the job covers whose edition is not acquired
+  destinations, next?}`: the titles the job covers whose edition is not acquired
   yet (read from the account holdings, as a local acquire reads them) and every
   output destination deployed on the answering shared node, each with an
   id and its own naming options. The Host acquires each title into an
   outbox with one sub-directory per destination, so each destination's
   keys come out as a local acquire on the owner would name them (a fix
   after review: the first cut sent only the first destination's options,
-  so every destination got that one's keys).
+  so every destination got that one's keys). A plan looks at no more
+  than 500 titles and hands out no more than 100; one that stopped
+  before looking at every title names in `next` where to ask again from,
+  so a run whose next 500 titles are all already in the library still
+  goes on rather than reading the empty answer as the end.
 - **Uploads** (decision 4). `upload.grant` carries a manifest: each
   distinct content once (`size`, `sha256`, `content_type`) with one
   `FileCopy {destination, key}` per destination; it is refused unless

@@ -2812,6 +2812,7 @@ mod results_and_uploads {
         let Body::AcquireTargets {
             targets,
             destinations,
+            ..
         } = answer.body
         else {
             panic!("{answer:?}");
@@ -5190,6 +5191,55 @@ mod results_and_uploads {
         assert_eq!(all, sorted, "holding-id order");
         assert_eq!(plan(Some(all[0].clone())).await, all[1..]);
         assert!(plan(Some(all[2].clone())).await.is_empty());
+    }
+
+    /// A plan that stops before it looked at every title says where to ask
+    /// again (`next`), and one that looked at them all does not (#689).
+    #[tokio::test]
+    async fn a_plan_that_stops_early_says_where_to_ask_again() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        for n in 0..101 {
+            world
+                .owner
+                .scope(PLUGIN, "test")
+                .upsert_book(&owner_book("riley-acct", &format!("t{n}")))
+                .await
+                .unwrap();
+        }
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 60).await;
+        let (handle, _stop) = start(&world, StubGuests::default()).await;
+        let plan = |after: Option<String>| {
+            let handle = handle.clone();
+            let job_id = job_id.clone();
+            async move {
+                let answer = handle
+                    .request(Body::AcquirePlan {
+                        job_id,
+                        fence,
+                        after,
+                    })
+                    .await
+                    .expect("the owner answers");
+                let Body::AcquireTargets { targets, next, .. } = answer.body else {
+                    panic!("expected targets: {answer:?}");
+                };
+                (targets, next)
+            }
+        };
+        let (first, next) = plan(None).await;
+        assert_eq!(first.len(), 100);
+        assert_eq!(
+            next.as_deref(),
+            first.last().map(|target| target.holding_id.as_str()),
+            "the first plan stops at its cap"
+        );
+        let (rest, next) = plan(next).await;
+        assert_eq!(rest.len(), 1);
+        assert_eq!(next, None, "the second plan looked at every title");
     }
 
     /// `acquire.plan` sends an episode's podcast parent row with it, so a

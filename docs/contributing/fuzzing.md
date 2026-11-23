@@ -785,8 +785,8 @@ only that. The others check:
   `scan.removed`, `scan.pass_end`, a `work` frame with scan tokens,
   `deployments.list` and `acquire.plan` with and without a cursor, paged
   and out-of-order `deployments`, `release` with the old `resumed` flag
-  (ignored), and `acquire.targets` with a destination subset, an empty list and a list
-  that does not fit its plan. The shared oracle is `fuzz/oracles/node_frame.rs`,
+  (ignored), and `acquire.targets` with a destination subset, an empty list, a list
+  that does not fit its plan, and no targets with a `next` cursor. The shared oracle is `fuzz/oracles/node_frame.rs`,
   replayed from `bookclerk-node-proto`.
 - **`node_account_bundle`**: an accepted bundle is within the size limit,
   has the bundle version and names the library and node it was opened
