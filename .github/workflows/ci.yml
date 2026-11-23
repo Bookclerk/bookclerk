@@ -408,6 +408,7 @@ jobs:
             crates/bookclerk-plugins/optional/metadata-audnexus/package-lock.json
             crates/bookclerk-plugins/optional/metadata-files/package-lock.json
             crates/bookclerk-plugins/optional/metadata-openlibrary/package-lock.json
+            crates/bookclerk-plugins/optional/notifier-webhook/package-lock.json
 
       # The Python SDK check and its API docs install from
       # packages/plugin-sdk-python/uv.lock. No uv cache: nothing from an

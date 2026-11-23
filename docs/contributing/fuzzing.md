@@ -2100,6 +2100,36 @@ text mutations in `npm test` (the `workerd_guests` check); `FUZZ_SEED` and
 - **RPC replies** (`parseRpcObject`). Oracle: `JSON.parse` of the same
   UTF-8 text, with only JSON's own whitespace around it.
 
+### Webhook notifier guest
+
+The `webhook` notifier reads a patron's address document, which the host
+passes through from what the patron typed, and the receiver's
+`Retry-After`, in
+`crates/bookclerk-plugins/optional/notifier-webhook/src/webhook.ts`. Its
+`test/fuzz.test.ts` replays `fuzz/address/` and `fuzz/retry_after/` and
+runs seeded text mutations in `npm test` (the `workerd_guests` check);
+`FUZZ_SEED` and `FUZZ_ITERATIONS` pick another run.
+
+Seeds that need an acceptable secret use `whsec_/wAQ/wAQ…`, a 32-byte key
+whose base64 has a `/` every four characters. A secret written as one long
+run of letters and digits after `whsec_` looks like a live signing secret
+to GitHub secret scanning and raises an alert, so fixtures here and in the
+tests avoid that shape (the tests build their keys at run time, and the
+Standard Webhooks reference secret is joined from two parts).
+
+- **Address documents** (`parseAddress`). Oracle: accepted exactly when
+  the text is at most 4 KiB, a JSON object with only `url` and `secret`,
+  both strings; the URL, trimmed, is at most 2048 characters, has no `#`,
+  and parses as `http:` or `https:` with a host and no credentials; and
+  the secret is `whsec_` and the canonical base64 (by Node's decoder) of
+  24 to 64 bytes. An accepted address re-parses to the trimmed values, its
+  label is the URL's host, its key is the decoded secret, and normalising
+  it again changes nothing.
+- **`Retry-After`** (`parseRetryAfter`). Oracle: up to ten digits are
+  seconds; a date counts exactly when `toUTCString` prints it back
+  unchanged (IMF-fixdate with the right weekday). The wait is capped at
+  one hour and never negative.
+
 ### Metadata file dialect guests
 
 Two guests read sidecar files from storage the host does not control: the
