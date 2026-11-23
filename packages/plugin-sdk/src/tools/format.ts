@@ -747,8 +747,32 @@ function basicString(s: string): string {
 function float(n: number): string {
   if (Number.isNaN(n)) return "nan";
   if (!Number.isFinite(n)) return n > 0 ? "inf" : "-inf";
-  if (Number.isInteger(n)) return `${n}.0`;
-  return String(n);
+  const text = plainDecimal(n);
+  return text.includes(".") ? text : `${text}.0`;
+}
+
+/**
+ * The shortest round-trip digits of a float in plain positional notation,
+ * as Rust's `Display` prints them (`1e21` is `1000000000000000000000`).
+ *
+ * @param n - Finite value.
+ * @returns Decimal text with no exponent.
+ */
+function plainDecimal(n: number): string {
+  const text = String(n);
+  const e = text.indexOf("e");
+  if (e < 0) return Object.is(n, -0) ? "-0" : text;
+  const negative = text.startsWith("-");
+  const mantissa = text.slice(negative ? 1 : 0, e);
+  const exponent = Number(text.slice(e + 1));
+  const dot = mantissa.indexOf(".");
+  const digits = mantissa.replace(".", "");
+  const point = (dot < 0 ? mantissa.length : dot) + exponent;
+  let body: string;
+  if (point <= 0) body = `0.${"0".repeat(-point)}${digits}`;
+  else if (point >= digits.length) body = digits + "0".repeat(point - digits.length);
+  else body = `${digits.slice(0, point)}.${digits.slice(point)}`;
+  return negative ? `-${body}` : body;
 }
 
 /**

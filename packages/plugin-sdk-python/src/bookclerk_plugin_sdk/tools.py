@@ -1423,6 +1423,9 @@ def validate_manifest(m: dict[str, Any]) -> None:
     credentials = m.get("credentials")
     if credentials is not None and credentials not in ("shareable", "single_keeper"):
         raise ValueError("plugin.toml: `credentials` must be `shareable` or `single_keeper`")
+    # Schedules decode with the rest of the manifest, so a bad one is
+    # reported before any rule.
+    _decode_crons((m.get("triggers") or {}).get("crons", []))
     if not str(m.get("id", "")).strip():
         raise ValueError("plugin.toml: `id` is required")
     try:
@@ -1678,9 +1681,8 @@ def _validate_triggers(m: dict[str, Any]) -> None:
     entrypoints = [str(e) for e in (m.get("entrypoints") or [])]
     triggers = m.get("triggers") or {}
     crons = triggers.get("crons", [])
-    # A malformed schedule fails to parse before the host looks at entrypoints.
-    _validate_crons(crons)
-    if crons:
+    schedules = _decode_crons(crons)
+    if schedules:
         # Crons fire only on integration deployments.
         for registry in ("storefront", "storage", "databaseAdapter", "ingress"):
             if registry in entrypoints:
@@ -1688,6 +1690,7 @@ def _validate_triggers(m: dict[str, Any]) -> None:
                     f"plugin.toml: `[triggers].crons` cannot be combined with the `{registry}` "
                     "entrypoint; put the schedule in a separate integration plugin"
                 )
+    _check_cron_list(schedules)
     for index, job in enumerate(triggers.get("jobs") or []):
         if not isinstance(job, str) or not _EVENT_TYPE_RE.match(job):
             raise ValueError(
@@ -1865,7 +1868,10 @@ def _validate_webhooks(m: dict[str, Any]) -> None:
     Raises:
         ValueError: Naming the first bad row by its index.
     """
-    rows = list(m.get("webhooks") or [])
+    raw_rows = m.get("webhooks", [])
+    if not isinstance(raw_rows, list):
+        raise ValueError("plugin.toml: `webhooks` must be an array of tables")
+    rows = list(raw_rows)
     if len(rows) > _MAX_WEBHOOKS:
         raise ValueError(f"plugin.toml: at most {_MAX_WEBHOOKS} [[webhooks]] rows")
     names: set[str] = set()
@@ -1896,7 +1902,10 @@ def _validate_webhooks(m: dict[str, Any]) -> None:
                 f"plugin.toml: webhooks[{i}].retention_secs must be "
                 f"60..={_MAX_WEBHOOK_RETENTION_SECS}"
             )
-        headers = list(row.get("headers") or [])
+        raw_headers = row.get("headers", [])
+        if not isinstance(raw_headers, list):
+            raise ValueError(f"plugin.toml: webhooks[{i}].headers must be an array of header names")
+        headers = list(raw_headers)
         if len(headers) > MAX_WEBHOOK_HEADERS:
             raise ValueError(
                 f"plugin.toml: webhooks[{i}].headers lists more than {MAX_WEBHOOK_HEADERS} names"
@@ -1915,6 +1924,11 @@ def _validate_webhooks(m: dict[str, Any]) -> None:
         signature = row.get("signature") if isinstance(row.get("signature"), dict) else {}
         scheme = signature.get("scheme")
         if scheme == "none":
+            extra = next((k for k in signature if k != "scheme"), None)
+            if extra is not None:
+                raise ValueError(
+                    f'plugin.toml: webhooks[{i}].signature.{extra} does not apply to `scheme = "none"`'
+                )
             continue
         if scheme != "hmac-sha256":
             raise ValueError(
@@ -1926,7 +1940,10 @@ def _validate_webhooks(m: dict[str, Any]) -> None:
                 f"plugin.toml: webhooks[{i}].signature.header must be a lowercase header name "
                 "the host may read"
             )
-        prefix = str(signature.get("prefix") or "")
+        raw_prefix = signature.get("prefix", "")
+        if not isinstance(raw_prefix, str):
+            raise ValueError(f"plugin.toml: webhooks[{i}].signature.prefix must be a string")
+        prefix = raw_prefix
         if len(prefix) > _MAX_WEBHOOK_SIGNATURE_PREFIX_LEN or not all(
             "\x21" <= c <= "\x7e" for c in prefix
         ):
@@ -2054,7 +2071,8 @@ def _host_pattern(raw: str) -> str | None:
     if host == "*":
         return "*"
     if host.startswith("*."):
-        return _hostname_ascii(host[2:], _FORBIDDEN_NAME_CHARS)
+        # The host trims the suffix after ``*.`` (``normalize_hostname``).
+        return _hostname_ascii(host[2:].strip(), _FORBIDDEN_NAME_CHARS)
     if _is_ipv6(host):
         return host
     return _hostname_ascii(host, _FORBIDDEN_NAME_CHARS)
@@ -2293,7 +2311,10 @@ def _setting_columns_error(entry: dict[str, Any]) -> str | None:
         The first failed rule, or ``None``.
     """
     key = str(entry.get("key") or "")
-    columns = list(entry.get("columns") or [])
+    raw_columns = entry.get("columns", [])
+    if not isinstance(raw_columns, list):
+        return f"setting `{key}` `columns` must be an array of tables"
+    columns = list(raw_columns)
     if entry.get("type") != "table":
         return f"setting `{key}` declares `columns` but is not a table" if columns else None
     if not columns:
@@ -2301,7 +2322,9 @@ def _setting_columns_error(entry: dict[str, Any]) -> str | None:
     if len(columns) > _MAX_TABLE_COLUMNS:
         return f"table setting `{key}` declares more than {_MAX_TABLE_COLUMNS} columns"
     seen: set[str] = set()
-    for column in columns:
+    for number, column in enumerate(columns, start=1):
+        if not isinstance(column, dict):
+            return f"table setting `{key}` column {number} must be a table"
         name = str(column.get("key") or "")
         where = f"table setting `{key}` column `{name}`"
         if not _SETTING_KEY_RE.match(name):
@@ -2400,7 +2423,7 @@ def _validate_settings(m: dict[str, Any]) -> None:
             if not isinstance(m.get(_SEALED_TABLE), dict):
                 fail(f"secret setting `{key}` requires the `[{_SEALED_TABLE}]` binding")
             continue
-        if "vars" not in m:
+        if not isinstance(m.get("vars"), dict):
             fail(f"setting `{key}` requires the `[vars]` binding")
         if "default" in spec:
             err = _setting_value_error(spec, spec["default"])
@@ -3051,31 +3074,99 @@ def generate_types(plugin_dir: Path, out_file: Path | None = None) -> str:
 MAX_CRON_TRIGGERS = 8
 """Most ``[triggers] crons`` entries one manifest may declare."""
 
-_CRON_ITEM = re.compile(r"^(\*|[0-9A-Za-z]+(-[0-9A-Za-z]+)?)(/[0-9]{1,2})?$")
+_CRON_FIELDS: tuple[tuple[str, int, int, tuple[str, ...]], ...] = (
+    ("minute", 0, 59, ()),
+    ("hour", 0, 23, ()),
+    ("day of month", 1, 31, ()),
+    (
+        "month",
+        1,
+        12,
+        ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"),
+    ),
+    ("day of week", 0, 7, ("sun", "mon", "tue", "wed", "thu", "fri", "sat")),
+)
+"""The five cron fields as the host's ``FIELDS``: name, min, max, names from min."""
 
 
-def _validate_crons(crons: Any) -> None:
-    """Checks the shape of ``[triggers] crons``.
+def _cron_value(text: str, spec: tuple[str, int, int, tuple[str, ...]]) -> int | str:
+    """Parse one cron value (number or name) as the host's ``parse_value`` does.
 
-    At most :data:`MAX_CRON_TRIGGERS` ASCII entries of five fields, each a
-    comma list of ``*``, values, ranges and ``/step``, with no duplicates once
-    whitespace is normalized. Value ranges, names and never-firing schedules
-    are checked by the host at install (``CronSchedule::parse``).
+    Args:
+        text: Value text.
+        spec: Field name, bounds and accepted names.
+
+    Returns:
+        The value, or an error message.
+    """
+    name, low, high, names = spec
+    if not text:
+        return f"{name} has an empty value"
+    if text.isascii() and text.isdigit():
+        if len(text) > 2:
+            return f"{name} value `{text}` is out of range"
+        value = int(text)
+    elif text.lower() in names:
+        value = low + names.index(text.lower())
+    else:
+        return f"{name} value `{text}` is not recognized"
+    if value < low or value > high:
+        return f"{name} value {value} is outside {low}-{high}"
+    return value
+
+
+def _cron_field_error(text: str, spec: tuple[str, int, int, tuple[str, ...]]) -> str | None:
+    """Check one comma-separated cron field as the host's ``parse_field`` does.
+
+    Args:
+        text: Field text.
+        spec: Field name, bounds and accepted names.
+
+    Returns:
+        The first failed rule, or ``None``.
+    """
+    name, _low, high, _names = spec
+    for item in text.split(","):
+        range_text, slash, step = item.partition("/")
+        if slash:
+            if not (step.isascii() and step.isdigit()) or len(step) > 2:
+                return f"{name} step `{step}` is invalid"
+            if int(step) == 0 or int(step) > high:
+                return f"{name} step {int(step)} is outside 1-{high}"
+        if range_text == "*":
+            continue
+        start, dash, end = range_text.partition("-")
+        a = _cron_value(start, spec)
+        if isinstance(a, str):
+            return a
+        if dash:
+            b = _cron_value(end, spec)
+            if isinstance(b, str):
+                return b
+            if a > b:
+                return f"{name} range {a}-{b} is reversed"
+    return None
+
+
+def _decode_crons(crons: Any) -> list[str]:
+    """Decode ``[triggers] crons`` as the host does while reading the manifest.
+
+    Each entry must be an ASCII five-field schedule whose values, ranges and
+    steps are in bounds. Whether a schedule ever fires is checked by the
+    host when the package is installed (``CronSchedule::parse``).
 
     Args:
         crons: The ``crons`` value as parsed from TOML.
+
+    Returns:
+        The schedules normalized to single spaces.
 
     Raises:
         ValueError: Naming the first malformed entry.
     """
     if not isinstance(crons, list):
         raise ValueError("plugin.toml: triggers.crons must be an array of strings")
-    if len(crons) > MAX_CRON_TRIGGERS:
-        raise ValueError(
-            f"plugin.toml: triggers.crons has {len(crons)} entries; "
-            f"at most {MAX_CRON_TRIGGERS} are allowed"
-        )
-    seen: set[str] = set()
+    out: list[str] = []
     for index, raw in enumerate(crons):
         if not isinstance(raw, str) or len(raw) > MAX_CRON_BYTES or not raw.isascii():
             raise ValueError(
@@ -3088,12 +3179,30 @@ def _validate_crons(crons: Any) -> None:
                 f"plugin.toml: triggers.crons[{index}] `{raw}` needs 5 fields "
                 "(minute hour day-of-month month day-of-week)"
             )
-        for field in fields:
-            if not all(_CRON_ITEM.match(item) for item in field.split(",")):
-                raise ValueError(
-                    f"plugin.toml: triggers.crons[{index}] field `{field}` is not valid cron"
-                )
-        normalized = " ".join(fields)
+        for field, spec in zip(fields, _CRON_FIELDS, strict=True):
+            err = _cron_field_error(field, spec)
+            if err is not None:
+                raise ValueError(f"plugin.toml: triggers.crons[{index}] {err}")
+        out.append(" ".join(fields))
+    return out
+
+
+def _check_cron_list(schedules: list[str]) -> None:
+    """Check the decoded cron list: at most :data:`MAX_CRON_TRIGGERS`, no duplicates.
+
+    Args:
+        schedules: Normalized schedules from :func:`_decode_crons`.
+
+    Raises:
+        ValueError: Naming the first rule that fails.
+    """
+    if len(schedules) > MAX_CRON_TRIGGERS:
+        raise ValueError(
+            f"plugin.toml: triggers.crons has {len(schedules)} entries; "
+            f"at most {MAX_CRON_TRIGGERS} are allowed"
+        )
+    seen: set[str] = set()
+    for index, normalized in enumerate(schedules):
         if normalized in seen:
             raise ValueError(f"plugin.toml: triggers.crons[{index}] `{normalized}` is duplicated")
         seen.add(normalized)

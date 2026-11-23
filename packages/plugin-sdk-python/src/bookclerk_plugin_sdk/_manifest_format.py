@@ -443,6 +443,7 @@ def _events(src: Table) -> Any:
     """
 
     def consumer(c: Table) -> Table:
+        """Project one ``[[events.consumers]]`` row; ``schema_versions`` defaults to ``[1]`` and unset optional limits are left out."""
         versions = [1] if "schema_versions" not in c else _any_value(c["schema_versions"])
         return _table(
             [
@@ -457,6 +458,7 @@ def _events(src: Table) -> Any:
         )
 
     def producer(p: Table) -> Table:
+        """Project one ``[[events.producers]]`` row; an empty ``binding`` is left out."""
         return _table([("type", _str(p, "type")), ("binding", _non_empty_str(p, "binding"))])
 
     return _non_empty_table(
@@ -480,9 +482,11 @@ def _queues(src: Table) -> Any:
     """
 
     def producer(p: Table) -> Table:
+        """Project one ``[[queues.producers]]`` row; both fields are always written."""
         return {"queue": _str(p, "queue"), "binding": _str(p, "binding")}
 
     def consumer(c: Table) -> Table:
+        """Project one ``[[queues.consumers]]`` row, filling the host defaults (batch 10, timeout 5, retries 3, delay 0)."""
         return _table(
             [
                 ("queue", _str(c, "queue")),
@@ -524,6 +528,7 @@ def _media_tables(m: Table) -> list[tuple[str, Any]]:
     ]
 
     def dialect(d: Table) -> Table:
+        """Project one ``[[metadata_files.dialects]]`` row; empty optional lists are left out and ``fields`` is always written."""
         return _table(
             [
                 ("id", _str(d, "id")),
@@ -537,6 +542,7 @@ def _media_tables(m: Table) -> list[tuple[str, Any]]:
         )
 
     def address_field(f: Table) -> Table:
+        """Project one ``[[notifier.address_fields]]`` row; every field is written."""
         return {
             "key": _str(f, "key"),
             "label": _str(f, "label"),
@@ -545,6 +551,7 @@ def _media_tables(m: Table) -> list[tuple[str, Any]]:
         }
 
     def notification_type(t: Table) -> Table:
+        """Project one ``[[notifications.types]]`` row; ``severity`` defaults to ``info``."""
         return {
             "id": _str(t, "id"),
             "audience": _str(t, "audience"),
@@ -622,6 +629,7 @@ def _capabilities(m: Table) -> Table:
     own = _table_at(network, "own_user_agent")
 
     def tcp(t: Table) -> Table:
+        """Project one ``[[capabilities.network.tcp]]`` row; ``ports`` keeps its integers."""
         return {"host": _str(t, "host"), "ports": _any_value(_list_at(t, "ports"))}
 
     return {
@@ -659,6 +667,7 @@ def _cli(src: Table | None) -> Any:
         return _SKIP
 
     def arg(a: Table) -> Table:
+        """Project one ``[[cli.commands.args]]`` row; ``kind`` defaults to ``string`` and unset options are left out."""
         return _table(
             [
                 ("name", _str(a, "name")),
@@ -673,6 +682,7 @@ def _cli(src: Table | None) -> Any:
         )
 
     def command(c: Table) -> Table:
+        """Project one ``[[cli.commands]]`` row; ``args`` is always written."""
         return _table(
             [
                 ("name", _str(c, "name")),
@@ -695,6 +705,7 @@ def _oidc(src: Table) -> Any:
     """
 
     def client(c: Table) -> Table:
+        """Project one ``[[oidc.clients]]`` row; ``public_client`` and ``issue_refresh_token`` default to true."""
         return _table(
             [
                 ("client_id", _str(c, "client_id")),
@@ -725,6 +736,7 @@ def canonical_manifest(m: Table) -> Table:
     ai = _table_at(m, "ai") or {}
 
     def module(mod: Table) -> Table:
+        """Project one ``[[workerd.modules]]`` row; ``type`` defaults to ``js`` and an empty ``path`` is left out."""
         return _table(
             [
                 ("name", _str(mod, "name")),
@@ -734,6 +746,7 @@ def canonical_manifest(m: Table) -> Table:
         )
 
     def kv(ns: Table) -> Table:
+        """Project one ``[[kv_namespaces]]`` row; limits equal to the host defaults (64 KiB, 10,000 keys) are left out."""
         return _table(
             [
                 ("binding", _non_empty_str(ns, "binding")),

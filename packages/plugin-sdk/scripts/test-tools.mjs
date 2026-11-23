@@ -424,6 +424,7 @@ for (const triggers of [
     '"2" = "two"',
     '"10" = "ten"',
     '__proto__ = "marker"',
+    "magnitude = 1e21",
     "",
     "[[vars.rows]]",
     "id = 1",
@@ -443,9 +444,16 @@ for (const triggers of [
     !out.includes('crons = ["0 3 * * MON"]') && "cron whitespace not normalized",
     !out.includes("release_date = 2026-08-01") && "date literal lost",
     !out.includes("sample = [\n    1.0,\n    1,\n]") && "float/integer kind lost",
-    out.indexOf('"10" = "ten"') > out.indexOf('"2" = "two"') && "keys not in sorted order",
+    !(
+      out.indexOf('10 = "ten"') >= 0 &&
+      out.indexOf('2 = "two"') >= 0 &&
+      out.indexOf('10 = "ten"') < out.indexOf('2 = "two"')
+    ) && "keys missing or not in sorted order",
     !out.includes('__proto__ = "marker"') && "__proto__ key dropped",
+    !out.includes("magnitude = 1000000000000000000000.0") && "exponent float not plain",
     (back.vars?.rows?.length ?? 0) !== 2 && "array-of-tables element merged",
+    back.vars?.rows?.[0]?.id !== 1n && "first row lost id",
+    back.vars?.rows?.[1]?.meta?.x !== 2n && "second row lost meta.x",
   ].filter(Boolean);
   if (problems.length) {
     console.error("FAIL fmt free-form round trip:", problems.join("; "), "\n" + out);
@@ -510,10 +518,54 @@ for (const triggers of [
     queues: { producers: [{ binding: "SOCKETS", queue: "jobs" }] },
   };
   check(queue);
-  if (!envPropertiesFor(queue).some((p) => p.name === "SOCKETS")) {
-    console.error("FAIL types refused a SOCKETS queue producer the host accepts");
+  // The host accepts it, but `Env extends BookclerkEnv` types SOCKETS as a
+  // SocketsBinding, so `types` asks for another name instead of writing a
+  // declaration that does not compile.
+  let typesRefused = "";
+  try {
+    envPropertiesFor(queue);
+  } catch (err) {
+    typesRefused = String(err.message);
+  }
+  if (!typesRefused.includes("rename it so the generated Env compiles")) {
+    console.error("FAIL types wrote a SOCKETS queue that cannot compile:", typesRefused);
     process.exit(1);
   }
+  refuses(
+    "cron minute range",
+    { ...base, triggers: { crons: ["60 * * * *"] } },
+    "minute value 60 is outside 0-59",
+  );
+  check({ ...base, triggers: { crons: ["59 * * * *", "0 3 * * MON-FRI", "*/15 * * * *"] } });
+  refuses(
+    "cron decode before the command rule",
+    { ...base, command: undefined, triggers: { crons: ["60 * * * *"] } },
+    "minute value 60",
+  );
+  refuses(
+    "registry rule before duplicate crons",
+    { ...base, entrypoints: ["storage"], triggers: { crons: ["0 3 * * *", "0 3 * * *"] } },
+    "cannot be combined",
+  );
+  refuses(
+    "string setting columns",
+    { ...base, settings: [{ key: "x", type: "string", columns: "" }] },
+    "`columns` must be an array",
+  );
+  const hook = base;
+  refuses(
+    "string webhook headers",
+    { ...hook, webhooks: [{ name: "inbound", headers: "x", signature: { scheme: "none" } }] },
+    "headers must be an array",
+  );
+  refuses(
+    "extra field on an unsigned webhook",
+    {
+      ...hook,
+      webhooks: [{ name: "inbound", signature: { scheme: "none", header: "x-sig" } }],
+    },
+    "does not apply to",
+  );
 }
 console.log("ok formatter keeps cron and job triggers");
 const { validateManifest } = await import("../dist/tools/validate.js");
@@ -819,8 +871,8 @@ function bindingMessage(manifest) {
     [{ crons: ["*/30 * * * *", "0  3 * * MON"] }, ""],
     [{ crons: ["* * * *"] }, "needs 5 fields"],
     [{ crons: ["0 0 * * *", " 0 0 * * * "] }, "is duplicated"],
-    [{ crons: ["0 0 L * *"] }, ""],
-    [{ crons: ["0 0 5#2 * *"] }, "is not valid cron"],
+    [{ crons: ["0 0 L * *"] }, "is not recognized"],
+    [{ crons: ["0 0 5#2 * *"] }, "is not recognized"],
     [{ crons: Array.from({ length: 9 }, (_, i) => `${i} * * * *`) }, "at most 8"],
     [{ crons: ["0 0 * * *".padEnd(129, " ") + "x"] }, "at most 128 bytes"],
   ];

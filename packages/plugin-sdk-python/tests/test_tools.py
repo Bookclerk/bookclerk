@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 from datetime import date, timedelta
 from pathlib import Path
@@ -1337,8 +1338,31 @@ def test_validate_accepts_and_rejects_cron_triggers():
         validate_manifest({**base, "triggers": {"crons": [5]}})
     with pytest.raises(ValueError, match="needs 5 fields"):
         validate_manifest({**base, "triggers": {"crons": ["* * * *"]}})
-    with pytest.raises(ValueError, match="is not valid cron"):
+    with pytest.raises(ValueError, match="is not recognized"):
         validate_manifest({**base, "triggers": {"crons": ["@daily * * * *"]}})
+    # The host's field bounds: minute 59 passes, 60 does not.
+    validate_manifest({**base, "triggers": {"crons": ["59 * * * *", "0 0 1-31/2 jan-dec 7"]}})
+    with pytest.raises(ValueError, match="minute value 60 is outside 0-59"):
+        validate_manifest({**base, "triggers": {"crons": ["60 * * * *"]}})
+    with pytest.raises(ValueError, match="range 5-3 is reversed"):
+        validate_manifest({**base, "triggers": {"crons": ["0 5-3 * * *"]}})
+    with pytest.raises(ValueError, match="step 0 is outside"):
+        validate_manifest({**base, "triggers": {"crons": ["*/0 * * * *"]}})
+    # Schedules decode before any rule, and the list rules run after the
+    # registry rule.
+    no_command = {k: v for k, v in base.items() if k != "command"}
+    with pytest.raises(ValueError, match="minute value 60"):
+        validate_manifest(
+            {**no_command, "entrypoints": ["cli"], "triggers": {"crons": ["60 * * * *"]}}
+        )
+    with pytest.raises(ValueError, match="cannot be combined"):
+        validate_manifest(
+            {
+                **base,
+                "entrypoints": ["storage"],
+                "triggers": {"crons": ["0 3 * * *", "0 3 * * *"]},
+            }
+        )
     with pytest.raises(ValueError, match="is duplicated"):
         validate_manifest({**base, "triggers": {"crons": ["0 * * * *", "0  *  * * *"]}})
     media = {"works": ["book"], "lists": ["audio"]}
@@ -2183,3 +2207,67 @@ def test_fmt_keeps_free_form_values_and_normalizes_crons() -> None:
     back = tomllib.loads(text)
     assert back["vars"]["key\n"] == "v"
     assert back["vars"]["rows"] == [{"id": 1}, {"meta": {"x": 2}}]
+
+
+def test_shape_rules_the_host_decodes() -> None:
+    """Wrong-shaped webhooks, headers, prefixes, columns and vars are refused."""
+    from bookclerk_plugin_sdk.tools import validate_manifest
+
+    hook = {"name": "inbound", "signature": {"scheme": "none"}}
+    cases = [
+        ({"webhooks": {}}, "`webhooks` must be an array"),
+        ({"webhooks": [{**hook, "headers": "x"}]}, "headers must be an array"),
+        (
+            {"webhooks": [{"name": "inbound", "signature": {"scheme": "none", "header": "x"}}]},
+            "does not apply to",
+        ),
+        (
+            {
+                "webhooks": [
+                    {
+                        "name": "inbound",
+                        "signature": {
+                            "scheme": "hmac-sha256",
+                            "header": "x-sig",
+                            "secret_setting": "hook_key",
+                            "prefix": 123,
+                        },
+                    }
+                ],
+                "settings": [{"key": "hook_key", "label": "Key", "type": "secret"}],
+                "secrets": {},
+            },
+            "prefix must be a string",
+        ),
+        (
+            {"settings": [{"key": "rows", "label": "Rows", "type": "table", "columns": [42]}]},
+            "column 1 must be a table",
+        ),
+        (
+            {"settings": [{"key": "x", "label": "X", "type": "string", "columns": ""}]},
+            "`columns` must be an array",
+        ),
+        (
+            {"settings": [{"key": "x", "label": "X", "type": "string"}], "vars": []},
+            "requires the `[vars]` binding",
+        ),
+    ]
+    for extra, needle in cases:
+        with pytest.raises(ValueError, match=re.escape(needle)):
+            validate_manifest({**_DECODE_BASE, **extra})
+    validate_manifest({**_DECODE_BASE, "webhooks": [], "vars": {}})
+    validate_manifest(
+        {
+            **_DECODE_BASE,
+            "settings": [{"key": "x", "label": "X", "type": "string"}],
+            "vars": {},
+        }
+    )
+
+
+def test_wildcard_suffix_is_trimmed_like_the_host() -> None:
+    """``*. example.com`` normalizes to ``*.example.com`` as the host does."""
+    from bookclerk_plugin_sdk.tools import validate_manifest
+
+    network = {"mode": "outbound", "tcp": [{"host": "*. example.com", "ports": [443]}]}
+    validate_manifest({**_DECODE_BASE, "capabilities": {"network": network}})
