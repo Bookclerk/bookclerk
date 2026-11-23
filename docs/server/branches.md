@@ -1362,17 +1362,34 @@ For each library A it joined, B:
   in, it drops the books A no longer named. A read cut short keeps the
   list from the last complete read. Leaving A clears that library's list.
 
-B's **Library** page then shows **Books in other libraries** to B's
-operator and Owners: every library B is a branch of, merged into one list
-by work, the person's own books marked **Yours**, with an **Only yours**
-filter. Two books are the same work when their identifiers reach the
-same work in B's own library, when they share a strong identifier (an
-ASIN with its marketplace, or an OpenLibrary edition or work id), or when
-one library groups them under one work. An ISBN alone doesn't join two
-libraries' books, since one ISBN can sit on several editions. Titles are
-never compared,
-because work ids differ between libraries. Each entry shows which
-libraries hold it, from which stores, and in which formats.
+For B's operator and Owners, B's **Library** page lists these books in
+the same list as B's own, merged by work. Two books are the same work
+when their identifiers reach the same work in B's own library, when they
+share a strong identifier (an ASIN with its marketplace, or an
+OpenLibrary edition or work id), or when one library groups them under
+one work. An ISBN alone doesn't join two libraries' books, since one ISBN
+can sit on several editions. Titles are never compared, because work ids
+differ between libraries.
+
+- A book B has too stays on B's row, with an **Also in** line naming the
+  other libraries, and **Yours there** when it is on the person's own
+  store accounts in one of them.
+- A book only other libraries hold gets a row of its own in the list's
+  order, saying which libraries hold it (or "On a branch of" one), from
+  which stores and in which formats, marked **Yours** when it is the
+  person's own there.
+- Title, author and series orders place these rows among B's own. They
+  have no added or purchase time on B, so those orders put them last; the
+  duration order uses their runtime. Under a search they follow B's own
+  matches. While more of B's pages are to come, only the rows that sort
+  before the last one loaded show, so nothing jumps as the list grows.
+- The search narrows them too (`author:`, `narrator:`, `series:`,
+  `title:` and `asin:` included), and so does the format filter (an
+  ebook there is a PDF). The status and other filters leave them out,
+  since B holds no state or filter values for them.
+- When B reads any other library, a **Library** filter shows **Every
+  library** (the default), **This library**, **Other libraries**, **Yours
+  in other libraries**, or one library when there are several.
 
 The list also has the books of every library B holds a library card for
 (see [Signing in with a library card](sign-in.md#signing-in-with-a-library-card)).

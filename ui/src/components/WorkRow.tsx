@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { CoverThumb } from "@/components/CoverThumb";
 import { Download, Play } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -25,7 +26,9 @@ const mediaLabels: Record<MediaKind, string> = {
  * button.
  *
  * @param props - Work, handlers, busy flag, and acquire visibility. With
- *   `onPlay`, a work whose audio is acquired shows a play button.
+ *   `onPlay`, a work whose audio is acquired shows a play button; `note`
+ *   is a last line under the people (such as the other libraries that
+ *   hold the work too).
  */
 export function WorkRow({
   work,
@@ -34,6 +37,7 @@ export function WorkRow({
   onPlay,
   busy,
   showAcquire = true,
+  note,
 }: {
   work: WorkSummary;
   onAcquire: (work: WorkSummary) => void;
@@ -41,6 +45,7 @@ export function WorkRow({
   onPlay?: (work: WorkSummary) => void;
   busy: boolean;
   showAcquire?: boolean;
+  note?: ReactNode;
 }) {
   const series = work.series
     ? `${work.series}${work.series_position ? ` #${work.series_position}` : ""}`
@@ -103,6 +108,7 @@ export function WorkRow({
             {[series, editions].filter(Boolean).join(" · ")}
           </p>
         ) : null}
+        {note}
       </div>
       <div className="flex shrink-0 items-center">
         {onPlay && rowOffersPlay(work) ? (
