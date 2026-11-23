@@ -900,7 +900,7 @@ There is no `kind = "integration"`.
 | `remoteLibrary.scanLibrary` | `{ force: bool }` |
 | `remoteLibrary.syncListening` | Listening progress snapshots; the host upserts them tagged with the plugin id |
 | `remoteLibrary.pollEvents` | `{ ackFollows: bool }` → observed external users. The host polls after `start`, and kicks off **core** workflows (such as claim tickets). The plugin stays unaware of the portal and tickets. The host sends `ackFollows: true`; older hosts send no params, which read as `false` |
-| `remoteLibrary.ackEvents` | `{ externalUserIds }`: the users a `pollEvents` reply carried, sent once the host has started their workflows. A plugin polled with `ackFollows: true` keeps returning a user until it is acknowledged, so a reply lost on the way is answered again. Each user may arrive more than once; the default does nothing |
+| `remoteLibrary.ackEvents` | `{ externalUserIds }`: the users a `pollEvents` reply carried that the host accepted (their claim tickets minted). A user the host could not accept is left out and comes back on the next poll. A plugin polled with `ackFollows: true` keeps returning a user until it is acknowledged, so a reply lost on the way is answered again. Each user may arrive more than once; the default does nothing |
 | `oidc.authenticateUser` | `{ username, password }` → external user (when `oidc` is exported) |
 | `cli` | Declared under `[cli]` / `entrypoints = ["cli"]` |
 

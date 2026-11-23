@@ -334,12 +334,11 @@ fn combine_health(reports: Vec<bookclerk_plugin_sdk::HealthOk>) -> (bool, Option
 async fn poll_session_users(
     session: &PluginSession,
 ) -> bookclerk_integrations::Result<Vec<ExternalUser>> {
-    let users = session
-        .remote_library(|stub| async move {
-            stub.poll_events(bookclerk_plugin_abi::EventPollParams { ack_follows: true })
-                .await
-        })
-        .await?;
+    let users = bounded_remote_library(session, "pollEvents", |stub| async move {
+        stub.poll_events(bookclerk_plugin_abi::EventPollParams { ack_follows: true })
+            .await
+    })
+    .await?;
     Ok(users
         .into_iter()
         .map(|user| ExternalUser {
@@ -361,13 +360,61 @@ async fn ack_session_users(
     session: &PluginSession,
     external_user_ids: Vec<String>,
 ) -> bookclerk_integrations::Result<()> {
-    session
-        .remote_library(|stub| async move {
-            stub.ack_events(bookclerk_plugin_abi::EventAckParams { external_user_ids })
-                .await
-        })
-        .await?;
+    bounded_remote_library(session, "ackEvents", |stub| async move {
+        stub.ack_events(bookclerk_plugin_abi::EventAckParams { external_user_ids })
+            .await
+    })
+    .await?;
     Ok(())
+}
+
+/// Longest the user poll waits for one `pollEvents` or `ackEvents` answer,
+/// so a guest that stays alive but never answers cannot stall the loop.
+const USER_POLL_CALL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Runs one `remoteLibrary` call for the user poll, bounded by
+/// [`USER_POLL_CALL_DEADLINE`].
+///
+/// On the deadline the call's cancel flag is set, so the session releases
+/// it, and a `deadline_exceeded` error is returned; the users stay pending
+/// on the guest for the next poll.
+///
+/// # Arguments
+///
+/// * `session` - The guest's session.
+/// * `method` - Method name for the deadline error.
+/// * `call` - The call against the guest's `remoteLibrary` stub.
+///
+/// # Errors
+///
+/// Returns the call's error, or `deadline_exceeded` when it does not answer
+/// in time.
+async fn bounded_remote_library<T, F, Fut>(
+    session: &PluginSession,
+    method: &str,
+    call: F,
+) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce(Box<dyn bookclerk_plugin_sdk::RemoteLibrary>) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = std::result::Result<T, bookclerk_plugin_sdk::PluginError>>
+        + 'static,
+{
+    let cancel = Arc::new(AtomicBool::new(false));
+    let pending = session.remote_library_cancelable(Arc::clone(&cancel), call);
+    match tokio::time::timeout(USER_POLL_CALL_DEADLINE, pending).await {
+        Ok(result) => result,
+        Err(_) => {
+            cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+            Err(crate::PluginError::from_abi(
+                Some("deadline_exceeded"),
+                format!(
+                    "{method} did not answer within {} s",
+                    USER_POLL_CALL_DEADLINE.as_secs()
+                ),
+            ))
+        }
+    }
 }
 
 impl ExternalIntegration {

@@ -324,6 +324,7 @@ fn hooked_context() -> (IntegrationContext, Arc<std::sync::Mutex<Vec<String>>>) 
         on_external_user: Some(Arc::new(move |user| {
             assert_eq!(user.provider, "fake", "the alias fills an empty provider");
             sink.lock().expect("seen").push(user.external_user_id);
+            Box::pin(async { Ok(()) })
         })),
     };
     (ctx, seen)
@@ -870,7 +871,7 @@ async fn an_ask_with_no_poll_running_is_dropped() {
         &generations,
         Duration::from_secs(3600),
         "fake".into(),
-        Arc::new(|_| {}),
+        Arc::new(|_| Box::pin(async { Ok(()) })),
         move || {
             counter.fetch_add(1, Ordering::SeqCst);
             async { Some(Ok(Vec::new())) }

@@ -330,14 +330,16 @@ class NamedEntrypointTests(unittest.IsolatedAsyncioTestCase):
                 self.pending = ["ada"]
                 self.seen: list[object] = []
 
-            async def pollEvents(self, params=None):
+            async def pollEvents(
+                self, params: dict[str, object] | None = None
+            ) -> list[dict[str, str]]:
                 self.seen.append(params)
                 return [
                     {"provider": "test", "externalUserId": user, "displayName": ""}
                     for user in self.pending
                 ]
 
-            async def ackEvents(self, params):
+            async def ackEvents(self, params: dict[str, list[str]]) -> None:
                 self.pending = [u for u in self.pending if u not in params["externalUserIds"]]
 
         plugin = Acking()
@@ -348,7 +350,7 @@ class NamedEntrypointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await plugin.bookclerkInvoke({}, "pollEvents", {"ackFollows": True}), [])
 
         class Legacy(RemoteLibraryEntrypoint):
-            async def pollEvents(self):
+            async def pollEvents(self) -> list[dict[str, str]]:
                 return [{"provider": "test", "externalUserId": "old", "displayName": ""}]
 
         legacy = await Legacy().bookclerkInvoke({}, "pollEvents", {"ackFollows": True})

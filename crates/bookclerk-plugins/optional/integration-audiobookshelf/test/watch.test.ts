@@ -217,6 +217,30 @@ test("a user is pending before it is known, so a failed pending write loses nobo
   });
 });
 
+test("an acknowledged user is known before it stops being pending", async () => {
+  const ada = await watchKey("ada");
+  const strict: PluginMigration = {
+    id: "abs-user-watch-refuses-ada",
+    operations: [
+      {
+        kind: "schema",
+        value: `CREATE TABLE IF NOT EXISTS abs_watch_users (person TEXT NOT NULL PRIMARY KEY CHECK (person <> '${ada}'))`,
+      },
+    ],
+  };
+  await eachProfile([strict, WATCH_PENDING_MIGRATION], async (db, profile) => {
+    const watch = new UserWatch(db.binding, new Set());
+    await watch.seed(users(["root"]));
+    const polled = users(["root", "ada"]);
+    // The known write fails, but the user is pending and still reported.
+    assert.deepEqual(ids(await watch.takeNew(polled, true)), ["ada"], profile);
+    // Acknowledging cannot record it as known, so it stays pending rather
+    // than coming back as a new user.
+    await assert.rejects(watch.ack(["ada"]), Error, profile);
+    assert.deepEqual(ids(await watch.takeNew(polled, true)), ["ada"], profile);
+  });
+});
+
 test("without a database the pending set lives in memory", async () => {
   const pending = new Set<string>();
   const watch = new UserWatch(undefined, new Set(), pending);

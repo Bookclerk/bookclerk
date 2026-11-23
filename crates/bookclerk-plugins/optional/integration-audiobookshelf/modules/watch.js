@@ -244,6 +244,12 @@ export class UserWatch {
     /**
      * Marks the users in `userIds` acknowledged, so polls stop reporting them.
      *
+     * Each user is recorded as known before its pending row is deleted: a
+     * poll whose known write failed still returned the user, and deleting the
+     * pending row alone would leave it unknown, so the next poll would report
+     * it as new and the host would mint a second claim ticket. When the known
+     * write fails, the users stay pending.
+     *
      * @param userIds - Audiobookshelf user ids the host acknowledged; ids that
      *   were never pending are ignored.
      * @throws The database's error.
@@ -256,6 +262,7 @@ export class UserWatch {
                 this.#pending.delete(key);
             return;
         }
+        await insertKeys(db, keys);
         await writeAll(db, keys.map((person) => db.prepare("DELETE FROM abs_watch_pending WHERE person = ?").bind(text(person)).asRun()));
     }
 }

@@ -29,7 +29,7 @@ pub const RESIDENT_USER_POLL_INTERVAL: Duration = Duration::from_secs(30);
 pub const ON_DEMAND_USER_POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 /// The daemon hook each polled user is handed to.
-pub(crate) type OnExternalUser = Arc<dyn Fn(ExternalUser) + Send + Sync>;
+pub(crate) use bookclerk_integrations::OnExternalUser;
 
 /// Ends a poll loop when its owner starts again or stops.
 ///
@@ -96,12 +96,13 @@ impl PollGeneration {
 /// Spawns the poll loop for one remote library.
 ///
 /// The loop waits `interval` (or less, when [`PollGeneration::poll_now`]
-/// asks), calls `poll`, hands every user it returns to `on_user`, then
-/// acknowledges them through `ack` so the guest stops returning them. It
-/// runs until `generations` moves past the generation it was spawned under
-/// or `poll` returns `None` (its owner is gone). A failed poll or
-/// acknowledgement is logged and the loop keeps its schedule; a user whose
-/// acknowledgement failed comes back on the next poll.
+/// asks), calls `poll`, hands every user it returns to `on_user` and waits
+/// for it, then acknowledges the users the hook accepted through `ack` so
+/// the guest stops returning them. It runs until `generations` moves past
+/// the generation it was spawned under or `poll` returns `None` (its owner
+/// is gone). A failed poll, hook or acknowledgement is logged and the loop
+/// keeps its schedule; a user the hook refused or whose acknowledgement
+/// failed comes back on the next poll.
 ///
 /// # Arguments
 ///
@@ -111,7 +112,8 @@ impl PollGeneration {
 ///   the start.
 /// * `plugin_id` - alias for log lines and for users whose `provider` is
 ///   empty.
-/// * `on_user` - the daemon hook each user is passed to.
+/// * `on_user` - the daemon hook each user is passed to; a user is
+///   acknowledged only when it resolves `Ok`.
 /// * `poll` - one poll; `None` ends the loop.
 /// * `ack` - acknowledges the `externalUserId`s of users passed on.
 pub(crate) fn spawn<F, Fut, A, AckFut>(
@@ -146,10 +148,20 @@ pub(crate) fn spawn<F, Fut, A, AckFut>(
             // already handed them over.
             match result {
                 Ok(users) => {
-                    let ids: Vec<String> =
-                        users.iter().map(|u| u.external_user_id.clone()).collect();
+                    // Only users the hook durably accepted are acknowledged;
+                    // the guest hands the rest over again on the next poll.
+                    let mut ids = Vec::with_capacity(users.len());
                     for user in users {
-                        on_user(with_provider(user, &plugin_id));
+                        let id = user.external_user_id.clone();
+                        match on_user(with_provider(user, &plugin_id)).await {
+                            Ok(()) => ids.push(id),
+                            Err(err) => tracing::warn!(
+                                id = %plugin_id,
+                                %err,
+                                "remote library user was not accepted; \
+                                 it comes back on the next poll"
+                            ),
+                        }
                     }
                     if !ids.is_empty() {
                         if let Err(err) = ack(ids).await {
@@ -205,7 +217,10 @@ mod tests {
     fn recorder() -> (OnExternalUser, Arc<std::sync::Mutex<Vec<ExternalUser>>>) {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
-        let hook: OnExternalUser = Arc::new(move |user| sink.lock().expect("seen").push(user));
+        let hook: OnExternalUser = Arc::new(move |user| {
+            sink.lock().expect("seen").push(user);
+            Box::pin(async { Ok(()) })
+        });
         (hook, seen)
     }
 
@@ -259,6 +274,48 @@ mod tests {
         generations.end();
         tokio::time::sleep(Duration::from_secs(60)).await;
         assert_eq!(polls.load(Ordering::SeqCst), 3, "an ended loop stops");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_user_the_hook_refuses_is_not_acknowledged() {
+        let generations = PollGeneration::default();
+        let hook: OnExternalUser = Arc::new(|user| {
+            Box::pin(async move {
+                if user.external_user_id == "bad" {
+                    Err(bookclerk_integrations::IntegrationError::message(
+                        "mint failed",
+                    ))
+                } else {
+                    Ok(())
+                }
+            })
+        });
+        let acked = Arc::new(std::sync::Mutex::new(Vec::<Vec<String>>::new()));
+        let ack_sink = Arc::clone(&acked);
+        spawn(
+            &generations,
+            Duration::from_secs(1),
+            "abs".into(),
+            hook,
+            || async {
+                let bad = ExternalUser {
+                    external_user_id: "bad".into(),
+                    ..user("abs")
+                };
+                Some(Ok(vec![user("abs"), bad]))
+            },
+            move |ids| {
+                ack_sink.lock().expect("acked").push(ids);
+                async { Ok(()) }
+            },
+        );
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        generations.end();
+        assert_eq!(
+            acked.lock().expect("acked").clone(),
+            vec![vec!["u1".to_string()]],
+            "the refused user stays pending on the guest"
+        );
     }
 
     #[tokio::test(start_paused = true)]

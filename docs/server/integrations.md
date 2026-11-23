@@ -46,8 +46,8 @@ plugin that runs in `workerd`, in
 The plugin does Audiobookshelf work only: scans, listening sync, sign-in
 with Audiobookshelf credentials, and watching users through `pollEvents`.
 Claim tickets and the Accounts page are part of Bookclerk itself; the host
-polls `pollEvents`, starts those workflows, and then acknowledges the users
-(`ackEvents`) so the plugin stops reporting them.
+polls `pollEvents`, mints each user's claim ticket, and then acknowledges
+the users it minted (`ackEvents`) so the plugin stops reporting them.
 
 ### Set it up
 
@@ -155,10 +155,14 @@ only polls.
 
 The plugin keeps the users it has reported in its `LISTENING_STATE`
 database, as a hash of each user id. So a user created while the plugin
-slept is still reported by the next poll. If recording a new user fails,
-the next poll reports that user again and the host mints a second
-ticket. A poll reply lost on its way to the host is not retried, so a
-user the plugin had already recorded gets no ticket.
+slept is still reported by the next poll.
+
+Each reported user also stays pending until the host acknowledges it.
+The host acknowledges a user only after its claim ticket is minted, so a
+poll reply lost on its way to the host, or a ticket that could not be
+minted, is answered again by the next poll. The plugin records an
+acknowledged user as known before it clears the pending entry; if that
+write fails, the user stays pending rather than being reported as new.
 
 > [!NOTE]
 > Without the `LISTENING_STATE` database grant, the plugin cannot keep
