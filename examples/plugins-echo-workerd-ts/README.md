@@ -69,6 +69,17 @@ bookclerk plugins echo_workerd_ts notes-add --body "remember" --count 3
 bookclerk plugins echo_workerd_ts notes-list
 ```
 
+## Another plugin's model
+
+`[ai] calls = ["textEmbeddings"]` in `plugin.toml` asks for the `AI`
+binding ([docs/plugins/abi.md](../../docs/plugins/abi.md)). Once the operator
+approves it, `embed --text <text>` runs the library's embedding model,
+which the `embedder` plugin serves, and prints the model that answered:
+
+```bash
+bookclerk plugins echo_workerd_ts embed --text "a quiet harbour"
+```
+
 ## Build and test
 
 `src/` is the source; `npm run build` emits the shipped `modules/`, and

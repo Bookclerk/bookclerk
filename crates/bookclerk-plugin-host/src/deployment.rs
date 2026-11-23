@@ -880,6 +880,9 @@ pub struct LiveDeploymentRuntime {
     ingress: std::sync::Mutex<HashMap<String, Arc<crate::ingress::IngressGuest>>>,
     /// How often a running ingress is asked whether it is serving.
     ingress_health_interval: std::time::Duration,
+    /// What installs model plugins' models on this node; `None` installs
+    /// none and starts no download.
+    model_delivery: std::sync::Mutex<Option<crate::ModelDelivery>>,
 }
 
 impl LiveDeploymentRuntime {
@@ -912,6 +915,41 @@ impl LiveDeploymentRuntime {
             ingress_host: std::sync::Mutex::new(None),
             ingress: std::sync::Mutex::new(HashMap::new()),
             ingress_health_interval: crate::INGRESS_HEALTH_INTERVAL,
+            model_delivery: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Lets this node install the models its model plugins pin. Until it is
+    /// set, no model is looked for or downloaded.
+    pub fn set_model_delivery(&self, delivery: crate::ModelDelivery) {
+        *self
+            .model_delivery
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(delivery);
+    }
+
+    /// What installs models on this node, when the daemon set it.
+    #[must_use]
+    pub fn model_delivery(&self) -> Option<crate::ModelDelivery> {
+        self.model_delivery
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Hands the model delivery what `plugin` should have, when the
+    /// package pins models (`models.json`) and a delivery is set.
+    fn deliver_models(
+        &self,
+        plugin: &crate::DiscoveredPlugin,
+        config: &Config,
+        request: &DeploymentSpawn,
+    ) {
+        let Some(delivery) = self.model_delivery() else {
+            return;
+        };
+        if let Some(want) = crate::model_delivery::model_want(plugin, config, request) {
+            delivery.ensure(want);
         }
     }
 
@@ -1055,6 +1093,9 @@ impl LiveDeploymentRuntime {
             .write()
             .await
             .remove_instance(plugin_instance_id);
+        if let Some(delivery) = self.model_delivery() {
+            delivery.forget(plugin_instance_id);
+        }
         self.forget_guest(plugin_instance_id).await;
     }
 
@@ -1373,6 +1414,7 @@ impl DeploymentRuntime for LiveDeploymentRuntime {
                 return SpawnHealth::SpawnFailed { detail: err };
             }
         };
+        self.deliver_models(&plugin, &config, request);
         let prepared = crate::instance_bindings::prepared_open_from_resolved(
             request.config.clone(),
             request.secrets.clone(),

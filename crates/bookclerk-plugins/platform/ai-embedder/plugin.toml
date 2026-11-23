@@ -10,6 +10,15 @@ entrypoints = ["ai"]
 [ai]
 serves = ["textEmbeddings"]
 
+[[settings]]
+key = "model"
+label = "Model"
+type = "enum"
+default = "bekko-a8m"
+required = true
+values = [{ id = "bekko-a8m", label = "Bekko (fast)" }, { id = "harrier-270m-q4", label = "Harrier (most accurate)" }]
+description = "The model that turns text into vectors for Discover and search. Each node downloads the chosen model once; changing it embeds the library again in the background."
+
 [capabilities.network]
 mode = "deny"
 

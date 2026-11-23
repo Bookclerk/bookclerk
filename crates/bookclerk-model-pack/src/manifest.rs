@@ -207,6 +207,63 @@ impl PackFile {
             Err(PackError::FileMismatch(self.file.as_str().to_owned()))
         }
     }
+
+    /// Checks that a file on disk is the file the description lists,
+    /// reading it in pieces so its size never matters to memory.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The file to read.
+    ///
+    /// # Errors
+    ///
+    /// [`PackError::FileMismatch`] when the file cannot be read or its
+    /// length or digest differs.
+    pub fn verify_file(&self, path: &std::path::Path) -> Result<(), PackError> {
+        if file_matches(path, self.bytes, &self.sha256) {
+            Ok(())
+        } else {
+            Err(PackError::FileMismatch(self.file.as_str().to_owned()))
+        }
+    }
+}
+
+/// Whether a file on disk has a given length and SHA-256, read in pieces
+/// so its size never matters to memory.
+///
+/// # Arguments
+///
+/// * `path` - The file to read.
+/// * `bytes` - The length it must have.
+/// * `sha256` - The digest it must have.
+///
+/// # Returns
+///
+/// False when the file cannot be read or either differs.
+#[must_use]
+pub fn file_matches(path: &std::path::Path, bytes: u64, sha256: &Sha256Hex) -> bool {
+    use sha2::Digest;
+    use std::io::Read;
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut hasher = sha2::Sha256::new();
+    let mut buffer = vec![0u8; 256 * 1024];
+    let mut length = 0u64;
+    loop {
+        let Ok(read) = file.read(&mut buffer) else {
+            return false;
+        };
+        if read == 0 {
+            break;
+        }
+        hasher.update(buffer.get(..read).unwrap_or_default());
+        length = length.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
+        if length > bytes {
+            return false;
+        }
+    }
+    length == bytes && hex::encode(hasher.finalize()) == sha256.as_str()
 }
 
 /// How the graph's output becomes one vector per text.
@@ -395,6 +452,18 @@ impl PackManifest {
         Ok(bytes)
     }
 
+    /// Every file the description lists: the graph, the tokenizer, the
+    /// base rows, then each language's row pack by tag.
+    ///
+    /// # Returns
+    ///
+    /// The files, each name once for a checked description.
+    pub fn files(&self) -> impl Iterator<Item = &PackFile> {
+        [&self.graph.model, &self.tokenizer.model, &self.base_rows]
+            .into_iter()
+            .chain(self.languages.values())
+    }
+
     /// Bytes of one row of a row pack: every table's row, concatenated.
     ///
     /// Within 1 to [`MAX_ROW_BYTES`] for a checked description.
@@ -433,10 +502,7 @@ impl PackManifest {
             return Err(field("languages", "too many"));
         }
         let mut files = BTreeSet::new();
-        let listed = [&self.graph.model, &self.tokenizer.model, &self.base_rows]
-            .into_iter()
-            .chain(self.languages.values());
-        for file in listed {
+        for file in self.files() {
             if !files.insert(file.file.as_str()) {
                 return Err(field("file", "listed twice"));
             }

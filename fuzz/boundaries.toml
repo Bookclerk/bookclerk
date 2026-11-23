@@ -740,3 +740,10 @@ boundary = "Embedding model files in the embedder plugin's data directory: the m
 input_from = "store"
 side = "guest"
 artifacts = ["bookclerk"]
+
+[targets.model_fetch]
+crate = "bookclerk-plugin-catalog"
+boundary = "What the host parses while it downloads an embedding model: the registry's token reply and the plugin package's model list (models.json)"
+input_from = "store"
+side = "host"
+artifacts = ["bookclerk"]

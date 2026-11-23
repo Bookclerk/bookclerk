@@ -22,6 +22,7 @@ import {
   type PluginConsentGrantDraft,
 } from "@/components/PluginConsentDialog";
 import { CpuCoresSlider } from "@/components/CpuCoresSlider";
+import { ModelPicker } from "@/components/ModelPicker";
 import { DiagnosticsReportsList, DiagnosticsSharingFields } from "@/components/DiagnosticsSettings";
 import { SettingsTableEditor } from "@/components/SettingsTableEditor";
 import { Badge } from "@/components/ui/badge";
@@ -1314,6 +1315,20 @@ export function SettingsPage({
           id={fieldId}
           label={option.label}
           columns={option.columns ?? []}
+          value={value}
+          error={error}
+          onChange={(next) => setPluginValue(plugin, option, next)}
+        />
+      );
+    }
+
+    if (plugin.models && option.key === plugin.models.setting) {
+      return (
+        <ModelPicker
+          key={fieldId}
+          id={fieldId}
+          label={option.label}
+          models={plugin.models}
           value={value}
           error={error}
           onChange={(next) => setPluginValue(plugin, option, next)}

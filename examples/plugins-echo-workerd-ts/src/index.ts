@@ -5,7 +5,8 @@
  * Default export extends `BookclerkEntrypoint`, handles the `book_acquired`
  * event trigger and registers the `DB` binding's migrations; the `cli`
  * entrypoint is the exported `Cli` class, whose `notes-*` commands use the
- * database helpers in `notes.ts`. Run `npx bookclerk-plugin types .` to
+ * database helpers in `notes.ts` and whose `embed` command runs a model of
+ * another plugin through the `AI` binding. Run `npx bookclerk-plugin types .` to
  * regenerate `bookclerk-configuration.d.ts`.
  */
 
@@ -85,8 +86,24 @@ const CLI: CliSchema = {
         },
       ],
     },
+    {
+      name: "embed",
+      about: "Turn TEXT into a vector with the library's embedding model",
+      args: [
+        {
+          name: "text",
+          long: "text",
+          kind: "string",
+          required: true,
+          positional: false,
+        },
+      ],
+    },
   ],
 };
+
+/** The task alias for the text-embedding model the library chose. */
+const EMBEDDING_MODEL = "@library/text-embeddings";
 
 /** Largest `--count` `notes-add` accepts, so one command stays a modest write. */
 const MAX_NOTES_PER_ADD = 10_000;
@@ -176,6 +193,22 @@ export class Cli extends CliEntrypoint<Env> {
           return databaseFailure(err, 0);
         }
         return reply(0, lines.map((line) => `${line}\n`).join(""), "", { count: lines.length });
+      }
+      case "embed": {
+        const text = args["text"] ?? "";
+        if (text === "") return reply(2, "", "--text must not be empty\n", null);
+        // Absent until the operator approves `[ai].calls`.
+        const ai = this.env.AI;
+        if (ai === undefined) {
+          return reply(1, "", "text embeddings are not approved for this plugin\n", null);
+        }
+        const out = await ai.run(EMBEDDING_MODEL, { text });
+        const vector = out.data[0] ?? [];
+        return reply(0, `${out.model}: ${vector.length} numbers\n`, "", {
+          model: out.model,
+          revision: out.revision,
+          vector,
+        });
       }
       default:
         return reply(2, "", `unknown command ${params.command}\n`, null);

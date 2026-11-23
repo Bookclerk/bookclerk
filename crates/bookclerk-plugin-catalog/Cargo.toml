@@ -9,7 +9,13 @@ repository.workspace = true
 authors.workspace = true
 publish = false
 
+[features]
+# The loopback model registry other crates' tests download from
+# (`model_fetch_testing`). Never enabled by product code.
+test-support = []
+
 [dependencies]
+bookclerk-model-pack.workspace = true
 bookclerk-plugin-manifest.workspace = true
 bookclerk-plugin-sdk.workspace = true
 chrono.workspace = true

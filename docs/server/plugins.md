@@ -137,6 +137,8 @@ activate an earlier version.
 
 Platform guests (`local`, `sqlite`, `embedder`) ship with the node, and
 `cargo stage-plugins` stages development trees under `plugins/<fs-id>`.
+`embedder` ships without its model: each node downloads the chosen one
+on first start (see [Model downloads](configuration.md#model-downloads)).
 Those are staged on one machine, not installed into the library. Their
 provenance is `platform_bundled`, `verified_staged` or
 `local_development`, while an installed version is `installed`.

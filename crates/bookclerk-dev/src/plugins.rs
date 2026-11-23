@@ -796,8 +796,9 @@ fn stage_onnxruntime(bin_dir: &Path, out: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Copies a guest's `plugin.toml`, binary or modules, embedded logo and, for a
-/// guest that asks for it, the ONNX Runtime library into the staging root.
+/// Copies a guest's `plugin.toml`, binary or modules, embedded logo, model
+/// list and, for a guest that asks for it, the ONNX Runtime library into the
+/// staging root.
 fn stage_guest(
     _root: &Path,
     bin_dir: &Path,
@@ -849,6 +850,13 @@ fn stage_guest(
     }
 
     stage_embedded_logo(&guest.dir, &out, &manifest_src)?;
+    // A model plugin's list of the models it can be given, with their pins.
+    let offers = guest.dir.join(bookclerk_plugin_catalog::MODEL_OFFERS_FILE);
+    if offers.is_file() {
+        let dest = out.join(bookclerk_plugin_catalog::MODEL_OFFERS_FILE);
+        fs::copy(&offers, &dest)
+            .with_context(|| format!("copy {} -> {}", offers.display(), dest.display()))?;
+    }
     stamp_platform_if_known(guest, &out, files_dir)?;
     Ok(())
 }

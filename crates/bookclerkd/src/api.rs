@@ -514,6 +514,118 @@ struct PluginSettingColumn {
     required: bool,
 }
 
+/// Where one offered model stands on the answering node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+enum ModelInstallState {
+    /// Not on this node: another model is chosen.
+    NotInstalled,
+    /// Chosen; the node has not looked at its files yet.
+    Checking,
+    /// Chosen and downloading; `received_bytes` says how far.
+    Downloading,
+    /// Chosen; the last download failed (`detail`) and is tried again.
+    Waiting,
+    /// Chosen but not on this node, which does not download models
+    /// (`plugins.models.download = false`).
+    DownloadsOff,
+    /// On this node, every file verified.
+    Installed,
+}
+
+/// One model a model plugin offers.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+struct OfferedModelView {
+    /// The model id: the value the choosing setting takes.
+    #[schema(example = "bekko-a8m")]
+    id: String,
+    /// Name shown in the picker.
+    #[schema(example = "Bekko (fast)")]
+    label: String,
+    /// One sentence on what the model is good for.
+    #[schema(example = "Small and quick; good results in the seven supported languages.")]
+    summary: String,
+    /// Bytes downloaded and kept on disk.
+    #[schema(example = 140_609_206_u64)]
+    download_bytes: u64,
+    /// Memory the plugin needs while the model is loaded, in bytes.
+    #[schema(example = 230_686_720_u64)]
+    memory_bytes: u64,
+    /// False when the model needs more memory than the plugin may use on
+    /// this node; the picker does not offer it.
+    #[schema(example = true)]
+    fits: bool,
+    /// Where the model stands on this node.
+    state: ModelInstallState,
+    /// Bytes on disk so far, while `state` is `downloading`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 52_428_800_u64)]
+    received_bytes: Option<u64>,
+    /// Why the last download failed, while `state` is `waiting`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "the registry answered 503")]
+    detail: Option<String>,
+}
+
+/// The models a model plugin offers, as this node has them.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+struct PluginModelsView {
+    /// Key of the instance setting that chooses the model.
+    #[schema(example = "model")]
+    setting: String,
+    /// The model the setting names now (the package's default when it
+    /// names none).
+    #[schema(example = "bekko-a8m")]
+    chosen: String,
+    /// Memory the plugin may use on this node, in bytes.
+    #[schema(example = 536_870_912_u64)]
+    memory_ceiling_bytes: u64,
+    /// Every offered model, ascending by id.
+    models: Vec<OfferedModelView>,
+}
+
+impl From<bookclerk_plugin_host::PluginModels> for PluginModelsView {
+    fn from(status: bookclerk_plugin_host::PluginModels) -> Self {
+        use bookclerk_plugin_host::ModelState;
+        let ceiling = status.memory_ceiling_bytes;
+        let models = status
+            .models
+            .into_iter()
+            .map(|model| {
+                let (state, received_bytes, detail) = match model.state {
+                    ModelState::NotInstalled => (ModelInstallState::NotInstalled, None, None),
+                    ModelState::Checking => (ModelInstallState::Checking, None, None),
+                    ModelState::Downloading { received_bytes, .. } => {
+                        (ModelInstallState::Downloading, Some(received_bytes), None)
+                    }
+                    ModelState::Waiting { detail } => {
+                        (ModelInstallState::Waiting, None, Some(detail))
+                    }
+                    ModelState::DownloadsOff => (ModelInstallState::DownloadsOff, None, None),
+                    ModelState::Installed => (ModelInstallState::Installed, None, None),
+                };
+                OfferedModelView {
+                    id: model.model_id,
+                    label: model.offer.label,
+                    summary: model.offer.summary,
+                    download_bytes: model.offer.download_bytes,
+                    memory_bytes: model.offer.memory_bytes,
+                    fits: model.offer.memory_bytes <= ceiling,
+                    state,
+                    received_bytes,
+                    detail,
+                }
+            })
+            .collect();
+        Self {
+            setting: bookclerk_plugin_host::MODEL_SETTING_KEY.to_owned(),
+            chosen: status.chosen,
+            memory_ceiling_bytes: ceiling,
+            models,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Settings UI group for one discovered or loaded plugin.
 struct PluginSettingsGroup {
@@ -567,6 +679,11 @@ struct PluginSettingsGroup {
     /// other plugins and before a destination's first sync pass.
     #[serde(skip_serializing_if = "Option::is_none")]
     storage_sync: Option<crate::config_authority::StorageSyncView>,
+    /// The models a model plugin offers and where each stands on this
+    /// node; absent for other plugins and while the plugin is not deployed
+    /// here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    models: Option<PluginModelsView>,
     /// Nodes whose deployment of the instance is `present`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[schema(example = json!(["6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"]))]
@@ -3283,6 +3400,7 @@ fn build_database_settings_group(
         deployment: None,
         placement: None,
         storage_sync: None,
+        models: None,
         present_on: Vec::new(),
     }
 }
@@ -3492,6 +3610,7 @@ fn instance_settings_group(
             .cloned(),
         placement: view.placement.clone(),
         storage_sync: view.storage_sync.clone(),
+        models: None,
         present_on: view
             .deployments
             .iter()
@@ -4409,7 +4528,20 @@ async fn get_settings(
         effective.insert("output.revision".into(), revision.to_string());
     }
     let mut plugins = plugin_settings_snapshot(&cfg, &library, &node_id, &discovered_plugins).await;
+    let mut models: std::collections::HashMap<String, bookclerk_plugin_host::PluginModels> = state
+        .deployment_runtime()
+        .model_delivery()
+        .map(|delivery| delivery.status())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|status| (status.plugin_instance_id.clone(), status))
+        .collect();
     for group in &mut plugins {
+        group.models = group
+            .plugin_instance_id
+            .as_ref()
+            .and_then(|id| models.remove(id))
+            .map(PluginModelsView::from);
         group.logo = group
             .logo
             .take()
@@ -10424,5 +10556,89 @@ mod instance_settings_tests {
             rows,
             serde_json::json!([{ "library": "main", "watch": true }])
         );
+    }
+
+    #[test]
+    fn model_status_carries_cost_fit_and_state() {
+        use bookclerk_plugin_host::{ModelState, ModelStatus, PluginModels};
+
+        let offer = |label: &str, download: u64, memory: u64| {
+            serde_json::json!({
+                "label": label,
+                "summary": "A model.",
+                "model_json": { "bytes": 1296, "sha256": "ab".repeat(32) },
+                "download_bytes": download,
+                "memory_bytes": memory,
+            })
+        };
+        let offers = bookclerk_plugin_catalog::ModelOffers::parse(
+            &serde_json::to_vec(&serde_json::json!({
+                "registry": "ghcr.io/bookclerk/models",
+                "default": "bekko-a8m",
+                "models": {
+                    "bekko-a8m": offer("Bekko (fast)", 140_609_206, 220 << 20),
+                    "harrier-270m-q4": offer("Harrier (most accurate)", 217_276_472, 380 << 20),
+                },
+            }))
+            .expect("json"),
+        )
+        .expect("a model list");
+        let status = |id: &str, state: ModelState| ModelStatus {
+            model_id: id.to_owned(),
+            offer: offers.get(id).expect("offered").clone(),
+            state,
+        };
+        let view = super::PluginModelsView::from(PluginModels {
+            plugin_instance_id: "pi_1".into(),
+            plugin_key: "embedder".into(),
+            chosen: "bekko-a8m".into(),
+            // Room for the default model, not for the larger one.
+            memory_ceiling_bytes: 256 << 20,
+            models: vec![
+                status(
+                    "bekko-a8m",
+                    ModelState::Downloading {
+                        received_bytes: 1024,
+                        total_bytes: 140_609_206,
+                    },
+                ),
+                status("harrier-270m-q4", ModelState::NotInstalled),
+            ],
+        });
+        let json = serde_json::to_value(&view).expect("json");
+        assert_eq!(json["setting"], "model");
+        assert_eq!(json["chosen"], "bekko-a8m");
+        assert_eq!(json["memory_ceiling_bytes"], 256 << 20);
+        let bekko = &json["models"][0];
+        assert_eq!(bekko["id"], "bekko-a8m");
+        assert_eq!(bekko["label"], "Bekko (fast)");
+        assert_eq!(bekko["download_bytes"], 140_609_206);
+        assert_eq!(bekko["fits"], true);
+        assert_eq!(bekko["state"], "downloading");
+        assert_eq!(bekko["received_bytes"], 1024);
+        assert!(bekko.get("detail").is_none());
+        let harrier = &json["models"][1];
+        assert_eq!(harrier["fits"], false);
+        assert_eq!(harrier["state"], "not_installed");
+        assert!(harrier.get("received_bytes").is_none());
+
+        let state_of = |state: ModelState| {
+            let view = super::PluginModelsView::from(PluginModels {
+                plugin_instance_id: "pi_1".into(),
+                plugin_key: "embedder".into(),
+                chosen: "bekko-a8m".into(),
+                memory_ceiling_bytes: 512 << 20,
+                models: vec![status("bekko-a8m", state)],
+            });
+            serde_json::to_value(&view).expect("json")["models"][0].clone()
+        };
+        assert_eq!(state_of(ModelState::Checking)["state"], "checking");
+        assert_eq!(state_of(ModelState::Installed)["state"], "installed");
+        assert_eq!(state_of(ModelState::DownloadsOff)["state"], "downloads_off");
+        let waiting = state_of(ModelState::Waiting {
+            detail: "the registry answered 503".into(),
+        });
+        assert_eq!(waiting["state"], "waiting");
+        assert_eq!(waiting["detail"], "the registry answered 503");
     }
 }

@@ -52,9 +52,9 @@ cover every lockfile of a shipped artifact or its build:
 
 Tool versions that several workflows, images and scripts share live in
 [`.tool-versions`](ci.md#tool-versions) instead. Dependabot leaves the uv
-image and Node.js majors alone; the
-[tool versions bump](ci.md#tool-versions) moves uv, cargo-nextest and Rust, and a
-Node.js major moves by hand. Dependabot still updates the `node` image's
+image, Node.js majors, and `@playwright/test` and `playwright-core` in `ui/`
+alone; the [tool versions bump](ci.md#tool-versions) moves uv, cargo-nextest,
+Rust and Playwright, and a Node.js major moves by hand. Dependabot still updates the `node` image's
 digest within the pinned major.
 
 Packages that must share one version are grouped so they move in one pull
@@ -130,20 +130,15 @@ OSV SARIF upload and the `merge_group` checks would be skipped. The App can
 also approve pull requests without the "Allow GitHub Actions to create and
 approve pull requests" setting.
 
-### Before the merge queue exists
+### Pull requests that fall behind `main`
 
-While the repository is still owned by a user, `Protect Main` keeps
-"require branches to be up to date" on. Auto-merge then waits on a
-Dependabot pull request that has fallen behind `main` until it is rebased.
-Either:
-
-- turn that option off in the `Protect Main` required-status-checks rule,
-  so green Dependabot pull requests merge as soon as their checks pass.
-  Dependabot rebases pull requests that actually conflict, and `push` CI on
-  `main` is the safety net. This also relaxes the rule for human pull
-  requests until the queue replaces it; or
-- leave it on, and comment `@dependabot rebase` on pull requests that fall
-  behind.
+`Protect Main` requires the merge queue, and the queue builds every group on
+top of the current `main`. A green Dependabot pull request that has fallen
+behind `main` therefore enters the queue without a rebase, and the queue's
+full suite checks it against the latest code. Dependabot still rebases a
+pull request on its own when it conflicts or when its next check finds a
+newer version of the update; comment `@dependabot rebase` to force one
+sooner.
 
 ## Automation App
 
@@ -197,11 +192,12 @@ signed and attributed to the App.
    - **Contents: read and write**, to push branches.
    - **Pull requests: read and write**, to open, update and auto-merge
      pull requests.
-   - **Workflows: read and write**, only for
-     `dependabot-auto-merge.yml`. GitHub refuses to let an App turn on
-     auto-merge for a pull request that edits `.github/workflows/`, and
-     Dependabot's GitHub Actions updates bump the action pins there. No
-     other workflow requests it.
+   - **Workflows: read and write**, only for `dependabot-auto-merge.yml`,
+     `merge-queue-requeue.yml` and `tool-versions-bump.yml`. GitHub refuses
+     to let an App push to `.github/workflows/`, or turn on auto-merge for
+     a pull request that edits it. Dependabot's GitHub Actions updates bump
+     the action pins there, and a Playwright bump moves the UI visual jobs'
+     image there.
    - **Checks: read and write**, for the `Bookclerk CLA` check run
      (`cla.yml`), which GitHub lists under the App's name and the logo
      set in the App's **Display information**.

@@ -223,13 +223,14 @@ It runs inside the pinned Playwright image
 (`mcr.microsoft.com/playwright:v<version>-noble`, pinned by digest), so every
 run renders with the same browser, fonts and system libraries. The image's
 version must match `@playwright/test` in `ui/package.json`. When they
-differ, Playwright can't find its browser and the job fails.
-Dependabot bumps `@playwright/test` but can't move the image, so its
-Playwright pull request fails this job until the image's tag and digest
-(in `ci.yml` and `visual-recheck.yml`, which must match) and the
-`playwright-core` override in `ui/package.json` move to the same version
-in that pull request. A new browser can render some screenshots
-differently; approve those in the visual comment as usual.
+differ, Playwright can't find its browser and the job fails. So Playwright
+is pinned in [`.tool-versions`](../ci.md#tool-versions): the daily tool
+versions bump moves the image's tag and digest (in `ci.yml` and
+`visual-recheck.yml`), `@playwright/test`, the `playwright-core` override
+and the lockfile in one pull request, and Dependabot leaves both packages
+alone. `scripts/tests/test_dev_env.py` fails when any of them disagree. A
+new browser can render some screenshots differently; approve those in the
+visual comment as usual.
 
 Each run first records a full set of screenshots, then, once any are
 approved, compares with them. The job uploads a `ui-visual` artifact:

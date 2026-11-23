@@ -93,8 +93,46 @@ test("the CLI schema lists every command", async () => {
   const schema = await cli.describe();
   assert.deepEqual(
     schema.commands.map((c) => c.name),
-    ["ping", "notes-add", "notes-list"],
+    ["ping", "notes-add", "notes-list", "embed"],
   );
+});
+
+test("embed runs the library's model through the AI binding", async () => {
+  const asked: unknown[] = [];
+  const ai = {
+    run: async (model: string, input: unknown) => {
+      asked.push([model, input]);
+      return {
+        shape: [1, 3],
+        data: [[0.5, -0.5, 0.25]],
+        model: "@embedder/tiny",
+        revision: "r1",
+        fallbacks: [],
+      };
+    },
+  };
+  const withAi = new Cli({} as never, { DB: db.binding, AI: ai } as never);
+  const params = {
+    command: "embed",
+    args: [{ name: "text", value: "a quiet harbour" }],
+  } as unknown as CliInvokeParams;
+  const r = await withAi.invoke(params);
+  assert.equal(r.exitCode, 0);
+  assert.equal(r.stdout, "@embedder/tiny: 3 numbers\n");
+  assert.deepEqual(r.payload, {
+    model: "@embedder/tiny",
+    revision: "r1",
+    vector: [0.5, -0.5, 0.25],
+  });
+  assert.deepEqual(asked, [["@library/text-embeddings", { text: "a quiet harbour" }]]);
+});
+
+test("embed needs a text and an approved AI binding", async () => {
+  const empty = await run("embed", { text: "" });
+  assert.equal(empty.exitCode, 2);
+  const unapproved = await run("embed", { text: "a quiet harbour" });
+  assert.equal(unapproved.exitCode, 1);
+  assert.match(unapproved.stderr, /not approved/);
 });
 
 test("ping echoes its message", async () => {

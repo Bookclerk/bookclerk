@@ -22,6 +22,10 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", 
 [dev-dependencies]
 bookclerk-config.workspace = true
 bookclerk-db-testkit.workspace = true
+# The cross-plugin model run: the node's model router, and the loopback
+# registry the host downloads the model from.
+bookclerk-integrations.workspace = true
+bookclerk-plugin-catalog = { workspace = true, features = ["test-support"] }
 # The tiny model the staged `embedder` guest runs in its jail
 # (`tests/support/tiny_model.rs` of the plugin, included by path).
 bookclerk-model-pack.workspace = true

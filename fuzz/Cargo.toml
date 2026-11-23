@@ -33,6 +33,7 @@ bookclerk-node-proto = { path = "../crates/bookclerk-node-proto" }
 bookclerk-cover = { path = "../crates/bookclerk-cover" }
 bookclerk-tags = { path = "../crates/bookclerk-tags" }
 bookclerk-model-pack = { path = "../crates/bookclerk-model-pack" }
+bookclerk-plugin-catalog = { path = "../crates/bookclerk-plugin-catalog" }
 bookclerk-archive = { path = "../crates/bookclerk-archive" }
 # media_decode drives the media worker's demux and decode path.
 # With the FFmpeg decoders, so media_decode also fuzzes WMA, AC-3/E-AC-3
@@ -737,6 +738,13 @@ bench = false
 [[bin]]
 name = "model_pack"
 path = "fuzz_targets/model_pack.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "model_fetch"
+path = "fuzz_targets/model_fetch.rs"
 test = false
 doc = false
 bench = false
