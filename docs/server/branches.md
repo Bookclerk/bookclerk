@@ -625,7 +625,11 @@ The HTTP routes behind it are operator-only:
 - **Platform plugins** are approved automatically
   (`approved_by = "platform"`) only when this host's own install of the
   same platform key is bundled with the same payload digest as the
-  owner's artifact, and the request stays inside the platform envelope.
+  owner's artifact, the request stays inside the platform envelope, and
+  it asks for no larger budget (memory, disk, CPU, processes, workerd
+  CPU time or subrequests) than this host gives its own install of the
+  plugin. A request with a larger budget waits for this host's operator
+  like any other.
 - **Revoke stops work.** A revoke (CLI or UI) is seen within 5 seconds.
   The plugin's held jobs are cancelled and handed back to the owner
   unspent, and none of its jobs is claimed again until approved.

@@ -376,7 +376,7 @@ async fn start_host_client<T: JobTransport + 'static>(
             files_dir: host_files.to_path_buf(),
             handle: handle.clone(),
             catalog,
-            platform_payloads: Default::default(),
+            platform_installs: Default::default(),
         }
         .run(shutdown.clone()),
     );
@@ -2801,7 +2801,11 @@ mod results_and_uploads {
         let fence = claim_acquire(&world, 60).await;
         let (handle, _stop) = start(&world, StubGuests::default()).await;
         let answer = handle
-            .request(Body::AcquirePlan { job_id, fence })
+            .request(Body::AcquirePlan {
+                job_id,
+                fence,
+                after: None,
+            })
             .await
             .expect("the owner answers");
         let Body::AcquireTargets {
@@ -4392,7 +4396,6 @@ mod results_and_uploads {
                 job_id: job_id.clone(),
                 fence,
                 reason: "awaiting_host_consent".into(),
-                resumed: false,
             })
             .await
             .expect("the owner answers");
@@ -4812,6 +4815,7 @@ mod results_and_uploads {
             .request(Body::AcquirePlan {
                 job_id: job_id.clone(),
                 fence,
+                after: None,
             })
             .await
             .expect("the owner answers");
@@ -4823,6 +4827,56 @@ mod results_and_uploads {
             planned,
             vec![holding_of(&world.owner, &fresh.holding_id).await.as_str()]
         );
+    }
+
+    /// `acquire.plan` lists titles in holding-id order and, with `after`,
+    /// only those past it: a run's titles that already failed never fill
+    /// the plan ahead of ones not tried yet.
+    #[tokio::test]
+    async fn the_plan_moves_past_the_titles_a_run_already_tried() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        for product in ["t1", "t2", "t3"] {
+            world
+                .owner
+                .scope(PLUGIN, "test")
+                .upsert_book(&owner_book("riley-acct", product))
+                .await
+                .unwrap();
+        }
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 60).await;
+        let (handle, _stop) = start(&world, StubGuests::default()).await;
+        let plan = |after: Option<String>| {
+            let handle = handle.clone();
+            let job_id = job_id.clone();
+            async move {
+                let answer = handle
+                    .request(Body::AcquirePlan {
+                        job_id,
+                        fence,
+                        after,
+                    })
+                    .await
+                    .expect("the owner answers");
+                let Body::AcquireTargets { targets, .. } = answer.body else {
+                    panic!("expected targets: {answer:?}");
+                };
+                targets
+                    .into_iter()
+                    .map(|t| t.holding_id)
+                    .collect::<Vec<_>>()
+            }
+        };
+        let all = plan(None).await;
+        assert_eq!(all.len(), 3);
+        let mut sorted = all.clone();
+        sorted.sort();
+        assert_eq!(all, sorted, "holding-id order");
+        assert_eq!(plan(Some(all[0].clone())).await, all[1..]);
+        assert!(plan(Some(all[2].clone())).await.is_empty());
     }
 
     /// `acquire.plan` sends an episode's podcast parent row with it, so a
@@ -4860,6 +4914,7 @@ mod results_and_uploads {
             .request(Body::AcquirePlan {
                 job_id: job_id.clone(),
                 fence,
+                after: None,
             })
             .await
             .expect("the owner answers");

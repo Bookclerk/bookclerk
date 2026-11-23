@@ -1883,6 +1883,12 @@ pub struct JobPayload {
     /// retryable failure must not keep later claims in the resume path.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub resume_pending: bool,
+    /// The lease generation of the claim that took [`Self::resume_pending`]:
+    /// set by the claim itself, so a release of that claim knows, from the
+    /// library's own record and not the claimant's word, that it spent no
+    /// attempt. A value from an earlier claim never matches a later fence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resumed_generation: Option<i64>,
     /// For [`JobKind::Acquire`]: fetch only each title's companion PDF.
     ///
     /// Run only by nodes that hold the library database; a Host is never
@@ -2011,6 +2017,7 @@ impl Default for JobPayload {
             checkpoint: None,
             invocation_sequence: None,
             resume_pending: false,
+            resumed_generation: None,
             pdf_only: false,
             paced: false,
             requires_unsettled_since_ms: None,
