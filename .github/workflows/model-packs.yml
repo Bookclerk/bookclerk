@@ -157,6 +157,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends capnproto
 
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: model-packs
+          cache-on-failure: true
+          save-if: ${{ github.event_name != 'pull_request' && matrix.model == 'bekko-a8m' }}
+
+      # After the cargo cache on purpose: on a partial match that action
+      # cleans `target/`, which would delete a converter restored before it.
       - name: Cache the tokenizer converter
         id: converter
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -167,13 +176,6 @@ jobs:
       - name: Build the tokenizer converter
         if: steps.converter.outputs.cache-hit != 'true'
         run: scripts/model-packs/build-spm-to-fb.sh target/model-packs/tools
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          shared-key: model-packs
-          cache-on-failure: true
-          save-if: ${{ github.event_name != 'pull_request' && matrix.model == 'bekko-a8m' }}
 
       - name: Build the plugin's examples and fetch ONNX Runtime
         run: |

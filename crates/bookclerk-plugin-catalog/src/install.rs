@@ -1481,7 +1481,7 @@ fn download_to(url: &str, dest: &Path, offline: bool) -> Result<()> {
             "remote install requires https:// (or localhost http for fixtures)",
         ));
     }
-    download_resumable(url, dest)
+    download_resumable(url, dest, &Transfer::PACKAGE)
 }
 
 /// Attempts one remote package download may make; each picks up where
@@ -1491,22 +1491,47 @@ const DOWNLOAD_ATTEMPTS: u32 = 16;
 /// Attempts in a row that may fail without receiving a byte.
 const DOWNLOAD_RETRIES: u32 = 4;
 
+/// What one resumable download sends with each request and how much it
+/// may receive.
+#[derive(Clone, Copy)]
+pub(crate) struct Transfer<'a> {
+    /// Bearer token sent as `Authorization`; `None` sends no credentials.
+    /// A redirect to another host never carries it.
+    pub(crate) bearer: Option<&'a str>,
+    /// Largest body accepted, in bytes.
+    pub(crate) max_bytes: u64,
+    /// What the `User-Agent` says the download is for.
+    pub(crate) purpose: &'a str,
+    /// Called with the bytes of the file on disk after each write.
+    pub(crate) progress: Option<&'a (dyn Fn(u64) + Sync)>,
+}
+
+impl Transfer<'static> {
+    /// A plugin package: no credentials, at most [`MAX_DOWNLOAD_BYTES`].
+    pub(crate) const PACKAGE: Self = Self {
+        bearer: None,
+        max_bytes: MAX_DOWNLOAD_BYTES,
+        purpose: "plugin-install",
+        progress: None,
+    };
+}
+
 /// Streams `url` to `dest`, resuming a dropped or timed-out transfer.
 ///
 /// The body is written to disk as it arrives (never held in memory) and
-/// capped at [`MAX_DOWNLOAD_BYTES`]. When an attempt fails, times out
+/// capped at `transfer.max_bytes`. When an attempt fails, times out
 /// ([`DOWNLOAD_TIMEOUT`] per attempt) or ends short, the next asks for
 /// only the missing bytes (`Range`, with `If-Range` when the server named
 /// a validator); the plugin SDK's sans-IO `resume::next_step` decides
 /// whether each answer continues, replaces or ends the file, so a server
 /// that ignores the range or changed the file never splices bytes. The
-/// archive's digest is still checked by the caller.
+/// file's digest is still checked by the caller.
 ///
 /// # Errors
 ///
 /// Returns [`CatalogError`] for a refusal, a file over the limit, a
 /// length mismatch, or a transfer that keeps failing.
-fn download_resumable(url: &str, dest: &Path) -> Result<()> {
+pub(crate) fn download_resumable(url: &str, dest: &Path, transfer: &Transfer<'_>) -> Result<()> {
     use bookclerk_plugin_sdk::resume::{next_step, Partial, ResponseHead, Step, Validator};
     use std::io::Write as _;
 
@@ -1529,11 +1554,18 @@ fn download_resumable(url: &str, dest: &Path) -> Result<()> {
         let mut request = ureq::get(url)
             .header(
                 "User-Agent",
-                concat!("bookclerk/", env!("CARGO_PKG_VERSION"), " (plugin-install)"),
+                format!(
+                    "bookclerk/{} ({})",
+                    env!("CARGO_PKG_VERSION"),
+                    transfer.purpose
+                ),
             )
             // Offsets and lengths must count the bytes the server holds, so the
             // body must not be content-encoded (ureq would decode it).
             .header("Accept-Encoding", "identity");
+        if let Some(bearer) = transfer.bearer {
+            request = request.header("Authorization", format!("Bearer {bearer}"));
+        }
         if partial.offset > 0 {
             request = request.header("Range", format!("bytes={}-", partial.offset));
             if let Some(validator) = &validator {
@@ -1544,6 +1576,9 @@ fn download_resumable(url: &str, dest: &Path) -> Result<()> {
             .config()
             .timeout_global(Some(DOWNLOAD_TIMEOUT))
             .max_redirects(MAX_REDIRECTS)
+            // A registry redirects a blob to object storage on another
+            // host; the token is for the registry alone.
+            .redirect_auth_headers(ureq::config::RedirectAuthHeaders::Never)
             .http_status_as_error(false)
             .build()
             .call();
@@ -1605,7 +1640,7 @@ fn download_resumable(url: &str, dest: &Path) -> Result<()> {
             }
             Step::Append { total, end } => (total, end),
         };
-        if total.is_some_and(|total| total > MAX_DOWNLOAD_BYTES) {
+        if total.is_some_and(|total| total > transfer.max_bytes) {
             return Err(CatalogError::message("download exceeds size limit"));
         }
         partial.total = total;
@@ -1620,7 +1655,7 @@ fn download_resumable(url: &str, dest: &Path) -> Result<()> {
                 Ok(n) => {
                     let n64 = u64::try_from(n).unwrap_or(u64::MAX);
                     let next = partial.offset.saturating_add(n64);
-                    if next > MAX_DOWNLOAD_BYTES || partial.total.is_some_and(|total| next > total)
+                    if next > transfer.max_bytes || partial.total.is_some_and(|total| next > total)
                     {
                         return Err(CatalogError::message("download exceeds size limit"));
                     }
@@ -1631,6 +1666,9 @@ fn download_resumable(url: &str, dest: &Path) -> Result<()> {
                     }
                     file.write_all(&buf[..n])?;
                     partial.offset = next;
+                    if let Some(progress) = transfer.progress {
+                        progress(next);
+                    }
                 }
                 Err(err) => {
                     last_error = format!("download interrupted: {err}");

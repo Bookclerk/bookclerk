@@ -27,9 +27,9 @@ mod manifest;
 mod rows;
 
 pub use manifest::{
-    Element, GraphSpec, LanguageTag, PackFile, PackFileName, PackManifest, Pooling, Sha256Hex,
-    TableSpec, TokenizerSpec, MANIFEST_FILE, MAX_LANGUAGES, MAX_LITERAL_PIECES, MAX_MANIFEST_BYTES,
-    MAX_TABLES, PACK_FORMAT,
+    file_matches, Element, GraphSpec, LanguageTag, PackFile, PackFileName, PackManifest, Pooling,
+    Sha256Hex, TableSpec, TokenizerSpec, MANIFEST_FILE, MAX_LANGUAGES, MAX_LITERAL_PIECES,
+    MAX_MANIFEST_BYTES, MAX_TABLES, PACK_FORMAT,
 };
 pub use rows::{encode_rows, Rows, MAX_ROWS, MAX_ROW_BYTES, ROWS_HEADER_BYTES, ROWS_MAGIC};
 

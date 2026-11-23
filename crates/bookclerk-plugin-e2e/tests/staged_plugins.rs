@@ -568,7 +568,188 @@ async fn staged_first_party_plugins_describe() {
         }
     }
 
+    // Two real plugins together: the host installs a model for `embedder`
+    // and `echo_workerd_ts` runs it through its `AI` binding.
+    let staged = |id: &str| {
+        plugins
+            .iter()
+            .find(|plugin| plugin.manifest.id == id && scope.includes(id))
+    };
+    match (staged("embedder"), staged("echo_workerd_ts")) {
+        (Some(embedder), Some(caller)) => {
+            check_delivered_model_runs_for_another_plugin(&config, embedder, caller).await;
+        }
+        _ => eprintln!(
+            "staged_plugins: cross-plugin model run skipped (needs embedder and echo_workerd_ts)"
+        ),
+    }
+
     std::env::remove_var("BOOKCLERK_PLUGIN_DIRS");
+}
+
+/// The host downloads a model for the staged `embedder` from a registry on
+/// loopback, verifies it and puts it in the plugin's data directory; the
+/// staged `echo_workerd_ts` guest then asks for the library's embedding
+/// model through its `AI` binding and gets that model's vector, routed by
+/// the host from one jail to the other.
+// Test helper: a failure here is the test failing.
+#[allow(clippy::expect_used)]
+async fn check_delivered_model_runs_for_another_plugin(
+    config: &Config,
+    embedder: &bookclerk_plugin_host::DiscoveredPlugin,
+    caller: &bookclerk_plugin_host::DiscoveredPlugin,
+) {
+    use bookclerk_integrations::{AiRouter, Integration, IntegrationRegistry};
+    use bookclerk_plugin_catalog::model_fetch_testing::serve;
+    use bookclerk_plugin_catalog::{DescriptionPin, ModelOffers};
+    use bookclerk_plugin_host::{
+        prepared_open_from_resolved, ExternalIntegration, ModelDelivery, ModelState, ModelWant,
+        SessionServices,
+    };
+    use bookclerk_plugin_sdk::{AiTask, CliArg, ExtensibleConfig};
+
+    // The model as its publisher would hold it, and a registry serving it
+    // by digest.
+    let published = tempfile::tempdir().expect("tempdir");
+    let model = tiny_model::write_model(
+        published.path(),
+        "delivered",
+        bookclerk_model_pack::Pooling::Mean,
+        "",
+    );
+    model.add_even();
+    model.add_odd();
+    let mut blobs = std::collections::BTreeMap::new();
+    let mut download_bytes = 0u64;
+    let mut pin = None;
+    for entry in std::fs::read_dir(&model.dir).expect("model directory") {
+        let path = entry.expect("entry").path();
+        let content = std::fs::read(&path).expect("model file");
+        download_bytes += content.len() as u64;
+        let described = DescriptionPin::of(&content);
+        if path.file_name().is_some_and(|name| name == "model.json") {
+            pin = Some(described.clone());
+        }
+        blobs.insert(described.sha256.as_str().to_owned(), content);
+    }
+    let pin = pin.expect("the model has a model.json");
+    let offers = ModelOffers::parse(
+        &serde_json::to_vec(&serde_json::json!({
+            "registry": "registry.example/acme/models",
+            "default": "delivered",
+            "models": { "delivered": {
+                "label": "Delivered",
+                "summary": "The tiny model, downloaded by the host.",
+                "model_json": { "bytes": pin.bytes, "sha256": pin.sha256.as_str() },
+                "download_bytes": download_bytes,
+                "memory_bytes": 1,
+            } },
+        }))
+        .expect("json"),
+    )
+    .expect("offers");
+    let (registry, _) = serve(blobs, None);
+
+    // The embedder as a deployed model plugin, behind the node's router.
+    let empty = || ExtensibleConfig::json(&serde_json::json!({}));
+    let integration = tokio::time::timeout(
+        STAGED_SPAWN_TIMEOUT,
+        ExternalIntegration::spawn_prepared(
+            embedder,
+            config,
+            SessionServices::default(),
+            prepared_open_from_resolved(empty(), empty(), 0),
+            false,
+        ),
+    )
+    .await
+    .expect("embedder spawn timed out")
+    .expect("embedder spawn");
+    let mut integrations = IntegrationRegistry::new();
+    integrations.register(std::sync::Arc::new(integration) as std::sync::Arc<dyn Integration>);
+    let router = std::sync::Arc::new(AiRouter::new(std::sync::Arc::new(
+        tokio::sync::RwLock::new(integrations),
+    )));
+    // The model the loop above placed by hand is what the plugin lists now.
+    let before = router
+        .model_for(AiTask::TextEmbeddings)
+        .await
+        .expect("the embedder lists a model");
+    assert_eq!(before.name(), "@embedder/tiny");
+
+    // The host installs the offered model and drops the other.
+    let data_dir = bookclerk_plugin_host::plugin_data_dir(config, embedder).expect("data dir");
+    let delivery = ModelDelivery::new(std::sync::Arc::clone(&router), true, Some(registry));
+    delivery.ensure(ModelWant {
+        plugin_instance_id: "staged-embedder".into(),
+        plugin_key: embedder.plugin_key().canonical().to_string(),
+        plugin_id: embedder.manifest.id.clone(),
+        serves: embedder.manifest.ai.serves.clone(),
+        offers,
+        chosen: None,
+        data_dir: data_dir.clone(),
+        memory_ceiling_bytes: 512 << 20,
+    });
+    let installed_by = Instant::now() + STAGED_RPC_TIMEOUT;
+    loop {
+        let status = delivery.status();
+        let state = &status[0].models[0].state;
+        if *state == ModelState::Installed {
+            break;
+        }
+        assert!(
+            Instant::now() < installed_by,
+            "the model was not installed in time: {state:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let models = data_dir.join(bookclerk_plugin_host::MODELS_DIR);
+    assert!(models.join("delivered/model.json").is_file());
+    assert!(!models.join("tiny").exists(), "the unused model stays");
+    let chosen = router
+        .model_for(AiTask::TextEmbeddings)
+        .await
+        .expect("the embedder lists the delivered model");
+    assert_eq!(chosen.name(), "@embedder/delivered");
+
+    // Another plugin runs it through `AI`.
+    let services = SessionServices {
+        ai: Some(std::sync::Arc::clone(&router)),
+        ..SessionServices::default()
+    };
+    let session = tokio::time::timeout(
+        STAGED_SPAWN_TIMEOUT,
+        PluginSession::spawn_with(
+            caller,
+            config,
+            serde_json::json!({}),
+            HOST_SHARED_ACCOUNT,
+            &[],
+            services,
+        ),
+    )
+    .await
+    .expect("caller spawn timed out")
+    .expect("caller spawn");
+    let text = "A detective in Victorian London";
+    let params = CliInvokeParams {
+        command: "embed".into(),
+        args: vec![CliArg {
+            name: "text".into(),
+            value: text.into(),
+        }],
+    };
+    let result = tokio::time::timeout(STAGED_RPC_TIMEOUT, session.cli_invoke(params))
+        .await
+        .expect("embed timed out")
+        .expect("embed must answer");
+    assert_eq!(result.exit_code, 0, "embed failed: {:?}", result.stderr);
+    let payload = result.payload.json_value().expect("embed payload");
+    assert_eq!(payload["model"], "@embedder/delivered");
+    let vector: Vec<f32> =
+        serde_json::from_value(payload["vector"].clone()).expect("vector of numbers");
+    tiny_model::assert_close(&vector, &tiny_model::expected(&tiny_model::framed(text)));
+    eprintln!("staged_plugins: echo_workerd_ts ran the embedder's delivered model through AI");
 }
 
 /// True when a staged-plugin smoke call failed because a live storefront was down.

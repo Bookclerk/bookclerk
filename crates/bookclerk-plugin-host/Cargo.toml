@@ -57,6 +57,8 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+# The model delivery tests download from a registry on loopback.
+bookclerk-plugin-catalog = { workspace = true, features = ["test-support"] }
 # The on-demand storage tests drive a live local change feed.
 bookclerk-storage = { workspace = true, features = ["watch"] }
 bookclerk-node-proto.workspace = true

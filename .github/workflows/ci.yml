@@ -1885,8 +1885,8 @@ jobs:
   # baseline screenshot at two viewports in light and dark. Runs
   # inside the pinned Playwright image so every run renders with the same
   # browser, fonts and libraries; the image's tag must match the
-  # `@playwright/test` version in ui/package.json
-  # (docs/contributing/ui/visual-testing.md).
+  # `@playwright/test` version in ui/package.json, so all of them follow the
+  # `playwright` pin in .tool-versions (docs/contributing/ui/visual-testing.md).
   ui-visual:
     name: UI visual and accessibility${{ fromJSON(needs.plan.outputs.lanes || '{}')[format('ui-visual-{0}', strategy.job-index)].label }}
     # Pull request runs wait in the lane the plan picked, so they leave

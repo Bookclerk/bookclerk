@@ -42,7 +42,7 @@ Classic Libation setting names work as aliases where
 | `[auth]` | `[auth].password` to wrap the library key (prefer `BOOKCLERK_AUTH_PASSWORD`), `[auth].key_store` (`file`, `keychain` or `systemd-creds`; see [The key in the OS keychain](database.md#the-key-in-the-os-keychain)), and `[auth.oidc]` sign-in providers |
 | `[media]` | The codec worker pool: concurrency and confinement; see [Media worker](media.md) |
 | `[uploads]` | Upload limits on this node: file size, staging quota, free-disk floor and idle pruning; see [Upload limits](#upload-limits) |
-| `[plugins]` | How external plugins are jailed (see [Isolation modes](plugins.md#isolation-modes)), and whether their webhooks take requests |
+| `[plugins]`, `[plugins.models]` | How external plugins are jailed (see [Isolation modes](plugins.md#isolation-modes)), whether their webhooks take requests, and [model downloads](#model-downloads) |
 | `[output]` | The first-run seed of the `core.output` document, and the host's own `in_progress` scratch folder |
 | `[daemon]` | Listen addresses, JSON logs, trusted proxies, and `[daemon.node_api]` transport |
 | `[integrations]` | `public_origin`, and claim-ticket and portal session lifetimes |
@@ -493,6 +493,30 @@ handed out and the route answers 503. Set it with
 This table is about **how** plugins run. Which plugins run on a host, and
 their settings, live in the database (plugin instances and deployments).
 See [Managing plugins](plugins.md).
+
+### Model downloads
+
+The `embedder` plugin turns text into vectors for Discover and search.
+It has no network, so each node downloads the chosen model for it (141 MB
+for the default) the first time the plugin starts, and checks every file
+against digests pinned in the plugin package.
+
+```toml
+[plugins.models]
+download = true                       # false: never download on this node
+# registry = "https://mirror.example"   # download from a mirror instead
+```
+
+- `download = false` suits a node with no Internet access. Features that
+  need the model keep their stand-in until you place the files by hand
+  (see [Nodes that do not download](../internals/model-packs.md#nodes-that-do-not-download)).
+- `registry` is `https://host` with no path: a mirror that serves the
+  same repositories as `ghcr.io`. The pinned digests are checked either
+  way, so a mirror cannot change a model.
+
+Both are read when the daemon starts. Which model the library uses is
+not here: it is the plugin's `model` setting, in Settings or with
+`bookclerk plugins config set embedder model <id>`.
 
 `bookclerk config show` shows both tiers: `media.isolation`,
 `media.worker_bin`, `plugins.isolation` and `plugins.jail_bin`. A helper

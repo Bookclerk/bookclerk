@@ -1,0 +1,26 @@
+{
+  "registry": "ghcr.io/bookclerk/models",
+  "default": "bekko-a8m",
+  "models": {
+    "bekko-a8m": {
+      "label": "Bekko (fast)",
+      "summary": "Fast on any machine: about 30 ms per book description on one core.",
+      "model_json": {
+        "bytes": 6330,
+        "sha256": "f826a998307bf33fb41522eb8623e116e1a71c5e8384c68c07785cede5cef2eb"
+      },
+      "download_bytes": 140609206,
+      "memory_bytes": 230686720
+    },
+    "harrier-270m-q4": {
+      "label": "Harrier (most accurate)",
+      "summary": "The most accurate model tested, at about ten times the work per book. Suits desktops and larger servers.",
+      "model_json": {
+        "bytes": 1296,
+        "sha256": "3b3435089f0cd8f430a29f5074fe5330763feaccf3f17bcab9ca5643a6753f99"
+      },
+      "download_bytes": 217276472,
+      "memory_bytes": 398458880
+    }
+  }
+}

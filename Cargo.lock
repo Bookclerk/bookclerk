@@ -2239,6 +2239,7 @@ dependencies = [
 name = "bookclerk-plugin-catalog"
 version = "0.1.0"
 dependencies = [
+ "bookclerk-model-pack",
  "bookclerk-plugin-manifest",
  "bookclerk-plugin-sdk",
  "bookclerk-tls",
@@ -2389,7 +2390,9 @@ dependencies = [
  "async-trait",
  "bookclerk-config",
  "bookclerk-db-testkit",
+ "bookclerk-integrations",
  "bookclerk-model-pack",
+ "bookclerk-plugin-catalog",
  "bookclerk-plugin-host",
  "bookclerk-plugin-manifest",
  "bookclerk-plugin-sdk",

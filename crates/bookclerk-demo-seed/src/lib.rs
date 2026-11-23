@@ -1088,8 +1088,8 @@ const SQLITE_SIDE_FILES: [&str; 3] = ["library.db-journal", "library.db-wal", "l
 /// must make for itself, so the dir can be baked into the image.
 ///
 /// Removes `master.key` (the first daemon of each container mints and wraps
-/// its own), the covers cache's URL-signing key (`covers/token.key` under
-/// the cache dir), `logs/`, each plugin's `session-*` dirs under
+/// its own), the URL-signing keys of the covers and samples caches
+/// (`covers/token.key` and `samples/token.key` under the cache dir), `logs/`, each plugin's `session-*` dirs under
 /// `plugin-state/`, any joined library's plugin state
 /// (`plugin-state/link-*`), and empty SQLite side files. Anything already absent
 /// counts as removed.
@@ -1106,7 +1106,9 @@ const SQLITE_SIDE_FILES: [&str; 3] = ["library.db-journal", "library.db-wal", "l
 /// cannot see, so bookclerkd must stop first.
 pub fn clear_install_files(files_dir: &Path, cache_dir: &Path) -> anyhow::Result<()> {
     remove_file_if_present(&bookclerk_library::master_key_path(files_dir))?;
-    remove_file_if_present(&cache_dir.join("covers").join("token.key"))?;
+    for cache in ["covers", "samples"] {
+        remove_file_if_present(&cache_dir.join(cache).join("token.key"))?;
+    }
     remove_dir_if_present(&files_dir.join("logs"))?;
     let state = files_dir.join("plugin-state");
     if state.is_dir() {

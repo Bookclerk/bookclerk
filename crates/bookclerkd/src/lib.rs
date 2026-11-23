@@ -664,6 +664,18 @@ async fn assemble_host(
         ingress
     });
 
+    // The host installs its model plugins' models: set before the first
+    // reconcile so the first spawn of a model plugin starts its download.
+    {
+        let models = state.config.read().await.plugins.models.clone();
+        let runtime = state.deployment_runtime();
+        runtime.set_model_delivery(bookclerk_plugin_host::ModelDelivery::new(
+            Arc::clone(&runtime.ai),
+            models.download,
+            models.registry,
+        ));
+    }
+
     bookclerk_plugin_host::spawn_grant_watcher(paths.files_dir.clone());
     if let Err(err) = config_authority::reconcile_deployments(&state).await {
         tracing::warn!(error = %err, "initial plugin deployment reconcile failed");

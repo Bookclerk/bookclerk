@@ -2,3 +2,4 @@ nodejs 26
 uv 0.13.8
 cargo-nextest 0.9.152
 rust 1.100.0
+playwright 1.65.1

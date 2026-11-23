@@ -32,6 +32,12 @@ set -eu
 
 dir=${BOOKCLERK_FILES_DIR:?BOOKCLERK_FILES_DIR must name the template dir}
 
+# The bake downloads no embedding model (containers do not either, see
+# boot.sh). The file is removed below so it never ships: a container
+# writes its own.
+bake_config=${BOOKCLERK_CONFIG:-$dir/config.toml}
+printf '[plugins.models]\ndownload = false\n' >"$bake_config"
+
 /opt/bookclerk/bookclerk-demo-seed
 
 # A token for this build step only: it lives in the environment of
@@ -109,6 +115,7 @@ rm -f "$covers"
 unset BOOKCLERK_OPERATOR_TOKEN
 
 /opt/bookclerk/bookclerk-demo-seed --bake-finish
+rm -f "$bake_config"
 
 # Nothing that belongs to one container may ship in the template.
 leftover=$(find "$dir" \( -name master.key -o -name token.key -o -name 'session-*' \) -print)

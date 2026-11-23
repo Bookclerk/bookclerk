@@ -110,6 +110,13 @@ impl AiRouter {
         }
     }
 
+    /// Drops every cached listing, so the next run or listing asks each
+    /// plugin again. The host calls this after it installed or removed a
+    /// model's files, which changes what a running plugin lists.
+    pub async fn forget_listings(&self) {
+        self.listings.lock().await.clear();
+    }
+
     /// The deployed model plugins, in registration order.
     async fn plugins(&self) -> Vec<Arc<dyn Integration>> {
         self.integrations.read().await.model_plugins()

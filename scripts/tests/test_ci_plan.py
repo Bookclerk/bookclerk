@@ -831,7 +831,6 @@ class FullSuiteTests(unittest.TestCase):
         # paths itself; the plan job's test_model_packs.py covers the script.
         for path in (
             "scripts/model_packs.py",
-            "scripts/model-packs/models.json",
             "scripts/model-packs/check-texts.json",
             "scripts/model-packs/requirements.in",
             "scripts/model-packs/requirements.txt",
@@ -842,6 +841,18 @@ class FullSuiteTests(unittest.TestCase):
                 self.assertFalse(p.full_suite, p.reasons)
                 # Prettier formats the JSON files; nothing else reads them.
                 self.assertEqual(sorted(p.checks), ["lint"] if path.endswith(".json") else [])
+
+    def test_model_pack_pins_select_the_tests_that_hold_the_plugin_to_them(self) -> None:
+        # The embedder package's model list must pin what the builder
+        # publishes: bookclerk-plugin-catalog's replay test compares them,
+        # and bookclerk-plugin-host's delivery tests read the package.
+        p = plan("scripts/model-packs/models.json")
+        self.assertFalse(p.full_suite, p.reasons)
+        self.assertIn("bookclerk-plugin-catalog", p.test_packages())
+        p = plan("crates/bookclerk-plugins/platform/ai-embedder/models.json")
+        self.assertFalse(p.full_suite, p.reasons)
+        self.assertIn("bookclerk-plugin-catalog", p.test_packages())
+        self.assertIn("bookclerk-plugin-host", p.test_packages())
 
     def test_mutation_testing_files_select_nothing(self) -> None:
         # Only the mutation testing workflow reads them; the plan job's
