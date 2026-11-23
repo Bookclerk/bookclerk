@@ -1042,6 +1042,7 @@ async fn overlapping_grants_of_one_edition_grant_one() {
         id: "local".into(),
         title_folders: vec!["Author/free2".into()],
         title_names: None,
+        config_revision: 0,
     }];
     let request = UploadGrantRequest {
         holding_id: &row_c.id,
@@ -1058,7 +1059,7 @@ async fn overlapping_grants_of_one_edition_grant_one() {
         fence_c,
         "shared-node",
         &request,
-        Some(&digest),
+        super::super::uploads::OpenAs::Catalog { digest: &digest },
     )
     .await
     .unwrap();
