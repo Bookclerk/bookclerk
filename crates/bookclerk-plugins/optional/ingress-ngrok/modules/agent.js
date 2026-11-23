@@ -82,8 +82,12 @@ export class Session {
     error = "";
     /** The endpoint's public URL, once bound. */
     url = "";
-    /** When the last echo of this agent's own heartbeat arrived (ms since epoch), or 0. */
-    lastEcho = 0;
+    /**
+     * The number of this agent's last heartbeat whose echo arrived, or 0.
+     * Beats are numbered from 1 as {@link Session.beat} sends them, so a
+     * caller waits for its own beat's echo, not for one that arrived earlier.
+     */
+    echoed = 0;
     /** The session's configuration. */
     options;
     /** Frames decoded from the connection. */
@@ -94,6 +98,8 @@ export class Session {
     #nextId = 3;
     /** This agent's heartbeat stream, once opened. */
     #beatStream = 0;
+    /** Heartbeats this agent sent. */
+    #beats = 0;
     /** Frames waiting for the next write. */
     #out = [];
     /** Bytes in {@link Session.#out}. */
@@ -167,24 +173,31 @@ export class Session {
     }
     /**
      * Sends one heartbeat on this agent's own heartbeat stream; its echo sets
-     * {@link Session.lastEcho}.
+     * {@link Session.echoed} to the beat's number.
      *
      * @param io - The connection.
      * @param beat - 4 bytes to send (random outside tests).
-     * @returns When the beat was sent (ms since epoch).
+     * @returns The beat's number.
      */
     async beat(io, beat) {
-        const sentAt = Date.now();
+        const ticket = ++this.#beats;
         if (this.#beatStream === 0) {
-            this.#beatStream = this.#open({ kind: "own-beat", pending: beat, buf: new Uint8Array() });
+            this.#beatStream = this.#open({
+                kind: "own-beat",
+                pending: beat,
+                ticket,
+                buf: new Uint8Array(),
+            });
             await io.write(encodeData(this.#beatStream, concat(typePrefix(StreamType.Heartbeat), beat), FLAG_SYN));
-            return sentAt;
+            return ticket;
         }
         const state = this.#streams.get(this.#beatStream);
-        if (state?.kind === "own-beat")
+        if (state?.kind === "own-beat") {
             state.pending = beat;
+            state.ticket = ticket;
+        }
         await io.write(encodeData(this.#beatStream, beat));
-        return sentAt;
+        return ticket;
     }
     /**
      * Handles bytes read from the connection.
@@ -350,7 +363,7 @@ export class Session {
                 while (state.buf.length >= 4) {
                     const echo = state.buf.subarray(0, 4);
                     if (state.pending !== null && echo.every((b, i) => b === state.pending?.[i])) {
-                        this.lastEcho = Date.now();
+                        this.echoed = state.ticket;
                         state.pending = null;
                     }
                     state.buf = state.buf.slice(4);
