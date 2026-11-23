@@ -2593,6 +2593,8 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
         // library-link supervisor stops them and dials the new store's
         // active links.
         state.library_swaps.send_modify(|swaps| *swaps += 1);
+        // The index holds the previous store's vectors.
+        state.work_vectors.reset().await;
     }
 
     bookclerk_plugin_host::reconcile_host_overlay_authority(&new_cfg);

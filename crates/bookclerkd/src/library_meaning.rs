@@ -44,8 +44,8 @@ const DEFAULT_SIMILAR: usize = 12;
 /// Most similar works one request lists.
 const MAX_SIMILAR: usize = 40;
 
-/// Nearest works looked up for one similar-works answer: more than it
-/// lists, since the caller's scope and unheld works drop some.
+/// Nearest works looked up at a time for one similar-works answer: more
+/// than it lists, since the caller's scope and unheld works drop some.
 const SIMILAR_WINDOW: usize = 200;
 
 /// The share of the library's works (numerator, denominator) a model's
@@ -400,20 +400,27 @@ pub(crate) async fn list_similar_works(
         }));
     }
     let matrix = matrix(&state, &library, &standing.reading, ROUTE).await?;
-    let nearest: Vec<String> = match matrix.vector_of(&id) {
-        Some(vector) => matrix
-            .ranked(vector, Some(&id))
-            .into_iter()
-            .take(SIMILAR_WINDOW)
-            .map(|scored| scored.work_id)
-            .collect(),
+    let ranked = match matrix.vector_of(&id) {
+        Some(vector) => matrix.ranked(vector, Some(&id)),
         None => Vec::new(),
     };
-    let mut rows = library
-        .library_works_by_ids(&nearest, &filters)
-        .await
-        .map_err(|err| read_failed(ROUTE, &err))?;
-    rows.truncate(query.limit.unwrap_or(DEFAULT_SIMILAR).clamp(1, MAX_SIMILAR));
+    // The scope and unheld works drop some of the nearest, so read them a
+    // window at a time, nearest first, until the list is full.
+    let wanted = query.limit.unwrap_or(DEFAULT_SIMILAR).clamp(1, MAX_SIMILAR);
+    let mut rows = Vec::with_capacity(wanted);
+    for window in ranked.chunks(SIMILAR_WINDOW) {
+        let ids: Vec<String> = window.iter().map(|s| s.work_id.clone()).collect();
+        rows.extend(
+            library
+                .library_works_by_ids(&ids, &filters)
+                .await
+                .map_err(|err| read_failed(ROUTE, &err))?,
+        );
+        if rows.len() >= wanted {
+            break;
+        }
+    }
+    rows.truncate(wanted);
     Ok(Json(SimilarWorks {
         state: MeaningState::Ready,
         works: summaries(&state, &library, rows, ROUTE).await?,

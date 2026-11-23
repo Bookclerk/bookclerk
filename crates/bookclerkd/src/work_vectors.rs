@@ -61,12 +61,20 @@ pub(crate) struct Scored {
 }
 
 /// `vector` scaled to length 1; unchanged when it is all zero.
+///
+/// The numbers are first divided by the largest of them, so the sum of
+/// squares neither overflows for a huge vector nor vanishes for a tiny one.
 fn unit(vector: &mut [f32]) {
+    let largest = vector.iter().fold(0.0_f32, |max, x| max.max(x.abs()));
+    if largest <= 0.0 || !largest.is_finite() {
+        return;
+    }
+    for x in vector.iter_mut() {
+        *x /= largest;
+    }
     let norm = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm > 0.0 {
-        for x in vector {
-            *x /= norm;
-        }
+    for x in vector {
+        *x /= norm;
     }
 }
 
@@ -251,6 +259,12 @@ impl WorkVectors {
         self.held.lock().await.looked = None;
     }
 
+    /// Forgets the matrix and every query vector: the daemon reads another
+    /// library store now, whose vectors may carry the same stamp.
+    pub(crate) async fn reset(&self) {
+        *self.held.lock().await = Held::default();
+    }
+
     /// The vector an earlier page of the same search made for `text`.
     pub(crate) async fn cached_query(
         &self,
@@ -330,6 +344,36 @@ mod tests {
         assert!(WorkMatrix::build(space("m"), Vec::new())
             .ranked(&[1.0], None)
             .is_empty());
+    }
+
+    #[test]
+    fn huge_and_tiny_vectors_keep_their_direction() {
+        let matrix = WorkMatrix::build(
+            space("m"),
+            vec![stored("east", &[1e20, 0.0]), stored("north", &[0.0, 1e-20])],
+        );
+        for query in [[1e20_f32, 0.0], [1e-20, 0.0]] {
+            let ranked = matrix.ranked(&query, None);
+            assert_eq!(ranked[0].work_id, "east");
+            assert!((ranked[0].score - 1.0).abs() < 1e-6, "{ranked:?}");
+            assert!(ranked[1].score.abs() < 1e-6, "{ranked:?}");
+        }
+        // Nothing to scale: all zero, or not a number.
+        let mut zero = [0.0_f32, 0.0];
+        unit(&mut zero);
+        assert_eq!(zero, [0.0, 0.0]);
+        let mut endless = [f32::INFINITY, 1.0];
+        unit(&mut endless);
+        assert_eq!(endless, [f32::INFINITY, 1.0]);
+    }
+
+    #[tokio::test]
+    async fn a_reset_forgets_the_query_vectors() {
+        let index = WorkVectors::default();
+        let m = space("m");
+        index.cache_query(&m, "q", Arc::new(vec![1.0])).await;
+        index.reset().await;
+        assert!(index.cached_query(&m, "q").await.is_none());
     }
 
     #[test]

@@ -184,19 +184,24 @@ export function LibraryPage({
 
   // Whether the library can be searched by meaning. A daemon that cannot
   // say (an older one, or a failed read) offers the search by words only.
-  useEffect(() => {
-    let current = true;
-    fetchMeaningStatus()
-      .then((res) => {
-        if (current) setMeaning(res);
-      })
-      .catch(() => {
-        if (current) setMeaning(null);
-      });
-    return () => {
-      current = false;
-    };
+  // Read again on Refresh and whenever the library changes, so the switch
+  // turns on when the library's embedding ends.
+  const refreshMeaning = useCallback(async () => {
+    try {
+      setMeaning(await fetchMeaningStatus());
+    } catch {
+      setMeaning(null);
+    }
   }, []);
+
+  // The end of the embedding changes nothing in the library, so while it
+  // runs the state is asked for again every few seconds.
+  const preparing = meaning?.search === "embedding" || meaning?.similar === "embedding";
+  useEffect(() => {
+    if (!preparing) return;
+    const t = window.setTimeout(() => void refreshMeaning(), 15_000);
+    return () => window.clearTimeout(t);
+  }, [preparing, meaning, refreshMeaning]);
 
   // Reads the value menu of the chosen facet, again on every Refresh (so a
   // failed read can be retried).
@@ -301,7 +306,9 @@ export function LibraryPage({
     loadWorksRef.current = loadWorks;
   }, [loadWorks]);
 
-  const reloadWorks = useCallback(() => loadWorks("reload"), [loadWorks]);
+  const reloadWorks = useCallback(async () => {
+    await Promise.all([loadWorks("reload"), refreshMeaning()]);
+  }, [loadWorks, refreshMeaning]);
 
   const refreshMeta = useCallback(async () => {
     if (!canAcquire) return;
@@ -321,8 +328,8 @@ export function LibraryPage({
 
   const refresh = useCallback(async () => {
     setFacetReads((n) => n + 1);
-    await Promise.all([loadWorks("replace"), refreshMeta()]);
-  }, [loadWorks, refreshMeta]);
+    await Promise.all([loadWorks("replace"), refreshMeta(), refreshMeaning()]);
+  }, [loadWorks, refreshMeta, refreshMeaning]);
 
   useEffect(() => {
     void refresh();
@@ -709,6 +716,8 @@ export function LibraryPage({
               setFacet("genre");
               setFacetValue(value);
             } else {
+              // A field query (`author:"…"`) is read by its words.
+              setSearchMode("words");
               setQ(metaSearchQuery(kind, value));
             }
           }}
