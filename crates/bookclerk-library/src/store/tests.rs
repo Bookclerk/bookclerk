@@ -213,6 +213,70 @@ async fn credits_written_after_a_link_publish_an_edition_update() {
     }
 }
 
+/// The probe backfill finds unprobed audio rows page by page and stores a
+/// probe only on the row it read: unchanged since, still unprobed.
+#[tokio::test]
+async fn the_probe_backfill_writes_only_the_row_it_read() {
+    let store = kit_store().await;
+    let owner = crate::FileOwner::Edition("ed-backfill".into());
+    for key in ["A/A.m4b", "B/B.mp3"] {
+        assert!(store
+            .record_edition_file("local", key, &owner, crate::FileRole::Audio)
+            .await
+            .unwrap());
+    }
+    let destinations = ["local".to_string()];
+    let first = store
+        .unprobed_audio_files(&destinations, None, 1)
+        .await
+        .unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].storage_key, "A/A.m4b");
+    let next = store
+        .unprobed_audio_files(&destinations, Some(("local", "A/A.m4b")), 10)
+        .await
+        .unwrap();
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].storage_key, "B/B.mp3");
+    let probe = crate::FileProbe {
+        content_type: "audio/mp4".into(),
+        bitrate_kbps: Some(128),
+        lossless: false,
+        source_store: Some("audible".into()),
+    };
+    let stream = crate::AudioStream {
+        duration_ms: Some(60_000),
+        ..crate::AudioStream::default()
+    };
+    let stale = crate::UnprobedFile {
+        written_at: "2000-01-01T00:00:00Z".into(),
+        ..first[0].clone()
+    };
+    assert!(!store
+        .set_backfilled_file_probe(&stale, &probe, &stream)
+        .await
+        .unwrap());
+    assert!(store
+        .set_backfilled_file_probe(&first[0], &probe, &stream)
+        .await
+        .unwrap());
+    // A probed row is not probed twice, and drops out of the walk.
+    assert!(!store
+        .set_backfilled_file_probe(&first[0], &probe, &stream)
+        .await
+        .unwrap());
+    let left = store
+        .unprobed_audio_files(&destinations, None, 10)
+        .await
+        .unwrap();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].storage_key, "B/B.mp3");
+    assert_eq!(
+        store.edition_file_probe("local", "A/A.m4b").await.unwrap(),
+        Some(probe)
+    );
+}
+
 #[tokio::test]
 async fn a_title_acquired_again_after_a_reset_publishes_again() {
     use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
