@@ -25,6 +25,8 @@ out, so a major that passes every check merges like any other.
 To keep one Dependabot pull request out of auto-merge, add the `hold`
 label and turn its auto-merge off. Without the label the workflow
 approves it and turns auto-merge back on whenever Dependabot rebases it.
+A run that was already past its label check when you added the label can
+still arm it, so check again once that run finishes.
 
 The repository-level **Allow auto-merge** setting only makes the
 per-pull-request "Enable auto-merge" button and API available. It never

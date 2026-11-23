@@ -10,8 +10,9 @@
 #   the "Actions may approve PRs" setting.
 # - A pull request labeled `hold` is skipped, so a person's "not this one"
 #   survives Dependabot's rebases (each one is a `synchronize` that would
-#   otherwise approve and re-arm auto-merge). Labeling doesn't disarm an
-#   already armed pull request: also turn its auto-merge off.
+#   otherwise approve and re-arm auto-merge). The job reads the live labels
+#   again before arming. Labeling doesn't disarm an already armed pull
+#   request: also turn its auto-merge off once any running run finishes.
 # - Major bumps auto-merge too: CI is what stops a breaking one.
 # - Hold back specific packages with `exclude`, or tighten `target`.
 #
@@ -41,7 +42,20 @@ jobs:
     permissions:
       pull-requests: read
     steps:
+      # The payload's labels are from when the run started; read them again
+      # so a `hold` added since then still stops this run.
+      - name: Check for the hold label
+        id: hold
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          held="$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/labels" \
+            --jq 'any(.[]; .name == "hold")')"
+          echo "held=$held" >> "$GITHUB_OUTPUT"
+
       - name: Mint App token
+        if: steps.hold.outputs.held != 'true'
         id: app
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -55,6 +69,7 @@ jobs:
           permission-workflows: write
 
       - name: Approve + enable auto-merge
+        if: steps.hold.outputs.held != 'true'
         uses: fastify/github-action-merge-dependabot@73ec4cbb5e56df5591eae286972d5b2201ffe90f # v3.15.0
         with:
           github-token: ${{ steps.app.outputs.token }}
