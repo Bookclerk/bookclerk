@@ -48,6 +48,21 @@ const RESERVED_QUEUE_BINDINGS: ReadonlySet<string> = new Set([
   "NETWORK",
 ]);
 
+/**
+ * Typed `BookclerkEnv` properties: a binding of another kind under one of
+ * these names would not compile as `Env extends BookclerkEnv`.
+ */
+const TYPED_ENV_PROPERTIES: ReadonlyMap<string, string> = new Map([
+  ["EVENTS", "EventPublisherBinding"],
+  ["WORK_FS", "StorageBinding"],
+  ["KV", "KvNamespaceBinding"],
+  ["SOCKETS", "SocketsBinding"],
+  ["WEBHOOKS", "WebhooksBinding"],
+  ["NOTIFY", "NotifyBinding"],
+  ["ORIGIN", "OriginBinding"],
+  ["AI", "AiBinding"],
+]);
+
 /** One property of the generated `Env` interface. */
 interface EnvProperty {
   /** Binding name on `env`. */
@@ -140,7 +155,9 @@ function propertyKey(name: string): string {
  *
  * @param m - Validated manifest.
  * @returns Properties in stable emission order.
- * @throws {Error} When a `[[databases]]` binding collides with a reserved name.
+ * @throws {Error} When a `[[databases]]` binding collides with a reserved name,
+ *   a binding is declared twice, or a binding takes the name of a typed
+ *   `BookclerkEnv` property of another kind (a queue named `SOCKETS`).
  */
 export function envPropertiesFor(m: Manifest): EnvProperty[] {
   const props: EnvProperty[] = [];
@@ -259,6 +276,12 @@ export function envPropertiesFor(m: Manifest): EnvProperty[] {
       throw new Error("plugin.toml: binding is declared twice");
     }
     seen.add(p.name);
+    const typed = TYPED_ENV_PROPERTIES.get(p.name);
+    if (typed !== undefined && typed !== p.type) {
+      throw new Error(
+        `plugin.toml: binding \`${p.name}\` is a ${typed} on BookclerkEnv; rename it so the generated Env compiles`,
+      );
+    }
   }
   return props;
 }

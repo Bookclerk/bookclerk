@@ -4,7 +4,12 @@
  * Used by `bookclerk-plugin check|fmt|package` and the sparse-workerd smoke path.
  */
 
-import { MAX_CRON_BYTES } from "../abi.js";
+import {
+  MAX_CRON_BYTES,
+  MAX_WEBHOOK_BODY_BYTES,
+  MAX_WEBHOOK_HEADERS,
+  MAX_WEBHOOK_NAME_BYTES,
+} from "../abi.js";
 import { isValidALabel } from "./idna.js";
 
 /**
@@ -644,7 +649,7 @@ function settingRowsError(entry: SettingEntry, value: unknown): string | null {
   const columns = entry.columns ?? [];
   for (const [index, row] of value.entries()) {
     const number = index + 1;
-    if (!row || typeof row !== "object" || Array.isArray(row)) {
+    if (!isPlainTable(row)) {
       return `setting \`${key}\` row ${number} must be an object`;
     }
     const fields = row as Record<string, unknown>;
@@ -670,6 +675,19 @@ function settingRowsError(entry: SettingEntry, value: unknown): string | null {
 }
 
 /**
+ * Whether a parsed TOML value is a table: a plain object, not an array, a
+ * date or another class instance.
+ *
+ * @param value - Parsed value.
+ * @returns `true` for a table.
+ */
+function isPlainTable(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const proto: unknown = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
  * Checks a setting's columns the way the host's `validate_columns` does.
  *
  * @param entry - Setting.
@@ -677,6 +695,10 @@ function settingRowsError(entry: SettingEntry, value: unknown): string | null {
  */
 function settingColumnsError(entry: SettingEntry): string | null {
   const key = String(entry.key ?? "");
+  const raw: unknown = entry.columns;
+  if (raw != null && !Array.isArray(raw)) {
+    return `setting \`${key}\` \`columns\` must be an array of tables`;
+  }
   const columns = entry.columns ?? [];
   if (entry.type !== "table") {
     return columns.length === 0
@@ -773,7 +795,7 @@ function validateSettings(m: Manifest): void {
       if (!m.secrets) fail(`secret setting \`${key}\` requires the \`[secrets]\` binding`);
       continue;
     }
-    if (m.vars === undefined) fail(`setting \`${key}\` requires the \`[vars]\` binding`);
+    if (!isPlainTable(m.vars)) fail(`setting \`${key}\` requires the \`[vars]\` binding`);
     if (spec.default !== undefined) {
       const err = settingValueError(spec, spec.default);
       if (err) fail(`default for ${err}`);
@@ -1590,6 +1612,9 @@ export function validateManifest(m: Manifest): void {
   if (credentials != null && credentials !== "shareable" && credentials !== "single_keeper") {
     throw new Error("plugin.toml: `credentials` must be `shareable` or `single_keeper`");
   }
+  // Schedules decode with the rest of the manifest, so a bad one is reported
+  // before any rule.
+  decodeCrons(m.triggers?.crons ?? []);
   if (!m.id || !String(m.id).trim()) {
     throw new Error("plugin.toml: `id` is required");
   }
@@ -2061,9 +2086,8 @@ function validateBindings(m: Manifest): void {
 function validateTriggers(m: Manifest): void {
   const entrypoints = (m.entrypoints ?? []) as readonly string[];
   const crons = m.triggers?.crons ?? [];
-  // A malformed schedule fails to parse before the host looks at entrypoints.
-  validateCrons(crons);
-  if (Array.isArray(crons) && crons.length > 0) {
+  const schedules = decodeCrons(crons);
+  if (schedules.length > 0) {
     // Crons fire only on integration deployments.
     for (const registry of ["storefront", "storage", "databaseAdapter", "ingress"]) {
       if (entrypoints.includes(registry)) {
@@ -2073,6 +2097,7 @@ function validateTriggers(m: Manifest): void {
       }
     }
   }
+  cronListError(schedules);
   for (const [i, job] of (m.triggers?.jobs ?? []).entries()) {
     if (typeof job !== "string" || !EVENT_TYPE_RE.test(job)) {
       throw new Error(
@@ -2170,20 +2195,11 @@ function validateOidcClients(m: Manifest): void {
 /** Most `[[webhooks]]` rows one plugin may declare. */
 const MAX_WEBHOOKS = 8;
 
-/** Longest webhook name, in bytes (ABI `maxWebhookNameBytes`). */
-const MAX_WEBHOOK_NAME_BYTES = 32;
-
-/** Largest body cap a row may declare, in bytes (ABI `maxWebhookBodyBytes`). */
-const MAX_WEBHOOK_BODY_BYTES = 1024 * 1024;
-
 /** Highest request rate per minute a row may declare. */
 const MAX_WEBHOOK_RATE_PER_MINUTE = 600;
 
 /** Longest time a stored delivery may wait, in seconds (7 days). */
 const MAX_WEBHOOK_RETENTION_SECS = 7 * 86_400;
-
-/** Most request headers a row may keep (ABI `maxWebhookHeaders`). */
-const MAX_WEBHOOK_HEADERS = 16;
 
 /** Longest header name a row may name, in bytes. */
 const MAX_WEBHOOK_HEADER_NAME_BYTES = 64;
@@ -2205,6 +2221,15 @@ const FORBIDDEN_WEBHOOK_HEADERS = [
   "upgrade",
   "x-forwarded-for",
   "x-real-ip",
+];
+
+/** Keys an `hmac-sha256` signature table may carry; the host refuses any other. */
+const HMAC_SIGNATURE_FIELDS: readonly string[] = [
+  "scheme",
+  "header",
+  "prefix",
+  "encoding",
+  "secret_setting",
 ];
 
 /**
@@ -2243,6 +2268,10 @@ function webhookNumber(row: WebhookToml, field: keyof WebhookToml, fallback: num
  * @throws {Error} Naming the first bad row by its index.
  */
 function validateWebhooks(m: Manifest): void {
+  const rawRows: unknown = m.webhooks;
+  if (rawRows != null && !Array.isArray(rawRows)) {
+    throw new Error("plugin.toml: `webhooks` must be an array of tables");
+  }
   const rows = m.webhooks ?? [];
   if (rows.length > MAX_WEBHOOKS) {
     throw new Error(`plugin.toml: at most ${MAX_WEBHOOKS} [[webhooks]] rows`);
@@ -2277,6 +2306,10 @@ function validateWebhooks(m: Manifest): void {
         `plugin.toml: webhooks[${i}].retention_secs must be 60..=${MAX_WEBHOOK_RETENTION_SECS}`,
       );
     }
+    const rawHeaders: unknown = row.headers;
+    if (rawHeaders != null && !Array.isArray(rawHeaders)) {
+      throw new Error(`plugin.toml: webhooks[${i}].headers must be an array of header names`);
+    }
     const headers = row.headers ?? [];
     if (headers.length > MAX_WEBHOOK_HEADERS) {
       throw new Error(
@@ -2299,10 +2332,24 @@ function validateWebhooks(m: Manifest): void {
       kept.add(header);
     }
     const signature = row.signature ?? { scheme: "" };
-    if (signature.scheme === "none") continue;
+    if (signature.scheme === "none") {
+      const extra = Object.keys(signature).find((k) => k !== "scheme");
+      if (extra !== undefined) {
+        throw new Error(
+          `plugin.toml: webhooks[${i}].signature.${extra} does not apply to \`scheme = "none"\``,
+        );
+      }
+      continue;
+    }
     if (signature.scheme !== "hmac-sha256") {
       throw new Error(
         `plugin.toml: webhooks[${i}].signature.scheme must be \`none\` or \`hmac-sha256\``,
+      );
+    }
+    const unknown = Object.keys(signature).find((k) => !HMAC_SIGNATURE_FIELDS.includes(k));
+    if (unknown !== undefined) {
+      throw new Error(
+        `plugin.toml: webhooks[${i}].signature.${unknown} is not a field of \`scheme = "hmac-sha256"\``,
       );
     }
     const header = signature.header ?? "";
@@ -2311,7 +2358,11 @@ function validateWebhooks(m: Manifest): void {
         `plugin.toml: webhooks[${i}].signature.header must be a lowercase header name the host may read`,
       );
     }
-    const prefix = signature.prefix ?? "";
+    const rawPrefix: unknown = signature.prefix ?? "";
+    if (typeof rawPrefix !== "string") {
+      throw new Error(`plugin.toml: webhooks[${i}].signature.prefix must be a string`);
+    }
+    const prefix = rawPrefix;
     if (prefix.length > MAX_WEBHOOK_SIGNATURE_PREFIX_LEN || !/^[\x21-\x7e]*$/.test(prefix)) {
       throw new Error(
         `plugin.toml: webhooks[${i}].signature.prefix must be at most ${MAX_WEBHOOK_SIGNATURE_PREFIX_LEN} visible ASCII characters`,
@@ -2474,7 +2525,8 @@ function hostPattern(raw: string): string | null {
   const host = trimmed.slice(0, end);
   if (!host || host.includes("%")) return null;
   if (host === "*") return "*";
-  if (host.startsWith("*.")) return hostnameAscii(host.slice(2), FORBIDDEN_NAME_CHARS);
+  // The host trims the suffix after `*.` (`normalize_hostname`).
+  if (host.startsWith("*.")) return hostnameAscii(host.slice(2).trim(), FORBIDDEN_NAME_CHARS);
   if (isIpv6(host)) return host;
   return hostnameAscii(host, FORBIDDEN_NAME_CHARS);
 }
@@ -2772,29 +2824,105 @@ export const MAX_CRON_TRIGGERS = 8;
 /** Longest cron source in bytes (ABI `maxCronBytes`). */
 export { MAX_CRON_BYTES };
 
-/** One cron field item: `*`, a value or a range, optionally with `/step`. */
-const CRON_ITEM = /^(\*|[0-9A-Za-z]+(-[0-9A-Za-z]+)?)(\/[0-9]{1,2})?$/;
+/** One cron field: its name in errors, bounds, and accepted names from `min`. */
+interface CronField {
+  /** Field name used in error messages. */
+  name: string;
+  /** Smallest accepted value. */
+  min: number;
+  /** Largest accepted value (day of week accepts `7` for Sunday). */
+  max: number;
+  /** Three-letter names for `min..`, in order; empty when names are refused. */
+  names: readonly string[];
+}
+
+/** The five cron fields in source order, as the host's `FIELDS` declares them. */
+const CRON_FIELDS: readonly CronField[] = [
+  { name: "minute", min: 0, max: 59, names: [] },
+  { name: "hour", min: 0, max: 23, names: [] },
+  { name: "day of month", min: 1, max: 31, names: [] },
+  {
+    name: "month",
+    min: 1,
+    max: 12,
+    names: ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"],
+  },
+  { name: "day of week", min: 0, max: 7, names: ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] },
+];
 
 /**
- * Checks the shape of `[triggers] crons`: at most {@link MAX_CRON_TRIGGERS}
- * ASCII entries of five fields, each a comma list of `*`, values, ranges and
- * `/step`, with no duplicates once whitespace is normalized. Value ranges,
- * names and never-firing schedules are checked by the host when the package
- * is installed (`CronSchedule::parse`).
+ * Parses one cron value (number or name) the way the host's `parse_value` does.
+ *
+ * @param text - Value text.
+ * @param spec - Field the value belongs to.
+ * @returns The value, or an error message.
+ */
+function cronValue(text: string, spec: CronField): number | string {
+  if (!text) return `${spec.name} has an empty value`;
+  let value: number;
+  if (/^[0-9]+$/.test(text)) {
+    if (text.length > 2) return `${spec.name} value \`${text}\` is out of range`;
+    value = Number(text);
+  } else {
+    const index = spec.names.indexOf(text.toLowerCase());
+    if (index < 0) return `${spec.name} value \`${text}\` is not recognized`;
+    value = spec.min + index;
+  }
+  if (value < spec.min || value > spec.max) {
+    return `${spec.name} value ${value} is outside ${spec.min}-${spec.max}`;
+  }
+  return value;
+}
+
+/**
+ * Checks one comma-separated cron field the way the host's `parse_field`
+ * does: values, ranges and steps inside the field's bounds.
+ *
+ * @param text - Field text.
+ * @param spec - Field bounds.
+ * @returns The first failed rule, or `null`.
+ */
+function cronFieldError(text: string, spec: CronField): string | null {
+  for (const item of text.split(",")) {
+    const slash = item.indexOf("/");
+    const range = slash < 0 ? item : item.slice(0, slash);
+    if (slash >= 0) {
+      const step = item.slice(slash + 1);
+      if (!/^[0-9]{1,2}$/.test(step)) return `${spec.name} step \`${step}\` is invalid`;
+      const n = Number(step);
+      if (n === 0 || n > spec.max) return `${spec.name} step ${n} is outside 1-${spec.max}`;
+    }
+    if (range === "*") continue;
+    const dash = range.indexOf("-");
+    if (dash >= 0) {
+      const a = cronValue(range.slice(0, dash), spec);
+      if (typeof a === "string") return a;
+      const b = cronValue(range.slice(dash + 1), spec);
+      if (typeof b === "string") return b;
+      if (a > b) return `${spec.name} range ${a}-${b} is reversed`;
+    } else {
+      const a = cronValue(range, spec);
+      if (typeof a === "string") return a;
+    }
+  }
+  return null;
+}
+
+/**
+ * Decodes `[triggers] crons` the way the host does while reading the
+ * manifest, before any rule runs: an array of ASCII five-field schedules
+ * whose values, ranges and steps are in bounds. Whether a schedule ever
+ * fires is checked by the host when the package is installed.
  *
  * @param crons - The `crons` array as parsed from TOML.
+ * @returns The schedules normalized to single spaces.
  * @throws Error naming the first entry that is malformed.
  */
-export function validateCrons(crons: unknown): void {
+function decodeCrons(crons: unknown): string[] {
   if (!Array.isArray(crons)) {
     throw new Error("plugin.toml: triggers.crons must be an array of strings");
   }
-  if (crons.length > MAX_CRON_TRIGGERS) {
-    throw new Error(
-      `plugin.toml: triggers.crons has ${crons.length} entries; at most ${MAX_CRON_TRIGGERS} are allowed`,
-    );
-  }
-  const seen = new Set<string>();
+  const out: string[] = [];
   for (const [i, raw] of crons.entries()) {
     if (
       typeof raw !== "string" ||
@@ -2814,15 +2942,47 @@ export function validateCrons(crons: unknown): void {
         `plugin.toml: triggers.crons[${i}] \`${raw}\` needs 5 fields (minute hour day-of-month month day-of-week)`,
       );
     }
-    for (const field of fields) {
-      if (!field.split(",").every((item) => CRON_ITEM.test(item))) {
-        throw new Error(`plugin.toml: triggers.crons[${i}] field \`${field}\` is not valid cron`);
-      }
+    for (const [j, field] of fields.entries()) {
+      const err = cronFieldError(field, CRON_FIELDS[j]!);
+      if (err) throw new Error(`plugin.toml: triggers.crons[${i}] ${err}`);
     }
-    const normalized = fields.join(" ");
+    out.push(fields.join(" "));
+  }
+  return out;
+}
+
+/**
+ * Checks the decoded cron list the way the host's `validate` does: at most
+ * {@link MAX_CRON_TRIGGERS} entries and no duplicates.
+ *
+ * @param schedules - Normalized schedules from {@link decodeCrons}.
+ * @throws Error naming the first rule that fails.
+ */
+function cronListError(schedules: readonly string[]): void {
+  if (schedules.length > MAX_CRON_TRIGGERS) {
+    throw new Error(
+      `plugin.toml: triggers.crons has ${schedules.length} entries; at most ${MAX_CRON_TRIGGERS} are allowed`,
+    );
+  }
+  const seen = new Set<string>();
+  for (const [i, normalized] of schedules.entries()) {
     if (seen.has(normalized)) {
       throw new Error(`plugin.toml: triggers.crons[${i}] \`${normalized}\` is duplicated`);
     }
     seen.add(normalized);
   }
+}
+
+/**
+ * Checks `[triggers] crons` on its own: the host's decode rules (ASCII, five
+ * fields, values, ranges and steps in bounds), then at most
+ * {@link MAX_CRON_TRIGGERS} entries with no duplicates once whitespace is
+ * normalized. Never-firing schedules are checked by the host when the
+ * package is installed (`CronSchedule::parse`).
+ *
+ * @param crons - The `crons` array as parsed from TOML.
+ * @throws Error naming the first entry that is malformed.
+ */
+export function validateCrons(crons: unknown): void {
+  cronListError(decodeCrons(crons));
 }
