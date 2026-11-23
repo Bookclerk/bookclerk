@@ -1983,7 +1983,11 @@ shared node and branch node.
   (`GET /api/config/shared-branches`: all of them for the operator or an Owner,
   the owned ones for another user, by the same rule as removal);
   `DELETE /api/config/nodes/{node_id}` removes one that is not running
-  (operator or Owner; never this node or a branch node). Removal does not
+  (operator or Owner; never this node or a branch node). The removal and
+  every heartbeat take the node's `nodes` row lock before they decide, so a
+  node's first heartbeat and its removal run one after the other on every
+  engine (`READ COMMITTED` PostgreSQL included): a heartbeat writes its
+  status row only while the node's `nodes` row exists. Removal does not
   take back the database credentials or DEK it held: rotate them when it
   is no longer trusted.
 - **Audit.** `shared_branch_authorize`, `shared_branch_authorize_refused`,
@@ -2106,7 +2110,11 @@ it: a tree, A ← B ← C.
   are the holding's edition's (`edition_files`), so an edition already in A's
   outputs from another writer (an acquire, another branch) is not asked
   for and its upload is refused (`edition_has_files`): the library
-  delivers each edition once. Files keep the branch's own keys on every
+  delivers each edition once. Two branches can ask for one edition at the
+  same moment under different keys, where no key claim conflicts, so a
+  grant checks the edition again once its own keys are claimed: of two
+  overlapping grants at most one goes on (on an exact tie both are
+  refused, and each branch offers the title again). Files keep the branch's own keys on every
   destination (A's naming templates are not applied again), so a grant is
   refused (`key_in_use`) when a key is one of A's own books' (its audio,
   PDF, or a file beside the audio with the same stem) or another

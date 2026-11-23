@@ -27,16 +27,16 @@ pub const CANDIDATES_MAX_AGE: chrono::Duration = chrono::Duration::hours(24);
 /// # Arguments
 ///
 /// * `cfg` - Live configuration.
-/// * `similarity` - Whether embedding similarity scores candidates.
-/// * `embedding_model` - Model id the owned works were embedded with.
+/// * `vectors` - The vectors compared for similarity, or `None` to score
+///   candidates without it.
 pub(crate) fn discover_options(
     cfg: &bookclerk_config::Config,
-    similarity: bool,
-    embedding_model: String,
+    vectors: Option<bookclerk_discover::VectorSource>,
 ) -> bookclerk_discover::RecommendOptions {
+    let similarity = vectors.is_some();
     bookclerk_discover::RecommendOptions {
         limit: cfg.discovery.recommend_limit.max(36),
-        embedding_model,
+        vectors: vectors.unwrap_or_else(bookclerk_discover::VectorSource::stand_in),
         region: String::from("us"),
         include_purchase_hints: false,
         external_user_id: None,
@@ -167,11 +167,7 @@ pub async fn run_discover_candidates(
     if forget_if_removed(&library, &subject).await? {
         return Ok(format!("subject={} removed", subject.key()));
     }
-    let opts = discover_options(
-        &cfg,
-        false,
-        String::from(bookclerk_discover::MODEL_LOCAL_HASH_V1),
-    );
+    let opts = discover_options(&cfg, None);
     let report = if opts.fetch_storefront_candidates {
         let sources = state.sources.read().await.clone();
         bookclerk_discover::fetch_subject_candidates(&library, &sources, &subject, &opts).await?
@@ -247,6 +243,39 @@ fn catalog_prune_due(now: chrono::DateTime<Utc>) -> bool {
             .is_ok()
 }
 
+/// The vectors a ranking on this node compares.
+///
+/// The space is the one that serves the library now: this node's model
+/// once it has embedded every work, the model another node embedded with,
+/// or the hash stand-in. The stand-in's work vectors are made here, since
+/// they cost next to nothing; a model's are made by a `discover_embed`
+/// job, queued here when this node's model does not serve yet.
+///
+/// # Errors
+///
+/// Returns the library error.
+async fn ranking_vectors(
+    state: &AppState,
+    library: &bookclerk_library::LibraryStore,
+) -> anyhow::Result<bookclerk_discover::VectorSource> {
+    let node = crate::embedding::node_embedder(state).await;
+    let current = node.space().clone();
+    let mut source = crate::embedding::vector_source(library, node).await?;
+    if bookclerk_discover::is_stand_in(&source.space) {
+        // Embedding with the stand-in can give a model its cover back
+        // only by never having lost it, so the space stays the stand-in's.
+        let mut stand_in = bookclerk_discover::open_embedder();
+        if let Err(err) =
+            bookclerk_discover::embed_dirty_works(library, stand_in.as_mut(), None).await
+        {
+            tracing::warn!(error = %err, "could not embed the library with the stand-in");
+        }
+        source = bookclerk_discover::VectorSource::new(source.space, Some(stand_in));
+    }
+    crate::embedding::embed_if_needed(state, &current, &source.space).await;
+    Ok(source)
+}
+
 /// Most rankings one `discover_feed` job runs when candidate fetches keep
 /// finishing under it; past this the next read or event queues another.
 const MAX_RANK_PASSES: u32 = 3;
@@ -279,16 +308,12 @@ pub async fn run_discover_feed(
         .acquire_owned()
         .await
         .map_err(|_| anyhow::anyhow!("discover gate closed"))?;
-    // Owned works are embedded with the local-hash stand-in.
-    let model_id = if has_books {
-        let mut embedder = bookclerk_discover::open_embedder();
-        let model_id = embedder.model_id().to_string();
-        let _ = bookclerk_discover::embed_dirty_works(&library, embedder.as_mut()).await;
-        model_id
+    let vectors = if has_books {
+        Some(ranking_vectors(state, &library).await?)
     } else {
-        String::from(bookclerk_discover::MODEL_LOCAL_HASH_V1)
+        None
     };
-    let opts = discover_options(&cfg, has_books, model_id);
+    let opts = discover_options(&cfg, vectors);
     let sources = state.sources.read().await.clone();
     // A candidate fetch that finishes while this ranking runs folds its
     // follow-up ranking into this job (the dedup key covers running jobs),
@@ -638,6 +663,39 @@ mod tests {
             .collect();
         jobs.sort_by_key(|(kind, subject)| (kind.as_str().to_string(), subject.clone()));
         jobs
+    }
+
+    /// With no model on the node, a ranking makes the stand-in's work
+    /// vectors itself and queues no embedding job.
+    #[tokio::test]
+    async fn a_ranking_without_a_model_embeds_with_the_stand_in() {
+        let files = tempfile::tempdir().unwrap();
+        let (state, library) = crate::node_api::tests::test_state(&files).await;
+        library
+            .upsert_account("libro", "reader@example.com", "us", None, true, "libro")
+            .await
+            .unwrap();
+        let mut book =
+            bookclerk_library::NewBook::minimal("p1", "reader@example.com", "us", "Dune");
+        book.source = "libro".into();
+        book.plugin_key = "libro".into();
+        library.upsert_book(&book).await.unwrap();
+
+        let source = ranking_vectors(&state, &library).await.unwrap();
+        assert!(bookclerk_discover::is_stand_in(&source.space));
+        assert!(source.embedder.is_some());
+        let spaces = library.work_vector_spaces().await.unwrap();
+        assert_eq!(spaces.len(), 1);
+        assert!(bookclerk_discover::is_stand_in(&spaces[0].space));
+        assert_eq!(spaces[0].works, 1);
+        let embeds = library
+            .list_jobs(100)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|job| job.kind == JobKind::DiscoverEmbed)
+            .count();
+        assert_eq!(embeds, 0);
     }
 
     /// A wish records the library work it resolves to, and a sequel of an

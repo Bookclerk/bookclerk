@@ -268,6 +268,7 @@ pub use store::{
     COPY_RETRY_BASE_DELAY, COPY_RETRY_MAX_DELAY, HOLDING_REMOVED, MAX_COPY_ATTEMPTS,
     MAX_QUEUE_REASONS, OBJECT_TOMBSTONE_DAYS,
 };
+pub use store::{NewVector, SpaceCoverage, VectorSpace, VECTOR_KIND_TEXT, VECTOR_KIND_WORK};
 pub use store::{NotifyCursor, NotifyPage, NotifyQueueLimits, MAX_NOTIFY_PAGE};
 pub use token_hash::{
     derive_claim_password_fingerprint, derive_claim_session_token, hash_token,

@@ -24,7 +24,7 @@ use chrono::{DateTime, Utc};
 use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder};
 
 use super::{now_str, parse_dt, parse_dt_opt, LibraryStore};
-use crate::control_plane::{batch, bump, read_paged, LiveTopic};
+use crate::control_plane::{batch, bump, bump_if_any, read_paged, LiveTopic};
 use crate::entities::{bookmarks, editions, expressions, playback_progress, playback_sessions};
 use crate::error::{LibraryError, Result};
 
@@ -396,39 +396,45 @@ const SESSION_MOVED: &str =
 /// keeping their ratings and tags: `UPDATE`, then `INSERT OR IGNORE`
 /// guarded on the work existing.
 ///
+/// Both run only when the same batch finished the edition: its progress
+/// update stamped `finished_at` with the batch's timestamp
+/// ([`FINISHED_HERE`]). The decision is the row's as the batch found it,
+/// so a report that lost a race with another one, or with the session's
+/// close, does not finish the work.
+///
 /// # Arguments
 ///
 /// * `user_id` - The person.
 /// * `work_id` - The work.
+/// * `edition_id` - The edition whose progress row decides.
 /// * `now` - The batch's timestamp.
-/// * `moved_session` - For a sync's batch, the session whose update the
-///   flag depends on ([`SESSION_MOVED`]): a report that lost a race with
-///   the session's close must not finish the work.
 fn work_finished(
     user_id: i64,
     work_id: &str,
+    edition_id: &str,
     now: &str,
-    moved_session: Option<&str>,
 ) -> [TypedDbStatement; 2] {
-    let guard = moved_session.map_or_else(String::new, |_| format!(" AND {SESSION_MOVED}"));
+    let mark = || {
+        vec![
+            batch::int(user_id),
+            batch::text(edition_id),
+            batch::text(now),
+        ]
+    };
     let mut update = vec![batch::text(now), batch::int(user_id), batch::text(work_id)];
+    update.extend(mark());
     let mut insert = vec![
         batch::int(user_id),
         batch::text(work_id),
         batch::text(now),
         batch::text(work_id),
     ];
-    if let Some(session_id) = moved_session {
-        for binds in [&mut update, &mut insert] {
-            binds.push(batch::text(session_id));
-            binds.push(batch::text(now));
-        }
-    }
+    insert.extend(mark());
     [
         batch::exec(
             &format!(
                 "UPDATE user_title_state SET is_finished = 1, updated_at = ? \
-                 WHERE user_id = ? AND work_id = ?{guard}"
+                 WHERE user_id = ? AND work_id = ? AND {FINISHED_HERE}"
             ),
             update,
         ),
@@ -436,11 +442,78 @@ fn work_finished(
             &format!(
                 "INSERT OR IGNORE INTO user_title_state \
                  (user_id, work_id, is_finished, updated_at) \
-                 SELECT ?, ?, 1, ? WHERE EXISTS (SELECT 1 FROM works WHERE id = ?){guard}"
+                 SELECT ?, ?, 1, ? WHERE EXISTS (SELECT 1 FROM works WHERE id = ?) \
+                 AND {FINISHED_HERE}"
             ),
             insert,
         ),
     ]
+}
+
+/// True while the person's progress row in the edition was finished by the
+/// batch whose timestamp is bound: binds `user_id`, `edition_id`, the
+/// timestamp. Only the statement that finishes a row sets `finished_at`,
+/// and only on the unfinished-to-finished transition.
+const FINISHED_HERE: &str = "EXISTS (SELECT 1 FROM playback_progress \
+     WHERE user_id = ? AND edition_id = ? AND is_finished = 1 AND finished_at = ?)";
+
+/// A query statement that answers one row when the batch finished the
+/// edition ([`FINISHED_HERE`]), read back for [`PlaybackChange`].
+fn finished_here_probe(user_id: i64, edition_id: &str, now: &str) -> TypedDbStatement {
+    batch::query(
+        "SELECT user_id FROM playback_progress \
+         WHERE user_id = ? AND edition_id = ? AND is_finished = 1 AND finished_at = ?",
+        vec![
+            batch::int(user_id),
+            batch::text(edition_id),
+            batch::text(now),
+        ],
+        1,
+    )
+}
+
+/// One side of a [`reaches_end_sql`] comparison: an SQL expression and the
+/// binds it takes, in order.
+struct SqlOperand {
+    /// The expression.
+    sql: String,
+    /// Its binds.
+    binds: Vec<DbValue>,
+}
+
+impl SqlOperand {
+    /// `COALESCE(?, column)`: the bound value, or the row's when absent.
+    fn bound_or(value: Option<PlaybackMs>, column: &str) -> Self {
+        Self {
+            sql: format!("COALESCE(?, {column})"),
+            binds: vec![ms_opt(value)],
+        }
+    }
+}
+
+/// [`reaches_end`] written in SQL-v1, for a statement to decide from the
+/// row it changes: true when `duration` is known and above zero and
+/// `position` is within its last one percent, or within the last thirty
+/// seconds of a recording longer than a minute. A `NULL` duration is
+/// unknown and never finished (the predicate is then `NULL`, which a
+/// `CASE WHEN` reads as false).
+///
+/// # Returns
+///
+/// The predicate and its binds, in order.
+fn reaches_end_sql(position: &SqlOperand, duration: &SqlOperand) -> (String, Vec<DbValue>) {
+    let (p, d) = (&position.sql, &duration.sql);
+    let sql = format!(
+        "({d} > 0 AND ({p} >= {d} - {d} / 100 OR ({d} > 60000 AND {p} + {FINISHED_TAIL_MS} >= {d})))"
+    );
+    let mut binds = Vec::new();
+    // In the order the operands appear above.
+    for operand in [
+        duration, position, duration, duration, duration, position, duration,
+    ] {
+        binds.extend(operand.binds.iter().cloned());
+    }
+    (sql, binds)
 }
 
 /// An optional timeline length as a bind.
@@ -594,18 +667,33 @@ impl LibraryStore {
         work_id: Option<&str>,
         edit: &PlaybackProgressEdit,
     ) -> Result<PlaybackChange> {
-        let before = self.playback_progress(user_id, edition_id).await?;
-        let was_finished = before.as_ref().is_some_and(|p| p.is_finished);
-        let position = edit
-            .position
-            .or(before.as_ref().map(|p| p.position))
-            .unwrap_or(PlaybackMs::ZERO);
-        let duration = edit.duration.or(before.as_ref().and_then(|p| p.duration));
-        let finished = edit.finished.unwrap_or_else(|| {
-            was_finished || duration.is_some_and(|duration| reaches_end(position, duration))
-        });
-        let became_finished = finished && !was_finished;
         let now = now_str();
+        // Whether the edit finishes the edition is decided by the update
+        // from the row as it finds it, not from an earlier read: a field
+        // the edit leaves out is the row's, and an edit that leaves the
+        // finished flag out finishes the edition when the row was finished
+        // or the position (the edit's, else the row's) reaches the end of
+        // the runtime (the edit's, else the row's).
+        let (reaches, reaches_binds) = reaches_end_sql(
+            &SqlOperand::bound_or(edit.position, "position_ms"),
+            &SqlOperand::bound_or(edit.duration, "duration_ms"),
+        );
+        let finished_sql =
+            format!("COALESCE(?, CASE WHEN is_finished = 1 OR {reaches} THEN 1 ELSE 0 END)");
+        let finished_binds = || {
+            let mut binds = vec![batch::int_opt(edit.finished.map(i64::from))];
+            binds.extend(reaches_binds.iter().cloned());
+            binds
+        };
+        let mut update_binds = vec![ms_opt(edit.position), ms_opt(edit.duration)];
+        update_binds.extend(finished_binds());
+        update_binds.extend(finished_binds());
+        update_binds.extend([
+            batch::text(&now),
+            batch::text(&now),
+            batch::int(user_id),
+            batch::text(edition_id),
+        ]);
         let mut statements = vec![
             batch::exec(
                 "INSERT OR IGNORE INTO playback_progress \
@@ -619,34 +707,31 @@ impl LibraryStore {
                 ],
             ),
             batch::exec(
-                // A field the edit leaves out keeps the row's value as
-                // it is when this statement runs, not as it was read
-                // above, so a report landing in between is not undone.
-                "UPDATE playback_progress SET position_ms = COALESCE(?, position_ms), \
-                 duration_ms = COALESCE(?, duration_ms), \
-                 is_finished = COALESCE(?, CASE WHEN ? = 1 THEN 1 ELSE is_finished END), \
-                 finished_at = CASE WHEN ? = 1 THEN ? ELSE finished_at END, updated_at = ? \
-                 WHERE user_id = ? AND edition_id = ?",
-                vec![
-                    ms_opt(edit.position),
-                    ms_opt(edit.duration),
-                    batch::int_opt(edit.finished.map(i64::from)),
-                    batch::int(i64::from(finished)),
-                    batch::int(i64::from(became_finished)),
-                    batch::text(&now),
-                    batch::text(&now),
-                    batch::int(user_id),
-                    batch::text(edition_id),
-                ],
+                // Every `SET` expression reads the row as it was before
+                // this statement, so `finished_at` is stamped exactly on
+                // the unfinished-to-finished transition.
+                &format!(
+                    "UPDATE playback_progress SET position_ms = COALESCE(?, position_ms), \
+                     duration_ms = COALESCE(?, duration_ms), \
+                     is_finished = {finished_sql}, \
+                     finished_at = CASE WHEN is_finished = 0 AND {finished_sql} = 1 \
+                     THEN ? ELSE finished_at END, updated_at = ? \
+                     WHERE user_id = ? AND edition_id = ?"
+                ),
+                update_binds,
             ),
         ];
-        if let (true, Some(work_id)) = (became_finished, work_id) {
-            statements.extend(work_finished(user_id, work_id, &now, None));
+        if let Some(work_id) = work_id {
+            statements.extend(work_finished(user_id, work_id, edition_id, &now));
         }
+        let probe = statements.len();
+        statements.push(finished_here_probe(user_id, edition_id, &now));
         statements.push(bump(LiveTopic::Playback));
         let operation_id = format!("playback-progress-{}", uuid::Uuid::new_v4());
-        self.execute_host_batch(batch::request(&operation_id, statements))
+        let reply = self
+            .execute_host_batch(batch::request(&operation_id, statements))
             .await?;
+        let became_finished = !batch::rows(&reply, probe).is_empty();
         let progress = self
             .playback_progress(user_id, edition_id)
             .await?
@@ -805,15 +890,31 @@ impl LibraryStore {
         if session.closed_at.is_some() {
             return Ok(None);
         }
-        let before = self
-            .playback_progress(session.user_id, &session.edition_id)
-            .await?;
-        let was_finished = before.as_ref().is_some_and(|p| p.is_finished);
-        let duration = sync.duration.or(before.and_then(|p| p.duration));
-        let became_finished =
-            !was_finished && duration.is_some_and(|duration| reaches_end(sync.position, duration));
         let now = now_str();
         let open_session = SESSION_MOVED;
+        // Whether the report finishes the edition is decided by the
+        // progress update from the row as it finds it: the runtime is the
+        // report's, else the row's (which an overlapping report may just
+        // have stored), and only an unfinished row is finished.
+        let (reaches, reaches_binds) = reaches_end_sql(
+            &SqlOperand {
+                sql: "?".into(),
+                binds: vec![batch::int(sync.position.stored())],
+            },
+            &SqlOperand::bound_or(sync.duration, "duration_ms"),
+        );
+        let finishes = format!("is_finished = 0 AND {reaches}");
+        let mut progress_binds = vec![batch::int(sync.position.stored()), ms_opt(sync.duration)];
+        progress_binds.extend(reaches_binds.iter().cloned());
+        progress_binds.extend(reaches_binds.iter().cloned());
+        progress_binds.extend([
+            batch::text(&now),
+            batch::text(&now),
+            batch::int(session.user_id),
+            batch::text(&session.edition_id),
+            batch::text(&session.id),
+            batch::text(&now),
+        ]);
         let mut statements = vec![
             // The person may have forgotten their progress while the
             // session played: the next report starts the row again, as
@@ -853,39 +954,46 @@ impl LibraryStore {
                     batch::int(session.user_id),
                 ],
             ),
+            // Every `SET` expression reads the row as it was before this
+            // statement, so `finished_at` is stamped exactly on the
+            // unfinished-to-finished transition, and only while the
+            // session moved in this batch.
             batch::exec(
                 &format!(
                     "UPDATE playback_progress SET position_ms = ?, \
                      duration_ms = COALESCE(?, duration_ms), \
-                     is_finished = CASE WHEN ? = 1 THEN 1 ELSE is_finished END, \
-                     finished_at = CASE WHEN ? = 1 THEN ? ELSE finished_at END, updated_at = ? \
+                     is_finished = CASE WHEN {finishes} THEN 1 ELSE is_finished END, \
+                     finished_at = CASE WHEN {finishes} THEN ? ELSE finished_at END, \
+                     updated_at = ? \
                      WHERE user_id = ? AND edition_id = ? AND {open_session}"
                 ),
-                vec![
-                    batch::int(sync.position.stored()),
-                    ms_opt(sync.duration),
-                    batch::int(i64::from(became_finished)),
-                    batch::int(i64::from(became_finished)),
-                    batch::text(&now),
-                    batch::text(&now),
-                    batch::int(session.user_id),
-                    batch::text(&session.edition_id),
-                    batch::text(&session.id),
-                    batch::text(&now),
-                ],
+                progress_binds,
             ),
         ];
-        if let (true, Some(work_id)) = (became_finished, work_id) {
+        if let Some(work_id) = work_id {
             statements.extend(work_finished(
                 session.user_id,
                 work_id,
+                &session.edition_id,
                 &now,
-                Some(&session.id),
             ));
         }
-        if sync.close || became_finished {
-            statements.push(bump(LiveTopic::Playback));
-        }
+        let probe = statements.len();
+        statements.push(finished_here_probe(
+            session.user_id,
+            &session.edition_id,
+            &now,
+        ));
+        // A close bumps; so does a report that finished the edition, as
+        // the batch decided it.
+        statements.push(if sync.close {
+            bump(LiveTopic::Playback)
+        } else {
+            bump_if_any(
+                LiveTopic::Playback,
+                finished_here_probe(session.user_id, &session.edition_id, &now),
+            )
+        });
         let operation_id = format!("playback-sync-{}", uuid::Uuid::new_v4());
         let reply = self
             .execute_host_batch(batch::request(&operation_id, statements))
@@ -894,6 +1002,7 @@ impl LibraryStore {
         if batch::rows_affected(&reply, 1) == 0 {
             return Ok(None);
         }
+        let became_finished = !batch::rows(&reply, probe).is_empty();
         let progress = self
             .playback_progress(session.user_id, &session.edition_id)
             .await?

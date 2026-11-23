@@ -35,6 +35,7 @@ mod diagnostics_lookup;
 mod discover_events;
 mod discover_jobs;
 mod download_requests;
+mod embedding;
 mod event_worker;
 mod heartbeat;
 mod http_error;
@@ -686,6 +687,7 @@ async fn assemble_host(
     }
     start_job_runtime(state.clone()).await;
     start_event_runtime(state.clone());
+    embedding::spawn_model_watcher(state.clone());
     config_authority::spawn_config_reconciler(state.clone());
     config_authority::spawn_deployment_reconciler(state.clone());
     heartbeat::spawn_heartbeat(state.clone());
