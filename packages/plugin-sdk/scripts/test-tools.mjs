@@ -521,14 +521,14 @@ for (const triggers of [
   // The host accepts it, but `Env extends BookclerkEnv` types SOCKETS as a
   // SocketsBinding, so `types` asks for another name instead of writing a
   // declaration that does not compile.
-  let typesRefused = "";
+  let typesRefused = false;
   try {
     envPropertiesFor(queue);
   } catch (err) {
-    typesRefused = String(err.message);
+    typesRefused = String(err.message).includes("rename it so the generated Env compiles");
   }
-  if (!typesRefused.includes("rename it so the generated Env compiles")) {
-    console.error("FAIL types wrote a SOCKETS queue that cannot compile:", typesRefused);
+  if (!typesRefused) {
+    console.error("FAIL types wrote a SOCKETS queue that cannot compile");
     process.exit(1);
   }
   refuses(
