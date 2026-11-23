@@ -17200,6 +17200,190 @@
         "x-bookclerk-access": "The operator, or any signed-in user."
       }
     },
+    "/api/notifications/notifiers/{id}/deliverability": {
+      "post": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Runs a notifier instance's deliverability check.",
+        "description": "The notifier sends the host's test message the way real messages go\nand asks the checker services the operator approved how it scores,\nthen merges their findings into advice. It can take up to two minutes;\nsends on that notifier wait behind it.\n\nAccess: the operator, an Owner or an Administrator.",
+        "operationId": "post_notifier_deliverability",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin instance id of the notifier.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The checks and the merged advice.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeliverabilityReportJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The instance is not a notifier with a deliverability check, or its settings are incomplete.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the notifier refused the check: the server setting is not set"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can manage notifications"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The notifier is not running on this server.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the notifier is not running on this server"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The notifier could not be reached, did not answer in time, or its report was refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the notifier could not run the check"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
     "/api/notifications/routes": {
       "get": {
         "tags": [
@@ -55545,6 +55729,16 @@
           }
         }
       },
+      "CheckOutcomeJson": {
+        "type": "string",
+        "description": "How a deliverability check or piece of advice came out.",
+        "enum": [
+          "passed",
+          "warning",
+          "failed",
+          "skipped"
+        ]
+      },
       "ChoiceBody": {
         "type": "object",
         "description": "Body of `PUT /api/me/notifications/choices/{type}`.",
@@ -57046,6 +57240,99 @@
           }
         },
         "additionalProperties": false
+      },
+      "DeliverabilityAdviceJson": {
+        "type": "object",
+        "description": "One thing to do, merged from every check.",
+        "required": [
+          "outcome",
+          "title",
+          "detail",
+          "sources"
+        ],
+        "properties": {
+          "outcome": {
+            "$ref": "#/components/schemas/CheckOutcomeJson",
+            "description": "`failed` is a fix, `warning` an improvement, `passed` what is\nalready right."
+          },
+          "title": {
+            "type": "string",
+            "description": "Short heading.",
+            "example": "Publish a DMARC record"
+          },
+          "detail": {
+            "type": "string",
+            "description": "What to change and where.",
+            "example": "Add a TXT record at _dmarc.example.com, for example v=DMARC1; p=none."
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The checks that raised it.",
+            "example": [
+              "DNS records"
+            ]
+          }
+        }
+      },
+      "DeliverabilityCheckJson": {
+        "type": "object",
+        "description": "One checker's result.",
+        "required": [
+          "service",
+          "outcome",
+          "summary"
+        ],
+        "properties": {
+          "service": {
+            "type": "string",
+            "description": "The checker.",
+            "example": "Postmark spam check"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/CheckOutcomeJson",
+            "description": "How it came out."
+          },
+          "summary": {
+            "type": "string",
+            "description": "One line on the result.",
+            "example": "SpamAssassin score 0.8; under 5 passes"
+          },
+          "report_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The checker's full report, an `https` link, when it has one.",
+            "example": "https://www.mail-tester.com/example-1a2b3c"
+          }
+        }
+      },
+      "DeliverabilityReportJson": {
+        "type": "object",
+        "description": "The answer to a deliverability check.",
+        "required": [
+          "checks",
+          "advice"
+        ],
+        "properties": {
+          "checks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeliverabilityCheckJson"
+            },
+            "description": "One entry per checker."
+          },
+          "advice": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeliverabilityAdviceJson"
+            },
+            "description": "What to do, most urgent first."
+          }
+        }
       },
       "DeliveryBacklog": {
         "type": "object",
@@ -68089,6 +68376,11 @@
                 "type": "null"
               }
             ]
+          },
+          "deliverability_check": {
+            "type": "boolean",
+            "description": "True when the plugin is a notifier with a deliverability check\n(`[notifier].deliverability_check`), so the instance's settings offer\n`POST /api/notifications/notifiers/{id}/deliverability`.",
+            "example": true
           },
           "present_on": {
             "type": "array",
