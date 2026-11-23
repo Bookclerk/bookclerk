@@ -38,7 +38,7 @@ use base64::Engine as _;
 use bookclerk_node_proto::{UploadFile, MAX_UPLOAD_FILES};
 use chrono::{DateTime, Duration, Utc};
 use rand::RngCore as _;
-use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QuerySelect};
+use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -67,8 +67,23 @@ pub const UPLOAD_TOKEN_TTL_SECS: i64 = 60 * 60;
 const STATE_OPEN: &str = "open";
 /// Session state: the title was committed.
 pub(super) const STATE_COMMITTED: &str = "committed";
-/// Session state: abandoned (superseded, failed, or its fence lost).
+/// Session state: abandoned (superseded, failed, or its fence lost), and
+/// nothing of it is left on the receiving node.
 const STATE_ABORTED: &str = "aborted";
+/// Session state: abandoned with files on the receiving node still to
+/// delete. Only the receiving node can reach its own destinations, so it
+/// deletes them ([`uploads_to_sweep`]) and then marks the upload aborted
+/// ([`mark_discarded`]), wherever the abort ran (#292).
+const STATE_DISCARDING: &str = "discarding";
+
+/// How many uploads one sweep ([`uploads_to_sweep`]) answers.
+pub const UPLOAD_SWEEP_BATCH: usize = 64;
+
+/// How many open or discarding uploads one sweep reads, oldest first, to
+/// find those to answer: well under the smallest guest result-row cap.
+/// Uploads still live are skipped, so a node receiving more open uploads
+/// than this at once sweeps the rest once older ones commit or end.
+const UPLOAD_SWEEP_SCAN: u64 = 256;
 
 /// The declared files of an upload, as stored in `manifest_json`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -78,6 +93,11 @@ struct Manifest {
     /// granted, the primary first.
     #[serde(default)]
     destinations: Vec<String>,
+    /// Each of `destinations`' configuration revision at grant, in the
+    /// same order (#313); empty for an upload granted before they were
+    /// pinned.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    destination_revisions: Vec<i64>,
     /// Every file, in upload order.
     files: Vec<UploadFile>,
     /// Storage key of the title's companion PDF, when one is uploaded.
@@ -124,6 +144,34 @@ pub struct UploadDestination {
     /// titles (or is the root): every key must then also be one of them.
     /// `None` when the folder is the title's own.
     pub title_names: Option<TitleNames>,
+    /// The destination's instance document revision on the receiving node
+    /// at grant. The grant records it, and the receiving node writes no
+    /// further file and refuses the commit (`destinations_changed`) once
+    /// the destination runs another, so a moved root or bucket never
+    /// splits a title across two backends (#313).
+    pub config_revision: i64,
+}
+
+/// One output destination of the receiving shared node as a grant pins
+/// it: its id and the instance document revision its guest runs
+/// ([`UploadDestination::config_revision`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrantedDestination {
+    /// The destination's id (`local`, `s3`).
+    pub id: String,
+    /// The instance document revision its guest was opened with.
+    pub config_revision: i64,
+}
+
+impl GrantedDestination {
+    /// A destination `id` at `config_revision`.
+    #[must_use]
+    pub fn new(id: impl Into<String>, config_revision: i64) -> Self {
+        Self {
+            id: id.into(),
+            config_revision,
+        }
+    }
 }
 
 impl UploadDestination {
@@ -316,6 +364,10 @@ pub struct UploadSession {
     /// The receiving node's destination ids at grant, the primary first;
     /// the files are written only while the node still has exactly these.
     pub destinations: Vec<String>,
+    /// Each of [`Self::destinations`]' configuration revision at grant, in
+    /// the same order ([`UploadDestination::config_revision`]); empty for
+    /// an upload granted before revisions were pinned.
+    pub destination_revisions: Vec<i64>,
     /// The declared files.
     pub files: Vec<UploadFile>,
     /// Indexes of the files every destination has.
@@ -892,6 +944,26 @@ pub(super) async fn upload_holds_its_keys(
     Ok(store.count_edition_files_by(&session.upload_id).await? == granted_key_count(session))
 }
 
+/// True while every key `session` holds is recorded under the edition
+/// its title's listing resolves to now ([`LibraryStore::file_owner_of_holding`]).
+/// A rescan that moved the listing to another edition, or left the title
+/// unresolved, since the grant answers false: the commit is then refused
+/// (`edition_changed`) and the Host's next attempt is granted against the
+/// title's current edition (#688).
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+async fn upload_keys_follow_edition(store: &LibraryStore, session: &UploadSession) -> Result<bool> {
+    let Some(owner) = store.file_owner_of_holding(&session.holding_id).await? else {
+        return Ok(false);
+    };
+    Ok(store
+        .count_edition_files_by_owner(&session.upload_id, &owner)
+        .await?
+        == granted_key_count(session))
+}
+
 /// True while `key` on `destination` is still `session`'s own: its
 /// recorded latest writer is this upload (an upload id is unique, and
 /// claims keys for its own title only). A later upload of the title, an
@@ -1074,6 +1146,11 @@ pub(super) async fn open_upload_session(
             Vec::new()
         } else {
             req.destinations.iter().map(|d| d.id.clone()).collect()
+        },
+        destination_revisions: if req.holding_id.is_empty() {
+            Vec::new()
+        } else {
+            req.destinations.iter().map(|d| d.config_revision).collect()
         },
         files: req.files.to_vec(),
         pdf_key: req.pdf_key.map(str::to_string),
@@ -1271,6 +1348,7 @@ fn session_from_model(row: node_upload_sessions::Model) -> Result<UploadSession>
         primary_key: row.primary_key,
         pdf_key: manifest.pdf_key,
         destinations: manifest.destinations,
+        destination_revisions: manifest.destination_revisions,
         files: manifest.files,
         received,
         state: row.state,
@@ -1428,12 +1506,19 @@ pub async fn abort_upload(store: &LibraryStore, upload_id: &str) -> Result<Optio
         if row.state != STATE_OPEN {
             return Ok(None);
         }
+        // An upload that received files waits for its receiving node to
+        // delete them; one that received none is done.
+        let next = if row.received_json == "[]" {
+            STATE_ABORTED
+        } else {
+            STATE_DISCARDING
+        };
         // Compare-and-swap on the receipts, so the answer lists every file
         // recorded before the abort.
         let updated = node_upload_sessions::Entity::update_many()
             .col_expr(
                 node_upload_sessions::Column::State,
-                sea_orm::sea_query::Expr::value(STATE_ABORTED),
+                sea_orm::sea_query::Expr::value(next),
             )
             .filter(node_upload_sessions::Column::UploadId.eq(upload_id))
             .filter(node_upload_sessions::Column::State.eq(STATE_OPEN))
@@ -1443,13 +1528,75 @@ pub async fn abort_upload(store: &LibraryStore, upload_id: &str) -> Result<Optio
             .map_err(LibraryError::Orm)?;
         if updated.rows_affected == 1 {
             let mut session = session_from_model(row)?;
-            session.state = STATE_ABORTED.into();
+            session.state = next.into();
             return Ok(Some(session));
         }
     }
     Err(LibraryError::Unavailable(
         "upload receipts kept changing".into(),
     ))
+}
+
+/// Marks an aborted upload's files on its receiving node deleted: a
+/// `discarding` upload becomes `aborted`. Called by the receiving node once
+/// it has deleted (or found it cannot ever reach) what the upload had
+/// received; a no-op for any other state.
+///
+/// # Errors
+///
+/// Returns an error when the write fails.
+pub async fn mark_discarded(store: &LibraryStore, upload_id: &str) -> Result<()> {
+    node_upload_sessions::Entity::update_many()
+        .col_expr(
+            node_upload_sessions::Column::State,
+            sea_orm::sea_query::Expr::value(STATE_ABORTED),
+        )
+        .filter(node_upload_sessions::Column::UploadId.eq(upload_id))
+        .filter(node_upload_sessions::Column::State.eq(STATE_DISCARDING))
+        .exec(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    Ok(())
+}
+
+/// The uploads `receiving_node_id` should sweep (#292), at most
+/// [`UPLOAD_SWEEP_BATCH`]: each open upload it receives whose fence is no
+/// longer live ([`upload_fence_live`]: the Host vanished mid-title and its
+/// lease ran out or moved, so no further file, commit, renewal or finish
+/// will arrive), and each upload aborted elsewhere whose files it still
+/// holds (`discarding`). The caller aborts the first ([`abort_upload`]) and
+/// deletes the files of both, then marks them done ([`mark_discarded`]).
+/// An open upload whose fence is still live is left alone, however long
+/// it has been idle: its job may still send the rest.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub async fn uploads_to_sweep(
+    store: &LibraryStore,
+    receiving_node_id: &str,
+) -> Result<Vec<UploadSession>> {
+    let rows = node_upload_sessions::Entity::find()
+        .filter(node_upload_sessions::Column::ReceivingNodeId.eq(receiving_node_id))
+        .filter(node_upload_sessions::Column::State.is_in([STATE_OPEN, STATE_DISCARDING]))
+        .order_by_asc(node_upload_sessions::Column::CreatedAt)
+        .order_by_asc(node_upload_sessions::Column::UploadId)
+        .limit(UPLOAD_SWEEP_SCAN)
+        .all(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let session = session_from_model(row)?;
+        if session.state == STATE_OPEN && upload_fence_live(store, &session).await? {
+            continue;
+        }
+        out.push(session);
+        if out.len() >= UPLOAD_SWEEP_BATCH {
+            break;
+        }
+    }
+    Ok(out)
 }
 
 /// Aborts every open upload of `job_id` that `keep` selects; answers the
@@ -1699,6 +1846,11 @@ async fn commit_upload_checked(
     if !upload_holds_its_keys(store, &session).await? {
         return Ok(UploadCommit::Refused("key_taken"));
     }
+    // The keys were claimed under the edition the title resolved to at the
+    // grant; a rescan may have moved it since. The batch re-checks this.
+    if !session.holding_id.is_empty() && !upload_keys_follow_edition(store, &session).await? {
+        return Ok(UploadCommit::Refused("edition_changed"));
+    }
     // The owner decides the job's success itself.
     match (session.holding_id.is_empty(), finish) {
         (false, Some(_)) => return Ok(UploadCommit::Refused("not_a_closing_upload")),
@@ -1756,11 +1908,25 @@ async fn commit_upload_checked(
     let keys_sql = if session.holding_id.is_empty() {
         "1 = 1"
     } else {
+        let granted = i64::try_from(granted_key_count(&session)).unwrap_or(i64::MAX);
         binds.extend([
             text(upload_id),
-            batch::int(i64::try_from(granted_key_count(&session)).unwrap_or(i64::MAX)),
+            batch::int(granted),
+            text(upload_id),
+            text(&session.holding_id),
+            batch::int(granted),
         ]);
-        "(SELECT COUNT(*) FROM edition_files WHERE writer = ?) = ?"
+        // Every key is still recorded under the edition the title sells
+        // now: a rescan that moved the title's listing to another edition
+        // (or left it unresolved) since the grant refuses the commit, so a
+        // title is never marked acquired over files filed under an edition
+        // it no longer has (#688).
+        "(SELECT COUNT(*) FROM edition_files WHERE writer = ?) = ? \
+           AND (SELECT COUNT(*) FROM edition_files WHERE writer = ? \
+                  AND owner_kind = 'edition' AND owner_id IN \
+                    (SELECT store_listings.edition_id FROM store_listings \
+                      WHERE store_listings.id IN (SELECT holdings.listing_id \
+                        FROM holdings WHERE holdings.id = ?))) = ?"
     };
     let mut statements = vec![exec(
         &format!(

@@ -155,6 +155,10 @@ pub(crate) struct OwnerDestination {
     pub backend: Box<dyn StorageBackend>,
     /// Its naming and packaging options.
     pub options: DownloadOptions,
+    /// The instance document revision its guest was opened with: an upload
+    /// granted for one revision writes no further file, and does not
+    /// commit, once the destination runs another (#313).
+    pub config_revision: i64,
 }
 
 #[cfg(test)]
@@ -201,6 +205,21 @@ mod test_destinations {
             .lock()
             .unwrap()
             .insert(files_dir.to_path_buf(), destinations);
+    }
+
+    /// A stand-in's configuration revision: derived from its root, so a
+    /// test that moves a destination's root sees a new revision, as a
+    /// guest reopened with a changed document would report.
+    pub(super) fn revision(root: &Path) -> i64 {
+        // FNV-1a over the path's bytes, folded into the positive range.
+        let hash = root
+            .as_os_str()
+            .as_encoded_bytes()
+            .iter()
+            .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+                (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
+            });
+        i64::try_from(hash >> 1).unwrap_or(i64::MAX)
     }
 
     /// The stand-ins of the owner at `files_dir`.
@@ -256,15 +275,22 @@ pub(crate) async fn owner_destinations(state: &AppState) -> anyhow::Result<Vec<O
         for stand_in in stand_ins {
             out.push(OwnerDestination {
                 id: stand_in.id.to_string(),
+                config_revision: test_destinations::revision(&stand_in.root),
                 backend: Box::new(bookclerk_storage::LocalFsBackend::new(stand_in.root)?),
                 options: DownloadOptions::for_destination(&cfg, &stand_in.naming, ""),
             });
         }
         return Ok(out);
     }
+    let registry = state.destinations.read().await;
+    let revisions: std::collections::BTreeMap<String, i64> = registry
+        .destinations()
+        .into_iter()
+        .map(|deployed| (deployed.id.to_string(), deployed.settings.config_revision))
+        .collect();
     let destinations = bookclerk_plugin_host::build_acquire_destinations(
         &cfg,
-        &*state.destinations.read().await,
+        &registry,
         // Plans and uploads name every destination; no title is placed here.
         &std::collections::BTreeMap::new(),
     )
@@ -273,6 +299,7 @@ pub(crate) async fn owner_destinations(state: &AppState) -> anyhow::Result<Vec<O
         .items
         .into_iter()
         .map(|item| OwnerDestination {
+            config_revision: revisions.get(item.id.as_str()).copied().unwrap_or_default(),
             id: item.id.to_string(),
             backend: item.backend,
             options: item.options,
@@ -283,6 +310,22 @@ pub(crate) async fn owner_destinations(state: &AppState) -> anyhow::Result<Vec<O
 /// The ids of `destinations`, in order (the primary first).
 pub(crate) fn destination_ids(destinations: &[OwnerDestination]) -> Vec<String> {
     destinations.iter().map(|d| d.id.clone()).collect()
+}
+
+/// True when `destinations` are exactly the ones `session` was granted for:
+/// the same ids in the same order, each still at the configuration
+/// revision the grant pinned (#313). An upload granted before revisions
+/// were pinned (none recorded) is matched by its ids alone.
+pub(crate) fn destinations_match(
+    destinations: &[OwnerDestination],
+    session: &UploadSession,
+) -> bool {
+    destination_ids(destinations) == session.destinations
+        && (session.destination_revisions.is_empty()
+            || destinations
+                .iter()
+                .map(|d| d.config_revision)
+                .eq(session.destination_revisions.iter().copied()))
 }
 
 /// The destinations an upload was granted for, taken from `destinations`
@@ -1691,7 +1734,7 @@ async fn start_file(
             return Err(unavailable());
         }
     };
-    if destination_ids(&destinations) != session.destinations {
+    if !destinations_match(&destinations, session) {
         // The host named the files for the destinations it was granted;
         // writing them to a changed set would mis-name, skip one, or write
         // where a filter now says not to.
@@ -1821,7 +1864,7 @@ pub async fn post_commit(
                         return unavailable();
                     }
                 };
-                if destination_ids(&target) != session.destinations {
+                if !destinations_match(&target, &session) {
                     tracing::warn!(upload_id = %session.upload_id, "the title's destinations on this shared node changed before the upload's commit; aborted");
                     abort_and_discard(&state, &library, &session.upload_id).await;
                     return refused("destinations_changed");

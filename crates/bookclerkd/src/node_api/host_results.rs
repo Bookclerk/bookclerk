@@ -411,6 +411,7 @@ async fn title_destinations(
             id: destination.id.clone(),
             title_folders,
             title_names,
+            config_revision: destination.config_revision,
         });
     }
     out

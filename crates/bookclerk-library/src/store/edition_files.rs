@@ -949,6 +949,29 @@ impl LibraryStore {
             .map_err(LibraryError::Orm)
     }
 
+    /// How many keys `writer` (a host upload id) is recorded as the latest
+    /// writer of under `owner`: compared with
+    /// [`Self::count_edition_files_by`], it says whether every key the
+    /// upload holds is still filed under that owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the read fails.
+    pub async fn count_edition_files_by_owner(
+        &self,
+        writer: &str,
+        owner: &FileOwner,
+    ) -> Result<u64> {
+        use sea_orm::PaginatorTrait as _;
+        edition_files::Entity::find()
+            .filter(edition_files::Column::Writer.eq(writer))
+            .filter(edition_files::Column::OwnerKind.eq(owner.kind()))
+            .filter(edition_files::Column::OwnerId.eq(owner.id()))
+            .count(self.db())
+            .await
+            .map_err(LibraryError::Orm)
+    }
+
     /// Who holds `key` on `destination`; `None` when it is unrecorded.
     ///
     /// A row naming an owner kind this build does not know reads as held

@@ -591,12 +591,15 @@ async fn a_catalog_upload_commits_only_under_the_live_fence() {
     let (store, _member) = world(dir.path()).await;
     let session = open(&store, true, true).await;
     accepted(&store, session.fence, "c", false, &[title("p1", 3)]).await;
-    let destinations = vec!["local".to_string(), "s3".to_string()];
+    let destinations = vec![
+        GrantedDestination::new("local", 0),
+        GrantedDestination::new("s3", 0),
+    ];
     let file = |key: &str, size: u64| UploadFile {
         copies: destinations
             .iter()
             .map(|destination| FileCopy {
-                destination: destination.clone(),
+                destination: destination.id.clone(),
                 key: key.into(),
             })
             .collect(),
@@ -920,7 +923,7 @@ async fn a_catalog_upload_never_overwrites_another_titles_files() {
     ];
     let session = open(&store, true, true).await;
     accepted(&store, session.fence, "c", false, &titles).await;
-    let destinations = vec!["local".to_string()];
+    let destinations = vec![GrantedDestination::new("local", 0)];
     let grant = |branch: &'static str, fence: i64, product: &'static str, key: &'static str| {
         let store = store.clone();
         let destinations = destinations.clone();
@@ -1103,7 +1106,7 @@ async fn grant_branch_local(
         "audible",
         product,
         &local_files(keys),
-        &["local".to_string()],
+        &[GrantedDestination::new("local", 0)],
     )
     .await
     .unwrap()
@@ -2079,7 +2082,7 @@ async fn a_catalog_upload_is_refused_once_its_listing_sells_another_edition() {
         &[title("p1", 3), title("p2", 3)],
     )
     .await;
-    let destinations = vec!["local".to_string()];
+    let destinations = vec![GrantedDestination::new("local", 0)];
     let files = [UploadFile {
         copies: vec![FileCopy {
             destination: "local".into(),

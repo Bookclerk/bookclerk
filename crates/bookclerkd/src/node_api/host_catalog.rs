@@ -16,7 +16,7 @@
 
 use bookclerk_library::control_plane::{
     accept_catalog_batch, begin_catalog, grant_catalog_upload, library_ancestry, CatalogAccept,
-    CatalogBegin, UploadGrant,
+    CatalogBegin, GrantedDestination, UploadGrant,
 };
 use bookclerk_library::LibraryStore;
 use bookclerk_node_proto::{
@@ -44,6 +44,19 @@ fn lost(id: String, fence: i64) -> Frame {
 async fn destination_ids(host: &HostContext) -> Vec<String> {
     match super::uploads::owner_destinations(&host.state).await {
         Ok(destinations) => super::uploads::destination_ids(&destinations),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// This node's destinations as a catalog upload's grant pins them: each
+/// id with the configuration revision its guest runs (#313), the primary
+/// first; empty when none is deployed.
+async fn granted_destinations(host: &HostContext) -> Vec<GrantedDestination> {
+    match super::uploads::owner_destinations(&host.state).await {
+        Ok(destinations) => destinations
+            .iter()
+            .map(|d| GrantedDestination::new(d.id.clone(), d.config_revision))
+            .collect(),
         Err(_) => Vec::new(),
     }
 }
@@ -162,7 +175,7 @@ pub(super) async fn upload(
     if files.len() > MAX_UPLOAD_FILES {
         return Ok(error(id, "refused", "invalid_manifest"));
     }
-    let destinations = destination_ids(host).await;
+    let destinations = granted_destinations(host).await;
     if destinations.is_empty() {
         return Ok(error(id, "unavailable", "no_destination"));
     }

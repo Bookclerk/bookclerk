@@ -1481,7 +1481,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         primary_key TEXT NOT NULL,
         manifest_json TEXT NOT NULL,
         received_json TEXT NOT NULL DEFAULT '[]',
-        state TEXT NOT NULL CHECK (state IN ('open', 'committed', 'aborted')),
+        state TEXT NOT NULL CHECK (state IN ('open', 'committed', 'aborted', 'discarding')),
         created_at TEXT NOT NULL,
         expires_at TEXT NOT NULL,
         committed_at TEXT

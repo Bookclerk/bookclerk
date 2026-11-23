@@ -935,6 +935,76 @@ async fn a_pinned_job_without_an_account_passes_no_filter() {
     assert!(consented.admits(&w.store, &record).await.unwrap());
 }
 
+/// A title's commit is refused `edition_changed` when a rescan moved its
+/// listing to another edition after the grant: the keys stay filed under
+/// the edition they were claimed for, and the title is not marked acquired
+/// over them (#688).
+#[tokio::test]
+async fn an_upload_commit_is_refused_once_the_title_moved_to_another_edition() {
+    let _guard = master_key_test_lock_async().await;
+    let w = world().await;
+    let job_id = enqueue(&w.store, JobKind::Acquire, "riley-acct").await;
+    let (book_uuid, files) = riley_title(&w.store).await;
+    let other = w
+        .store
+        .scope(PLUGIN, "test")
+        .upsert_book(&crate::store::NewBook {
+            ..scanned("riley-acct", "t8")
+        })
+        .await
+        .unwrap();
+    let fence = claim(&w.store).await.unwrap().job.lease_generation;
+    let UploadGrant::Granted { upload_id, .. } =
+        grant_title(&w.store, &job_id, fence, &book_uuid, &files).await
+    else {
+        panic!("granted");
+    };
+    for index in 0..files.len() {
+        assert!(record_upload_file(&w.store, &upload_id, index)
+            .await
+            .unwrap());
+    }
+    // A rescan resolved the title's listing to the other title's edition.
+    let FileOwner::Edition(moved_to) = owner_of(&w.store, &other.holding_id).await;
+    let listing = crate::entities::holdings::Entity::find_by_id(book_uuid.clone())
+        .one(w.store.db())
+        .await
+        .unwrap()
+        .unwrap()
+        .listing_id;
+    crate::entities::store_listings::Entity::update_many()
+        .col_expr(
+            crate::entities::store_listings::Column::EditionId,
+            Expr::value(moved_to),
+        )
+        .filter(crate::entities::store_listings::Column::Id.eq(listing))
+        .exec(w.store.db())
+        .await
+        .unwrap();
+    assert_eq!(
+        commit_upload(&w.store, &upload_id, None, SETTINGS.limits)
+            .await
+            .unwrap(),
+        UploadCommit::Refused("edition_changed")
+    );
+    let book = w
+        .store
+        .acquire_title_of_holding(&book_uuid)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(book.status, crate::models::AcquireStatus::Acquired);
+    assert_eq!(
+        load_upload(&w.store, &upload_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        "open",
+        "nothing was committed"
+    );
+}
+
 /// A job naming its account by label, or by its id in another case, is
 /// filtered by that account's plugin, as the executor resolves it.
 #[tokio::test]
@@ -1614,6 +1684,7 @@ fn local(folder: &str) -> Vec<UploadDestination> {
         id: "local".into(),
         title_folders: vec![folder.into()],
         title_names: None,
+        config_revision: 0,
     }]
 }
 
@@ -2211,6 +2282,7 @@ async fn an_upload_commit_acquires_the_title_and_completes_the_job() {
         id: "s3".into(),
         title_folders: vec!["Title".into()],
         title_names: None,
+        config_revision: 0,
     };
     let two = vec![destinations[0].clone(), s3.clone()];
     let unwritten = UploadGrantRequest {
@@ -2969,6 +3041,7 @@ async fn an_upload_is_bound_to_its_titles_key_scope() {
         id: "local".into(),
         title_folders: Vec::new(),
         title_names: None,
+        config_revision: 0,
     }];
     assert!(matches!(
         grant_upload(
@@ -3039,6 +3112,7 @@ fn a_destination_scope_admits_only_keys_below_its_folders() {
         id: "local".into(),
         title_folders: vec!["A/T".into()],
         title_names: None,
+        config_revision: 0,
     };
     assert!(folder.admits("A/T/T.m4b"));
     assert!(folder.admits("A/T/sub/c1.mp3"));
@@ -3049,6 +3123,7 @@ fn a_destination_scope_admits_only_keys_below_its_folders() {
         id: "local".into(),
         title_folders: vec![String::new()],
         title_names: None,
+        config_revision: 0,
     };
     assert!(root.admits("T.m4b"));
     assert!(!root.admits("A/T.m4b"));
@@ -3056,6 +3131,7 @@ fn a_destination_scope_admits_only_keys_below_its_folders() {
         id: "local".into(),
         title_folders: Vec::new(),
         title_names: None,
+        config_revision: 0,
     };
     assert!(!none.admits("T.m4b"));
 }
@@ -3086,6 +3162,7 @@ fn shared_scope(folder: &str) -> UploadDestination {
                 )),
             ],
         }),
+        config_revision: 0,
     }
 }
 
@@ -4679,7 +4756,7 @@ async fn a_job_upload_takes_over_a_branch_delivered_copy_of_its_edition() {
         "test",
         "t1",
         &files,
-        &["local".to_string()],
+        &[GrantedDestination::new("local", 0)],
     )
     .await
     .unwrap()

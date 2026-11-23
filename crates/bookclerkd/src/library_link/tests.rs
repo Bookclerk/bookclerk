@@ -1437,6 +1437,7 @@ mod results_and_uploads {
             id: "local".into(),
             title_folders: vec![folder.into()],
             title_names: None,
+            config_revision: 0,
         }]
     }
 
@@ -3198,6 +3199,7 @@ mod results_and_uploads {
                     id: "local".into(),
                     title_folders: vec!["Author/Title t2".into()],
                     title_names: None,
+                    config_revision: 0,
                 }],
             },
         )
@@ -3327,11 +3329,13 @@ mod results_and_uploads {
                         id: "local".into(),
                         title_folders: vec!["Author/Title t2".into()],
                         title_names: None,
+                        config_revision: 0,
                     },
                     UploadDestination {
                         id: "s3".into(),
                         title_folders: vec!["library/t2".into()],
                         title_names: None,
+                        config_revision: 0,
                     },
                 ],
             },
@@ -6126,6 +6130,7 @@ fn an_uploads_destinations_come_back_in_grant_order_or_not_at_all() {
                     bookclerk_storage::LocalFsBackend::new(root.path().to_path_buf()).unwrap(),
                 ),
                 options: bookclerk_source::DownloadOptions::default(),
+                config_revision: 0,
             })
             .collect()
     };
