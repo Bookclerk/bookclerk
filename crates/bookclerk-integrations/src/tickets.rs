@@ -364,4 +364,47 @@ mod tests {
             "{err}"
         );
     }
+
+    #[tokio::test]
+    async fn redeeming_a_mailed_invite_verifies_the_address_it_went_to() {
+        let (store, _dir, _dek, _raw_ticket) = claim_library().await;
+        let user = store
+            .create_user_with_profile(
+                UserRole::Member,
+                Some("Mailed"),
+                None,
+                Some("mailed@example.com"),
+                None,
+            )
+            .await
+            .unwrap();
+        let password = bookclerk_library::hash_password(&invite_password()).unwrap();
+        store
+            .set_user_password_hash(user.id, Some(password.as_str()))
+            .await
+            .unwrap();
+        let identity = store
+            .ensure_local_portal_identity(user.id, Some("Mailed"))
+            .await
+            .unwrap();
+        let ticket = store
+            .mint_invite_ticket(identity.id, "mailed@example.com", "test")
+            .await
+            .unwrap();
+        let integrations = IntegrationsConfig::default();
+        let nonce = hash_token(&["mailed", "-", "nonce"].concat());
+        let (_session, redeemed) =
+            redeem_ticket_to_session(&store, &integrations, ticket.expose(), &nonce)
+                .await
+                .unwrap();
+        assert_eq!(redeemed.user_id, Some(user.id));
+        assert!(
+            store
+                .get_user(user.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .email_verified
+        );
+    }
 }

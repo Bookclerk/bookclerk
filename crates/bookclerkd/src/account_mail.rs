@@ -836,3 +836,7 @@ pub(crate) async fn sweep_once(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "account_mail_tests.rs"]
+mod tests;
