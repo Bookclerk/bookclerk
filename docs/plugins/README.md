@@ -362,11 +362,12 @@ Audible, Libro.fm, Chirp, GraphicAudio and Audiobookshelf ship as
   (fail closed).
 
 The Audiobookshelf integration, the Open Library and Audnexus metadata
-providers, the `covers` fetcher, the `metadata_files` reader and the
-`cloudflare_relay` ingress are first-party **workerd TypeScript** guests in
-the same tree (`crates/bookclerk-plugins/optional/integration-audiobookshelf`,
-`metadata-openlibrary`, `metadata-audnexus`, `covers`, `metadata-files` and
-`ingress-cloudflare`). They have no Cargo package:
+providers, the `covers` fetcher, the `metadata_files` reader, the
+`cloudflare_relay` ingress and the `webhook` notifier are first-party
+**workerd TypeScript** guests in the same tree
+(`crates/bookclerk-plugins/optional/integration-audiobookshelf`,
+`metadata-openlibrary`, `metadata-audnexus`, `covers`, `metadata-files`,
+`ingress-cloudflare` and `notifier-webhook`). They have no Cargo package:
 
 - Their source is in `src/`. `npm run build` compiles it with TypeScript
   into the `modules/` that ships, and both are committed. CI's

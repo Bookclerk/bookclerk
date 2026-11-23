@@ -48,7 +48,7 @@ deletes, so the entries stay valid under each container's new key.
 make for itself, and the build fails if any of it is left:
 
 - `master.key`, and the fingerprint of it the library keeps;
-- the covers cache's URL-signing key;
+- the URL-signing keys of the covers and samples caches;
 - library leases, node heartbeats, plugin sessions and logs.
 
 `--bake-finish` refuses a library that holds any sealed secret, sign-in

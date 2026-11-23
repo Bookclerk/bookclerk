@@ -1,0 +1,54 @@
+{
+  "contract": "success",
+  "coverage": "success",
+  "needs": {
+    "check": {
+      "result": "success"
+    },
+    "confinement": {
+      "result": "skipped"
+    },
+    "desktop": {
+      "result": "skipped"
+    },
+    "e2e": {
+      "result": "success"
+    },
+    "macos": {
+      "result": "skipped"
+    },
+    "native-gateway": {
+      "result": "success"
+    },
+    "plan": {
+      "result": "success"
+    },
+    "postgres": {
+      "result": "success"
+    },
+    "release": {
+      "result": "success"
+    },
+    "site": {
+      "result": "skipped"
+    },
+    "test": {
+      "result": "success"
+    },
+    "test-os": {
+      "result": "skipped"
+    },
+    "tray": {
+      "result": "skipped"
+    },
+    "ui-visual": {
+      "result": "failure"
+    },
+    "windows-cluster": {
+      "result": "skipped"
+    }
+  },
+  "run_attempt": 1,
+  "run_id": 501,
+  "stranded": []
+}

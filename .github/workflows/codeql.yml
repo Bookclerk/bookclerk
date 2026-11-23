@@ -10,6 +10,10 @@
 #   uploads main's Rust results for the base commit again instead of a
 #   20-minute analysis (scripts/codeql_reuse.py), and analyzes when it
 #   can't find them. Main keeps those results as an artifact.
+# - A visual approval commit (only ui/visual/baselines.lock changed since a
+#   parent whose run passed, scripts/ci_carry.py) uploads that parent run's
+#   results for every language again instead of analyzing; each pull
+#   request run keeps its SARIF for that (docs/contributing/ci.md#visual-approval-commits).
 # - The Rust extractor's own cargo output (build scripts and proc macros) is
 #   cached between runs; main saves it and pull requests only restore it.
 #
@@ -44,9 +48,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # Find a visual approval commit's parent run.
+      actions: read
     outputs:
       matrix: ${{ steps.choose.outputs.matrix }}
       reuse-rust: ${{ steps.choose.outputs.reuse-rust }}
+      carry-run: ${{ steps.carry.outputs.run-id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -71,6 +78,22 @@ jobs:
             args+=(--paths-file "$RUNNER_TEMP/changed.txt")
           fi
           python3 scripts/codeql_languages.py "${args[@]}"
+
+      # The parent run whose analyses a visual approval commit uploads
+      # again; no output means analyze as usual.
+      - name: Look for a visual approval commit
+        id: carry
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: >-
+          python3 scripts/ci_carry.py find --repo "$REPO" --workflow codeql.yml
+          --head "$HEAD_SHA" --head-repo "$HEAD_REPO" --head-branch "$HEAD_BRANCH"
+          --kind run --dest "$RUNNER_TEMP/ci-carry"
 
   analyze:
     name: Analyze (${{ matrix.language }})
@@ -99,25 +122,41 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
 
-      # The Rust analysis of a pull request that changes no Rust input would
-      # equal main's at the base parent, so that run's SARIF is uploaded
-      # again under the same job and category. No output means analyze.
-      - name: Find main's Rust results for the base commit
+      # Results that equal what an analysis would find are uploaded again
+      # under the same job and category. A visual approval commit's code is
+      # its parent's, so it reuses the parent run's analysis of this
+      # language. Otherwise, the Rust analysis of a pull request that changes
+      # no Rust input would equal main's at the base parent, so that run's
+      # SARIF is reused. No output means analyze.
+      - name: Find results to reuse
         id: reuse
-        if: matrix.language == 'rust' && github.event_name == 'pull_request' && needs.languages.outputs.reuse-rust == 'true'
+        if: >-
+          github.event_name == 'pull_request' &&
+          (needs.languages.outputs.carry-run != '' ||
+          (matrix.language == 'rust' && needs.languages.outputs.reuse-rust == 'true'))
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          CARRY_RUN: ${{ needs.languages.outputs.carry-run }}
+          LANGUAGE: ${{ matrix.language }}
+          REUSE_RUST: ${{ needs.languages.outputs.reuse-rust }}
         run: |
-          base="$(git rev-parse HEAD^1)"
-          python3 scripts/codeql_reuse.py --repo "$REPO" --base "$base" --dest "$RUNNER_TEMP/reused-sarif"
+          set -euo pipefail
+          if [ -n "$CARRY_RUN" ]; then
+            python3 scripts/ci_carry.py sarif --repo "$REPO" --run-id "$CARRY_RUN" \
+              --language "$LANGUAGE" --dest "$RUNNER_TEMP/carried-sarif"
+          fi
+          if ! grep -q '^sarif=' "$GITHUB_OUTPUT" && [ "$LANGUAGE" = "rust" ] && [ "$REUSE_RUST" = "true" ]; then
+            base="$(git rev-parse HEAD^1)"
+            python3 scripts/codeql_reuse.py --repo "$REPO" --base "$base" --dest "$RUNNER_TEMP/reused-sarif"
+          fi
 
-      - name: Upload main's Rust results
+      - name: Upload the reused results
         if: steps.reuse.outputs.sarif != ''
         uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           sarif_file: ${{ steps.reuse.outputs.sarif }}
-          category: /language:rust
+          category: /language:${{ matrix.language }}
 
       # rust-toolchain.toml follows `stable`, so the key names the compiler
       # itself: a new release would otherwise restore outputs it rebuilds.
@@ -151,6 +190,28 @@ jobs:
         with:
           category: /language:${{ matrix.language }}
           output: ${{ runner.temp }}/sarif
+
+      # What a later visual approval commit reuses (see above): this run's
+      # SARIF, analyzed or reused, one artifact per language.
+      - name: Keep the results for a visual approval commit
+        if: github.event_name == 'pull_request'
+        env:
+          REUSED: ${{ steps.reuse.outputs.sarif }}
+        run: |
+          set -euo pipefail
+          if [ -n "$REUSED" ]; then
+            mkdir -p "$RUNNER_TEMP/sarif"
+            cp "$REUSED" "$RUNNER_TEMP/sarif/"
+          fi
+
+      - name: Upload the kept results
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: codeql-sarif-${{ matrix.language }}
+          path: ${{ runner.temp }}/sarif/*.sarif
+          if-no-files-found: error
+          retention-days: 14
 
       # What pull requests that change no Rust input reuse (see above).
       - name: Keep the Rust results for pull requests
