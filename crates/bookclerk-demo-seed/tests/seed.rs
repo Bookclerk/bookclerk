@@ -617,11 +617,13 @@ fn baked_dir(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf)
         files.join("plugin-state/libro/session-1/tmp"),
         files.join("plugin-state/covers/session-2"),
         cache.join("covers"),
+        cache.join("samples"),
     ] {
         std::fs::create_dir_all(dir).unwrap();
     }
     std::fs::write(bookclerk_library::master_key_path(&files), b"key").unwrap();
     std::fs::write(cache.join("covers/token.key"), b"signing").unwrap();
+    std::fs::write(cache.join("samples/token.key"), b"signing").unwrap();
     std::fs::write(files.join("logs/bookclerkd.log"), b"line").unwrap();
     std::fs::write(files.join("plugin-state/libro/session-1/tmp/x"), b"x").unwrap();
     std::fs::write(files.join("library.db"), b"db").unwrap();
@@ -638,6 +640,7 @@ fn finishing_a_bake_clears_the_per_install_files() {
 
     assert!(!bookclerk_library::master_key_path(&files).exists());
     assert!(!cache.join("covers/token.key").exists());
+    assert!(!cache.join("samples/token.key").exists());
     assert!(!files.join("logs").exists());
     assert!(!files.join("plugin-state/libro/session-1").exists());
     assert!(!files.join("plugin-state/covers/session-2").exists());
