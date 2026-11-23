@@ -327,6 +327,19 @@ async fn health_and_validation_never_connect() {
         "{}",
         health.detail
     );
+    // A fresh install with no server is healthy, just not set up; a send
+    // still fails.
+    let unset = EmailNotifier::new(
+        Settings::read(&config(), &json!({}), &NetworkGrant::default()),
+        unused(),
+    );
+    assert_eq!(
+        unset.health().await.unwrap(),
+        HealthOk {
+            ok: true,
+            detail: "no mail server set yet".to_owned()
+        }
+    );
     let pending = EmailNotifier::new(
         Settings::read(
             &config(),

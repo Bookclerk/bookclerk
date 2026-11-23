@@ -209,6 +209,10 @@ To set up a channel:
 Patrons can use the same plugin for their own address once an
 administrator offers it; a personal address holds one `email`.
 
+Until `server` is set, the plugin reports itself healthy with "no mail
+server set yet" and every send fails. Its health check reads the settings
+only and never connects to the server.
+
 The plugin checks the server's certificate against the usual public
 roots, signs in only after TLS (`AUTH PLAIN`, or `AUTH LOGIN` when that is
 all the server offers), and marks every message `Auto-Submitted:

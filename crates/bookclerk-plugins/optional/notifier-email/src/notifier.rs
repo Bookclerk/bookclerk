@@ -72,7 +72,7 @@ impl Settings {
             .find(|setting| setting.key == SERVER_SETTING);
         let destination = match grant.map(|grant| (grant.state, grant.destination.as_str())) {
             None | Some((SettingGrantState::Unset, _)) => {
-                return Err(PluginError::invalid_params("the server setting is not set"));
+                return Err(PluginError::invalid_params(SERVER_NOT_SET));
             }
             Some((SettingGrantState::Invalid, _)) => {
                 return Err(PluginError::invalid_params(
@@ -122,6 +122,10 @@ impl Settings {
         })
     }
 }
+
+/// Why the settings are unusable when no mail server is set: a fresh
+/// install, which `health` reports as healthy but not configured yet.
+const SERVER_NOT_SET: &str = "the server setting is not set";
 
 /// `notifier` entrypoint: one SMTP submission per message.
 pub struct EmailNotifier<T> {
@@ -199,6 +203,10 @@ impl<T: Transport> Notifier for EmailNotifier<T> {
             Ok(()) => HealthOk {
                 ok: true,
                 detail: String::new(),
+            },
+            Err(err) if err.message == SERVER_NOT_SET => HealthOk {
+                ok: true,
+                detail: "no mail server set yet".to_owned(),
             },
             Err(err) => HealthOk {
                 ok: false,
