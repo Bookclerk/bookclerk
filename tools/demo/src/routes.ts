@@ -90,6 +90,7 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["DELETE", "/api/auth/profile/avatar", "deny"],
   ["GET", "/api/auth/profile/catalog-listing", "allow"],
   ["PUT", "/api/auth/profile/catalog-listing", "deny"],
+  ["POST", "/api/auth/profile/email/verification", "deny"],
   ["GET", "/api/auth/totp", "allow"],
   ["DELETE", "/api/auth/totp", "deny"],
   ["POST", "/api/auth/totp/enroll/begin", "deny"],
@@ -97,6 +98,7 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["POST", "/api/auth/totp/login", "deny"],
   ["GET", "/api/auth/tray-handoff", "deny"],
   ["POST", "/api/auth/tray-handoff/prepare", "deny"],
+  ["POST", "/api/auth/verify-email", "deny"],
 
   // Libraries, branches, shared branches and nodes: read-only views, no links.
   ["GET", "/api/library-status", "allow"],
@@ -286,6 +288,10 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["DELETE", "/api/notifications/channels/{id}", "deny"],
   ["POST", "/api/notifications/channels/{id}/resume", "deny"],
   ["POST", "/api/notifications/channels/{id}/test", "deny"],
+  // Account mail goes to real addresses, so the demo may only read it.
+  ["GET", "/api/notifications/account-mail", "allow"],
+  ["PUT", "/api/notifications/account-mail", "deny"],
+  ["POST", "/api/notifications/account-mail/test", "deny"],
   ["GET", "/api/notifications/routes", "allow"],
   ["PUT", "/api/notifications/routes/{type}", "allow"],
   ["GET", "/api/notifications/offers", "allow"],
@@ -367,6 +373,7 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["GET", "/api/users/{id}/avatar", "allow"],
   ["POST", "/api/users/{id}/claim-ticket", "deny"],
   ["POST", "/api/users/{id}/reset-password", "deny"],
+  ["POST", "/api/users/{id}/invite-email", "deny"],
   // Patron scopes: readable, never changed.
   ["GET", "/api/users/default-scope", "allow"],
   ["PUT", "/api/users/default-scope", "deny"],
