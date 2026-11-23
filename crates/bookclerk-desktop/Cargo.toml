@@ -53,7 +53,7 @@ tauri = { version = "2.12.5", default-features = false, features = ["wry", "comm
 # alerts): D-Bus on Linux, the notification center on macOS, toasts on
 # Windows. Held on 4.18, the last line on the zbus 5 that the media
 # controls already bring, so the window carries one D-Bus stack.
-notify-rust = { version = "~4.18.0", optional = true }
+notify-rust = { version = "~4.19.0", optional = true }
 
 [build-dependencies]
 tauri-build = { version = "2.5", default-features = false, optional = true , features = [] }
