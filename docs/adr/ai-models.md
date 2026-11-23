@@ -97,7 +97,12 @@ Bookclerk ships one model plugin for text embeddings:
 - It sleeps when idle, like every plugin, so its memory is held only
   while it works.
 - It serves the models found in its data directory. Which model a
-  library uses is chosen in the host, which delivers the files.
+  library uses is the plugin's `model` setting, and the host delivers
+  the files: each node downloads the chosen model in the background the
+  first time the plugin starts there, and features that need vectors
+  keep their stand-in until it has landed
+  ([How a node gets a model](../internals/model-packs.md#how-a-node-gets-a-model)).
+  The release does not bundle a model: the default one is 141 MB.
 
 Models are delivered as a cut graph, a tokenizer and the token rows
 ([Embedding model packs](../internals/model-packs.md)). The layout can

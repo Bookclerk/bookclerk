@@ -40,6 +40,7 @@ boundary extends it.
 | `tags_read` | Embedded tags of media files on storage: MP4 `ilst` items, chapter tracks and the audio track's sample description, ID3v2 and ID3v1, FLAC metadata blocks, Ogg Opus and Vorbis headers and comments, read by range in the tag worker | `bookclerk-tags::TagReader` |
 | `tags_wire` | Tag worker frames: requests the worker reads, replies the host reads | `bookclerk-tags::wire` |
 | `model_pack` | Embedding model files in the embedder plugin's data directory: the model description (`model.json`) and the token-row packs | `bookclerk-model-pack::PackManifest::parse`, `Rows::parse` |
+| `model_fetch` | What the host parses while it downloads an embedding model for the embedder plugin: the registry's token reply and the plugin package's model list (`models.json`) | `bookclerk-plugin-catalog::parse_token_reply`, `ModelOffers::parse` |
 | `archive_extract` | Archives people upload (ZIP, tar and gzip tar): entry names, links, sizes and compression ratios, walked by the media worker's extract job | `bookclerk-archive::extract` |
 | `archive_report` | The media worker's extract report, read by the host: written paths, sizes and totals | `bookclerk-archive::ExtractReport::validate` |
 | `media_keep_codec` | Audio parts the media worker copies into an M4B without re-encoding them (`output.keep_codec_in_m4b`): MP4 sample entries and tables, Ogg and FLAC headers and packets | `bookclerk-media::package_keeping_codec` |
@@ -386,6 +387,17 @@ only that. The others check:
   for a token it does not list, and re-encodes to exactly its own bytes.
   The shared oracle is `fuzz/oracles/model_pack.rs`, replayed from
   `bookclerk-model-pack`.
+- **`model_fetch`**: the first byte picks the reader: `0` reads the rest as
+  a registry's token reply, any other value as a model list. An accepted
+  token is 1 to 8,192 characters of the bearer-token alphabet, by a rule
+  written apart from the crate's, and is the `token` string of the reply
+  read as plain JSON. An accepted list offers 1 to 32 models with its
+  default among them; every model id is one plain directory name; and the
+  token and blob URLs the host would request are `https://` on the listed
+  registry host, with no credentials, no stray query, no fragment and no
+  path that climbs. The shared oracle is `fuzz/oracles/model_fetch.rs`,
+  replayed from `bookclerk-plugin-catalog`. It found that both readers
+  took a JSON array of the fields in order; they now take objects only.
 - **`media_decode`**: the input is a whole audio file. It is decoded at
   the source's channel count twice and once mixed to mono. An accepted
   stream has a sample rate from 1 Hz to 768 kHz and one or two channels,

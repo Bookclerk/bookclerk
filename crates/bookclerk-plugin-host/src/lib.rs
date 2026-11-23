@@ -77,6 +77,7 @@ mod instance_bindings;
 mod jail;
 mod kv_binding;
 mod manifest;
+mod model_delivery;
 mod notify_raiser;
 mod on_demand;
 mod on_demand_source;
@@ -208,6 +209,9 @@ pub use manifest::{
     ModuleSpec, NamedBinding, NetworkCapabilities, NetworkMode, PluginFamily, PluginManifest,
     PluginRuntimeKind, TriggersManifest, WorkerdLimits, WorkerdRuntimeManifest, ALL_ENTRYPOINTS,
     MAX_EMBEDDED_LOGO_BYTES,
+};
+pub use model_delivery::{
+    ModelDelivery, ModelState, ModelStatus, ModelWant, PluginModels, MODELS_DIR, MODEL_SETTING_KEY,
 };
 pub use on_demand::{activates_on_demand, OnDemandIntegration, TRIGGER_IDLE_TIMEOUT};
 pub use on_demand_source::{

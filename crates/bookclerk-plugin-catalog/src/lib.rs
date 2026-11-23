@@ -21,6 +21,9 @@ mod install;
 mod kind;
 mod ledger;
 mod manifest;
+mod model_fetch;
+#[cfg(any(test, feature = "test-support"))]
+pub mod model_fetch_testing;
 mod mutation_lock;
 mod owner_fetch;
 mod payload;
@@ -64,6 +67,11 @@ pub use manifest::{
     normalize_protocol, parse_sha256_hex, validate_sha256_hex, ArtifactTarget,
     BookclerkPackageManifest, PackageLinks, PublisherIdentity, SandboxRequest,
     MANIFEST_SCHEMA_VERSION, PROTOCOL_WORKERS_RPC,
+};
+pub use model_fetch::{
+    fetch_model, model_installed, parse_token_reply, remove_other_models, BearerToken,
+    DescriptionPin, ModelOffer, ModelOffers, ModelRegistry, MAX_MODEL_BYTES, MAX_MODEL_OFFERS,
+    MAX_MODEL_OFFERS_BYTES, MAX_TOKEN_BYTES, MAX_TOKEN_REPLY_BYTES, MODEL_OFFERS_FILE,
 };
 pub use mutation_lock::{acquire_plugins_lock, PluginMutationLock, PLUGIN_MUTATION_LOCK_FILE};
 pub use owner_fetch::{check_owner_artifact_url, fetch_owner_artifact};
