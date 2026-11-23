@@ -12,7 +12,7 @@ use sea_orm::{
     ActiveModelTrait,
     ActiveValue::{NotSet, Set},
     ColumnTrait, Condition, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
-    QuerySelect, StreamTrait, TransactionTrait,
+    QuerySelect, QueryTrait, StreamTrait, TransactionTrait,
 };
 use uuid::Uuid;
 
@@ -3050,7 +3050,7 @@ impl<'a> AcquireEventTitle<'a> {
 /// when the title has no edition yet).
 ///
 /// The spec's dedup key is new for every call
-/// (`book_acquired:{title id}:{stamp}`), so a title acquired again after a
+/// (`book_acquired:{title id}:{edition id}:{stamp}`), so a title acquired again after a
 /// reset or a failure publishes again. A write that only repeats an acquire
 /// already announced reuses that event's key instead, through
 /// [`acquired_event_key`], and is dropped as a duplicate.
@@ -3084,7 +3084,7 @@ pub(crate) fn book_acquired_spec(
         causation_id: String::new(),
         dedup_key: format!(
             "{}{}-{}",
-            book_acquired_key_prefix(title.title_id),
+            book_acquired_key_prefix(title.title_id, edition_id.unwrap_or_default()),
             now_str(),
             Uuid::new_v4().simple()
         ),
@@ -3094,9 +3094,10 @@ pub(crate) fn book_acquired_spec(
     }
 }
 
-/// The dedup key prefix every `book_acquired` of `title_id` shares.
-fn book_acquired_key_prefix(title_id: &str) -> String {
-    format!("book_acquired:{title_id}:")
+/// The dedup key prefix every `book_acquired` of `title_id` naming
+/// edition `edition_id` shares.
+fn book_acquired_key_prefix(title_id: &str, edition_id: &str) -> String {
+    format!("book_acquired:{title_id}:{edition_id}:")
 }
 
 /// The dedup key the `book_acquired` of `title`'s edition `edition_id`
@@ -3104,9 +3105,10 @@ fn book_acquired_key_prefix(title_id: &str) -> String {
 /// [`book_acquired_spec`] made stays).
 ///
 /// A write is a repeat of an acquire already announced when the title's
-/// newest `book_acquired` still in the outbox is newer than every
-/// `edition_acquire_changed` of the edition the title published since:
-/// nothing reset, queued or failed the edition in between. A repeat reuses
+/// newest `book_acquired` of this edition still in the outbox is newer
+/// than every `edition_acquire_changed` of the edition (published through
+/// any of its holdings): nothing reset, queued or failed the edition in
+/// between. An acquire of an edition the title never announced is new. A repeat reuses
 /// that event's key, so a retried acquire is dropped as a duplicate while
 /// an acquire after a reset publishes again. Both reads go through the
 /// outbox's unique key (`queue_name, account_id, source, event_type,
@@ -3123,7 +3125,7 @@ pub(crate) async fn acquired_event_key<C: ConnectionTrait>(
     title: AcquireEventTitle<'_>,
     edition_id: &str,
 ) -> Result<Option<String>> {
-    let newest = |event_type: &str, prefix: String| {
+    let newest = |event_type: &str, prefix: String, ordering_key: Option<&str>| {
         // The prefix's range: every key that starts with it sorts at or
         // after it and before the prefix with its last byte (`:`) raised.
         let mut end = prefix.clone();
@@ -3136,20 +3138,27 @@ pub(crate) async fn acquired_event_key<C: ConnectionTrait>(
             .filter(domain_events::Column::EventType.eq(event_type))
             .filter(domain_events::Column::DedupKey.gte(prefix))
             .filter(domain_events::Column::DedupKey.lt(end))
-            .filter(domain_events::Column::OrderingKey.eq(title.title_id))
+            .apply_if(ordering_key, |q, key| {
+                q.filter(domain_events::Column::OrderingKey.eq(key))
+            })
             .order_by_desc(domain_events::Column::CreatedAt)
             .order_by_desc(domain_events::Column::Id)
     };
-    let Some(acquired) = newest("book_acquired", book_acquired_key_prefix(title.title_id))
-        .one(db)
-        .await
-        .map_err(LibraryError::Orm)?
+    let Some(acquired) = newest(
+        "book_acquired",
+        book_acquired_key_prefix(title.title_id, edition_id),
+        Some(title.title_id),
+    )
+    .one(db)
+    .await
+    .map_err(LibraryError::Orm)?
     else {
         return Ok(None);
     };
     let changed = newest(
         crate::EDITION_ACQUIRE_CHANGED,
         format!("{}:{edition_id}:", crate::EDITION_ACQUIRE_CHANGED),
+        None,
     )
     .one(db)
     .await

@@ -682,7 +682,8 @@ pub(super) fn plan_write_credits(p: &CreditBatchParams, now: &str) -> Vec<SqlStm
         ));
     }
     for event in &p.events {
-        // The event names its edition in its ordering key.
+        // The event names its edition in its ordering key, and is written
+        // only while a listing of that edition is held.
         out.push(sql(
             "INSERT OR IGNORE INTO domain_events (\
                 id, event_type, schema_version, occurred_at, account_id, source, \
@@ -693,7 +694,11 @@ pub(super) fn plan_write_credits(p: &CreditBatchParams, now: &str) -> Vec<SqlStm
                 SELECT 1 FROM domain_events \
                 WHERE queue_name = 'core.events' AND account_id = ? AND source = ? \
                   AND event_type = ? AND dedup_key = ?\
-             ) AND EXISTS (SELECT 1 FROM editions WHERE id = ?)",
+             ) AND EXISTS (\
+                SELECT 1 FROM holdings WHERE listing_id IN (\
+                    SELECT id FROM store_listings WHERE edition_id = ?\
+                )\
+             )",
             vec![
                 j_str(&event.id),
                 j_str(&event.event_type),

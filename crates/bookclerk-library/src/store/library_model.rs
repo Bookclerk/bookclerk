@@ -717,15 +717,17 @@ fn credit_batches(plan: &resolve::Plan) -> Vec<CreditBatchParams> {
 /// `batches` with one `edition_updated` for the listing's edition after
 /// the last of them, so consumers that derive from credits and series see
 /// them once they are written: the link that refreshed the edition's work
-/// ran before them, in its own batch (#986). No credit batch, no event; a
-/// catalog listing nobody holds (a Discover or lookup answer) publishes
-/// none either, since nothing derived from a held work changed.
+/// ran before them, in its own batch (#986). No credit batch, no event.
+/// The event is written only while some listing of the edition is held
+/// (checked in the batch itself), so a catalog listing filling credits on
+/// a held edition announces them, while one nobody holds (a Discover or
+/// lookup answer) publishes nothing, since no held work changed.
 fn announce_credits(
     mut batches: Vec<CreditBatchParams>,
     listing: &resolve::Listing,
     plan: &resolve::Plan,
 ) -> Vec<CreditBatchParams> {
-    if batches.is_empty() || plan.holding.is_none() || plan.listing.edition_id.is_empty() {
+    if batches.is_empty() || plan.listing.edition_id.is_empty() {
         return batches;
     }
     let edition_id = plan.listing.edition_id.clone();

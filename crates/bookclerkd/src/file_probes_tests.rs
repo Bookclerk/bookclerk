@@ -4,9 +4,12 @@ use bookclerk_library::{FileOwner, FileRole, NewBook};
 
 use super::*;
 
+/// The storefront's provenance-qualified key, as listings record it.
+const PLUGIN: &str = "platform:bookclerk/audible";
+
 /// A file stored before probes were recorded is probed by the walk, with
-/// the edition's one store as its source; a file that cannot be read stays
-/// unprobed for the next walk.
+/// the plain id of the edition's one store as its source; a file that
+/// cannot be read stays unprobed for the next walk.
 #[tokio::test]
 async fn the_walk_probes_files_stored_without_a_probe() {
     bookclerk_media::replace_pool(bookclerk_media::MediaPool::new(
@@ -20,11 +23,14 @@ async fn the_walk_probes_files_stored_without_a_probe() {
     let (state, library) = crate::node_api::tests::test_state(&files).await;
     crate::node_api::uploads::set_test_destination(files.path(), storage.path());
     library
-        .upsert_account("audible", "acct", "us", None, true, "audible")
+        .upsert_account(PLUGIN, "acct", "us", None, true, "audible")
         .await
         .expect("account");
     let book = library
-        .upsert_book(&NewBook::minimal("B0PROBE1", "acct", "us", "Old Copy"))
+        .upsert_book(&NewBook {
+            plugin_key: PLUGIN.to_string(),
+            ..NewBook::minimal("B0PROBE1", "acct", "us", "Old Copy")
+        })
         .await
         .expect("book");
     let edition = library
@@ -89,4 +95,25 @@ async fn the_walk_probes_files_stored_without_a_probe() {
         .expect("read");
     assert_eq!(left.len(), 1);
     assert_eq!(left[0].storage_key, "Old Copy/part 2.mp3");
+
+    // A probe of a file written again since the walk read it stores
+    // nothing.
+    let replaced = UnprobedFile {
+        written_at: "2000-01-01T00:00:00Z".to_string(),
+        ..left[0].clone()
+    };
+    let probe = FileProbe {
+        content_type: "audio/mpeg".to_string(),
+        bitrate_kbps: Some(64),
+        lossless: false,
+        source_store: None,
+    };
+    assert!(!library
+        .set_backfilled_file_probe(&replaced, &probe, &AudioStream::default())
+        .await
+        .expect("write"));
+    assert!(library
+        .set_backfilled_file_probe(&left[0], &probe, &AudioStream::default())
+        .await
+        .expect("write"));
 }

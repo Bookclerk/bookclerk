@@ -1401,7 +1401,7 @@ async fn author_values(store: &LibraryStore, scope: Option<&WorkScope>) -> Vec<S
 
 #[tokio::test]
 async fn a_catalog_cover_on_a_held_edition_refreshes_its_row() {
-    use sea_orm::EntityTrait;
+    use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
     let store = store().await;
     let work = scan(&store, "B0CAT1", "acct-1", "Held Cover", "A. Author").await;
     store
@@ -1425,9 +1425,22 @@ async fn a_catalog_cover_on_a_held_edition_refreshes_its_row() {
         .unwrap()
         .cover_edition_id
         .unwrap();
+    let updates = |store: &LibraryStore, edition: &str| {
+        let db = store.db().clone();
+        let edition = edition.to_owned();
+        async move {
+            crate::entities::domain_events::Entity::find()
+                .filter(crate::entities::domain_events::Column::EventType.eq("edition_updated"))
+                .filter(crate::entities::domain_events::Column::OrderingKey.eq(edition))
+                .count(&db)
+                .await
+                .unwrap()
+        }
+    };
+    let announced = updates(&store, &edition).await;
     assert_eq!(
         store
-            .held_works_of_editions(&[edition, "no-such-edition".into()])
+            .held_works_of_editions(&[edition.clone(), "no-such-edition".into()])
             .await
             .unwrap(),
         std::slice::from_ref(&work)
@@ -1448,11 +1461,18 @@ async fn a_catalog_cover_on_a_held_edition_refreshes_its_row() {
                 product.into(),
                 Some("us".into()),
             )],
-            credits: vec![(
-                "A. Author".into(),
-                bookclerk_resolve::CreditRole::Author,
-                None,
-            )],
+            credits: vec![
+                (
+                    "A. Author".into(),
+                    bookclerk_resolve::CreditRole::Author,
+                    None,
+                ),
+                (
+                    "N. Reader".into(),
+                    bookclerk_resolve::CreditRole::Narrator,
+                    None,
+                ),
+            ],
             ..bookclerk_resolve::ListingDraft::default()
         },
         detail: crate::ListingDetail {
@@ -1481,4 +1501,16 @@ async fn a_catalog_cover_on_a_held_edition_refreshes_its_row() {
         None,
         "an unheld work gets no row"
     );
+    // The catalog answer fills its listing's fields on the held edition
+    // (one announcement) and adds the narrator as a new credit (a second,
+    // after the credit batches); the unheld edition announces nothing.
+    assert_eq!(updates(&store, &edition).await, announced + 2);
+    let unheld_edition =
+        crate::entities::store_listings::Entity::find_by_id(recorded.ids[1].clone().unwrap())
+            .one(store.db())
+            .await
+            .unwrap()
+            .unwrap()
+            .edition_id;
+    assert_eq!(updates(&store, &unheld_edition).await, 0);
 }

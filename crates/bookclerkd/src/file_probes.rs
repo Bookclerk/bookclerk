@@ -137,7 +137,8 @@ enum Probed {
     Stored,
     /// The file could not be read or parsed; the next walk tries again.
     Unreadable,
-    /// The key changed hands (or left) since the page was read.
+    /// The key changed hands, left, or was written again since the page
+    /// was read.
     Moved,
 }
 
@@ -180,20 +181,17 @@ async fn probe_one(
         lossless: probed.lossless,
         source_store: library.sole_store_of_edition(file.owner.id()).await?,
     };
-    if !library
-        .set_edition_file_probe(&destination.id, key, &file.owner, &probe)
-        .await?
-    {
-        return Ok(Probed::Moved);
-    }
     let stream = AudioStream {
         codec: probed.codec,
         format: probed.format,
         duration_ms: probed.duration_ms,
     };
-    library
-        .set_edition_file_stream(&destination.id, key, &file.owner, &stream)
-        .await?;
+    if !library
+        .set_backfilled_file_probe(file, &probe, &stream)
+        .await?
+    {
+        return Ok(Probed::Moved);
+    }
     Ok(Probed::Stored)
 }
 

@@ -1062,9 +1062,11 @@ batch as its rows:
   too, with `edition_updated` for the edition the listing left; each pin
   publishes again, even back to an edition the listing sold before);
 - `edition_updated` (`editionId`) when the listing filled a missing
-  subtitle, publication date or duration on its edition, and once a held
+  subtitle, publication date or duration on its edition, and once a
   listing's credits and series (written in batches after the link) are
-  stored for a work, expression or edition that had none;
+  stored for a work, expression or edition that had none, while some
+  listing of that edition is held (a catalog answer that fills credits on
+  a held edition announces them too);
 - `edition_updated` (`editionId`, `fields: ["chapters"]`) when the
   chapters an edition plays change: a new chapter claim from an acquire,
   or an Administrator's edit or pin (see

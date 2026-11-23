@@ -306,30 +306,35 @@ pub(crate) async fn handle_library_index_batch(
     if readable.is_empty() {
         return;
     }
-    let outcome = async {
-        let mut works = std::collections::BTreeSet::new();
-        for (_, _, change) in &readable {
-            if let Some(work_id) = changed_work(library, change).await? {
-                works.insert(work_id);
-            }
+    // Each delivery's lookup stands alone: one that fails is retried by
+    // itself and does not hold back the works the others found.
+    let mut works = std::collections::BTreeSet::new();
+    let mut looked_up = Vec::with_capacity(readable.len());
+    for (event, delivery, change) in readable {
+        let lookup = changed_work(library, &change).await;
+        if let Ok(Some(work_id)) = &lookup {
+            works.insert(work_id.clone());
         }
-        let works: Vec<String> = works.into_iter().collect();
-        let written = if works.is_empty() {
-            0
-        } else {
-            library.refresh_library_works(&works).await?
-        };
-        Ok::<_, bookclerk_library::LibraryError>((works, written))
+        looked_up.push((event, delivery, change, lookup.map(|_| ())));
     }
-    .await;
-    for (event, delivery, change) in &readable {
+    let works: Vec<String> = works.into_iter().collect();
+    let refreshed = if works.is_empty() {
+        Ok(0)
+    } else {
+        library.refresh_library_works(&works).await
+    };
+    for (event, delivery, change, lookup) in &looked_up {
         let fence = delivery.fence();
-        let result = match &outcome {
-            Ok((works, written)) => {
-                debug!(event_id = %event.id, ?change, works = works.len(), written, "library index refreshed");
+        let failure = match (lookup, &refreshed) {
+            (Err(err), _) | (Ok(()), Err(err)) => Some(err),
+            (Ok(()), Ok(_)) => None,
+        };
+        let result = match failure {
+            None => {
+                debug!(event_id = %event.id, ?change, works = works.len(), "library index refreshed");
                 library.ack_event_delivery(&fence).await
             }
-            Err(err) => {
+            Some(err) => {
                 warn!(event_id = %event.id, error = %err, "library index refresh failed");
                 library.fail_event_delivery(&fence, &err.to_string()).await
             }
@@ -732,6 +737,18 @@ mod tests {
         assert!(
             claim().await.expect("claim").is_none(),
             "the one claim took every ready delivery"
+        );
+        let ours = library
+            .list_event_deliveries(None, 1000)
+            .await
+            .expect("deliveries")
+            .into_iter()
+            .filter(|d| d.plugin_id == consumer)
+            .collect::<Vec<_>>();
+        assert_eq!(ours.len(), dispatched);
+        assert!(
+            ours.iter().all(|d| d.state == "acked"),
+            "every delivery the drain took is acked: {ours:?}"
         );
         assert_eq!(titles(&library).await, ["First", "Second"]);
     }

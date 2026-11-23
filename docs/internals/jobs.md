@@ -376,10 +376,11 @@ library database, so the whole library shares one index:
   when the payload names no edition). A refresh reads the work as it is
   now and writes its whole row. A link writes a title's credits and
   series in batches after the link itself, so the last of those batches
-  publishes an `edition_updated` for the listing's edition; a refresh
-  that ran between them is followed by one that sees them. Like the
-  search consumer, this one folds the deliveries that are ready (up to
-  64) into one refresh of the works they touch. A work whose last holding is gone keeps its row
+  publishes an `edition_updated` for the listing's edition while some
+  listing of it is held; a refresh that ran between them is followed by
+  one that sees them. Like the search consumer, this one folds the
+  deliveries that are ready (up to 64) into one refresh of the works they
+  touch; a delivery whose work lookup fails is retried on its own. A work whose last holding is gone keeps its row
   with a holding count of 0, which pages skip, and the row is deleted
   only when the work itself is. A failed refresh is retried up to ten
   times, then dead-lettered.

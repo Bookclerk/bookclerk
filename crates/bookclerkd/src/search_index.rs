@@ -188,41 +188,52 @@ fn parse_change(event: &DomainEventRecord) -> Result<Change, String> {
 /// Writes the changes of a batch into the index: every work they touched
 /// is refreshed once.
 ///
+/// Each change's lookup stands alone, so one that fails does not hold
+/// back the works the others found.
+///
 /// # Returns
 ///
-/// How many documents were written.
-///
-/// # Errors
-///
-/// Returns [`SearchError::Busy`] when another writer holds the index, or
-/// the library or index error.
+/// Per change, in order, the error of its lookup (`None` when it
+/// succeeded), and the outcome of refreshing the works the successful
+/// lookups found: how many documents were written, or
+/// [`SearchError::Busy`] when another writer holds the index, or the
+/// library or index error.
 async fn apply_changes(
     works: &WorkSearchIndex,
     library: &LibraryStore,
     changes: &[&Change],
-) -> bookclerk_search::Result<usize> {
+) -> (Vec<Option<String>>, bookclerk_search::Result<usize>) {
     let mut touched = std::collections::BTreeSet::new();
+    let mut lookups = Vec::with_capacity(changes.len());
     for change in changes {
         let work = match change {
-            Change::Edition(edition_id) => library.work_of_edition(edition_id).await?,
-            Change::Listing(listing_id) => {
-                let work = library.work_of_listing(listing_id).await?;
-                if work.is_none() {
-                    // The listing is gone, so the work it belonged to is
-                    // unknown: rebuild instead.
-                    works.mark_incomplete()?;
-                }
-                work
-            }
+            Change::Edition(edition_id) => library
+                .work_of_edition(edition_id)
+                .await
+                .map_err(SearchError::from),
+            Change::Listing(listing_id) => match library.work_of_listing(listing_id).await {
+                // The listing is gone, so the work it belonged to is
+                // unknown: rebuild instead.
+                Ok(None) => works.mark_incomplete().map(|()| None),
+                found => found.map_err(SearchError::from),
+            },
         };
-        touched.extend(work);
+        match work {
+            Ok(work) => {
+                touched.extend(work);
+                lookups.push(None);
+            }
+            Err(err) => lookups.push(Some(err.to_string())),
+        }
     }
-    if touched.is_empty() {
-        return Ok(0);
-    }
-    works
-        .refresh_works(library, &touched.into_iter().collect::<Vec<_>>())
-        .await
+    let refreshed = if touched.is_empty() {
+        Ok(0)
+    } else {
+        works
+            .refresh_works(library, &touched.into_iter().collect::<Vec<_>>())
+            .await
+    };
+    (lookups, refreshed)
 }
 
 /// Most deliveries a search index consumer handles together: the claimed
@@ -327,21 +338,26 @@ pub(crate) async fn run_search_batch(
     let changes: Vec<&Change> = readable.iter().map(|(_, _, change)| change).collect();
     let dir = state.config.read().await.paths().search_index_dir.clone();
     let gate = write_gate(&dir);
-    let outcome = match gate.try_lock() {
-        Err(_) => Err(SearchError::Busy),
+    let (lookups, outcome) = match gate.try_lock() {
+        Err(_) => (Vec::new(), Err(SearchError::Busy)),
         Ok(_gate) => match WorkSearchIndex::open(&dir) {
             Ok(works) => apply_changes(&works, library, &changes).await,
-            Err(err) => Err(err),
+            Err(err) => (Vec::new(), Err(err)),
         },
     };
-    for (event, delivery, change) in &readable {
+    for (i, (event, delivery, change)) in readable.iter().enumerate() {
         let fence = delivery.fence();
-        let result = match &outcome {
-            Ok(written) => {
+        let lookup = lookups.get(i).and_then(Option::as_deref);
+        let result = match (lookup, &outcome) {
+            (Some(err), _) => {
+                warn!(event_id = %event.id, error = %err, "search index lookup failed");
+                library.fail_event_delivery(&fence, err).await
+            }
+            (None, Ok(written)) => {
                 debug!(event_id = %event.id, ?change, written, "search index refreshed");
                 library.ack_event_delivery(&fence).await
             }
-            Err(SearchError::Busy) => {
+            (None, Err(SearchError::Busy)) => {
                 let run_after = chrono::Duration::from_std(BUSY_RETRY)
                     .map(|d| Utc::now() + d)
                     .unwrap_or_else(|_| Utc::now());
@@ -353,7 +369,7 @@ pub(crate) async fn run_search_batch(
                     )
                     .await
             }
-            Err(err) => {
+            (None, Err(err)) => {
                 warn!(event_id = %event.id, error = %err, "search index refresh failed");
                 library.fail_event_delivery(&fence, &err.to_string()).await
             }
@@ -636,10 +652,10 @@ mod tests {
         );
         works.rebuild(&library).await.expect("works rebuild");
         assert!(WorkSearchIndex::is_complete(&works_dir));
-        let written = apply_changes(&works, &library, &[&parse_change(&gone).expect("parse")])
-            .await
-            .expect("apply");
-        assert_eq!(written, 0);
+        let (lookups, written) =
+            apply_changes(&works, &library, &[&parse_change(&gone).expect("parse")]).await;
+        assert_eq!(lookups, [None]);
+        assert_eq!(written.expect("apply"), 0);
         assert!(!WorkSearchIndex::is_complete(&works_dir));
     }
 
