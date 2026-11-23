@@ -11495,15 +11495,6 @@
             "kind": "text"
           },
           "offset": 10
-        },
-        {
-          "name": "introduceBookclerk",
-          "codeOrder": 14,
-          "discriminantValue": null,
-          "type": {
-            "kind": "bool"
-          },
-          "offset": 33
         }
       ]
     },

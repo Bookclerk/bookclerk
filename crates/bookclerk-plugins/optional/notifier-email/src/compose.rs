@@ -35,8 +35,9 @@ pub struct Envelope<'a> {
 /// # Arguments
 ///
 /// * `message` - The rendered message.
+/// * `sender` - The From name, the library's name in the link's label.
 #[must_use]
-pub fn plain_body(message: &NotificationMessage) -> String {
+pub fn plain_body(message: &NotificationMessage, sender: &str) -> String {
     let mut parts = vec![message.text.trim_end().to_owned()];
     if !message.fields.is_empty() {
         parts.push(
@@ -50,10 +51,10 @@ pub fn plain_body(message: &NotificationMessage) -> String {
     }
     if let Some(link) = message.link.as_deref() {
         if !message.text.contains(link) {
-            parts.push(format!("{}: {link}", link_label(link)));
+            parts.push(format!("{}: {link}", link_label(sender)));
         }
     }
-    if message.introduce_bookclerk {
+    if introduces_bookclerk(message) {
         parts.push(format!(
             "{INTRO_TITLE}\n{INTRO_TEXT}\nLearn more at bookclerk.app: {BOOKCLERK_SITE}"
         ));
@@ -94,11 +95,24 @@ mod palette {
 /// mail client has; nothing is fetched.
 const SERIF_STACK: &str = "Literata, Georgia, 'Times New Roman', serif";
 
+/// The notification type the host gives invite mail: its recipient may not
+/// know Bookclerk yet, so it carries the introduction.
+pub const INVITE_TYPE: &str = "account_invite";
+
+/// Whether a message carries the introduction: only invites do.
+///
+/// # Arguments
+///
+/// * `message` - The rendered message.
+fn introduces_bookclerk(message: &NotificationMessage) -> bool {
+    message.notification_type == INVITE_TYPE
+}
+
 /// The introduction's heading, for recipients who may not know Bookclerk.
 pub const INTRO_TITLE: &str = "New to Bookclerk?";
 
 /// The introduction, in both parts.
-pub const INTRO_TEXT: &str = "Bookclerk is a home for audiobooks. It gathers the books a household has bought from stores like Audible, Libro.fm, Chirp and GraphicAudio into one library that runs on its owner's own computer. With your sign-in you can browse the shelves, listen in your browser and keep your own wishlist. It's free and open source.";
+pub const INTRO_TEXT: &str = "Bookclerk is a home for audiobooks. It gathers the books a household has bought from multiple audiobook storefronts into one library that runs on its owner's own computer. With your sign-in you can browse the shelves, listen in your browser and keep your own wishlist. It's free and open source.";
 
 /// Bookclerk's own site, linked from every footer.
 pub const BOOKCLERK_SITE: &str = "https://bookclerk.app";
@@ -173,8 +187,8 @@ fn text_paragraphs(text: &str) -> Vec<String> {
 }
 
 /// The host part of a link (`library.example.com`, with a port when one is
-/// given), for the button's short label; `None` when the link has no
-/// `scheme://host`.
+/// given), for the footer's link to the library's home page; `None` when the
+/// link has no `scheme://host`.
 ///
 /// # Arguments
 ///
@@ -189,16 +203,31 @@ pub fn link_host(link: &str) -> Option<&str> {
     (!host.is_empty()).then_some(host)
 }
 
-/// The label of the HTML's link button: short, and naming where it goes so
-/// the recipient can trust it at a glance. The plain-text part keeps the
-/// full URL.
+/// Whether a From name names a library rather than just the product (empty
+/// or `Bookclerk`, which the header already shows).
 ///
 /// # Arguments
 ///
-/// * `link` - The message's link.
+/// * `sender` - The From name.
+fn names_library(sender: &str) -> bool {
+    let sender = sender.trim();
+    !sender.is_empty() && !sender.eq_ignore_ascii_case("Bookclerk")
+}
+
+/// The label of the link button: short, naming the library it opens
+/// (`Open Fritz Family Library`), or `Open your library` when the From name
+/// is just the product's. The plain-text part keeps the full URL beside it.
+///
+/// # Arguments
+///
+/// * `sender` - The From name, which names the library.
 #[must_use]
-pub fn link_label(link: &str) -> String {
-    link_host(link).map_or_else(|| "Open the link".to_owned(), |host| format!("Open {host}"))
+pub fn link_label(sender: &str) -> String {
+    if names_library(sender) {
+        format!("Open {}", sender.trim())
+    } else {
+        "Open your library".to_owned()
+    }
 }
 
 /// The inbox preview line: the text's first characters on one line.
@@ -229,14 +258,13 @@ pub fn mjml_source(message: &NotificationMessage, sender: &str) -> String {
     let title = escape_html(&message.title);
     // The card names who it is from (the From name), unless that is just
     // the product name the header already shows.
-    let sender = sender.trim();
-    let eyebrow = if sender.is_empty() || sender.eq_ignore_ascii_case("Bookclerk") {
+    let eyebrow = if !names_library(sender) {
         String::new()
     } else {
         format!(
             "<mj-text color=\"{}\" font-size=\"13px\" font-weight=\"600\" padding=\"4px 28px 0\">{}</mj-text>\n",
             palette::MUTED,
-            escape_html(sender)
+            escape_html(sender.trim())
         )
     };
     let body = match message.html.as_deref() {
@@ -272,7 +300,7 @@ pub fn mjml_source(message: &NotificationMessage, sender: &str) -> String {
             escape_html(link),
             palette::INK,
             palette::PAPER,
-            escape_html(&link_label(link)),
+            escape_html(&link_label(sender)),
         ),
         _ => String::new(),
     };
@@ -318,14 +346,14 @@ pub fn mjml_source(message: &NotificationMessage, sender: &str) -> String {
     )
 }
 
-/// The introduction panel for recipients who may not know Bookclerk
-/// (`introduce_bookclerk`), on parchment under the card; empty otherwise.
+/// The introduction panel for invites, on parchment under the card; empty
+/// otherwise.
 ///
 /// # Arguments
 ///
 /// * `message` - The rendered message.
 fn intro_section(message: &NotificationMessage) -> String {
-    if !message.introduce_bookclerk {
+    if !introduces_bookclerk(message) {
         return String::new();
     }
     format!(
@@ -397,8 +425,9 @@ pub fn render_mjml(source: &str) -> Result<String, String> {
 /// # Arguments
 ///
 /// * `message` - The rendered message.
+/// * `sender` - The From name, the library's name in the link's label.
 #[must_use]
-pub fn simple_html(message: &NotificationMessage) -> String {
+pub fn simple_html(message: &NotificationMessage, sender: &str) -> String {
     let content = match message.html.as_deref() {
         Some(html) => html.to_owned(),
         None => text_paragraphs(&message.text)
@@ -427,7 +456,7 @@ pub fn simple_html(message: &NotificationMessage) -> String {
         Some(link) if !content.contains(&escape_html(link)) => format!(
             "\n<p><a href=\"{}\">{}</a></p>",
             escape_html(link),
-            escape_html(&link_label(link))
+            escape_html(&link_label(sender))
         ),
         _ => String::new(),
     };
@@ -448,7 +477,7 @@ pub fn simple_html(message: &NotificationMessage) -> String {
 pub fn html_body(message: &NotificationMessage, sender: &str) -> (String, bool) {
     match render_mjml(&mjml_source(message, sender)) {
         Ok(html) => (html, true),
-        Err(_) => (simple_html(message), false),
+        Err(_) => (simple_html(message, sender), false),
     }
 }
 
@@ -464,7 +493,7 @@ pub fn html_body(message: &NotificationMessage, sender: &str) -> (String, bool) 
 /// The message, ready for DATA (before dot-stuffing).
 #[must_use]
 pub fn compose(message: &NotificationMessage, envelope: &Envelope<'_>) -> String {
-    let text = plain_body(message);
+    let text = plain_body(message, envelope.from_name);
     let (html, branded) = html_body(message, envelope.from_name);
     let logo = [InlineImage {
         content_id: LOGO_CONTENT_ID,

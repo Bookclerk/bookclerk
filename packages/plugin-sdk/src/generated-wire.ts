@@ -9552,7 +9552,6 @@ export const NotificationMessageCodec: StructCodec<T.NotificationMessage> = {
     if (v.libraryOrigin !== undefined) {
       s.setText(10, v.libraryOrigin ?? "");
     }
-    s.setBool(33, v.introduceBookclerk ?? false);
   },
   read(s, caps) {
     const out: T.NotificationMessage = {
@@ -9564,7 +9563,6 @@ export const NotificationMessageCodec: StructCodec<T.NotificationMessage> = {
       fields: s.getStructList(7, 0, 2).map((item) => NotificationFieldCodec.read(item, caps)),
       alertAction: fromOrd(A.NOTIFICATION_ALERT_ACTIONS, s.getUint16(1), "NotificationAlertAction"),
       sensitive: s.getBool(32),
-      introduceBookclerk: s.getBool(33),
     };
     const markdownValue = s.getText(4);
     if (!(markdownValue === "")) {

@@ -4079,9 +4079,6 @@ struct NotificationMessage {
   # public origin like `link`; absent when no public origin is set. Email
   # footers link to it.
   libraryOrigin @13 :Text $optional;
-  # True when the recipient may not know Bookclerk yet (an invite): a
-  # notifier that lays out its own messages adds a short introduction.
-  introduceBookclerk @14 :Bool;
 }
 
 # Where a `Notifier.send` goes.

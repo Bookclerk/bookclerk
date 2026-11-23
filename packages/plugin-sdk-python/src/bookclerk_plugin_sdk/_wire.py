@@ -5343,7 +5343,6 @@ def _write_notification_message(s: _CapnpStruct, v: Any, caps: _CapTable) -> Non
     s.set_bool(32, v["sensitive"])
     if v.get("libraryOrigin") is not None:
         s.set_text(10, v["libraryOrigin"])
-    s.set_bool(33, v["introduceBookclerk"])
 
 
 def _read_notification_message(s: _StructReader, caps: _CapTable) -> Any:
@@ -5356,7 +5355,6 @@ def _read_notification_message(s: _StructReader, caps: _CapTable) -> Any:
         "fields": [_notification_field_codec.read(item, caps) for item in s.get_struct_list(7, 0, 2)],
         "alertAction": _from_ord(A.NOTIFICATION_ALERT_ACTIONS, s.get_u16(1), "NotificationAlertAction"),
         "sensitive": s.get_bool(32),
-        "introduceBookclerk": s.get_bool(33),
     }
     markdown = s.get_text(4)
     if not (markdown == ""):

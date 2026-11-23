@@ -135,15 +135,14 @@ fn message() -> NotificationMessage {
         alert_key: None,
         sensitive: true,
         library_origin: Some("https://library.example.com/".into()),
-        introduce_bookclerk: false,
     }
 }
 
 #[test]
 fn bodies_carry_text_fields_and_the_link_once() {
     assert_eq!(
-        plain_body(&message()),
-        "Pat invited you.\n\nUse the link below.\n\nLibrary: Home <books>\n\nOpen library.example.com: https://library.example.com/claim?t=a&b\n\n-- \nSent by your library at https://library.example.com/ with Bookclerk (https://bookclerk.app). This is an automatic message.\n"
+        plain_body(&message(), "Riverside Library"),
+        "Pat invited you.\n\nUse the link below.\n\nLibrary: Home <books>\n\nOpen Riverside Library: https://library.example.com/claim?t=a&b\n\n-- \nSent by your library at https://library.example.com/ with Bookclerk (https://bookclerk.app). This is an automatic message.\n"
     );
     let (html, branded) = html_body(&message(), "Riverside Library");
     assert!(branded);
@@ -165,10 +164,10 @@ fn bodies_carry_text_fields_and_the_link_once() {
         "{html}"
     );
     assert!(html.contains("src=\"cid:mark@bookclerk\""), "{html}");
-    // The link is a button with a short label naming its host; the long
+    // The link is a button with a short label naming the library; the long
     // URL is only in the href.
     assert!(html.contains("href=\"https://library.example.com/claim?t=a&amp;b\""));
-    assert!(html.contains(">Open library.example.com</a>"), "{html}");
+    assert!(html.contains(">Open Riverside Library</a>"), "{html}");
     assert_eq!(html.matches("claim?t=a").count(), 1, "{html}");
     // Nothing is fetched to show it: no web fonts or remote images.
     assert!(!html.contains("fonts.googleapis"), "{html}");
@@ -180,7 +179,7 @@ fn bodies_carry_text_fields_and_the_link_once() {
         Some("<p><a href=\"https://library.example.com/claim?t=a&amp;b\">Open</a></p>".into());
     inline.fields.clear();
     assert_eq!(
-        plain_body(&inline),
+        plain_body(&inline, "Riverside Library"),
         "Open https://library.example.com/claim?t=a&b now\n\n-- \nSent by your library at https://library.example.com/ with Bookclerk (https://bookclerk.app). This is an automatic message.\n"
     );
     let (html, _) = html_body(&inline, "");
@@ -194,23 +193,22 @@ fn bodies_carry_text_fields_and_the_link_once() {
     plain.link = None;
     plain.fields.clear();
     plain.text = "one\r\ntwo\n\n\n".into();
-    assert_eq!(plain_body(&plain), "one\r\ntwo\n\n-- \nSent by your library at https://library.example.com/ with Bookclerk (https://bookclerk.app). This is an automatic message.\n");
+    assert_eq!(plain_body(&plain, "x"), "one\r\ntwo\n\n-- \nSent by your library at https://library.example.com/ with Bookclerk (https://bookclerk.app). This is an automatic message.\n");
     let (h, _) = html_body(&plain, "x");
     assert!(
         h.contains("one<br>two") || h.contains("one<br />two"),
         "{h}"
     );
-    let simple = simple_html(&message());
+    let simple = simple_html(&message(), "Bookclerk");
     assert!(simple.starts_with("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><title>You&#39;re invited</title>"));
     assert!(simple.contains("<p>Pat invited you.</p>\n<p>Use the link below.</p>"));
     assert!(simple.contains("<th align=\"left\">Library</th><td>Home &lt;books&gt;</td>"));
-    assert!(simple.contains(
-        "<a href=\"https://library.example.com/claim?t=a&amp;b\">Open library.example.com</a>"
-    ));
+    assert!(simple
+        .contains("<a href=\"https://library.example.com/claim?t=a&amp;b\">Open your library</a>"));
 }
 
 #[test]
-fn link_labels_name_the_host() {
+fn link_labels_name_the_library() {
     assert_eq!(
         link_host("https://a.example:8443/x?y#z"),
         Some("a.example:8443")
@@ -218,7 +216,22 @@ fn link_labels_name_the_host() {
     assert_eq!(link_host("https://user@a.example/"), Some("a.example"));
     assert_eq!(link_host("not a url"), None);
     assert_eq!(link_host("https:///path"), None);
-    assert_eq!(link_label("mailto:x"), "Open the link");
+    assert_eq!(link_label(" Riverside Library "), "Open Riverside Library");
+    assert_eq!(link_label("bookclerk"), "Open your library");
+    assert_eq!(link_label(""), "Open your library");
+}
+
+#[test]
+fn only_invites_introduce_bookclerk() {
+    let mut invite = message();
+    assert!(!plain_body(&invite, "x").contains("New to Bookclerk?"));
+    assert!(!html_body(&invite, "x").0.contains("New to Bookclerk?"));
+    invite.notification_type = "account_invite".into();
+    let text = plain_body(&invite, "x");
+    assert!(text.contains("New to Bookclerk?"), "{text}");
+    assert!(text.contains("multiple audiobook storefronts"), "{text}");
+    let (html, _) = html_body(&invite, "x");
+    assert!(html.contains("New to Bookclerk?"), "{html}");
 }
 
 #[test]

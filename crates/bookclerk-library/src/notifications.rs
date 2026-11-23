@@ -290,7 +290,6 @@ impl NewNotification {
             alert_key: self.alert_key.clone(),
             sensitive: false,
             library_origin,
-            introduce_bookclerk: false,
         }
     }
 }

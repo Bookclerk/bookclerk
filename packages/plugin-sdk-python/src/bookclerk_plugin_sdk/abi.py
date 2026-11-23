@@ -6476,9 +6476,6 @@ class NotificationMessage(TypedDict):
         libraryOrigin: The library's home page (`https://library.example.com/`), built
             from its public origin like `link`; absent when no public origin is set.
             Email footers link to it. Omitted when absent (wire zero value).
-        introduceBookclerk: True when the recipient may not know Bookclerk yet (an
-            invite): a notifier that lays out its own messages adds a short
-            introduction.
     """
 
     notificationId: str
@@ -6495,7 +6492,6 @@ class NotificationMessage(TypedDict):
     alertKey: NotRequired[str]
     sensitive: bool
     libraryOrigin: NotRequired[str]
-    introduceBookclerk: bool
 
 
 class NotifyDestination(TypedDict):

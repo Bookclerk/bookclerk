@@ -4213,10 +4213,6 @@ pub struct NotificationMessage {
     /// `None` when absent (wire zero value).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub library_origin: Option<String>,
-    /// True when the recipient may not know Bookclerk yet (an invite): a
-    /// notifier that lays out its own messages adds a short introduction.
-    #[serde(default)]
-    pub introduce_bookclerk: bool,
 }
 
 /// Where a `Notifier.send` goes.
@@ -9692,7 +9688,6 @@ pub fn write_notification_message(
     if let Some(value) = &v.library_origin {
         b.set_library_origin(value);
     }
-    b.set_introduce_bookclerk(v.introduce_bookclerk);
     Ok(())
 }
 
@@ -9723,7 +9718,6 @@ pub fn read_notification_message(
         alert_key: opt_text(r.get_alert_key()?)?,
         sensitive: r.get_sensitive(),
         library_origin: opt_text(r.get_library_origin()?)?,
-        introduce_bookclerk: r.get_introduce_bookclerk(),
     })
 }
 
