@@ -1,0 +1,1 @@
+{"config": {}, "suites": [], "errors": [{"message": "webServer exited"}], "stats": {"startTime": "2026-11-22T00:00:00Z", "duration": 1.0, "expected": 480, "skipped": 1, "unexpected": 0, "flaky": 0}}

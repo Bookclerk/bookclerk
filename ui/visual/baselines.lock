@@ -1,1 +1,981 @@
-8d05420908dfd07e138cb0fc8cc825be243b0080
+# Approved visual baselines (docs/contributing/ui/visual-testing.md).
+# One entry per screenshot: its path and the approved set commit of the
+# baselines repository that holds its image. The approval workflow
+# writes it. Entries stay sorted and apart, so pull requests that change
+# different screenshots merge without conflicts.
+
+desktop/app--accounts--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--accounts--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--add-branch--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--add-branch--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--book-details--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--book-details--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--change-picture--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--change-picture--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--clerk-approve--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--clerk-approve--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--clerk-callback--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--clerk-callback--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--discover--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--discover--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--discover-details--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--discover-details--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--discover-search--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--discover-search--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--join-approve--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--join-approve--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--join-callback--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--join-callback--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--library--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--library--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--library-other-libraries--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--library-other-libraries--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--now-playing--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--now-playing--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--player--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--player--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--player-approve--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--player-approve--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--plugin-consent--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--plugin-consent--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--second-factor--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--second-factor--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--second-factor-app--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--second-factor-app--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-account--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-account--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-branches--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-branches--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-library--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-library--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-library-card--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-library-card--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-nodes--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-nodes--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-output--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-output--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-plugin-detail--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-plugin-detail--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-plugins--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-plugins--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-server--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-server--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-server-attention--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-server-attention--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-shared-branches--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-shared-branches--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-sign-in--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-sign-in--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-users--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--settings-users--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--sign-in--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--sign-in--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--sign-in-sso--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--sign-in-sso--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--status--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--status--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--welcome--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--welcome--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--welcome-diagnostics--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--welcome-diagnostics--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--welcome-join--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--welcome-join--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--wishlist--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--wishlist--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--banner--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--banner--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--bar-chart--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--bar-chart--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--bulk-actions--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--bulk-actions--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--delete-form--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--delete-form--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--event-log--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--event-log--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--filters--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--filters--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--header--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--header--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--issue-links--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--issue-links--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--issue-table--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--issue-table--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--ledger--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--ledger--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--lookup-form--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--lookup-form--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--meter-table--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--meter-table--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--report-meta--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--report-meta--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--sign-in-card--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--sign-in-card--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--signature-table--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--signature-table--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--stat-card--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--stat-card--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--toolbar--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--component--toolbar--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--demo--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--demo--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--issue--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--issue--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--issues--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--issues--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--lookup-deleted--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--lookup-deleted--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--lookup-form--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--lookup-form--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--lookup-message--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--lookup-message--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--lookup-result--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--lookup-result--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--message--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--message--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--overview--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--overview--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--report--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--report--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--reports--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--reports--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--sign-in--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/collector--sign-in--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/library-starrating--fractional--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/library-starrating--fractional--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/library-starrating--large--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/library-starrating--large--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/library-starrating--unrated--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/library-starrating--unrated--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/library-starrating--whole--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/library-starrating--whole--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/pages-errorstatepage--message-only--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/pages-errorstatepage--message-only--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/pages-errorstatepage--with-retry--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/pages-errorstatepage--with-retry--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/pages-notfoundpage--default--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/pages-notfoundpage--default--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/player-nowplaying--finished--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/player-nowplaying--finished--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/player-nowplaying--loading--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/player-nowplaying--loading--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/player-nowplaying--paused--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/player-nowplaying--paused--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/player-nowplaying--playing-with-bookmarks--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/player-nowplaying--playing-with-bookmarks--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/player-nowplaying--with-chapters--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/player-nowplaying--with-chapters--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/player-playerbar--failed--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/player-playerbar--failed--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/player-playerbar--fast-with-sleep-timer--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/player-playerbar--fast-with-sleep-timer--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/player-playerbar--loading--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/player-playerbar--loading--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/player-playerbar--long-title--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/player-playerbar--long-title--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/player-playerbar--paused--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/player-playerbar--paused--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/player-playerbar--playing--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/player-playerbar--playing--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/player-playerbar--unknown-length--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/player-playerbar--unknown-length--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/primitives-badge--plain--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/primitives-badge--plain--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/primitives-badge--tones--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/primitives-badge--tones--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/primitives-button--danger--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/primitives-button--danger--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/primitives-button--disabled--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/primitives-button--disabled--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/primitives-button--ghost--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/primitives-button--ghost--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/primitives-button--primary--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/primitives-button--primary--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/primitives-button--secondary--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/primitives-button--secondary--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/primitives-input--empty--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/primitives-input--empty--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/primitives-input--filled--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/primitives-input--filled--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/primitives-input--invalid--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/primitives-input--invalid--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/setup-recoverycopysetupstep--needs-copy--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/setup-recoverycopysetupstep--needs-copy--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--breadcrumbs--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--breadcrumbs--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--buttons--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--buttons--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--callout-note--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--callout-note--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--callout-warning--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--callout-warning--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--code-block--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--code-block--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--diagram--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--diagram--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--docs-header--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--docs-header--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--faq--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--faq--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--feature--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--feature--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--footer--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--footer--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--header--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--header--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--hero--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--hero--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--platform-card--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--platform-card--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--ribbon--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--ribbon--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--status-card--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--status-card--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--steps--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--steps--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--table--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--component--table--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--docs-layout--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--docs-layout--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--docs-unavailable--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--docs-unavailable--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--download--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--download--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--home--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--home--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--not-found--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--not-found--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--privacy--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--privacy--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--security--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/website--security--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--accounts--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--accounts--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--add-branch--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--add-branch--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--book-details--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--book-details--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--change-picture--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--change-picture--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--clerk-approve--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--clerk-approve--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--clerk-callback--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--clerk-callback--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--discover--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--discover--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--discover-details--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--discover-details--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--discover-search--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--discover-search--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--join-approve--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--join-approve--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--join-callback--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--join-callback--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--library--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--library--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--library-other-libraries--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--library-other-libraries--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--now-playing--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--now-playing--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--player--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--player--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--player-approve--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--player-approve--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--plugin-consent--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--plugin-consent--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--second-factor--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--second-factor--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--second-factor-app--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--second-factor-app--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-account--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-account--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-branches--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-branches--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-library--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-library--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-library-card--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-library-card--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-nodes--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-nodes--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-output--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-output--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-plugin-detail--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-plugin-detail--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-plugins--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-plugins--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-server--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-server--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-server-attention--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-server-attention--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-shared-branches--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-shared-branches--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-sign-in--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-sign-in--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-users--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--settings-users--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--sign-in--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--sign-in--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--sign-in-sso--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--sign-in-sso--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--status--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--status--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--welcome--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--welcome--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--welcome-diagnostics--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--welcome-diagnostics--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--welcome-join--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--welcome-join--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--wishlist--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--wishlist--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--banner--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--banner--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--bar-chart--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--bar-chart--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--bulk-actions--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--bulk-actions--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--delete-form--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--delete-form--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--event-log--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--event-log--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--filters--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--filters--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--header--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--header--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--issue-links--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--issue-links--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--issue-table--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--issue-table--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--ledger--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--ledger--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--lookup-form--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--lookup-form--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--meter-table--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--meter-table--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--report-meta--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--report-meta--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--sign-in-card--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--sign-in-card--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--signature-table--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--signature-table--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--stat-card--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--stat-card--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--toolbar--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--component--toolbar--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--demo--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--demo--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--issue--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--issue--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--issues--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--issues--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--lookup-deleted--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--lookup-deleted--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--lookup-form--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--lookup-form--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--lookup-message--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--lookup-message--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--lookup-result--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--lookup-result--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--message--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--message--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--overview--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--overview--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--report--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--report--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--reports--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--reports--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--sign-in--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/collector--sign-in--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/library-starrating--fractional--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/library-starrating--fractional--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/library-starrating--large--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/library-starrating--large--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/library-starrating--unrated--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/library-starrating--unrated--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/library-starrating--whole--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/library-starrating--whole--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/pages-errorstatepage--message-only--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/pages-errorstatepage--message-only--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/pages-errorstatepage--with-retry--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/pages-errorstatepage--with-retry--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/pages-notfoundpage--default--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/pages-notfoundpage--default--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/player-nowplaying--finished--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/player-nowplaying--finished--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/player-nowplaying--loading--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/player-nowplaying--loading--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/player-nowplaying--paused--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/player-nowplaying--paused--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/player-nowplaying--playing-with-bookmarks--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/player-nowplaying--playing-with-bookmarks--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/player-nowplaying--with-chapters--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/player-nowplaying--with-chapters--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/player-playerbar--failed--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/player-playerbar--failed--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/player-playerbar--fast-with-sleep-timer--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/player-playerbar--fast-with-sleep-timer--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/player-playerbar--loading--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/player-playerbar--loading--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/player-playerbar--long-title--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/player-playerbar--long-title--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/player-playerbar--paused--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/player-playerbar--paused--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/player-playerbar--playing--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/player-playerbar--playing--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/player-playerbar--unknown-length--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/player-playerbar--unknown-length--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/primitives-badge--plain--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/primitives-badge--plain--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/primitives-badge--tones--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/primitives-badge--tones--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/primitives-button--danger--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/primitives-button--danger--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/primitives-button--disabled--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/primitives-button--disabled--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/primitives-button--ghost--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/primitives-button--ghost--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/primitives-button--primary--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/primitives-button--primary--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/primitives-button--secondary--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/primitives-button--secondary--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/primitives-input--empty--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/primitives-input--empty--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/primitives-input--filled--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/primitives-input--filled--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/primitives-input--invalid--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/primitives-input--invalid--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/setup-recoverycopysetupstep--needs-copy--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/setup-recoverycopysetupstep--needs-copy--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--breadcrumbs--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--breadcrumbs--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--buttons--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--buttons--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--callout-note--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--callout-note--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--callout-warning--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--callout-warning--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--code-block--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--code-block--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--diagram--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--diagram--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--docs-header--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--docs-header--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--faq--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--faq--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--feature--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--feature--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--footer--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--footer--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--header--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--header--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--hero--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--hero--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--platform-card--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--platform-card--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--ribbon--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--ribbon--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--status-card--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--status-card--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--steps--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--steps--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--table--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--component--table--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--docs-layout--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--docs-layout--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--docs-unavailable--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--docs-unavailable--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--download--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--download--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--home--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--home--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--not-found--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--not-found--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--privacy--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--privacy--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--security--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/website--security--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080

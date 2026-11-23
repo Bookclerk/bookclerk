@@ -16,7 +16,9 @@ import functools
 import importlib.util
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import tomllib
 import unittest
 from unittest import mock
@@ -577,6 +579,91 @@ class WorkflowContractTests(unittest.TestCase):
             elif name != FAIL_FAST_JOB:
                 self.assertNotIn("permissions", other, name)
         self.assertEqual(self.wf["permissions"], {"contents": "read"})
+
+    def _run_fail_fast(self, *, jobs: str, started: str, ls_remote_status: int) -> tuple[int, str, list[str]]:
+        """Runs the fail-fast watch script once under the step shell's ``bash -e``.
+
+        ``gh`` and ``git`` are stubs on ``PATH``: ``gh api`` prints the
+        already-filtered job lines (``started`` for the started-jobs query,
+        ``jobs`` otherwise), ``gh run cancel`` records its arguments, and
+        ``git ls-remote`` exits with ``ls_remote_status``. ``sleep`` exits 99,
+        so a script that would wait for another poll stops at once.
+
+        Args:
+            jobs: Lines ``status|conclusion|name`` for the jobs query.
+            started: Job names for the started-jobs query.
+            ls_remote_status: Exit status of ``git ls-remote --exit-code``.
+
+        Returns:
+            The script's exit status, its combined output, and the argument
+            lines of every ``gh run cancel`` call.
+        """
+        script = self.jobs[FAIL_FAST_JOB]["steps"][0]["run"]
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp)
+            cancels = bin_dir / "cancels"
+            stubs = {
+                "gh": (
+                    '#!/bin/sh\n'
+                    'if [ "$1" = run ] && [ "$2" = cancel ]; then echo "$@" >> "$CANCELS"; exit 0; fi\n'
+                    'case "$*" in *\'.status != "queued"\'*) printf "%s\\n" "$STARTED" ;; *) printf "%s\\n" "$JOBS" ;; esac\n'
+                ),
+                "git": '#!/bin/sh\nexit "$LS_REMOTE_STATUS"\n',
+                "sleep": "#!/bin/sh\nexit 99\n",
+            }
+            for name, body in stubs.items():
+                (bin_dir / name).write_text(body, encoding="utf-8")
+                (bin_dir / name).chmod(0o755)
+            env = {
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "CANCELS": str(cancels),
+                "JOBS": jobs,
+                "STARTED": started,
+                "LS_REMOTE_STATUS": str(ls_remote_status),
+                "GH_REPO": "Bookclerk/bookclerk",
+                "RUN_ID": "1",
+                "QUEUE_REF": "refs/heads/gh-readonly-queue/main/pr-1-abc",
+            }
+            done = subprocess.run(
+                ["bash", "-e", "-c", script], env=env, capture_output=True, text=True, timeout=30, check=False
+            )
+            calls = cancels.read_text(encoding="utf-8").splitlines() if cancels.exists() else []
+        return done.returncode, done.stdout + done.stderr, calls
+
+    def test_fail_fast_cancels_a_dropped_group_under_bash_e(self) -> None:
+        # The step shell is `bash -e`: a missing queue branch (ls-remote exit
+        # 2) must reach the cancel instead of ending the step with status 2.
+        status, output, calls = self._run_fail_fast(
+            jobs="in_progress||plan\nqueued||CI Gate", started="plan", ls_remote_status=2
+        )
+        self.assertEqual(status, 0, output)
+        self.assertEqual(calls, ["run cancel 1"])
+        self.assertIn("no longer exists", output)
+
+    def test_fail_fast_keeps_a_merged_group_whose_gate_started(self) -> None:
+        # A merged group's branch is deleted too; with CI Gate started the
+        # watch ends without cancelling.
+        status, output, calls = self._run_fail_fast(
+            jobs="completed|success|plan\nin_progress||CI Gate", started="plan\nCI Gate", ls_remote_status=2
+        )
+        self.assertEqual(status, 0, output)
+        self.assertEqual(calls, [])
+
+    def test_fail_fast_cancels_on_a_failed_job_and_waits_otherwise(self) -> None:
+        status, output, calls = self._run_fail_fast(
+            jobs="completed|failure|fmt / clippy / docs\nin_progress||tray\nqueued||CI Gate",
+            started="fmt / clippy / docs\ntray",
+            ls_remote_status=0,
+        )
+        self.assertEqual(status, 0, output)
+        self.assertEqual(calls, ["run cancel 1"])
+        self.assertIn("fmt / clippy / docs", output)
+        # A live group with nothing failed polls again (the stub sleep exits 99).
+        status, output, calls = self._run_fail_fast(
+            jobs="in_progress||tray\nqueued||CI Gate", started="tray", ls_remote_status=0
+        )
+        self.assertEqual(status, 99, output)
+        self.assertEqual(calls, [])
 
     def test_test_job_installs_pinned_nextest(self) -> None:
         steps = self.jobs["test"]["steps"]
@@ -1232,6 +1319,61 @@ def step_selects(step: dict, test: dict) -> bool:
     if step["exact"]:
         return any(f == name or f.endswith("::" + name) for f in step["filters"])
     return any(f in name for f in step["filters"])
+
+
+class VisualRecheckWorkflowTests(unittest.TestCase):
+    """`visual-recheck.yml` runs CI's visual check and keeps pull request code unprivileged."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        wf_dir = REPO / ".github" / "workflows"
+        cls.ci = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["ui-visual"]
+        cls.recheck = yaml.safe_load((wf_dir / "visual-recheck.yml").read_text(encoding="utf-8"))
+        cls.baselines = yaml.safe_load((wf_dir / "visual-baselines.yml").read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _shape(steps: list[dict]) -> list[tuple]:
+        """Each step's name or action and command, without the inputs that name artifacts or refs."""
+        return [(s.get("name"), (s.get("uses") or "").split("@")[0], s.get("run"), s.get("env")) for s in steps]
+
+    def test_visual_job_mirrors_ci(self) -> None:
+        visual = self.recheck["jobs"]["visual"]
+        # CI's OSV remediation step only applies to a called remediation run.
+        ci_steps = [s for s in self.ci["steps"] if s.get("uses") != PRIVATE_HEAD_ACTION]
+        self.assertEqual(self._shape(visual["steps"]), self._shape(ci_steps))
+        self.assertEqual(visual["container"], self.ci["container"])
+        self.assertEqual(visual["timeout-minutes"], self.ci["timeout-minutes"])
+        for step, ci_step in zip(visual["steps"], ci_steps):
+            self.assertEqual(step.get("uses"), ci_step.get("uses"), step.get("name"))
+
+    def test_pull_request_code_runs_without_secrets_or_write_access(self) -> None:
+        jobs = self.recheck["jobs"]
+        self.assertEqual(self.recheck["permissions"], {})
+        for name in ("plan", "visual"):
+            with self.subTest(job=name):
+                self.assertEqual(jobs[name]["permissions"], {"contents": "read"})
+                self.assertNotIn("secrets.", str(jobs[name]))
+                checkout = jobs[name]["steps"][0]
+                self.assertEqual(checkout["with"]["ref"], "${{ matrix.target.merge }}")
+                self.assertIs(checkout["with"]["persist-credentials"], False)
+        # Targets come from main's code, uploaded before any pull request code runs.
+        targets = jobs["targets"]
+        self.assertNotIn("ref", targets["steps"][0].get("with", {}))
+        self.assertEqual(jobs["plan"]["needs"], "targets")
+        self.assertEqual(jobs["visual"]["needs"], ["targets", "plan"])
+        upload = next(s for s in targets["steps"] if "upload-artifact" in s.get("uses", ""))
+        self.assertEqual(upload["with"]["name"], "recheck-targets")
+
+    def test_bot_proposes_only_for_rechecks_of_the_default_branch(self) -> None:
+        on = self.baselines.get("on", self.baselines.get(True))
+        self.assertIn(self.recheck["name"], on["workflow_run"]["workflows"])
+        job = self.baselines["jobs"]["propose-recheck"]
+        self.assertIn("github.event.workflow_run.path == '.github/workflows/visual-recheck.yml'", job["if"])
+        self.assertIn("github.event.workflow_run.head_branch == github.event.repository.default_branch", job["if"])
+        checkout = job["steps"][0]
+        self.assertEqual(checkout["with"]["ref"], "${{ github.event.repository.default_branch }}")
+        # The CI proposal job still only takes pull request runs.
+        self.assertIn("github.event.workflow_run.event == 'pull_request'", self.baselines["jobs"]["propose"]["if"])
 
 
 class DiagnosticsReportKeyTests(unittest.TestCase):
