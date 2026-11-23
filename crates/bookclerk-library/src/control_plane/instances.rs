@@ -15,6 +15,7 @@ use uuid::Uuid;
 use super::documents::ConfigActor;
 use crate::entities::plugin_instances;
 use crate::error::{LibraryError, Result};
+use crate::store::keyset::read_keyset;
 use crate::store::LibraryStore;
 
 /// Stable id of one plugin instance.
@@ -263,13 +264,17 @@ pub async fn list_plugin_instances_for_key(
     store: &LibraryStore,
     plugin_key: &str,
 ) -> Result<Vec<PluginInstance>> {
-    let rows = plugin_instances::Entity::find()
-        .filter(plugin_instances::Column::PluginKey.eq(plugin_key))
-        .order_by_asc(plugin_instances::Column::CreatedAt)
-        .order_by_asc(plugin_instances::Column::PluginInstanceId)
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+    let select =
+        plugin_instances::Entity::find().filter(plugin_instances::Column::PluginKey.eq(plugin_key));
+    let rows = read_keyset(
+        store,
+        select,
+        &[
+            plugin_instances::Column::CreatedAt,
+            plugin_instances::Column::PluginInstanceId,
+        ],
+    )
+    .await?;
     Ok(rows.into_iter().map(instance_from_model).collect())
 }
 
@@ -307,13 +312,16 @@ pub async fn default_instance_for_key(
 ///
 /// Returns an error when the read fails.
 pub async fn list_all_plugin_instances(store: &LibraryStore) -> Result<Vec<PluginInstance>> {
-    let rows = plugin_instances::Entity::find()
-        .order_by_asc(plugin_instances::Column::PluginKey)
-        .order_by_asc(plugin_instances::Column::CreatedAt)
-        .order_by_asc(plugin_instances::Column::PluginInstanceId)
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+    let rows = read_keyset(
+        store,
+        plugin_instances::Entity::find(),
+        &[
+            plugin_instances::Column::PluginKey,
+            plugin_instances::Column::CreatedAt,
+            plugin_instances::Column::PluginInstanceId,
+        ],
+    )
+    .await?;
     Ok(rows.into_iter().map(instance_from_model).collect())
 }
 

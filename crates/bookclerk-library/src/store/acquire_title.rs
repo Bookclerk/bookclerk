@@ -364,14 +364,18 @@ impl LibraryStore {
         };
         // Every account's holding of a listing may be more rows than one
         // read returns, so the holdings are read in pages.
-        let mut holdings = find_chunked_paged::<holdings::Entity, _>(self, &listing_ids, |part| {
-            account(
-                super::holdings::find_holdings()
-                    .filter(holdings::Column::HolderKind.eq("account"))
-                    .filter(holdings::Column::ListingId.is_in(part.to_vec()))
-                    .order_by_asc(holdings::Column::Id),
-            )
-        })
+        let mut holdings = find_chunked_paged::<holdings::Entity, _>(
+            self,
+            &listing_ids,
+            &[holdings::Column::Id],
+            |part| {
+                account(
+                    super::holdings::find_holdings()
+                        .filter(holdings::Column::HolderKind.eq("account"))
+                        .filter(holdings::Column::ListingId.is_in(part.to_vec())),
+                )
+            },
+        )
         .await?;
         holdings.extend(
             account(
@@ -415,12 +419,16 @@ impl LibraryStore {
         let listing_ids = distinct(listing_ids.iter().cloned());
         // Every account's holding of a listing may be more rows than one
         // read returns, so the holdings are read in pages.
-        let mut holdings = find_chunked_paged::<holdings::Entity, _>(self, &listing_ids, |part| {
-            super::holdings::find_holdings()
-                .filter(holdings::Column::HolderKind.eq("account"))
-                .filter(holdings::Column::ListingId.is_in(part.to_vec()))
-                .order_by_asc(holdings::Column::Id)
-        })
+        let mut holdings = find_chunked_paged::<holdings::Entity, _>(
+            self,
+            &listing_ids,
+            &[holdings::Column::Id],
+            |part| {
+                super::holdings::find_holdings()
+                    .filter(holdings::Column::HolderKind.eq("account"))
+                    .filter(holdings::Column::ListingId.is_in(part.to_vec()))
+            },
+        )
         .await?;
         holdings.sort_by(|a, b| a.id.cmp(&b.id));
         self.acquire_titles_of(holdings).await
@@ -437,10 +445,10 @@ impl LibraryStore {
         let listings = find_chunked_paged::<store_listings::Entity, _>(
             self,
             &[edition_id.to_string()],
+            &[store_listings::Column::Id],
             |part| {
                 store_listings::Entity::find()
                     .filter(store_listings::Column::EditionId.is_in(part.to_vec()))
-                    .order_by_asc(store_listings::Column::Id)
             },
         )
         .await?;
@@ -668,16 +676,21 @@ impl LibraryStore {
         .into_iter()
         .map(|m| (m.id.clone(), m))
         .collect();
-        for identifier in
-            find_chunked_paged::<edition_identifiers::Entity, _>(self, &edition_ids, |part| {
+        for identifier in find_chunked_paged::<edition_identifiers::Entity, _>(
+            self,
+            &edition_ids,
+            &[
+                edition_identifiers::Column::EditionId,
+                edition_identifiers::Column::Scheme,
+                edition_identifiers::Column::Marketplace,
+                edition_identifiers::Column::Value,
+            ],
+            |part| {
                 edition_identifiers::Entity::find()
                     .filter(edition_identifiers::Column::EditionId.is_in(part.to_vec()))
-                    .order_by_asc(edition_identifiers::Column::EditionId)
-                    .order_by_asc(edition_identifiers::Column::Scheme)
-                    .order_by_asc(edition_identifiers::Column::Marketplace)
-                    .order_by_asc(edition_identifiers::Column::Value)
-            })
-            .await?
+            },
+        )
+        .await?
         {
             rows.identifiers
                 .entry(identifier.edition_id.clone())
@@ -705,11 +718,14 @@ impl LibraryStore {
         .map(|m| m.id)
         .collect();
         let account_ids = distinct(holdings.iter().filter_map(|h| h.account_id.clone()));
-        rows.sources = find_chunked_paged::<accounts::Entity, _>(self, &account_ids, |part| {
-            accounts::Entity::find()
-                .filter(accounts::Column::AccountId.is_in(part.to_vec()))
-                .order_by_asc(accounts::Column::Id)
-        })
+        rows.sources = find_chunked_paged::<accounts::Entity, _>(
+            self,
+            &account_ids,
+            &[accounts::Column::Id],
+            |part| {
+                accounts::Entity::find().filter(accounts::Column::AccountId.is_in(part.to_vec()))
+            },
+        )
         .await?
         .into_iter()
         .map(|m| ((m.plugin_key, m.account_id), m.source))

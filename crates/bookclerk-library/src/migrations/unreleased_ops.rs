@@ -674,7 +674,23 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         feed_json TEXT NOT NULL,
         seed_scope TEXT NOT NULL,
         candidates_fetched_at TEXT,
-        computed_at TEXT NOT NULL
+        computed_at TEXT NOT NULL,
+        feed_version TEXT,
+        feed_parts INTEGER
+    )",
+    ),
+    // A stored feed too wide for one statement or cell of the database
+    // plugin, cut into pieces joined again in `seq` order. The pieces go in
+    // first under a new `version`; the subject's `discover_feeds` row then
+    // names that version and its piece count (its `feed_json` empty), and
+    // pieces no row names are dropped after each write.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS discover_feed_parts (
+        subject_key TEXT NOT NULL,
+        version TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        body TEXT NOT NULL,
+        PRIMARY KEY (subject_key, version, seq)
     )",
     ),
     // One subject's stored taste: what their books, listening and wishes say

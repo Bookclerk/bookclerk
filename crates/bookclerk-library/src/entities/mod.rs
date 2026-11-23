@@ -33,6 +33,7 @@ pub mod credits;
 pub mod destination_feeds;
 pub mod destination_objects;
 pub mod discover_candidates;
+pub mod discover_feed_parts;
 pub mod discover_feeds;
 pub mod discover_fetches;
 pub mod discover_request_queue;
