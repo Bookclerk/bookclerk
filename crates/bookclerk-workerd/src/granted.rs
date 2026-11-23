@@ -1289,6 +1289,13 @@ fn authorize_granted_request(
     // hash, so the broker hashes the same request: hashed as written, a
     // statement the desugaring rewrites (`ORDER BY` null placement, `/` and
     // `%` by zero) would reach the session with a hash it cannot reproduce.
+    // A retry token the SDK minted over the request as it sent it is still
+    // accepted: that form names the same desugared request.
+    let as_sent = if req.request_hash.is_empty() {
+        None
+    } else {
+        canonical_execute_request_hash(req).ok()
+    };
     bookclerk_plugin_abi::desugar_execute_request(req);
     for stmt in &mut req.statements {
         stmt.kind = guest_statement_kind(&stmt.sql);
@@ -1297,7 +1304,10 @@ fn authorize_granted_request(
         req.operation_id = format!("{:032x}", rand::random::<u128>());
     }
     let computed = canonical_execute_request_hash(req)?;
-    if !req.request_hash.is_empty() && req.request_hash != computed {
+    if !req.request_hash.is_empty()
+        && req.request_hash != computed
+        && as_sent.as_deref() != Some(req.request_hash.as_str())
+    {
         return Err(PluginError::invalid_params(
             "retry token requestHash does not match the canonical request",
         ));
@@ -3841,6 +3851,34 @@ mod tests {
         retry.request_hash = req.request_hash.clone();
         authorize_granted_request(&mut retry, 0, &GuestSqlPolicy::host_authoritative())
             .expect("retry token matches the desugared request");
+        // So is one an SDK computed over the request as it sent it.
+        let mut as_sent = bookclerk_plugin_abi::decode_execute_request_bytes(&guest_sql_bytes(
+            raw,
+            vec![],
+            DbPlanStatementKind::Select,
+            DbResultSelection::Rows,
+            10,
+        ))
+        .expect("decode");
+        as_sent.request_hash = canonical_execute_request_hash(&as_sent).expect("hash");
+        authorize_granted_request(&mut as_sent, 0, &GuestSqlPolicy::host_authoritative())
+            .expect("retry token matches the request as sent");
+        assert_eq!(
+            as_sent.request_hash, req.request_hash,
+            "stamps the canonical hash"
+        );
+        // A token naming neither form is refused.
+        let mut forged = bookclerk_plugin_abi::decode_execute_request_bytes(&guest_sql_bytes(
+            raw,
+            vec![],
+            DbPlanStatementKind::Select,
+            DbResultSelection::Rows,
+            10,
+        ))
+        .expect("decode");
+        forged.request_hash = "0".repeat(64);
+        authorize_granted_request(&mut forged, 0, &GuestSqlPolicy::host_authoritative())
+            .expect_err("a token over another request is refused");
     }
 
     #[test]

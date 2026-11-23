@@ -2465,6 +2465,11 @@ and the `bookclerk_src` wrap alias.
 - The binding's own `bookclerk_receipts` and `bookclerk_plugin_migrations`
   tables stay host-owned, so retry tokens replay inside the binding and
   plugins can't edit the journal.
+- A retry token's `requestHash` may be the canonical hash of the request
+  as the plugin sent it (what `canonicalExecuteRequestHash` /
+  `canonical_execute_request_hash` compute) or of the form the host runs
+  after it desugars the SQL. Both name the same request; the host stamps
+  the desugared one.
 
 #### The SQL a plugin may use
 
