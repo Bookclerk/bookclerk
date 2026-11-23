@@ -11,6 +11,11 @@
 //! keys are kept ([`keep_link_copies`]); when it does not, the caller
 //! deletes what it created and gives the keys back ([`release_link_copies`]).
 //!
+//! The title is named by its call number on the library, which names one
+//! edition, so two libraries the branch joined that send the same edition
+//! share its copies; a title sent without one is named by its holding
+//! there, and only that library's attempts share it.
+//!
 //! The writer names the node, the process incarnation and the attempt, so a
 //! copy whose daemon stopped mid-title is found on the next start
 //! ([`stale_link_copies`]) and removed: nothing else would ever learn it
@@ -54,14 +59,50 @@ pub struct LinkCopyAttempt<'a> {
     pub writer: &'a str,
 }
 
+/// Whether a key held a file before an attempt wrote its copy there.
+///
+/// Only a key the attempt finds empty is its own to delete when the title
+/// is not committed; a file already there (an earlier copy of the title,
+/// say, recorded before this ledger or by an attempt that took it over)
+/// is overwritten by the copy and stays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyTarget {
+    /// No file was at the key: the attempt's copy is the only one, and
+    /// goes when the title is not committed.
+    New,
+    /// A file was already at the key: it stays, and its record is kept
+    /// again, when the title is not committed.
+    Existing,
+}
+
+impl CopyTarget {
+    /// The `replaced` column's value: 1 for [`Self::Existing`].
+    fn column(self) -> i64 {
+        match self {
+            Self::New => 0,
+            Self::Existing => 1,
+        }
+    }
+
+    /// The target the `replaced` column records.
+    fn from_column(replaced: i64) -> Self {
+        if replaced == 0 {
+            Self::New
+        } else {
+            Self::Existing
+        }
+    }
+}
+
 /// What [`claim_link_copy`] found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkCopyClaim {
     /// The key was unrecorded (or another attempt of the same title was
     /// still copying it); the attempt holds it now.
     Fresh,
-    /// The key held a kept copy of the same title, which the attempt took
-    /// over: a failed attempt leaves that file and its record kept.
+    /// The key held a kept copy of the same title (from any library that
+    /// sent the same edition), which the attempt took over: a failed
+    /// attempt leaves that file and its record kept.
     Replaced,
     /// Another title holds the key; nothing was written.
     HeldByAnotherTitle,
@@ -76,9 +117,10 @@ pub struct StaleLinkCopy {
     pub key: String,
     /// The attempt that wrote it.
     pub writer: String,
-    /// True when the attempt had taken over a kept copy of the same title:
-    /// the file is left and the record kept again, rather than deleted.
-    pub replaced: bool,
+    /// Whether a file was at the key before the attempt: an
+    /// [`CopyTarget::Existing`] one is left and its record kept again
+    /// ([`settle_stale_link_copy`]), a [`CopyTarget::New`] one deleted.
+    pub target: CopyTarget,
 }
 
 /// The title reference a copy is recorded under: the title's call number
@@ -99,6 +141,20 @@ pub fn link_copy_writer(node_id: &str, incarnation: &str) -> String {
         "{node_id}/{incarnation}/{}",
         uuid::Uuid::new_v4().hyphenated()
     )
+}
+
+/// True when `title_ref` names the title by its call number, which names
+/// one edition whichever library sent it ([`link_copy_title_ref`]).
+fn names_an_edition(title_ref: &str) -> bool {
+    title_ref.starts_with("cn:")
+}
+
+/// True when the copy recorded in `row` is of the title `attempt` copies:
+/// the same call number from any library, or the same holding of the same
+/// library.
+fn same_title(row: &link_copy_files::Model, attempt: LinkCopyAttempt<'_>) -> bool {
+    row.title_ref == attempt.title_ref
+        && (names_an_edition(attempt.title_ref) || row.library_id == attempt.library_id)
 }
 
 /// RFC 3339 stamp, as the other control-plane records write it.
@@ -128,14 +184,19 @@ async fn held_by_another_edition(
     Ok(!same)
 }
 
-/// Claims `key` on `destination` for `attempt` before the copy is written.
+/// Claims `key` on `destination` for `attempt` before the copy is written;
+/// `target` says whether a file is already there.
 ///
 /// The key is the attempt's when it is unrecorded, or held by a copy of
 /// the same title (an earlier attempt's kept copy, or one still copying,
-/// which the newest attempt takes over). It is refused, changing nothing,
-/// when another title's copy holds it, or when this install's own library
-/// recorded it for another edition (whose call number differs): the copy
-/// must not overwrite that file.
+/// which the newest attempt takes over); a title named by its call number
+/// is the same title whichever joined library sent it. It is refused,
+/// changing nothing, when another title's copy holds it, or when this
+/// install's own library recorded it for another edition (whose call
+/// number differs) and no copy of this title holds it: the copy must not
+/// overwrite that file. A key this title's copy holds may be in this
+/// install's library too (the branch owner's title, imported once
+/// committed), and stays the title's own.
 ///
 /// # Errors
 ///
@@ -145,8 +206,16 @@ pub async fn claim_link_copy(
     attempt: LinkCopyAttempt<'_>,
     destination: &str,
     key: &str,
+    target: CopyTarget,
 ) -> Result<LinkCopyClaim> {
-    if held_by_another_edition(store, destination, key, attempt.title_ref).await? {
+    let recorded = link_copy_files::Entity::find_by_id((destination.to_string(), key.to_string()))
+        .one(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    let ours = recorded
+        .as_ref()
+        .is_some_and(|row| same_title(row, attempt));
+    if !ours && held_by_another_edition(store, destination, key, attempt.title_ref).await? {
         return Ok(LinkCopyClaim::HeldByAnotherTitle);
     }
     let now = stamp(Utc::now());
@@ -157,7 +226,7 @@ pub async fn claim_link_copy(
         title_ref: Set(attempt.title_ref.to_string()),
         writer: Set(attempt.writer.to_string()),
         state: Set(STATE_COPYING.into()),
-        replaced: Set(0),
+        replaced: Set(target.column()),
         written_at: Set(now.clone()),
     })
     .on_conflict(
@@ -176,33 +245,45 @@ pub async fn claim_link_copy(
     }
     // Taken over only from the same title, each in one conditional write:
     // a kept copy (marked replaced, so a failed attempt keeps it again),
-    // else another attempt's copy still in progress (the newest wins).
+    // else another attempt's copy still in progress (the newest wins; a
+    // file it found stays one this attempt found too).
     let take = |state: &'static str, replaced: Option<i64>| {
         let mut update = link_copy_files::Entity::update_many()
             .col_expr(link_copy_files::Column::Writer, Expr::value(attempt.writer))
+            .col_expr(
+                link_copy_files::Column::LibraryId,
+                Expr::value(attempt.library_id),
+            )
             .col_expr(link_copy_files::Column::State, Expr::value(STATE_COPYING))
             .col_expr(link_copy_files::Column::WrittenAt, Expr::value(now.clone()));
         if let Some(replaced) = replaced {
             update = update.col_expr(link_copy_files::Column::Replaced, Expr::value(replaced));
         }
-        update
+        let update = update
             .filter(link_copy_files::Column::Destination.eq(destination))
             .filter(link_copy_files::Column::StorageKey.eq(key))
-            .filter(link_copy_files::Column::LibraryId.eq(attempt.library_id))
             .filter(link_copy_files::Column::TitleRef.eq(attempt.title_ref))
-            .filter(link_copy_files::Column::State.eq(state))
+            .filter(link_copy_files::Column::State.eq(state));
+        if names_an_edition(attempt.title_ref) {
+            update
+        } else {
+            update.filter(link_copy_files::Column::LibraryId.eq(attempt.library_id))
+        }
     };
-    let kept = take(STATE_KEPT, Some(1))
+    let kept = take(STATE_KEPT, Some(CopyTarget::Existing.column()))
         .exec(store.db())
         .await
         .map_err(LibraryError::Orm)?;
     if kept.rows_affected == 1 {
         return Ok(LinkCopyClaim::Replaced);
     }
-    let copying = take(STATE_COPYING, None)
-        .exec(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+    let copying = take(
+        STATE_COPYING,
+        (target == CopyTarget::Existing).then(|| target.column()),
+    )
+    .exec(store.db())
+    .await
+    .map_err(LibraryError::Orm)?;
     if copying.rows_affected == 1 {
         return Ok(LinkCopyClaim::Fresh);
     }
@@ -258,9 +339,10 @@ pub async fn release_link_copies(store: &LibraryStore, writer: &str) -> Result<(
 /// Copies of `node_id` that an earlier process left mid-title: `copying`
 /// records whose writer is this node under another incarnation than
 /// `incarnation`, older than [`STALE_LINK_COPY_AGE_SECS`] at `now`, oldest
-/// first, at most a batch. The caller deletes each fresh one's file (or
-/// keeps a replaced one's) and then settles its attempt
-/// ([`release_link_copies`]).
+/// first, at most a batch. The caller deletes each new one's file (or
+/// keeps an existing one's) and then settles that key
+/// ([`settle_stale_link_copy`]); a key whose file could not be deleted is
+/// left for a later sweep.
 ///
 /// # Errors
 ///
@@ -293,9 +375,49 @@ pub async fn stale_link_copies(
             destination: row.destination,
             key: row.storage_key,
             writer: row.writer,
-            replaced: row.replaced != 0,
+            target: CopyTarget::from_column(row.replaced),
         })
         .collect())
+}
+
+/// Settles one copy [`stale_link_copies`] answered, once the caller deleted
+/// its file (a [`CopyTarget::New`] one) or left it (a
+/// [`CopyTarget::Existing`] one): the record is forgotten, or kept again.
+/// Changes nothing when another attempt claimed the key since.
+///
+/// # Errors
+///
+/// Returns an error when the write fails.
+pub async fn settle_stale_link_copy(store: &LibraryStore, copy: &StaleLinkCopy) -> Result<()> {
+    let ours = |destination: &str, key: &str, writer: &str| {
+        sea_orm::Condition::all()
+            .add(link_copy_files::Column::Destination.eq(destination.to_string()))
+            .add(link_copy_files::Column::StorageKey.eq(key.to_string()))
+            .add(link_copy_files::Column::Writer.eq(writer.to_string()))
+            .add(link_copy_files::Column::State.eq(STATE_COPYING))
+    };
+    match copy.target {
+        CopyTarget::Existing => {
+            link_copy_files::Entity::update_many()
+                .col_expr(link_copy_files::Column::State, Expr::value(STATE_KEPT))
+                .col_expr(
+                    link_copy_files::Column::Replaced,
+                    Expr::value(CopyTarget::New.column()),
+                )
+                .filter(ours(&copy.destination, &copy.key, &copy.writer))
+                .exec(store.db())
+                .await
+                .map_err(LibraryError::Orm)?;
+        }
+        CopyTarget::New => {
+            link_copy_files::Entity::delete_many()
+                .filter(ours(&copy.destination, &copy.key, &copy.writer))
+                .exec(store.db())
+                .await
+                .map_err(LibraryError::Orm)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

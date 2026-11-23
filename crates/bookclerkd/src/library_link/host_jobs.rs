@@ -319,9 +319,15 @@ impl CopyAttempt {
         }
     }
 
-    /// Claims `key` on `destination` before it is written; an error when
-    /// another title holds it, so the copy never overwrites that file.
-    async fn claim(&self, destination: &DestinationId, key: &str) -> anyhow::Result<()> {
+    /// Claims `key` on `destination` before it is written (`target` says
+    /// whether a file is already there); an error when another title holds
+    /// it, so the copy never overwrites that file.
+    async fn claim(
+        &self,
+        destination: &DestinationId,
+        key: &str,
+        target: control_plane::CopyTarget,
+    ) -> anyhow::Result<()> {
         let claim = control_plane::claim_link_copy(
             &self.ledger.store,
             control_plane::LinkCopyAttempt {
@@ -331,6 +337,7 @@ impl CopyAttempt {
             },
             destination.as_str(),
             key,
+            target,
         )
         .await?;
         match claim {
@@ -363,8 +370,11 @@ impl CopyAttempt {
 /// Removes the copies an earlier process of this node left mid-title on
 /// this host's own destinations ([`control_plane::stale_link_copies`]):
 /// their attempt never learned whether the owner committed them, so no one
-/// else would ever remove them. A copy that had taken over a kept copy of
-/// its title keeps its file and is recorded kept again. Best effort, logged.
+/// else would ever remove them. A copy written over a file already there
+/// (a kept copy of its title, say) keeps its file and is recorded kept
+/// again, as the attempt's own cleanup would have left it. Each key is
+/// settled on its own, so one whose file could not be deleted stays
+/// recorded for the next job's sweep. Best effort, logged.
 async fn sweep_stale_copies<G: HostGuests>(guests: &G, ledger: &CopyLedger) {
     let stale = match control_plane::stale_link_copies(
         &ledger.store,
@@ -388,26 +398,26 @@ async fn sweep_stale_copies<G: HostGuests>(guests: &G, ledger: &CopyLedger) {
             return;
         }
     };
-    let mut writers = BTreeSet::new();
     for copy in &stale {
-        if !copy.replaced {
-            match local.iter().find(|(id, _)| id.as_str() == copy.destination) {
-                Some((_, backend)) => {
-                    if let Err(err) = backend.delete(&copy.key).await {
-                        tracing::warn!(key = %copy.key, error = %err, "could not remove an unfinished copy from this host's own destination; retried on the next job");
-                        continue;
+        match copy.target {
+            control_plane::CopyTarget::Existing => {}
+            control_plane::CopyTarget::New => {
+                match local.iter().find(|(id, _)| id.as_str() == copy.destination) {
+                    Some((_, backend)) => match backend.delete(&copy.key).await {
+                        Ok(()) | Err(bookclerk_storage::StorageError::NotFound(_)) => {}
+                        Err(err) => {
+                            tracing::warn!(key = %copy.key, error = %err, "could not remove an unfinished copy from this host's own destination; retried on the next job");
+                            continue;
+                        }
+                    },
+                    None => {
+                        tracing::warn!(destination = %copy.destination, key = %copy.key, "an unfinished copy is on a destination this host no longer has; left in place")
                     }
-                }
-                None => {
-                    tracing::warn!(destination = %copy.destination, key = %copy.key, "an unfinished copy is on a destination this host no longer has; left in place")
                 }
             }
         }
-        writers.insert(copy.writer.clone());
-    }
-    for writer in writers {
-        if let Err(err) = control_plane::release_link_copies(&ledger.store, &writer).await {
-            tracing::warn!(%writer, error = %err, "could not settle an unfinished copy's record");
+        if let Err(err) = control_plane::settle_stale_link_copy(&ledger.store, copy).await {
+            tracing::warn!(writer = %copy.writer, error = %err, "could not settle an unfinished copy's record");
         }
     }
     tracing::info!(
@@ -1972,7 +1982,12 @@ pub async fn copy_to_local_destinations<G: HostGuests>(
             // rather than overwritten, and a crash mid-copy is found on
             // the next start (#314).
             if let Some(attempt) = attempt {
-                attempt.claim(id, key).await?;
+                let target = if existed {
+                    control_plane::CopyTarget::Existing
+                } else {
+                    control_plane::CopyTarget::New
+                };
+                attempt.claim(id, key, target).await?;
             }
             if let Err(err) = destination.put_file(key, &primary.join(key), meta).await {
                 tracing::warn!(book_uuid, %key, error = %err, "could not copy a title to this host's own destination");

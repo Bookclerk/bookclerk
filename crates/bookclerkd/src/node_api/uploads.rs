@@ -493,50 +493,71 @@ fn this_node(state_files: &std::path::Path) -> Option<String> {
         .map(|identity| identity.node_id)
 }
 
-/// Deletes `key` from `destination` for the aborted `session`, but only
-/// while the key is still that upload's own ([`upload_owns_key`]): a later
-/// upload of the title, an acquire on this node, or another title may have
-/// written it since (a stale cleanup running after the job's permits were
-/// given back), and that file is left alone. Best effort; a failure is
-/// logged, and an unreadable record keeps the file. Never call it while
-/// holding the key's lock ([`lock_copies`]).
+/// Deletes the copy granted at `key` on `destination` for the aborted
+/// `session`. A better copy of the edition ([`UploadSession::upgrade`]) was
+/// written under its staged key, which no one else writes, so that is
+/// deleted and `key` (the copy it would have replaced) is never touched.
+/// Any other upload's copy is deleted only while the key is still that
+/// upload's own ([`upload_owns_key`]): a later upload of the title, an
+/// acquire on this node, or another title may have written it since (a
+/// stale cleanup running after the job's permits were given back), and
+/// that file is left alone. Never call it while holding the key's lock
+/// ([`lock_copies`]).
+///
+/// # Returns
+///
+/// True when the copy is gone or was left on purpose (written again
+/// since); false when the delete failed or the record could not be read,
+/// so a later sweep tries again.
 async fn discard_copy(
     library: &LibraryStore,
     session: &UploadSession,
     destination: &OwnerDestination,
     key: &str,
-) {
+) -> bool {
     // Held from the ownership check through the delete, as a finishing
     // write holds it from its last check to its end ([`tee`]): a write of
     // the key by a newer upload cannot land in between and be deleted.
     let _lock = lock_named(copy_lock_name(&destination.id, key)).await;
-    match upload_owns_key(library, session, &destination.id, key).await {
-        Ok(true) => {}
-        Ok(false) => {
-            tracing::info!(upload_id = %session.upload_id, destination = %destination.id, "an aborted upload's file was written again since; left in place");
-            return;
-        }
-        Err(err) => {
-            tracing::warn!(upload_id = %session.upload_id, destination = %destination.id, error = %err, "could not check who wrote an aborted upload's file; left in place");
-            return;
+    if !session.upgrade {
+        match upload_owns_key(library, session, &destination.id, key).await {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::info!(upload_id = %session.upload_id, destination = %destination.id, "an aborted upload's file was written again since; left in place");
+                return true;
+            }
+            Err(err) => {
+                tracing::warn!(upload_id = %session.upload_id, destination = %destination.id, error = %err, "could not check who wrote an aborted upload's file; left in place for now");
+                return false;
+            }
         }
     }
-    if let Err(err) = destination.backend.delete(key).await {
-        tracing::warn!(upload_id = %session.upload_id, destination = %destination.id, error = %err, "could not delete an aborted upload's file");
+    match destination.backend.delete(&session.write_key(key)).await {
+        Ok(()) | Err(bookclerk_storage::StorageError::NotFound(_)) => true,
+        Err(err) => {
+            tracing::warn!(upload_id = %session.upload_id, destination = %destination.id, error = %err, "could not delete an aborted upload's file");
+            false
+        }
     }
 }
 
 /// Deletes the copies of declared file `index` of `session` from
 /// `destinations` that are still the upload's own ([`discard_copy`]).
+///
+/// # Returns
+///
+/// False when a copy could not be deleted (or checked) and a later sweep
+/// should try again.
 async fn discard_file(
     library: &LibraryStore,
     destinations: &[OwnerDestination],
     session: &UploadSession,
     index: usize,
-) {
+) -> bool {
     let Some(file) = session.files.get(index) else {
-        return;
+        return true;
     };
+    let mut done = true;
     for copy in &file.copies {
         let Some(destination) = destinations.iter().find(|d| d.id == copy.destination) else {
             // The destination was undeployed since the copy was written;
@@ -544,8 +565,9 @@ async fn discard_file(
             tracing::warn!(upload_id = %session.upload_id, destination = %copy.destination, key = %copy.key, "an aborted upload's file is on a destination this node no longer has; left in place");
             continue;
         };
-        discard_copy(library, session, destination, &copy.key).await;
+        done &= discard_copy(library, session, destination, &copy.key).await;
     }
+    done
 }
 
 /// Deletes every copy an aborted upload had received from this node's
@@ -572,8 +594,9 @@ pub(crate) async fn discard_received(
 /// every copy this node still has was deleted or left on purpose (written
 /// again since, or on a destination no longer deployed). Answers false,
 /// leaving the upload `discarding`, when another shared node received it
-/// (that node's sweep deletes its copies) or this node's destinations could
-/// not be opened (the next sweep retries).
+/// (that node's sweep deletes its copies), or this node's destinations
+/// could not be opened or a copy could not be deleted (the next sweep
+/// retries).
 async fn discard_received_here(
     state: &AppState,
     library: &LibraryStore,
@@ -596,8 +619,17 @@ async fn discard_received_here(
             return false;
         }
     };
+    let mut done = true;
     for index in &session.received {
-        discard_file(library, &destinations, session, *index).await;
+        done &= discard_file(library, &destinations, session, *index).await;
+    }
+    if !done {
+        tracing::warn!(
+            upload_id = %session.upload_id,
+            job_id = %session.job_id,
+            "some of an aborted upload's files could not be deleted; the next sweep retries"
+        );
+        return false;
     }
     tracing::info!(
         upload_id = %session.upload_id,
@@ -647,7 +679,8 @@ pub(crate) fn spawn_upload_sweep(state: Arc<AppState>) {
 ///
 /// # Returns
 ///
-/// How many uploads it settled (aborted, or whose files it deleted).
+/// How many uploads it settled: aborted, or whose files are all deleted
+/// now. One it could not settle is logged and left to the next pass.
 ///
 /// # Errors
 ///
@@ -658,16 +691,27 @@ pub(crate) async fn sweep_uploads_once(state: &AppState) -> anyhow::Result<usize
     let files_dir = state.config.read().await.paths().files_dir.clone();
     let node_id = load_or_create_node_identity(&files_dir)?.node_id;
     let sessions = uploads_to_sweep(&library, &node_id).await?;
-    let settled = sessions.len();
+    let mut settled = 0;
     for session in sessions {
         if session.state == "open" {
             tracing::info!(upload_id = %session.upload_id, job_id = %session.job_id, "an upload's fence is no longer live; aborting it");
             abort_and_discard(state, &library, &session.upload_id).await;
+            settled += 1;
         } else if session.received.is_empty() {
             // Nothing of it reached this node after all.
-            mark_discarded(&library, &session.upload_id).await?;
-        } else {
-            discard_received(state, &library, &session).await;
+            match mark_discarded(&library, &session.upload_id).await {
+                Ok(()) => settled += 1,
+                Err(err) => {
+                    tracing::warn!(upload_id = %session.upload_id, error = %err, "could not mark an aborted upload's files deleted; the next sweep retries");
+                }
+            }
+        } else if discard_received_here(state, &library, &session).await {
+            match mark_discarded(&library, &session.upload_id).await {
+                Ok(()) => settled += 1,
+                Err(err) => {
+                    tracing::warn!(upload_id = %session.upload_id, error = %err, "could not mark an aborted upload's files deleted; the next sweep retries");
+                }
+            }
         }
     }
     Ok(settled)
@@ -1007,6 +1051,10 @@ async fn tee(
         let (tx, rx) = mpsc::channel(CHANNEL_CHUNKS);
         senders.push(tx);
         let key = copy.key.clone();
+        // A better copy of the edition is staged beside its key until the
+        // commit ([`UploadSession::write_key`]); `key` stays the granted
+        // one, which the cleanups name.
+        let write_key = session.write_key(&key).into_owned();
         let meta = ObjectMeta {
             content_type: file.content_type.clone(),
             content_length: Some(file.size),
@@ -1022,7 +1070,7 @@ async fn tee(
             };
             let result = destination
                 .backend
-                .put_stream(&key, Box::pin(reader), meta)
+                .put_stream(&write_key, Box::pin(reader), meta)
                 .await;
             (destination, key, result)
         })));
@@ -1390,6 +1438,50 @@ async fn record_written(
             unavailable()
         }
     }
+}
+
+/// Moves each staged file of the better copy `session` onto its granted
+/// key ([`UploadSession::write_key`]), under the key's lock and while the
+/// key is still this upload's ([`upload_owns_key`]): a key another writer
+/// took since keeps its file, and the commit then refuses the upload as
+/// no longer holding its keys. A staged file already gone was moved by an
+/// earlier attempt of this commit, so a retried commit carries on.
+///
+/// A commit refused after this (the title moved to another edition, say)
+/// leaves the better copy in place under keys that are still its
+/// edition's: whole files of the same edition, whose records keep
+/// describing the copy they replaced until a later copy is committed.
+///
+/// # Errors
+///
+/// Returns an error when this node's destinations cannot be opened, a
+/// granted destination is missing, or a record read or a move fails.
+async fn publish_staged(
+    state: &AppState,
+    library: &LibraryStore,
+    session: &UploadSession,
+) -> anyhow::Result<()> {
+    let destinations = owner_destinations(state).await?;
+    for file in &session.files {
+        for copy in &file.copies {
+            let Some(destination) = destinations.iter().find(|d| d.id == copy.destination) else {
+                anyhow::bail!(
+                    "destination {} is no longer deployed here",
+                    copy.destination
+                );
+            };
+            let _lock = lock_named(copy_lock_name(&destination.id, &copy.key)).await;
+            if !upload_owns_key(library, session, &destination.id, &copy.key).await? {
+                tracing::warn!(upload_id = %session.upload_id, destination = %destination.id, "a better copy's key was written by another writer since; its staged file is not moved");
+                continue;
+            }
+            let staged = session.staged_key(&copy.key);
+            if destination.backend.exists(&staged).await? {
+                destination.backend.rename(&staged, &copy.key).await?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `PUT /api/node/v1/uploads/{upload_id}/files/{index}`.
@@ -1962,6 +2054,15 @@ pub async fn post_commit(
                 tracing::warn!(upload_id = %session.upload_id, "no output destination is deployed on this shared node");
                 return unavailable();
             }
+        }
+    }
+    // A better copy of the edition lands now, before the commit: until
+    // here its files waited beside their keys, so an upload that stopped
+    // short left the copy it replaces whole (#300).
+    if session.upgrade && session.state != "committed" {
+        if let Err(err) = publish_staged(&state, &library, &session).await {
+            tracing::warn!(upload_id = %session.upload_id, error = %err, "could not move a better copy's staged files into place; the commit can be retried");
+            return unavailable();
         }
     }
     let detail = commit.detail.as_deref().unwrap_or("");

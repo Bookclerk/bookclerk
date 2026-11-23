@@ -260,7 +260,8 @@ pub use library_links::{
 };
 pub use link_copies::{
     claim_link_copy, keep_link_copies, link_copy_title_ref, link_copy_writer, release_link_copies,
-    stale_link_copies, LinkCopyAttempt, LinkCopyClaim, StaleLinkCopy, STALE_LINK_COPY_AGE_SECS,
+    settle_stale_link_copy, stale_link_copies, CopyTarget, LinkCopyAttempt, LinkCopyClaim,
+    StaleLinkCopy, STALE_LINK_COPY_AGE_SECS,
 };
 pub use link_imports::{
     books_imported_from_link, import_link_title, record_copy_taken_from_link, HeldBookKey,

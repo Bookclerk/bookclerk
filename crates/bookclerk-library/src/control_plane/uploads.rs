@@ -110,6 +110,12 @@ struct Manifest {
     /// holding's listing sold at grant, whose keys the upload claimed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     catalog_edition: Option<String>,
+    /// True when the upload replaces its edition's copy with a better one
+    /// ([`upload_upgrades_edition`]): its files are staged beside their
+    /// keys and moved into place only at the commit
+    /// ([`UploadSession::write_key`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    upgrade: bool,
 }
 
 /// In a [`TitleNames::part_patterns`] pattern: one or more characters of a
@@ -381,9 +387,36 @@ pub struct UploadSession {
     /// sold at grant. The upload writes under that edition's keys, so it
     /// is recorded as delivered only while the listing still sells it.
     pub catalog_edition: Option<String>,
+    /// True when the upload replaces its edition's copy with a better one
+    /// (#300): each file is written under its staged key
+    /// ([`Self::write_key`]) and moved onto its granted key only when the
+    /// upload commits, so an upload that never commits leaves the copy it
+    /// would have replaced as it was.
+    pub upgrade: bool,
 }
 
 impl UploadSession {
+    /// Where the receiving node writes the copy granted at `key`: `key`
+    /// itself, or for a better copy of the edition ([`Self::upgrade`]) a
+    /// staged key beside it, unique to this upload, that the commit moves
+    /// onto `key` ([`Self::staged_key`]).
+    #[must_use]
+    pub fn write_key<'a>(&self, key: &'a str) -> std::borrow::Cow<'a, str> {
+        if self.upgrade {
+            std::borrow::Cow::Owned(self.staged_key(key))
+        } else {
+            std::borrow::Cow::Borrowed(key)
+        }
+    }
+
+    /// The staged key of the copy granted at `key`: `key` with a suffix
+    /// naming this upload. It ends in no audio, PDF or sidecar extension
+    /// of the title, and no other upload writes it.
+    #[must_use]
+    pub fn staged_key(&self, key: &str) -> String {
+        format!("{key}.bookclerk-staged-{}", self.upload_id)
+    }
+
     /// True for a branch's catalog upload, bound to the node's catalog
     /// fence instead of a job's.
     #[must_use]
@@ -614,7 +647,12 @@ fn stated_probe(file: &UploadFile) -> Option<FileProbe> {
 /// compare, leaves the edition's files to their writers.
 ///
 /// The replacement is in place, under the copy's own primary key, so the
-/// edition's acquisition record still names its audio. The stated probe is
+/// edition's acquisition record still names its audio. It lands only at
+/// the commit: the files are staged beside their keys until then
+/// ([`UploadSession::write_key`]), and the claim keeps each existing
+/// record describing the file still there, so an upload that never commits
+/// leaves the copy and what the library knows of it unchanged. The stated
+/// probe is
 /// trusted as the protocol trusts it ([`bookclerk_node_proto::UploadProbe`]):
 /// the sender is a node trusted with the title, and the probe decides only
 /// which of two copies of one edition is kept.
@@ -909,7 +947,9 @@ async fn claim_upload_keys<'a>(
 
 /// Stores the probes a committed upload stated for its audio files on the
 /// rows it wrote ([`LibraryStore::set_uploaded_file_probe`]), so the
-/// library knows what copy it holds without reading the files back.
+/// library knows what copy it holds without reading the files back. A
+/// better copy's rows first drop what they said of the copy it replaced
+/// ([`LibraryStore::describe_uploaded_file`]).
 ///
 /// Done once the upload is committed, when every file has arrived whole:
 /// an open or aborted upload's rows stay unprobed. A file with no probe or
@@ -925,6 +965,17 @@ async fn store_committed_probes(store: &LibraryStore, upload_id: &str) -> Result
     let Some(session) = load_upload(store, upload_id).await? else {
         return Ok(());
     };
+    if session.upgrade {
+        // The better copy is in place now: its rows still described the
+        // copy it replaced ([`LibraryStore::claim_edition_file`]).
+        for file in &session.files {
+            for copy in &file.copies {
+                store
+                    .describe_uploaded_file(&copy.destination, &copy.key, upload_id, &file.sha256)
+                    .await?;
+            }
+        }
+    }
     for file in &session.files {
         let Some(probe) = stated_probe(file) else {
             continue;
@@ -1279,6 +1330,7 @@ pub(super) async fn open_upload_session(
         pdf_key: req.pdf_key.map(str::to_string),
         catalog_digest: catalog_digest.map(str::to_string),
         catalog_edition,
+        upgrade,
     })
     .map_err(|err| LibraryError::Other(anyhow::anyhow!("upload manifest encode: {err}")))?;
     let upload_id = uuid::Uuid::new_v4().hyphenated().to_string();
@@ -1479,6 +1531,7 @@ fn session_from_model(row: node_upload_sessions::Model) -> Result<UploadSession>
         state: row.state,
         catalog_digest: manifest.catalog_digest,
         catalog_edition: manifest.catalog_edition,
+        upgrade: manifest.upgrade,
     })
 }
 

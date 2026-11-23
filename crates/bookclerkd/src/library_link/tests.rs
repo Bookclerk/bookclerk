@@ -4386,6 +4386,155 @@ mod results_and_uploads {
         );
     }
 
+    /// Grants `files` of the title `holding_id` under the acquire job
+    /// `job_id` held at `fence`: the upload id and token.
+    async fn grant_files(
+        world: &Linked,
+        job_id: &str,
+        fence: i64,
+        holding_id: &str,
+        files: &[UploadFile],
+    ) -> (String, String) {
+        let UploadGrant::Granted {
+            upload_id, token, ..
+        } = grant_upload(
+            &world.owner,
+            &world.link.remote_node_id,
+            job_id,
+            fence,
+            &shared_node_id(world),
+            &UploadGrantRequest {
+                holding_id,
+                primary_key: "Author/Title t1/t1.m4b",
+                pdf_key: None,
+                files,
+                destinations: &local_scope("Author/Title t1"),
+            },
+        )
+        .await
+        .unwrap()
+        else {
+            panic!("granted");
+        };
+        (upload_id, token.to_string())
+    }
+
+    /// A better copy of an edition waits beside its keys until it commits
+    /// (#300): aborted part way, it leaves the copy it would have replaced
+    /// as it was, file and record; committed, it moves into place and the
+    /// record describes it.
+    #[tokio::test]
+    async fn a_better_copy_lands_only_when_it_commits() {
+        let _dek = crate::auth::tests::process_dek_lock().await;
+        let world = linked().await;
+        let owner_out = tempfile::tempdir().unwrap();
+        crate::node_api::uploads::set_test_destination(world.owner_files.path(), owner_out.path());
+        let book = world
+            .owner
+            .scope(PLUGIN, "test")
+            .upsert_book(&owner_book("riley-acct", "t1"))
+            .await
+            .unwrap();
+        let holding = holding_of(&world.owner, &book.holding_id).await;
+        let key = "Author/Title t1/t1.m4b";
+        // The library's copy: 64 kbps.
+        std::fs::create_dir_all(owner_out.path().join("Author/Title t1")).unwrap();
+        std::fs::write(owner_out.path().join(key), b"old").unwrap();
+        let owner = world
+            .owner
+            .file_owner_of_holding(&book.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(world
+            .owner
+            .record_edition_file("local", key, &owner, bookclerk_library::FileRole::Audio)
+            .await
+            .unwrap());
+        let worse = bookclerk_library::FileProbe {
+            content_type: "audio/mp4".into(),
+            bitrate_kbps: Some(64),
+            lossless: false,
+            source_store: None,
+        };
+        assert!(world
+            .owner
+            .set_edition_file_probe("local", key, &owner, &worse)
+            .await
+            .unwrap());
+        let mut audio = local_file(key, b"new");
+        audio.content_type = Some("audio/mp4".into());
+        audio.probe = Some(bookclerk_node_proto::UploadProbe {
+            bitrate_kbps: Some(256),
+            lossless: false,
+            source_store: None,
+        });
+        let new_sha = audio.sha256.clone();
+        let files = vec![audio];
+        let job_id = enqueue_acquire(&world.owner).await;
+        let fence = claim_acquire(&world, 60).await;
+
+        let (upload_id, token) = grant_files(&world, &job_id, fence, &holding, &files).await;
+        let put = put_raw(world.addr, &upload_id, &token, 0, b"new").await;
+        assert!(put.starts_with("HTTP/1.1 200"), "{put}");
+        let staged = owner_out
+            .path()
+            .join(format!("{key}.bookclerk-staged-{upload_id}"));
+        assert_eq!(std::fs::read(owner_out.path().join(key)).unwrap(), b"old");
+        assert_eq!(std::fs::read(&staged).unwrap(), b"new");
+        let aborted = bookclerk_library::control_plane::abort_upload(&world.owner, &upload_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(aborted.state, "discarding");
+        assert_eq!(
+            crate::node_api::uploads::sweep_uploads_once(&world.state)
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(!staged.exists(), "the staged copy is deleted");
+        assert_eq!(
+            std::fs::read(owner_out.path().join(key)).unwrap(),
+            b"old",
+            "the copy it would have replaced is untouched"
+        );
+        assert_eq!(
+            world.owner.edition_file_probe("local", key).await.unwrap(),
+            Some(worse.clone()),
+            "the record still describes the copy in place"
+        );
+
+        let (upload_id, token) = grant_files(&world, &job_id, fence, &holding, &files).await;
+        let put = put_raw(world.addr, &upload_id, &token, 0, b"new").await;
+        assert!(put.starts_with("HTTP/1.1 200"), "{put}");
+        let committed = commit_raw(world.addr, &upload_id, &token, "{}").await;
+        assert!(committed.starts_with("HTTP/1.1 200"), "{committed}");
+        assert_eq!(std::fs::read(owner_out.path().join(key)).unwrap(), b"new");
+        let left = files_under(owner_out.path());
+        assert!(
+            left.iter()
+                .all(|path| !path.to_string_lossy().contains("bookclerk-staged")),
+            "nothing staged is left: {left:?}"
+        );
+        let record = world
+            .owner
+            .edition_file("local", key)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.sha256.as_deref(), Some(new_sha.as_str()));
+        assert_eq!(
+            world
+                .owner
+                .edition_file_probe("local", key)
+                .await
+                .unwrap()
+                .and_then(|probe| probe.bitrate_kbps),
+            Some(256)
+        );
+    }
+
     /// An upload aborted away from the node that received it (here, by the
     /// library call alone, as another shared node would) waits as
     /// `discarding` until the receiving node's sweep deletes its files, and

@@ -1626,7 +1626,13 @@ the handed credentials only. There is no in-process fallback.
   manifest states is better (lossless over lossy, then the higher
   bitrate). A better copy replaces the edition's files in place, whoever
   wrote them; an equal or worse one, or one the library cannot compare,
-  is refused. Another edition's keys are never replaced: naming
+  is refused. The replacement lands only at the commit: the receiving
+  node writes each file under a temporary key beside its own
+  (`<key>.bookclerk-staged-<upload id>`) and moves it onto the key just
+  before the commit, and the claim changes only the key's writer, so its
+  record keeps describing the file still there until the commit
+  describes the new one. An abort deletes only the temporary keys, and
+  the library's copy and what it knows of it are untouched. Another edition's keys are never replaced: naming
   templates write `<call number>`, so two editions never plan one path. A
   title whose edition another account's title acquired since the plan
   (two hosts, or two plans, raced for one edition) is answered
@@ -1647,11 +1653,18 @@ the handed credentials only. There is no in-process fallback.
   copy is recorded in the Host's own library (`link_copy_files`) before
   it is written, under the title's call number on the library: a key
   another title's copy holds, or one the Host's library recorded for
-  another edition, fails the title instead of being overwritten. A
-  committed title's copies are kept; a failed one's records are given
-  back. A copy whose daemon stopped mid-title stays `copying` under the
+  another edition (and no copy of this title holds), fails the title
+  instead of being overwritten. A call number names one edition, so two
+  libraries the Host joined that send the same edition share its copy; a
+  title sent without one is named by its holding there and shared by no
+  other library. A committed title's copies are kept; a failed one's
+  records are given back. Each record notes whether a file was already at
+  the key: only a copy written to an empty key is removed when its title
+  fails. A copy whose daemon stopped mid-title stays `copying` under the
   old process's writer, and the next job that keeps copies removes it
-  (after an hour, so an overlapping restart's older process can finish).
+  (after an hour, so an overlapping restart's older process can finish),
+  by the same rule and one key at a time, so a delete that fails leaves
+  its record for the next job.
 - **Owner-decided success.** A title's commit marks it acquired and never
   completes the job. Only the closing upload (no title, no files) may ask
   to finish, and the owner completes the job only when no title in the
@@ -1684,7 +1697,10 @@ the handed credentials only. There is no in-process fallback.
   receives every five minutes: an open upload whose fence is no longer
   live (its Host vanished mid-title, so no further file, commit, renewal
   or finish arrives) is aborted and its files deleted, and a `discarding`
-  upload's files are deleted.
+  upload's files are deleted. An upload stays `discarding` until every
+  delete succeeded, so a failed one is tried again on the next sweep; if
+  its receiving node is removed from the library first, retention drops
+  it.
 - **Pinned destinations.** A grant records each destination's id and the
   instance document revision its guest runs. A file or the commit that
   arrives once the receiving node's destinations differ (one added,
@@ -1718,10 +1734,15 @@ the handed credentials only. There is no in-process fallback.
   is refused once a destination's configuration revision changed; the
   sweep aborts an upload whose Host vanished and deletes the files of one
   aborted elsewhere; a Host's own copy never overwrites another title's
-  file. Library: a commit is refused once the title moved to another
-  edition; a better copy of an edition replaces its files and a worse one
-  is refused; a title whose edition another title acquired is answered
-  `edition_acquired`.
+  file; a better copy lands only when it commits, and an aborted one
+  leaves the library's copy and its record as they were. Library: a
+  commit is refused once the title moved to another edition; a better
+  copy of an edition replaces its files and a worse one is refused; a
+  title whose edition another title acquired is answered
+  `edition_acquired`; two libraries that send one edition share a Host's
+  copy, and a copy imported into the Host's library stays its title's; a
+  stale copy is settled one key at a time; retention drops a
+  `discarding` upload whose receiving node was removed.
 
 ### Live socket and the host consent screen
 
