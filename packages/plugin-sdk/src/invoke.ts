@@ -1172,20 +1172,16 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       params: W.ProvisioningProvisionParamsCodec,
       results: W.ProvisioningProvisionResultsCodec,
       stub: "provisioning",
-      call: (s, p, cx) =>
-        named(s, cx.host.bindContext(cx.ctx), "provision", [p.request ?? {}]),
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "provision", [p.request ?? {}]),
       ok: okProvisioned,
     }),
-    deprovision: spec<W.ProvisioningDeprovisionParams, W.ProvisioningDeprovisionResults["result"]>(
-      {
-        params: W.ProvisioningDeprovisionParamsCodec,
-        results: W.ProvisioningDeprovisionResultsCodec,
-        stub: "provisioning",
-        call: (s, p, cx) =>
-          named(s, cx.host.bindContext(cx.ctx), "deprovision", [p.request ?? {}]),
-        ok: okEmpty,
-      },
-    ),
+    deprovision: spec<W.ProvisioningDeprovisionParams, W.ProvisioningDeprovisionResults["result"]>({
+      params: W.ProvisioningDeprovisionParamsCodec,
+      results: W.ProvisioningDeprovisionResultsCodec,
+      stub: "provisioning",
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "deprovision", [p.request ?? {}]),
+      ok: okEmpty,
+    }),
   },
   Notifier: {
     health: withoutParams(
