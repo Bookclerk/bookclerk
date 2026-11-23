@@ -3710,6 +3710,31 @@ mod tests {
         assert!(unknown.contains("unknown or revoked"), "{unknown}");
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancel_only_grant_answers_the_cancel_poll_and_nothing_else() {
+        let flag = Rc::new(std::cell::Cell::new(true));
+        let slot = GrantedSlot::cancel_only(
+            Box::new(FlagCancel {
+                cancelled: Rc::clone(&flag),
+                fail: false,
+            }),
+            Instant::now() + Duration::from_secs(60),
+        );
+        assert!(slot.input.is_none() && slot.output.is_none() && slot.progress.is_none());
+        assert!(!slot.allow_open && !slot.allow_put && !slot.allow_progress);
+        assert!(!slot.allow_database && slot.database.is_none());
+        assert_eq!(slot.max_request_bytes, 0);
+        assert!(slot.events.is_none() && slot.queue.is_none() && slot.kv.is_none());
+        assert!(slot.sockets.is_none() && slot.webhooks.is_none() && slot.notify.is_none());
+        assert!(slot.origin.is_none() && slot.ai.is_none());
+        let table: GrantedTable = Rc::new(RefCell::new(HashMap::new()));
+        table.borrow_mut().insert("g-cron".into(), slot);
+        let fired = dispatch_cancel_poll(&table, "g-cron".into(), CANCEL_POLL_INTERVAL * 3)
+            .await
+            .expect("poll ok");
+        assert!(fired, "a cancelled fire surfaces on the cron grant's poll");
+    }
+
     struct FlagSession {
         called: std::cell::Cell<bool>,
     }

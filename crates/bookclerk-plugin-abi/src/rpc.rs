@@ -8542,6 +8542,20 @@ mod tests {
                 let opened = open_default(&client).await;
                 let remote = opened.remote_library.expect("remoteLibrary");
                 assert!(remote.health().await.expect("health").ok);
+                let unsupported = remote
+                    .poll_events(crate::EventPollParams { ack_follows: true })
+                    .await
+                    .expect_err("the default pollEvents is unsupported");
+                assert!(
+                    unsupported.message.contains("pollEvents"),
+                    "{unsupported:?}"
+                );
+                remote
+                    .ack_events(crate::EventAckParams {
+                        external_user_ids: vec!["u1".into()],
+                    })
+                    .await
+                    .expect("the default ackEvents accepts and does nothing");
                 let consumer = opened.event_consumer.expect("eventConsumer");
                 assert_eq!(
                     deliver(&consumer, sample_event("book_acquired"))
