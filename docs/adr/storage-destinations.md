@@ -97,6 +97,34 @@ plugin's provisioning entrypoint. The plugin creates what it needs and
 returns narrowly scoped credentials, which the host seals like any other
 secret. Manual entry stays available.
 
+The first grant is an API token the operator creates at the provider and
+pastes; the browser sign-in comes later as a second grant kind. A plugin
+declares its setup in `[provisioning]`: the provider, the grants it
+accepts, where to create a token and which permissions it needs, the
+settings it asks the operator for (`inputs`), the settings it may write
+back (`outputs`), and whether it can remove what it created
+(`deprovision`).
+
+- The host opens a short-lived guest for the run with the instance's
+  stored settings and secrets, the inputs laid over them, and calls only
+  `Provisioning.provision`. Required settings may still be missing.
+- The plugin returns non-secret settings, any number of credentials and a
+  short summary. The host refuses an undeclared key, a malformed value,
+  and a credential or the grant itself appearing in a setting or the
+  summary, then stores the settings and inputs as one revision. A grant
+  the plugin does not return as a credential is dropped.
+- A run sees what an earlier run stored, so a second run updates and
+  rotates rather than duplicating.
+- The host seals the credentials before writing the revision that names
+  them. A running instance picks up the new revision, and with it the new
+  credentials, as it does any configuration change.
+- `Provisioning.deprovision` removes what the setup created. The setup
+  screen offers it before the instance is deleted; with a fresh grant when
+  the stored credentials cannot do it.
+- Provisioning runs under the instance's normal network grant. There is no
+  provisioning-only egress: the hosts a setup calls are declared in
+  `[capabilities.network]` and approved like any other.
+
 ## Consequences
 
 - Destinations, stored files and reads key on the instance id. A read

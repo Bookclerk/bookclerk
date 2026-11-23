@@ -75,7 +75,7 @@ version = "0.1.0"               # required semver; pins the [[settings]] schema
 # logo = "https://example.com/icon.png"   # or "assets/logo.png" (host-served)
 runtime = "native"
 command = "./bookclerk-plugin-echo-native-rust"
-entrypoints = ["cli"]           # storefront | storage | remoteLibrary | databaseAdapter | cli | oidc | metadata | covers | metadataFiles | notifier | ingress | ai
+entrypoints = ["cli"]           # storefront | storage | remoteLibrary | databaseAdapter | cli | oidc | metadata | covers | metadataFiles | notifier | ingress | provisioning | ai
 
 [capabilities.network]
 mode = "deny"
@@ -381,6 +381,45 @@ kind = "relay"
 
 See [Public addresses](abi.md#public-addresses-ingress) for the methods
 and the rules on each request.
+
+### `[provisioning]` (guided setup)
+
+A plugin with the `provisioning` entrypoint offers a guided setup: the
+operator pastes a token from the provider and the plugin creates what it
+needs and fills in its own settings. The table is required for that
+entrypoint, and every other plugin must leave it out.
+
+```toml
+entrypoints = ["storage", "provisioning"]
+
+[provisioning]
+provider = "cloudflare"
+grants = ["api_token"]
+token_url = "https://dash.cloudflare.com/?to=/:account/api-tokens"
+token_permissions = [
+    "Account > Workers R2 Storage > Edit",
+    "Account > Account API Tokens > Edit",
+]
+inputs = ["account_id", "jurisdiction", "bucket", "prefix"]
+outputs = ["account_id", "jurisdiction", "bucket", "access_key_id", "secret_access_key"]
+deprovision = true
+```
+
+- `provider`: lowercase letters, digits and hyphens, up to 32 characters.
+- `grants`: what the operator hands over; `api_token` (a pasted token) is
+  the only one today.
+- `token_url`: an `https` page where the operator creates the token.
+- `token_permissions`: what the token needs, one line each (at most 16
+  lines of 120 characters), shown on the setup screen.
+- `inputs`: non-secret, non-table settings the screen asks for first.
+- `outputs`: the settings, secret or not (but not table settings), the
+  plugin may write back; at least one.
+- `deprovision`: whether the plugin can remove what it created.
+
+The guided setup runs under the plugin's normal
+[`[capabilities.network]`](capabilities.md#network-rules) grant, so the provider's
+API host must be listed there. See
+[Guided setup](abi.md#guided-setup-provisioning) for the methods.
 
 ### `[ai]` (models)
 

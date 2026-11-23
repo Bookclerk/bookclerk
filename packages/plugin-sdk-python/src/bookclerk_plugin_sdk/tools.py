@@ -12,6 +12,7 @@ See ``docs/plugins/README.md`` for manifest fields and runtime requirements.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import os
 import re
 import shutil
@@ -25,7 +26,13 @@ from encodings import idna as encodings_idna
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from ._abi import MAX_CRON_BYTES
+from ._abi import (
+    MAX_CRON_BYTES,
+    MAX_WEBHOOK_BODY_BYTES,
+    MAX_WEBHOOK_HEADERS,
+    MAX_WEBHOOK_NAME_BYTES,
+)
+from ._manifest_format import format_manifest
 from .path_guard import (
     cli_user_path,
     copy_file_under,
@@ -681,7 +688,32 @@ def own_user_agent_host_ascii(raw: str) -> str | None:
     host = pattern[2:] if wildcard else pattern
     if not host or host == "*":
         return None
-    if any(ord(c) <= 0x20 or c in _FORBIDDEN_HOST_CHARS for c in host):
+    ascii_host = _hostname_ascii(host, _FORBIDDEN_HOST_CHARS)
+    if ascii_host is None:
+        return None
+    return f"*.{ascii_host}" if wildcard else ascii_host
+
+
+_FORBIDDEN_NAME_CHARS = _FORBIDDEN_HOST_CHARS - {","}
+"""Forbidden code points for a ``domains`` or ``tcp`` host.
+
+As :data:`_FORBIDDEN_HOST_CHARS` but without the comma, which only the
+own-``User-Agent`` list refuses (it is a list separator there).
+"""
+
+
+def _hostname_ascii(host: str, forbidden: frozenset[str]) -> str | None:
+    """Return the ASCII form of a hostname, as the host's IDNA step produces it.
+
+    Args:
+        host: Hostname with no port, trailing dot or ``*.`` prefix.
+        forbidden: Characters refused before and after IDNA mapping (code
+            points up to U+0020 are always refused).
+
+    Returns:
+        The lowercase A-label hostname, or ``None`` when the host would refuse it.
+    """
+    if not host or any(ord(c) <= 0x20 or c in forbidden for c in host):
         return None
     if not host.isascii():
         # UTS 46 also maps the full-width and ideographic full stops to `.`.
@@ -690,9 +722,9 @@ def own_user_agent_host_ascii(raw: str) -> str | None:
     if any(label is None for label in labels):
         return None
     ascii_host = ".".join(label for label in labels if label is not None)
-    if any(ord(c) <= 0x20 or c in _FORBIDDEN_HOST_CHARS for c in ascii_host):
+    if any(ord(c) <= 0x20 or c in forbidden for c in ascii_host):
         return None
-    return f"*.{ascii_host}" if wildcard else ascii_host
+    return ascii_host
 
 
 def _is_own_user_agent_host(raw: str) -> bool:
@@ -872,6 +904,7 @@ _METADATA_FIELDS: tuple[str, ...] = (
     "series",
     "chapters",
     "duration",
+    "explicitness",
 )
 """Fields a ``[[metadata_files.dialects]].fields`` entry may name."""
 
@@ -944,6 +977,122 @@ def _validate_ingress(m: dict[str, Any]) -> None:
             raise ValueError(f"plugin.toml: `[ingress]` has unknown key `{key}`")
     if table.get("kind") not in ("relay", "direct"):
         raise ValueError('plugin.toml: `[ingress].kind` must be "relay" or "direct"')
+
+
+_PROVIDER_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}\Z")
+"""``[provisioning].provider`` grammar, mirroring Rust ``validate_provisioning``."""
+
+_PROVISION_GRANTS = ("api_token",)
+"""Grant kinds a ``[provisioning]`` table may list."""
+
+
+def _is_control(text: str) -> bool:
+    """Whether ``text`` holds a control character (Unicode ``Cc``).
+
+    Args:
+        text: Text to check.
+
+    Returns:
+        True when any character is a control character.
+    """
+    return any(unicodedata.category(c) == "Cc" for c in text)
+
+
+def _validate_provisioning(m: dict[str, Any]) -> None:
+    """Check ``[provisioning]`` against the entrypoints and settings with the host's rules.
+
+    Args:
+        m: Manifest dictionary.
+
+    Raises:
+        ValueError: If a ``provisioning`` plugin has no table or another plugin
+            has one, or the provider, grants, token URL, token permissions,
+            inputs or outputs break their rules.
+    """
+    exported = "provisioning" in (m.get("entrypoints") or [])
+    table = m.get("provisioning")
+    if table is None:
+        if exported:
+            raise ValueError(
+                "plugin.toml: `[provisioning]` is required for a plugin with the "
+                "`provisioning` entrypoint"
+            )
+        return
+    if not exported:
+        raise ValueError("plugin.toml: `[provisioning]` needs the `provisioning` entrypoint")
+    known = {
+        "provider",
+        "grants",
+        "token_url",
+        "token_permissions",
+        "inputs",
+        "outputs",
+        "deprovision",
+    }
+    for key in table:
+        if key not in known:
+            raise ValueError(f"plugin.toml: `[provisioning]` has unknown key `{key}`")
+    provider = table.get("provider")
+    if not isinstance(provider, str) or not _PROVIDER_RE.match(provider):
+        raise ValueError("plugin.toml: `[provisioning].provider` must match ^[a-z][a-z0-9-]{0,31}$")
+    grants = table.get("grants")
+    if (
+        not isinstance(grants, list)
+        or not grants
+        or any(g not in _PROVISION_GRANTS for g in grants)
+        or len(set(grants)) != len(grants)
+    ):
+        raise ValueError(
+            "plugin.toml: `[provisioning].grants` must list each grant kind once and not be empty"
+        )
+    url = table.get("token_url")
+    if url is not None and (
+        not isinstance(url, str)
+        or not url.startswith("https://")
+        or len(url.encode("utf-8")) > 2048
+        or any(c.isspace() for c in url)
+        or _is_control(url)
+    ):
+        raise ValueError("plugin.toml: `[provisioning].token_url` must be an https:// URL")
+    permissions = table.get("token_permissions") or []
+    if (
+        not isinstance(permissions, list)
+        or len(permissions) > 16
+        or not all(
+            isinstance(line, str) and line.strip() and len(line) <= 120 and not _is_control(line)
+            for line in permissions
+        )
+    ):
+        raise ValueError(
+            "plugin.toml: `[provisioning].token_permissions` takes at most 16 non-empty "
+            "lines of at most 120 characters"
+        )
+    kinds = {
+        str(s.get("key")): str(s.get("type") or "")
+        for s in (m.get("settings") or [])
+        if isinstance(s, dict)
+    }
+    seen: set[str] = set()
+    for key in table.get("inputs") or []:
+        if kinds.get(key) not in ("string", "bool", "integer", "enum") or key in seen:
+            raise ValueError(
+                f"plugin.toml: `[provisioning].inputs` entry `{key}` must be a declared "
+                "setting that is not a secret or a table, listed once"
+            )
+        seen.add(key)
+    outputs = table.get("outputs") or []
+    if not outputs:
+        raise ValueError("plugin.toml: `[provisioning].outputs` must not be empty")
+    seen = set()
+    for key in outputs:
+        if kinds.get(key) not in ("string", "bool", "integer", "enum", "secret") or key in seen:
+            raise ValueError(
+                f"plugin.toml: `[provisioning].outputs` entry `{key}` must be a declared "
+                "setting that is not a table, listed once"
+            )
+        seen.add(key)
+    if not isinstance(table.get("deprovision", False), bool):
+        raise ValueError("plugin.toml: `[provisioning].deprovision` must be a boolean")
 
 
 def _validate_metadata_files(m: dict[str, Any]) -> None:
@@ -1259,6 +1408,9 @@ def _validate_notification_types(m: dict[str, Any]) -> None:
 def validate_manifest(m: dict[str, Any]) -> None:
     """Validate a parsed ``plugin.toml`` mapping.
 
+    Checks run in the host's order (``PluginManifest::validate``), so a
+    manifest that breaks two rules gets the same first error everywhere.
+
     Args:
         m: Manifest dictionary (typically from ``tomllib.loads``).
 
@@ -1266,6 +1418,11 @@ def validate_manifest(m: dict[str, Any]) -> None:
         ValueError: If required fields, runtime tables, or network capabilities
             are missing or inconsistent.
     """
+    # The host refuses an unknown `credentials` value while decoding, before
+    # any rule runs.
+    credentials = m.get("credentials")
+    if credentials is not None and credentials not in ("shareable", "single_keeper"):
+        raise ValueError("plugin.toml: `credentials` must be `shareable` or `single_keeper`")
     if not str(m.get("id", "")).strip():
         raise ValueError("plugin.toml: `id` is required")
     try:
@@ -1275,28 +1432,35 @@ def validate_manifest(m: dict[str, Any]) -> None:
         raise ValueError(f"plugin.toml: {exc}") from exc
     if m.get("api_version") != 3:
         raise ValueError("plugin.toml: `api_version` must be 3")
+    # An unknown entrypoint name is a parse error on the host, before any rule.
+    entrypoints = [str(e) for e in (m.get("entrypoints") or [])]
+    for entrypoint in entrypoints:
+        if entrypoint not in ENTRYPOINT_NAMES:
+            raise ValueError(
+                f"plugin.toml: unknown entrypoint `{entrypoint}` "
+                f"(expected one of {', '.join(ENTRYPOINT_NAMES)})"
+            )
     if m.get("logo") is not None:
         validate_logo(str(m["logo"]))
     _validate_media(m)
     _validate_acquire(m)
+    _validate_webhooks(m)
     _validate_metadata_files(m)
     _validate_notifier(m)
     _validate_notification_types(m)
     _validate_ingress(m)
+    _validate_provisioning(m)
     _validate_ai(m)
-    _validate_surface(m)
+    if m.get("credentials") is not None and "storefront" not in entrypoints:
+        raise ValueError(
+            "plugin.toml: `credentials` needs the `storefront` entrypoint "
+            "(only storefronts connect store accounts)"
+        )
+    _validate_oidc_clients(m)
     runtime = m.get("runtime") or "native"
-    net = (m.get("capabilities") or {}).get("network") or {}
-    _validate_own_user_agent(net)
     if runtime == "native":
         if not str(m.get("command") or "").strip():
             raise ValueError('plugin.toml: `command` is required when runtime = "native"')
-        domains = net.get("domains") or []
-        if domains:
-            raise ValueError(
-                'plugin.toml: capabilities.network.domains is only valid for runtime = "workerd" '
-                "(native guests use capabilities.network.tcp for mediated connect(); omit domains)"
-            )
     elif runtime == "workerd":
         w = m.get("workerd")
         if not isinstance(w, dict):
@@ -1314,14 +1478,44 @@ def validate_manifest(m: dict[str, Any]) -> None:
             list(w.get("compatibility_flags") or []),
             declares_python(m),
         )
-        # `fetch` needs `domains`; a host-held `tls://` stream needs `tcp`.
-        if net.get("mode") == "outbound" and not net.get("domains") and not net.get("tcp"):
-            raise ValueError(
-                'plugin.toml: capabilities.network.domains or tcp is required when runtime = "workerd" '
-                'and mode = "outbound"'
-            )
     else:
         raise ValueError(f"plugin.toml: unknown runtime {runtime}")
+    net = (m.get("capabilities") or {}).get("network") or {}
+    if m.get("sockets") is not None and net.get("mode") != "outbound":
+        raise ValueError(
+            'plugin.toml: [sockets] needs capabilities.network.mode = "outbound" '
+            "(every socket URL must pass the network grant)"
+        )
+    domains = list(net.get("domains") or [])
+    if runtime == "native" and domains:
+        raise ValueError(
+            'plugin.toml: capabilities.network.domains is only valid for runtime = "workerd" '
+            "(native guests use capabilities.network.tcp for mediated connect(); omit domains)"
+        )
+    # `fetch` needs `domains`; a host-held `tls://` stream needs `tcp`.
+    if (
+        runtime == "workerd"
+        and net.get("mode") == "outbound"
+        and not domains
+        and not net.get("tcp")
+    ):
+        raise ValueError(
+            'plugin.toml: capabilities.network.domains or tcp is required when runtime = "workerd" '
+            'and mode = "outbound"'
+        )
+    _validate_network_grants(net)
+    _validate_own_user_agent(net)
+    _validate_surface(m)
+    if m.get("cli") is not None and "cli" not in entrypoints:
+        raise ValueError('plugin.toml: `[cli]` requires `"cli"` in `entrypoints`')
+    _validate_settings(m)
+    if ((m.get("oidc") or {}).get("clients") or []) and "oidc" not in entrypoints:
+        raise ValueError('plugin.toml: `[[oidc.clients]]` requires `"oidc"` in `entrypoints`')
+    _validate_bindings(m)
+    _validate_triggers(m)
+    _validate_event_tables(m)
+    _validate_queues(m)
+    _validate_kv_namespaces(m)
 
 
 ENTRYPOINT_NAMES: tuple[str, ...] = (
@@ -1337,6 +1531,7 @@ ENTRYPOINT_NAMES: tuple[str, ...] = (
     "notifier",
     "ingress",
     "ai",
+    "provisioning",
 )
 """Entrypoint wire names accepted in ``entrypoints``."""
 
@@ -1346,81 +1541,56 @@ _EVENT_TYPE_RE = re.compile(r"^[a-z][a-z0-9_]*\Z")
 
 
 def _validate_surface(m: dict[str, Any]) -> None:
-    """Validate ``entrypoints`` / triggers / bindings (mirrors Rust ``validate``)."""
+    """Validate the "declare at least one entrypoint or trigger" rule, then duplicates.
+
+    Args:
+        m: Manifest under validation.
+
+    Raises:
+        ValueError: When the surface is empty or an entrypoint repeats.
+    """
     entrypoints = [str(e) for e in (m.get("entrypoints") or [])]
-    seen: set[str] = set()
-    for entrypoint in entrypoints:
-        if entrypoint not in ENTRYPOINT_NAMES:
-            raise ValueError(
-                f"plugin.toml: unknown entrypoint `{entrypoint}` "
-                f"(expected one of {', '.join(ENTRYPOINT_NAMES)})"
-            )
-        if entrypoint in seen:
-            raise ValueError(f"plugin.toml: entrypoints entry `{entrypoint}` is duplicated")
-        seen.add(entrypoint)
     events = m.get("events") or {}
-    consumers = list(events.get("consumers") or [])
-    queue_consumers = list((m.get("queues") or {}).get("consumers") or [])
-    jobs = list((m.get("triggers") or {}).get("jobs") or [])
-    crons = (m.get("triggers") or {}).get("crons", [])
-    if not entrypoints and not consumers and not queue_consumers and not jobs and not crons:
+    triggers = m.get("triggers") or {}
+    if (
+        not entrypoints
+        and not (events.get("consumers") or [])
+        and not ((m.get("queues") or {}).get("consumers") or [])
+        and not (triggers.get("jobs") or [])
+        and not (triggers.get("crons") or [])
+    ):
         raise ValueError(
             "plugin.toml: declare at least one of `entrypoints`, `[[events.consumers]]`, "
             "`[[queues.consumers]]`, `[triggers].jobs`, or `[triggers].crons`"
         )
-    _validate_crons(crons)
-    if crons:
-        # Crons fire only on integration deployments (host ``validate``).
-        for registry in ("storefront", "storage", "databaseAdapter"):
-            if registry in entrypoints:
-                raise ValueError(
-                    f"plugin.toml: `[triggers].crons` cannot be combined with the `{registry}` "
-                    "entrypoint; put the schedule in a separate integration plugin"
-                )
-    _validate_queues(m)
-    _validate_kv_namespaces(m)
-    if m.get("sockets") is not None and (
-        ((m.get("capabilities") or {}).get("network") or {}).get("mode") != "outbound"
-    ):
+    seen: set[str] = set()
+    for entrypoint in entrypoints:
+        if entrypoint in seen:
+            raise ValueError(f"plugin.toml: entrypoints entry `{entrypoint}` is duplicated")
+        seen.add(entrypoint)
+
+
+_MAX_DATABASE_BINDINGS = 8
+"""Most ``[[databases]]`` bindings one plugin may declare."""
+
+
+def _validate_bindings(m: dict[str, Any]) -> None:
+    """Validate ``[[databases]]`` and every named ``env`` binding as the host does.
+
+    Args:
+        m: Manifest under validation.
+
+    Raises:
+        ValueError: Naming the first bad or colliding binding by its row.
+    """
+    databases = list(m.get("databases") or [])
+    if len(databases) > _MAX_DATABASE_BINDINGS:
         raise ValueError(
-            'plugin.toml: [sockets] needs capabilities.network.mode = "outbound" '
-            "(every socket URL must pass the network grant)"
+            f"plugin.toml: [[databases]] lists {len(databases)} bindings; "
+            f"max is {_MAX_DATABASE_BINDINGS}"
         )
-    for index, consumer in enumerate(consumers):
-        event_type = str(consumer.get("type") or "")
-        if not event_type.strip():
-            raise ValueError(f"plugin.toml: events.consumers[{index}].type is required")
-        if not _EVENT_TYPE_RE.match(event_type):
-            raise ValueError(
-                f"plugin.toml: events.consumers[{index}].type `{event_type}` must be "
-                "snake_case `[a-z][a-z0-9_]*`"
-            )
-        _validate_message_retention(f"events.consumers[{index}]", consumer)
-    produced: set[str] = set()
-    for index, producer in enumerate(events.get("producers") or []):
-        event_type = str(producer.get("type") or "")
-        if not _EVENT_TYPE_RE.match(event_type):
-            raise ValueError(
-                f"plugin.toml: events.producers[{index}].type `{event_type}` must be "
-                "snake_case `[a-z][a-z0-9_]*`"
-            )
-        if event_type in produced:
-            raise ValueError(
-                f"plugin.toml: events.producers[{index}].type `{event_type}` is duplicated"
-            )
-        produced.add(event_type)
-        if event_type in HOST_EVENT_TYPES:
-            raise ValueError(
-                f"plugin.toml: events.producers[{index}].type `{producer.get('type')}` is emitted "
-                "by the host (after a source's acquire handler returns); plugins may consume it "
-                "but not publish it"
-            )
-    if m.get("cli") is not None and "cli" not in seen:
-        raise ValueError('plugin.toml: `[cli]` requires `"cli"` in `entrypoints`')
-    if ((m.get("oidc") or {}).get("clients") or []) and "oidc" not in seen:
-        raise ValueError('plugin.toml: `[[oidc.clients]]` requires `"oidc"` in `entrypoints`')
     bindings: set[str] = set()
-    for db in m.get("databases") or []:
+    for db in databases:
         name = str(db.get("binding") or "")
         if not _DATABASE_BINDING_RE.match(name) or len(name) > 32:
             raise ValueError(
@@ -1434,7 +1604,9 @@ def _validate_surface(m: dict[str, Any]) -> None:
         if name in bindings:
             raise ValueError(f"plugin.toml: [[databases]] binding `{name}` is duplicated")
         bindings.add(name)
-    reserved = {"CONFIG", "SECRETS", "EVENTS", "WORK_FS", _LOOPBACK_ENV, "SOCKETS"}
+    # Names a KV namespace or queue producer may not take even when the table
+    # that defaults to it is absent.
+    reserved = {"CONFIG", _SEALED_ENV, "EVENTS", "WORK_FS", _LOOPBACK_ENV}
     # Row index, not the binding text. The text can be an oauth name, and an
     # error that includes it is logged as clear text.
     named: list[tuple[str, str, int]] = []
@@ -1454,6 +1626,8 @@ def _validate_surface(m: dict[str, Any]) -> None:
         named.append(("notifications", "NOTIFY", 0))
     if (m.get("ai") or {}).get("calls") or []:
         named.append(("ai", "AI", 0))
+    if m.get("webhooks") or []:
+        named.append(("webhooks", "WEBHOOKS", 0))
     for index, kv in enumerate(m.get("kv_namespaces") or []):
         named.append(("kv_namespaces", str(kv.get("binding") or "KV"), index))
     for index, producer in enumerate((m.get("events") or {}).get("producers") or []):
@@ -1490,6 +1664,748 @@ def _validate_surface(m: dict[str, Any]) -> None:
         and (sockets_name == "EVENTS" or sockets_name in producer_names)
     ):
         raise ValueError("plugin.toml: [sockets][0] binding collides with another binding")
+
+
+def _validate_triggers(m: dict[str, Any]) -> None:
+    """Validate ``[triggers]``: crons only on integrations, cron shape, job types.
+
+    Args:
+        m: Manifest under validation.
+
+    Raises:
+        ValueError: Naming the first bad trigger.
+    """
+    entrypoints = [str(e) for e in (m.get("entrypoints") or [])]
+    triggers = m.get("triggers") or {}
+    crons = triggers.get("crons", [])
+    # A malformed schedule fails to parse before the host looks at entrypoints.
+    _validate_crons(crons)
+    if crons:
+        # Crons fire only on integration deployments.
+        for registry in ("storefront", "storage", "databaseAdapter", "ingress"):
+            if registry in entrypoints:
+                raise ValueError(
+                    f"plugin.toml: `[triggers].crons` cannot be combined with the `{registry}` "
+                    "entrypoint; put the schedule in a separate integration plugin"
+                )
+    for index, job in enumerate(triggers.get("jobs") or []):
+        if not isinstance(job, str) or not _EVENT_TYPE_RE.match(job):
+            raise ValueError(
+                f"plugin.toml: triggers.jobs[{index}] `{job}` must be snake_case `[a-z][a-z0-9_]*`"
+            )
+
+
+def _validate_event_tables(m: dict[str, Any]) -> None:
+    """Validate ``[[events.consumers]]`` and ``[[events.producers]]`` as the host does.
+
+    Args:
+        m: Manifest under validation.
+
+    Raises:
+        ValueError: Naming the first bad consumer or producer row.
+    """
+    events = m.get("events") or {}
+    for index, consumer in enumerate(events.get("consumers") or []):
+        event_type = str(consumer.get("type") or "")
+        if not event_type.strip():
+            raise ValueError(f"plugin.toml: events.consumers[{index}].type is required")
+        if not _EVENT_TYPE_RE.match(event_type):
+            raise ValueError(
+                f"plugin.toml: events.consumers[{index}].type `{event_type}` must be "
+                "snake_case `[a-z][a-z0-9_]*`"
+            )
+        versions = consumer.get("schema_versions")
+        if versions is not None:
+            if not isinstance(versions, list) or not versions:
+                raise ValueError(
+                    f"plugin.toml: events.consumers[{index}].schema_versions must not be empty"
+                )
+            if any(
+                isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= 0xFFFFFFFF
+                for v in versions
+            ):
+                raise ValueError(
+                    f"plugin.toml: events.consumers[{index}].schema_versions entries must be "
+                    "integers from 0 to 4294967295"
+                )
+        resource_class = consumer.get("resource_class")
+        resource_class = resource_class.strip() if isinstance(resource_class, str) else ""
+        if resource_class and resource_class != "network":
+            raise ValueError(
+                f"plugin.toml: events.consumers[{index}].resource_class `{resource_class}` "
+                "is not supported (only `network`)"
+            )
+        _validate_message_retention(f"events.consumers[{index}]", consumer)
+    produced: set[str] = set()
+    for index, producer in enumerate(events.get("producers") or []):
+        event_type = str(producer.get("type") or "")
+        if not _EVENT_TYPE_RE.match(event_type):
+            raise ValueError(
+                f"plugin.toml: events.producers[{index}].type `{event_type}` must be "
+                "snake_case `[a-z][a-z0-9_]*`"
+            )
+        if event_type in produced:
+            raise ValueError(
+                f"plugin.toml: events.producers[{index}].type `{event_type}` is duplicated"
+            )
+        produced.add(event_type)
+        if event_type in HOST_EVENT_TYPES:
+            raise ValueError(
+                f"plugin.toml: events.producers[{index}].type `{producer.get('type')}` is emitted "
+                "by the host (after a source's acquire handler returns); plugins may consume it "
+                "but not publish it"
+            )
+
+
+def _validate_oidc_clients(m: dict[str, Any]) -> None:
+    """Validate ``[[oidc.clients]]`` fields as the host does.
+
+    Args:
+        m: Manifest under validation.
+
+    Raises:
+        ValueError: Naming the first client with a missing or bad field.
+    """
+    for index, client in enumerate((m.get("oidc") or {}).get("clients") or []):
+
+        def text(field: str, client: dict[str, Any] = client) -> str:
+            value = client.get(field)
+            return value if isinstance(value, str) else ""
+
+        if not text("client_id").strip():
+            raise ValueError(f"plugin.toml: oidc.clients[{index}].client_id is required")
+        callback = text("callback_path")
+        if not callback.strip() or not callback.startswith("/"):
+            raise ValueError(
+                f"plugin.toml: oidc.clients[{index}].callback_path must start with `/`"
+            )
+        if not text("origin_config_key").strip():
+            raise ValueError(f"plugin.toml: oidc.clients[{index}].origin_config_key is required")
+
+
+_MAX_WEBHOOKS = 8
+"""Most ``[[webhooks]]`` rows one plugin may declare."""
+
+_MAX_WEBHOOK_RATE_PER_MINUTE = 600
+"""Highest request rate per minute a row may declare."""
+
+_MAX_WEBHOOK_RETENTION_SECS = 7 * 86_400
+"""Longest time a stored delivery may wait, in seconds (7 days)."""
+
+_MAX_WEBHOOK_HEADER_NAME_BYTES = 64
+"""Longest header name a row may name, in bytes."""
+
+_MAX_WEBHOOK_SIGNATURE_PREFIX_LEN = 16
+"""Longest signature prefix, in bytes."""
+
+_FORBIDDEN_WEBHOOK_HEADERS = frozenset(
+    {
+        "authorization",
+        "connection",
+        "cookie",
+        "forwarded",
+        "host",
+        "keep-alive",
+        "proxy-authorization",
+        "set-cookie",
+        "transfer-encoding",
+        "upgrade",
+        "x-forwarded-for",
+        "x-real-ip",
+    }
+)
+"""Headers a row may never keep: they carry credentials or describe the hop."""
+
+_WEBHOOK_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*\Z")
+"""Webhook name grammar."""
+
+_WEBHOOK_HEADER_RE = re.compile(r"^[a-z0-9!#$%&'*+\-.^_`|~]+\Z")
+"""Lowercase RFC 9110 token characters."""
+
+
+def _is_webhook_header_name(name: Any) -> bool:
+    """Return whether ``name`` is a lowercase HTTP header name.
+
+    Args:
+        name: Candidate.
+
+    Returns:
+        Whether the host accepts it.
+    """
+    return (
+        isinstance(name, str)
+        and 0 < len(name) <= _MAX_WEBHOOK_HEADER_NAME_BYTES
+        and bool(_WEBHOOK_HEADER_RE.match(name))
+    )
+
+
+def _webhook_number(row: dict[str, Any], field: str, default: int) -> int | None:
+    """Return an integer webhook field, its default when absent, or ``None``.
+
+    Args:
+        row: Webhook row.
+        field: Field name.
+        default: Serde default.
+
+    Returns:
+        The value, or ``None`` when it is not an integer.
+    """
+    if field not in row:
+        return default
+    value = row[field]
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _validate_webhooks(m: dict[str, Any]) -> None:
+    """Validate ``[[webhooks]]`` the way the host's ``validate_webhooks`` does.
+
+    Args:
+        m: Manifest under validation.
+
+    Raises:
+        ValueError: Naming the first bad row by its index.
+    """
+    rows = list(m.get("webhooks") or [])
+    if len(rows) > _MAX_WEBHOOKS:
+        raise ValueError(f"plugin.toml: at most {_MAX_WEBHOOKS} [[webhooks]] rows")
+    names: set[str] = set()
+    for i, row in enumerate(rows):
+        name = row.get("name") if isinstance(row.get("name"), str) else ""
+        if not _WEBHOOK_NAME_RE.match(name) or len(name) > MAX_WEBHOOK_NAME_BYTES:
+            raise ValueError(
+                f"plugin.toml: webhooks[{i}].name must be `[a-z0-9][a-z0-9-]*` and at most "
+                f"{MAX_WEBHOOK_NAME_BYTES} chars"
+            )
+        if name in names:
+            raise ValueError(f"plugin.toml: webhooks[{i}].name repeats an earlier row")
+        names.add(name)
+        body = _webhook_number(row, "max_body_bytes", 64 * 1024)
+        if body is None or not 1 <= body <= MAX_WEBHOOK_BODY_BYTES:
+            raise ValueError(
+                f"plugin.toml: webhooks[{i}].max_body_bytes must be 1..={MAX_WEBHOOK_BODY_BYTES}"
+            )
+        rate = _webhook_number(row, "rate_per_minute", 60)
+        if rate is None or not 1 <= rate <= _MAX_WEBHOOK_RATE_PER_MINUTE:
+            raise ValueError(
+                f"plugin.toml: webhooks[{i}].rate_per_minute must be "
+                f"1..={_MAX_WEBHOOK_RATE_PER_MINUTE}"
+            )
+        retention = _webhook_number(row, "retention_secs", 86_400)
+        if retention is None or not 60 <= retention <= _MAX_WEBHOOK_RETENTION_SECS:
+            raise ValueError(
+                f"plugin.toml: webhooks[{i}].retention_secs must be "
+                f"60..={_MAX_WEBHOOK_RETENTION_SECS}"
+            )
+        headers = list(row.get("headers") or [])
+        if len(headers) > MAX_WEBHOOK_HEADERS:
+            raise ValueError(
+                f"plugin.toml: webhooks[{i}].headers lists more than {MAX_WEBHOOK_HEADERS} names"
+            )
+        kept: set[str] = set()
+        for header in headers:
+            if not _is_webhook_header_name(header):
+                raise ValueError(
+                    f"plugin.toml: webhooks[{i}].headers entries must be lowercase header names"
+                )
+            if header in _FORBIDDEN_WEBHOOK_HEADERS:
+                raise ValueError(f"plugin.toml: webhooks[{i}].headers may not keep `{header}`")
+            if header in kept:
+                raise ValueError(f"plugin.toml: webhooks[{i}].headers repeats `{header}`")
+            kept.add(header)
+        signature = row.get("signature") if isinstance(row.get("signature"), dict) else {}
+        scheme = signature.get("scheme")
+        if scheme == "none":
+            continue
+        if scheme != "hmac-sha256":
+            raise ValueError(
+                f"plugin.toml: webhooks[{i}].signature.scheme must be `none` or `hmac-sha256`"
+            )
+        header = signature.get("header") or ""
+        if not _is_webhook_header_name(header) or header in _FORBIDDEN_WEBHOOK_HEADERS:
+            raise ValueError(
+                f"plugin.toml: webhooks[{i}].signature.header must be a lowercase header name "
+                "the host may read"
+            )
+        prefix = str(signature.get("prefix") or "")
+        if len(prefix) > _MAX_WEBHOOK_SIGNATURE_PREFIX_LEN or not all(
+            "\x21" <= c <= "\x7e" for c in prefix
+        ):
+            raise ValueError(
+                f"plugin.toml: webhooks[{i}].signature.prefix must be at most "
+                f"{_MAX_WEBHOOK_SIGNATURE_PREFIX_LEN} visible ASCII characters"
+            )
+        encoding = signature.get("encoding")
+        if encoding is not None and encoding not in ("hex", "base64"):
+            raise ValueError(
+                f"plugin.toml: webhooks[{i}].signature.encoding must be `hex` or `base64`"
+            )
+        secret = signature.get("secret_setting")
+        settings = m.get("settings")
+        if not isinstance(secret, str) or not any(
+            isinstance(s, dict) and s.get("key") == secret and s.get("type") == "secret"
+            for s in (settings if isinstance(settings, list) else [])
+        ):
+            raise ValueError(
+                f"plugin.toml: webhooks[{i}].signature.secret_setting must name a "
+                '`type = "secret"` entry in [[settings]]'
+            )
+
+
+def _unbracketed(host: str) -> str:
+    """Return ``host`` trimmed, without URL-form IPv6 brackets.
+
+    Args:
+        host: Host as written.
+
+    Returns:
+        The host.
+    """
+    host = host.strip()
+    return host[1:-1] if host.startswith("[") and host.endswith("]") else host
+
+
+def _canonical_port(text: str) -> int | None:
+    """Parse a port in canonical decimal (1-65535, no sign or leading zero).
+
+    Args:
+        text: Port text.
+
+    Returns:
+        The port, or ``None``.
+    """
+    if not text or len(text) > 5 or text[0] == "0" or not all("0" <= c <= "9" for c in text):
+        return None
+    port = int(text)
+    return port if port <= 65535 else None
+
+
+def _split_domain_entry(entry: str) -> tuple[str, int | None] | None:
+    """Split a ``domains`` entry into its host pattern and optional port.
+
+    Args:
+        entry: Trimmed entry.
+
+    Returns:
+        ``(host, port)``, or ``None`` when a port or bracket is malformed.
+    """
+    if entry.startswith("["):
+        close = entry.find("]")
+        if close < 0:
+            return None
+        host, after = entry[1:close], entry[close + 1 :]
+        if not after:
+            return host, None
+        if not after.startswith(":"):
+            return None
+        port = _canonical_port(after[1:])
+        return None if port is None else (host, port)
+    colon = entry.rfind(":")
+    if colon >= 0 and ":" not in entry[:colon]:
+        port = _canonical_port(entry[colon + 1 :])
+        return None if port is None else (entry[:colon], port)
+    return entry, None
+
+
+def _is_ipv6(text: str) -> bool:
+    """Return whether ``text`` is an IPv6 literal with no brackets or zone.
+
+    Args:
+        text: Candidate.
+
+    Returns:
+        Whether it parses as IPv6.
+    """
+    if ":" not in text or not all(c in "0123456789abcdefABCDEF:." for c in text):
+        return False
+    try:
+        ipaddress.IPv6Address(text)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_ipv4(text: str) -> bool:
+    """Return whether ``text`` is a dotted-quad IPv4 address in strict form.
+
+    Args:
+        text: Candidate.
+
+    Returns:
+        Whether it parses as IPv4.
+    """
+    parts = text.split(".")
+    return len(parts) == 4 and all(
+        re.fullmatch(r"0|[1-9][0-9]{0,2}", p) is not None and int(p) <= 255 for p in parts
+    )
+
+
+def _host_pattern(raw: str) -> str | None:
+    """Return the host pattern a ``domains`` or ``tcp`` host normalizes to.
+
+    Args:
+        raw: Host half of the entry (no port).
+
+    Returns:
+        ``"*"``, another non-empty marker for a valid host, or ``None``.
+    """
+    host = raw.strip().rstrip(".")
+    if not host or "%" in host:
+        return None
+    if host == "*":
+        return "*"
+    if host.startswith("*."):
+        return _hostname_ascii(host[2:], _FORBIDDEN_NAME_CHARS)
+    if _is_ipv6(host):
+        return host
+    return _hostname_ascii(host, _FORBIDDEN_NAME_CHARS)
+
+
+def _is_domain_pattern(raw: str) -> bool:
+    """Return whether the host's ``normalize_domain_pattern`` accepts a ``domains`` entry.
+
+    Args:
+        raw: Entry as written.
+
+    Returns:
+        Whether the host accepts it.
+    """
+    entry = raw.strip()
+    if not entry or "%" in entry:
+        return False
+    split = _split_domain_entry(entry)
+    if split is None:
+        return False
+    pattern = _host_pattern(split[0])
+    return pattern is not None and not (pattern == "*" and split[1] is not None)
+
+
+def _cidr_error(raw: str) -> str | None:
+    """Parse an ``address_cidrs`` entry the way the host's ``CidrGrant::parse`` does.
+
+    Args:
+        raw: Entry as written.
+
+    Returns:
+        The host's error text, or ``None`` when it parses.
+    """
+    text = raw.strip()
+    if not text:
+        return "empty CIDR"
+    addr, slash, prefix_text = text.partition("/")
+    if not slash:
+        return None if _is_ipv4(text) or _is_ipv6(text) else f"invalid IP `{text}`"
+    digits = prefix_text[1:] if prefix_text.startswith("+") else prefix_text
+    # Bound the significant digits before converting (Python caps int() on
+    # very long text); leading zeros parse as they do for the host's `u8`.
+    significant = digits.lstrip("0") or "0"
+    if (
+        not digits
+        or not all("0" <= c <= "9" for c in digits)
+        or len(significant) > 3
+        or int(significant) > 255
+    ):
+        return f"invalid CIDR prefix `{prefix_text}`"
+    v4 = _is_ipv4(addr)
+    if not v4 and not _is_ipv6(addr):
+        return f"invalid CIDR address `{addr}`"
+    prefix, limit = int(significant), (32 if v4 else 128)
+    return f"CIDR prefix {prefix} exceeds {limit}" if prefix > limit else None
+
+
+def _validate_network_grants(net: dict[str, Any]) -> None:
+    """Validate ``domains`` entries, ``tcp`` hosts and ports, and ``address_cidrs``.
+
+    Args:
+        net: The ``[capabilities.network]`` table.
+
+    Raises:
+        ValueError: Naming the first entry the host would refuse.
+    """
+    for domain in net.get("domains") or []:
+        if not _is_domain_pattern(str(domain)):
+            raise ValueError(
+                f"plugin.toml: capabilities.network.domains entry `{domain}` is not a valid "
+                "hostname with an optional `:port` (IDNA ToASCII failed, percent-encoded host, "
+                "a port on `*`, or a port that is not 1-65535 in plain digits)"
+            )
+    for tcp in net.get("tcp") or []:
+        host = str(tcp.get("host") or "")
+        pattern = _host_pattern(_unbracketed(host))
+        if pattern is None or pattern == "*":
+            raise ValueError(
+                f"plugin.toml: capabilities.network.tcp host `{host}` is not a valid hostname "
+                "(`*` is a fetch grant only)"
+            )
+        ports = tcp.get("ports") or []
+        if not ports:
+            raise ValueError(
+                f"plugin.toml: capabilities.network.tcp host `{host}` must declare at least one port"
+            )
+        if not isinstance(ports, list) or any(
+            isinstance(p, bool) or not isinstance(p, int) or not 0 <= p <= 65535 for p in ports
+        ):
+            raise ValueError(
+                f"plugin.toml: capabilities.network.tcp host `{host}` ports must be integers "
+                "from 0 to 65535"
+            )
+    for cidr in net.get("address_cidrs") or []:
+        err = _cidr_error(str(cidr))
+        if err is not None:
+            raise ValueError(
+                f"plugin.toml: capabilities.network.address_cidrs entry `{cidr}`: {err}"
+            )
+
+
+_SETTING_TYPES: tuple[str, ...] = ("string", "bool", "integer", "enum", "secret", "table")
+"""Value types accepted in ``[[settings]] type``."""
+
+_COLUMN_TYPES: tuple[str, ...] = ("string", "bool", "integer", "enum")
+"""Value types a table column may have."""
+
+_SETTING_NETWORKS: tuple[str, ...] = ("fetch", "tcp")
+"""Network grant kinds a string setting may declare."""
+
+_SETTING_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}\Z")
+"""Setting and column key grammar (host ``is_valid_setting_key``)."""
+
+_MAX_SETTINGS = 32
+"""Most ``[[settings]]`` one plugin may declare."""
+
+_MAX_SETTING_VALUES = 64
+"""Most ``values`` one enum entry may declare."""
+
+_MAX_SETTING_STRING_BYTES = 1024
+"""Longest string value (and enum id), in UTF-8 bytes."""
+
+_MAX_TABLE_COLUMNS = 16
+"""Most columns one table setting may declare."""
+
+_MAX_TABLE_ROWS = 64
+"""Most rows one table value may hold."""
+
+
+def _setting_values_error(entry: dict[str, Any]) -> str | None:
+    """Check an entry's ``values`` the way the host's ``validate_values`` does.
+
+    Args:
+        entry: Setting or column.
+
+    Returns:
+        The first failed rule, or ``None``.
+    """
+    key = str(entry.get("key") or "")
+    values = list(entry.get("values") or [])
+    if entry.get("type") == "enum":
+        if not values:
+            return f"enum setting `{key}` must declare `values`"
+        if len(values) > _MAX_SETTING_VALUES:
+            return f"enum setting `{key}` declares more than {_MAX_SETTING_VALUES} values"
+        ids: set[str] = set()
+        for value in values:
+            value_id = value.get("id") if isinstance(value, dict) else None
+            if not isinstance(value_id, str) or not value_id:
+                return f"enum setting `{key}` has an invalid value id"
+            if len(value_id.encode("utf-8")) > _MAX_SETTING_STRING_BYTES:
+                return f"enum setting `{key}` has an invalid value id"
+            if value_id in ids:
+                return f"enum setting `{key}` value `{value_id}` is duplicated"
+            ids.add(value_id)
+    elif values:
+        return f"setting `{key}` declares `values` but is not an enum"
+    return None
+
+
+def _setting_value_error(entry: dict[str, Any], value: Any) -> str | None:
+    """Check one value against an entry the way the host's ``check_value`` does.
+
+    Args:
+        entry: Setting or column.
+        value: Candidate value.
+
+    Returns:
+        The first failed rule, or ``None``.
+    """
+    key = str(entry.get("key") or "")
+    kind = entry.get("type")
+    if kind == "secret":
+        return f"setting `{key}` is a secret; store it through the secrets binding"
+    if kind == "bool":
+        return None if isinstance(value, bool) else f"setting `{key}` must be a boolean"
+    if kind == "integer":
+        ok = isinstance(value, int) and not isinstance(value, bool)
+        return None if ok else f"setting `{key}` must be an integer"
+    if kind == "enum":
+        ids = [str(v.get("id") or "") for v in entry.get("values") or [] if isinstance(v, dict)]
+        if isinstance(value, str) and value in ids:
+            return None
+        return f"setting `{key}` must be one of: {', '.join(ids)}"
+    if kind == "table":
+        return _setting_rows_error(entry, value)
+    if not isinstance(value, str):
+        return f"setting `{key}` must be a string"
+    if len(value.encode("utf-8")) <= _MAX_SETTING_STRING_BYTES and "\0" not in value:
+        return None
+    return f"setting `{key}` must be at most {_MAX_SETTING_STRING_BYTES} bytes"
+
+
+def _setting_rows_error(entry: dict[str, Any], value: Any) -> str | None:
+    """Check a table value's rows the way the host's ``check_rows`` does.
+
+    Args:
+        entry: Table setting.
+        value: Candidate rows.
+
+    Returns:
+        The first failed rule, or ``None``.
+    """
+    key = str(entry.get("key") or "")
+    if not isinstance(value, list):
+        return f"setting `{key}` must be an array of rows"
+    if len(value) > _MAX_TABLE_ROWS:
+        return f"setting `{key}` may hold at most {_MAX_TABLE_ROWS} rows"
+    columns = [c for c in entry.get("columns") or [] if isinstance(c, dict)]
+    for index, row in enumerate(value):
+        number = index + 1
+        if not isinstance(row, dict):
+            return f"setting `{key}` row {number} must be an object"
+        # The host reads rows as sorted JSON objects.
+        for field in sorted(row):
+            column = next((c for c in columns if c.get("key") == field), None)
+            if column is None:
+                return f"setting `{key}` row {number}: column `{field}` is not declared"
+            err = _setting_value_error(column, row[field])
+            if err is not None:
+                return f"setting `{key}` row {number}: {err}"
+        for column in columns:
+            name = str(column.get("key") or "")
+            if column.get("required") is True and "default" not in column and name not in row:
+                return f"setting `{key}` row {number}: column `{name}` is required"
+    return None
+
+
+def _setting_columns_error(entry: dict[str, Any]) -> str | None:
+    """Check a setting's columns the way the host's ``validate_columns`` does.
+
+    Args:
+        entry: Setting.
+
+    Returns:
+        The first failed rule, or ``None``.
+    """
+    key = str(entry.get("key") or "")
+    columns = list(entry.get("columns") or [])
+    if entry.get("type") != "table":
+        return f"setting `{key}` declares `columns` but is not a table" if columns else None
+    if not columns:
+        return f"table setting `{key}` must declare `columns`"
+    if len(columns) > _MAX_TABLE_COLUMNS:
+        return f"table setting `{key}` declares more than {_MAX_TABLE_COLUMNS} columns"
+    seen: set[str] = set()
+    for column in columns:
+        name = str(column.get("key") or "")
+        where = f"table setting `{key}` column `{name}`"
+        if not _SETTING_KEY_RE.match(name):
+            return f"{where} must match ^[a-z][a-z0-9_]{{0,63}}$"
+        if name in seen:
+            return f"{where} is duplicated"
+        seen.add(name)
+        if column.get("type") not in _COLUMN_TYPES:
+            return f"{where} must be a string, bool, integer or enum"
+        if column.get("columns"):
+            return f"{where} may not declare columns"
+        if "network" in column or "default_port" in column:
+            return f"{where} may not declare `network` or `default_port`"
+        values_err = _setting_values_error(column)
+        if values_err is not None:
+            return f"table setting `{key}`: {values_err}"
+        if "default" in column:
+            err = _setting_value_error(column, column["default"])
+            if err is not None:
+                return f"table setting `{key}` column default: {err}"
+    return None
+
+
+def _setting_network_error(entry: dict[str, Any]) -> str | None:
+    """Check a setting's network grant the way the host's ``validate_network`` does.
+
+    Args:
+        entry: Setting.
+
+    Returns:
+        The first failed rule, or ``None``.
+    """
+    key = str(entry.get("key") or "")
+    if "network" not in entry:
+        if "default_port" in entry:
+            return f"setting `{key}` declares `default_port` without `network`"
+        return None
+    if entry["network"] not in _SETTING_NETWORKS:
+        return f"setting `{key}` network must be one of {', '.join(_SETTING_NETWORKS)}"
+    if entry.get("type") != "string":
+        return f"setting `{key}` declares `network` but is not a string"
+    port = entry.get("default_port")
+    if "default_port" in entry and (
+        not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535
+    ):
+        return f"setting `{key}` `default_port` must be 1-65535"
+    return None
+
+
+def _validate_settings(m: dict[str, Any]) -> None:
+    """Validate ``[[settings]]`` the way the host's settings schema does.
+
+    Args:
+        m: Manifest under validation.
+
+    Raises:
+        ValueError: When a key, type, value list, column, network grant or
+            default is invalid, or the binding a value travels in is missing.
+    """
+
+    def fail(message: str) -> None:
+        raise ValueError(f"plugin.toml: [[settings]] {message}")
+
+    raw = m.get("settings")
+    if raw is None:
+        raw = []
+    if not isinstance(raw, list):
+        fail("must be an array of tables")
+    for index, row in enumerate(raw):
+        if not isinstance(row, dict):
+            fail(f"row {index} must be a table")
+    settings: list[dict[str, Any]] = raw
+
+    if len(settings) > _MAX_SETTINGS:
+        fail(f"at most {_MAX_SETTINGS} settings may be declared")
+    seen: set[str] = set()
+    for spec in settings:
+        key = str(spec.get("key") or "")
+        if not _SETTING_KEY_RE.match(key):
+            fail(f"settings key `{key}` must match ^[a-z][a-z0-9_]{{0,63}}$")
+        if key in seen:
+            fail(f"settings key `{key}` is duplicated")
+        seen.add(key)
+        if spec.get("type") not in _SETTING_TYPES:
+            fail(f"setting `{key}` type must be one of {', '.join(_SETTING_TYPES)}")
+        shape = (
+            _setting_values_error(spec)
+            or _setting_columns_error(spec)
+            or _setting_network_error(spec)
+        )
+        if shape is not None:
+            fail(shape)
+        if spec.get("type") == "secret":
+            if "default" in spec:
+                fail(f"secret setting `{key}` may not declare a default")
+            if not isinstance(m.get(_SEALED_TABLE), dict):
+                fail(f"secret setting `{key}` requires the `[{_SEALED_TABLE}]` binding")
+            continue
+        if "vars" not in m:
+            fail(f"setting `{key}` requires the `[vars]` binding")
+        if "default" in spec:
+            err = _setting_value_error(spec, spec["default"])
+            if err is not None:
+                fail(f"default for {err}")
 
 
 def _workerd_modules_dir(plugin_dir: Path, m: dict[str, Any]) -> Path:
@@ -1574,6 +2490,7 @@ ENTRYPOINT_EXPORT_CLASSES: dict[str, str] = {
     "notifier": "Notifier",
     "ingress": "Ingress",
     "ai": "Ai",
+    "provisioning": "Provisioning",
 }
 """Exported class name the launcher binds for each ``entrypoints`` wire name."""
 
@@ -1754,261 +2671,6 @@ def sync_embed(plugin_dir: Path) -> str:
     return f"synced {dest}"
 
 
-def _esc(s: str) -> str:
-    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
-def _array(values: list[str]) -> str:
-    """Emit a TOML array like ``toml::to_string_pretty``: inline for one element."""
-    if not values:
-        return "[]"
-    if len(values) == 1:
-        return f"[{values[0]}]"
-    inner = ",\n".join(f"    {v}" for v in values)
-    return f"[\n{inner},\n]"
-
-
-def _string_array(values: list[str]) -> str:
-    return _array([_esc(v) for v in values])
-
-
-def _number_array(values: list[Any]) -> str:
-    return _array([str(v) for v in values])
-
-
-def _bool(value: Any) -> str:
-    return "true" if value else "false"
-
-
-def _value(value: Any) -> str | None:
-    if isinstance(value, bool):
-        return _bool(value)
-    if isinstance(value, str):
-        return _esc(value)
-    if isinstance(value, (int, float)):
-        return str(value)
-    if isinstance(value, list):
-        rendered: list[str] = []
-        for item in value:
-            if isinstance(item, (dict, list)):
-                return None
-            one = _value(item)
-            if one is None:
-                return None
-            rendered.append(one)
-        return _array(rendered)
-    return None
-
-
-def _table_rows(lines: list[str], table: dict[str, Any]) -> None:
-    for key in sorted(table):
-        rendered = _value(table[key])
-        if rendered is not None:
-            lines.append(f"{key} = {rendered}")
-
-
-def _emit_queues(lines: list[str], queues: Any) -> None:
-    """Write ``[[queues.producers]]`` and ``[[queues.consumers]]`` rows."""
-    if not isinstance(queues, dict):
-        return
-    for producer in queues.get("producers") or []:
-        lines.append("")
-        lines.append("[[queues.producers]]")
-        lines.append(f"queue = {_esc(str(producer['queue']))}")
-        lines.append(f"binding = {_esc(str(producer['binding']))}")
-    for consumer in queues.get("consumers") or []:
-        lines.append("")
-        lines.append("[[queues.consumers]]")
-        lines.append(f"queue = {_esc(str(consumer['queue']))}")
-        for key in ("max_batch_size", "max_batch_timeout", "max_retries"):
-            if consumer.get(key) is not None:
-                lines.append(f"{key} = {consumer[key]}")
-        if consumer.get("dead_letter_queue") is not None:
-            lines.append(f"dead_letter_queue = {_esc(str(consumer['dead_letter_queue']))}")
-        for key in ("retry_delay", "max_concurrency", "message_retention_period"):
-            if consumer.get(key) is not None:
-                lines.append(f"{key} = {consumer[key]}")
-
-
-def _named_binding(lines: list[str], header: str, binding: Any) -> None:
-    if binding is None:
-        return
-    lines.append("")
-    lines.append(header)
-    name = str((binding or {}).get("binding") or "") if isinstance(binding, dict) else ""
-    if name:
-        lines.append(f"binding = {_esc(name)}")
-
-
-def format_manifest(m: dict[str, Any]) -> str:
-    """Emit canonical TOML matching Rust ``format_manifest`` gold fixtures.
-
-    Flags are emitted as written. This function does not insert the Python pair.
-
-    Args:
-        m: Validated manifest dictionary.
-
-    Returns:
-        Canonical ``plugin.toml`` text ending with a newline.
-    """
-    lines: list[str] = []
-    lines.append(f"api_version = {m['api_version']}")
-    lines.append(f"id = {_esc(m['id'])}")
-    if m.get("name") is not None:
-        lines.append(f"name = {_esc(m['name'])}")
-    if m.get("version") is not None:
-        lines.append(f"version = {_esc(m['version'])}")
-    if m.get("logo") is not None:
-        lines.append(f"logo = {_esc(m['logo'])}")
-    runtime = m.get("runtime") or "native"
-    lines.append(f"runtime = {_esc(runtime)}")
-    if m.get("command") is not None:
-        lines.append(f"command = {_esc(m['command'])}")
-    if m.get("args"):
-        lines.append(f"args = {_string_array(list(m['args']))}")
-    if m.get("entrypoints"):
-        lines.append(f"entrypoints = {_string_array([str(e) for e in m['entrypoints']])}")
-
-    if m.get("workerd"):
-        w = m["workerd"]
-        lines.append("")
-        lines.append("[workerd]")
-        lines.append(f"compatibility_date = {_esc(w['compatibility_date'])}")
-        if w.get("compatibility_flags"):
-            lines.append(f"compatibility_flags = {_string_array(list(w['compatibility_flags']))}")
-        lines.append(f"main_module = {_esc(w['main_module'])}")
-        lines.append(f"modules_dir = {_esc(w.get('modules_dir') or 'modules')}")
-        lines.append(f"entrypoint = {_esc(w.get('entrypoint') or 'default')}")
-        limits = w.get("limits") or {}
-        if limits.get("cpu_ms") is not None or limits.get("subrequests") is not None:
-            lines.append("")
-            lines.append("[workerd.limits]")
-            if limits.get("cpu_ms") is not None:
-                lines.append(f"cpu_ms = {limits['cpu_ms']}")
-            if limits.get("subrequests") is not None:
-                lines.append(f"subrequests = {limits['subrequests']}")
-
-    for mod in m.get("modules") or []:
-        lines.append("")
-        lines.append("[[modules]]")
-        lines.append(f"name = {_esc(str(mod['name']))}")
-        path = str(mod.get("path") or "")
-        if path:
-            lines.append(f"path = {_esc(path)}")
-        lines.append(f"type = {_esc(str(mod.get('type') or 'js'))}")
-
-    triggers = m.get("triggers") or {}
-    jobs = list(triggers.get("jobs") or [])
-    crons = list(triggers.get("crons") or [])
-    if jobs or crons:
-        lines.append("")
-        lines.append("[triggers]")
-        if jobs:
-            lines.append(f"jobs = {_string_array([str(j) for j in jobs])}")
-        if crons:
-            lines.append(f"crons = {_string_array([str(c) for c in crons])}")
-
-    events = m.get("events") or {}
-    for consumer in events.get("consumers") or []:
-        lines.append("")
-        lines.append("[[events.consumers]]")
-        lines.append(f"type = {_esc(str(consumer['type']))}")
-        lines.append(
-            f"schema_versions = {_number_array(list(consumer.get('schema_versions') or [1]))}"
-        )
-        lines.append(f"supports_suspend = {_bool(consumer.get('supports_suspend'))}")
-        lines.append(f"resource_class = {_esc(str(consumer.get('resource_class') or 'network'))}")
-        if consumer.get("max_retries") is not None:
-            lines.append(f"max_retries = {consumer['max_retries']}")
-        if consumer.get("message_retention_period") is not None:
-            lines.append(f"message_retention_period = {consumer['message_retention_period']}")
-        filt = consumer.get("filter")
-        if isinstance(filt, dict) and filt:
-            lines.append("")
-            lines.append("[events.consumers.filter]")
-            _table_rows(lines, filt)
-    for producer in events.get("producers") or []:
-        lines.append("")
-        lines.append("[[events.producers]]")
-        lines.append(f"type = {_esc(str(producer['type']))}")
-        if producer.get("binding"):
-            lines.append(f"binding = {_esc(str(producer['binding']))}")
-
-    for db in m.get("databases") or []:
-        lines.append("")
-        lines.append("[[databases]]")
-        lines.append(f"binding = {_esc(str(db['binding']))}")
-
-    if m.get("vars") is not None:
-        lines.append("")
-        lines.append("[vars]")
-        _table_rows(lines, dict(m["vars"]))
-    _named_binding(lines, f"[{_SEALED_TABLE}]", m.get(_SEALED_TABLE))
-    for kv in m.get("kv_namespaces") or []:
-        _named_binding(lines, "[[kv_namespaces]]", kv)
-        if kv.get("namespace") is not None:
-            lines.append(f"namespace = {_esc(str(kv['namespace']))}")
-        for key in ("max_value_bytes", "max_keys"):
-            if kv.get(key) is not None:
-                lines.append(f"{key} = {int(kv[key])}")
-    _emit_queues(lines, m.get("queues"))
-    _named_binding(lines, "[work_fs]", m.get("work_fs"))
-    _named_binding(lines, f"[{_LOOPBACK_TABLE}]", m.get(_LOOPBACK_TABLE))
-    _named_binding(lines, "[sockets]", m.get("sockets"))
-
-    caps = m.get("capabilities") or {}
-    net = caps.get("network") or {}
-    lines.append("")
-    lines.append("[capabilities.network]")
-    lines.append(f"mode = {_esc(net.get('mode') or 'deny')}")
-    if net.get("domains"):
-        lines.append(f"domains = {_string_array(list(net['domains']))}")
-
-    cli = m.get("cli") or {}
-    for cmd in cli.get("commands") or []:
-        lines.append("")
-        lines.append("[[cli.commands]]")
-        lines.append(f"name = {_esc(cmd['name'])}")
-        if cmd.get("about") is not None:
-            lines.append(f"about = {_esc(cmd['about'])}")
-        if not cmd.get("args"):
-            lines.append("args = []")
-        for arg in cmd.get("args") or []:
-            lines.append("")
-            lines.append("[[cli.commands.args]]")
-            lines.append(f"name = {_esc(str(arg['name']))}")
-            if arg.get("long") is not None:
-                lines.append(f"long = {_esc(str(arg['long']))}")
-            if arg.get("short") is not None:
-                lines.append(f"short = {_esc(str(arg['short']))}")
-            lines.append(f"kind = {_esc(str(arg.get('kind') or 'string'))}")
-            lines.append(f"required = {_bool(arg.get('required'))}")
-            if arg.get("default") is not None:
-                lines.append(f"default = {_esc(str(arg['default']))}")
-            if arg.get("about") is not None:
-                lines.append(f"about = {_esc(str(arg['about']))}")
-            lines.append(f"positional = {_bool(arg.get('positional'))}")
-
-    for client in (m.get("oidc") or {}).get("clients") or []:
-        lines.append("")
-        lines.append("[[oidc.clients]]")
-        lines.append(f"client_id = {_esc(str(client['client_id']))}")
-        if client.get("display_name"):
-            lines.append(f"display_name = {_esc(str(client['display_name']))}")
-        lines.append(f"callback_path = {_esc(str(client['callback_path']))}")
-        lines.append(f"public_client = {_bool(client.get('public_client', True))}")
-        scopes = list(client.get("default_scopes") or [])
-        if scopes:
-            lines.append(f"default_scopes = {_string_array([str(sc) for sc in scopes])}")
-        lines.append(f"issue_refresh_token = {_bool(client.get('issue_refresh_token', True))}")
-        lines.append(f"origin_config_key = {_esc(str(client['origin_config_key']))}")
-
-    out = "\n".join(lines)
-    if not out.endswith("\n"):
-        out += "\n"
-    return out
-
-
 def fmt_plugin_toml(path: Path, *, check_only: bool) -> str:
     """Format ``plugin.toml`` in place, or check that it is already canonical.
 
@@ -2038,7 +2700,8 @@ def fmt_plugin_toml(path: Path, *, check_only: bool) -> str:
         if norm(text) != norm(formatted):
             raise ValueError(f"would reformat {safe}")
         return f"ok {safe}"
-    safe.write_text(formatted, encoding="utf-8")
+    # LF on every platform, as the Rust formatter writes.
+    safe.write_text(formatted, encoding="utf-8", newline="\n")
     return f"wrote {safe}"
 
 

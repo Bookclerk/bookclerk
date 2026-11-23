@@ -1,5 +1,6 @@
-//! Replays the checked-in `s3_event`, `r2_event`, `b2_reply` and `b2_event`
-//! fuzz corpora in PR CI (no libFuzzer required), so a notification message,
+//! Replays the checked-in `s3_event`, `r2_event`, `b2_reply`, `b2_event`
+//! and `cloudflare_api` fuzz corpora in PR CI (no libFuzzer required), so a
+//! notification message, Cloudflare API reply,
 //! queue reply, B2 reply or B2 webhook body that once broke a parser stays
 //! fixed
 //! (`docs/adr/untrusted-input-fuzzing.md`).
@@ -329,4 +330,65 @@ fn named_b2_event_seeds_keep_their_meaning() {
     assert_eq!(keys("rules").len(), 3);
     assert_eq!(keys("rules_bad_secret"), ["a"]);
     assert!(keys("rules_empty").is_empty());
+}
+
+#[path = "../../../fuzz/oracles/cloudflare_api.rs"]
+mod cloudflare_api_oracle;
+
+#[test]
+fn fuzz_corpus_cloudflare_api_holds_the_oracle() {
+    for path in corpus_files("cloudflare_api") {
+        let data = std::fs::read(&path).expect("read");
+        cloudflare_api_oracle::check(&data);
+    }
+}
+
+/// Whether the reader byte 0 picks accepts one `cloudflare_api` seed.
+fn cloudflare_seed_reads(name: &str) -> bool {
+    use bookclerk_storage::cloudflare_api as api;
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fuzz/corpus/cloudflare_api")
+        .join(name);
+    let data = std::fs::read(&path).expect("read seed");
+    let (&selector, rest) = data.split_first().expect("non-empty seed");
+    match selector % 6 {
+        0 => api::parse_envelope(rest).is_ok(),
+        1 => api::parse_accounts(rest).is_ok(),
+        2 => api::parse_bucket_created(rest).is_ok(),
+        3 => api::find_permission_group(rest, api::BUCKET_ITEM_WRITE).is_ok_and(|g| g.is_some()),
+        4 => api::parse_minted_token(rest).is_ok(),
+        _ => api::check_bucket_name(std::str::from_utf8(rest).expect("utf-8")).is_ok(),
+    }
+}
+
+#[test]
+fn cloudflare_api_seeds_mean_what_they_say() {
+    for name in [
+        "envelope_ok",
+        "accounts_one",
+        "accounts_two",
+        "bucket_created",
+        "bucket_owned",
+        "groups_found",
+        "token_minted",
+        "bucket_name_ok",
+    ] {
+        assert!(cloudflare_seed_reads(name), "{name} reads");
+    }
+    for name in [
+        "envelope_refused",
+        "envelope_array",
+        "envelope_long_message",
+        "accounts_bad_id",
+        "bucket_forbidden",
+        "groups_missing",
+        "groups_bad_id",
+        "token_bad_value",
+        "token_no_id",
+        "bucket_name_upper",
+        "bucket_name_hyphen_end",
+        "bucket_name_short",
+    ] {
+        assert!(!cloudflare_seed_reads(name), "{name} is refused");
+    }
 }

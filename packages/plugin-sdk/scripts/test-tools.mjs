@@ -102,6 +102,29 @@ run(["fmt", "--check", path.join(fixtures, "fmt-full/plugin.toml")], false);
   }
 }
 
+// Formatter corpus: every first-party manifest, formatted by the Rust
+// formatter (crates/bookclerk-plugin-manifest/tests/fmt_corpus.rs). `fmt`
+// must write the same bytes for each source.
+{
+  const corpus = path.join(fixtures, "fmt-corpus");
+  const index = JSON.parse(fs.readFileSync(path.join(corpus, "index.json"), "utf8"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fmt-corpus-"));
+  try {
+    for (const [name, source] of Object.entries(index)) {
+      const target = path.join(dir, "plugin.toml");
+      fs.copyFileSync(path.join(root, source), target);
+      run(["fmt", target], true, "wrote");
+      const gold = fs.readFileSync(path.join(corpus, name), "utf8");
+      if (fs.readFileSync(target, "utf8") !== gold) {
+        throw new Error(`FAIL fmt-corpus: ${source} formats differently from ${name}`);
+      }
+      run(["fmt", "--check", path.join(corpus, name)], true);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // Shared logo and compatibility-date cases: the Rust and Python checkers
 // read the same files and must agree on every result and error message.
 {
@@ -194,18 +217,24 @@ run(["fmt", "--check", path.join(fixtures, "fmt-full/plugin.toml")], false);
     [table + column("a", "string") + column("a", "bool"), "column `a` is duplicated"],
     [table + column("a", "secret"), "column `a` must be a string, bool, integer or enum"],
     [table + column("Bad", "string"), "column `Bad` must match"],
-    [table + column("a", "enum"), "column `a` must declare `values`"],
-    [table + column("a", "string", "default = 1\n"), "default for table setting"],
+    [
+      table + column("a", "enum"),
+      "table setting `mappings`: enum setting `a` must declare `values`",
+    ],
+    [
+      table + column("a", "string", "default = 1\n"),
+      "table setting `mappings` column default: setting `a` must be a string",
+    ],
     [
       table.replace('type = "table"\n', 'type = "table"\ndefault = [{ b = "x" }]\n') +
         column("a", "string", "required = true\n") +
         column("b", "string"),
-      "does not match its columns",
+      "default for setting `mappings` row 1: column `a` is required",
     ],
     [
       table.replace('type = "table"\n', 'type = "table"\ndefault = [{ c = "x" }]\n') +
         column("a", "string"),
-      "does not match its columns",
+      "default for setting `mappings` row 1: column `c` is not declared",
     ],
   ];
   for (const [tables, needle] of cases) {
@@ -259,7 +288,7 @@ run(["fmt", "--check", path.join(fixtures, "fmt-full/plugin.toml")], false);
   const failed = [
     canonical(reparsed.settings) !== canonical(withDefault.settings) && "settings changed",
     !formatted.includes(
-      'default = [\n    { library = "a" },\n    { library = "b", mode = "write" },\n]',
+      '[[settings.default]]\nlibrary = "a"\n\n[[settings.default]]\nlibrary = "b"\nmode = "write"\n',
     ) && "default rows not formatted",
     formatManifest(reparsed) !== formatted && "second format differs",
   ].filter(Boolean);
@@ -359,8 +388,130 @@ for (const triggers of [
       capabilities: { network: { mode: "deny" } },
     }),
   );
-  if (JSON.stringify(roundTrip.triggers) !== JSON.stringify(triggers)) {
+  // Key order follows the Rust struct (`crons` before `jobs`), so compare
+  // the tables key by key: an added or missing key fails, list order counts.
+  const got = roundTrip.triggers ?? {};
+  const keys = (t) => Object.keys(t).sort().join(",");
+  const same =
+    keys(got) === keys(triggers) &&
+    Object.keys(triggers).every(
+      (key) => JSON.stringify(got[key]) === JSON.stringify(triggers[key]),
+    );
+  if (!same) {
     console.error("FAIL formatter changed [triggers]", JSON.stringify(roundTrip.triggers));
+    process.exit(1);
+  }
+}
+
+// Free-form values and cron text survive `fmt` the way the host writes them.
+{
+  const { formatManifest: fmtExact } = await import("../dist/tools/format.js");
+  const { validateManifest: check } = await import("../dist/tools/validate.js");
+  const source = [
+    "api_version = 3",
+    'id = "echo"',
+    'version = "0.1.0"',
+    'runtime = "native"',
+    'command = "./echo"',
+    'entrypoints = ["cli"]',
+    "",
+    "[triggers]",
+    'crons = ["0  3 * * MON"]',
+    "",
+    "[vars]",
+    "release_date = 2026-08-01",
+    "sample = [1.0, 1]",
+    '"2" = "two"',
+    '"10" = "ten"',
+    '__proto__ = "marker"',
+    "",
+    "[[vars.rows]]",
+    "id = 1",
+    "",
+    "[[vars.rows]]",
+    "[vars.rows.meta]",
+    "x = 2",
+    "",
+    "[capabilities.network]",
+    'mode = "deny"',
+    "",
+  ].join("\n");
+  check(parse(source));
+  const out = fmtExact(parse(source, { integersAsBigInt: true }), { integersAsBigInt: true });
+  const back = parse(out, { integersAsBigInt: true });
+  const problems = [
+    !out.includes('crons = ["0 3 * * MON"]') && "cron whitespace not normalized",
+    !out.includes("release_date = 2026-08-01") && "date literal lost",
+    !out.includes("sample = [\n    1.0,\n    1,\n]") && "float/integer kind lost",
+    out.indexOf('"10" = "ten"') > out.indexOf('"2" = "two"') && "keys not in sorted order",
+    !out.includes('__proto__ = "marker"') && "__proto__ key dropped",
+    (back.vars?.rows?.length ?? 0) !== 2 && "array-of-tables element merged",
+  ].filter(Boolean);
+  if (problems.length) {
+    console.error("FAIL fmt free-form round trip:", problems.join("; "), "\n" + out);
+    process.exit(1);
+  }
+}
+
+// Rules the host enforces while decoding (u16 ports, u32 schema versions,
+// the credentials and encoding enums) and the queue `SOCKETS` name.
+{
+  const { validateManifest: check } = await import("../dist/tools/validate.js");
+  const { envPropertiesFor } = await import("../dist/tools/types.js");
+  const base = {
+    api_version: 3,
+    id: "echo",
+    version: "0.1.0",
+    runtime: "native",
+    command: "./echo",
+    entrypoints: ["cli"],
+    capabilities: { network: { mode: "deny" } },
+  };
+  const refuses = (label, m, needle) => {
+    try {
+      check(m);
+    } catch (err) {
+      if (String(err.message).includes(needle)) return;
+      console.error(`FAIL ${label}: wrong error`, err.message);
+      process.exit(1);
+    }
+    console.error(`FAIL ${label}: accepted`);
+    process.exit(1);
+  };
+  refuses(
+    "credentials enum",
+    { ...base, entrypoints: ["storefront"], credentials: "bogus" },
+    "`credentials` must be `shareable` or `single_keeper`",
+  );
+  refuses(
+    "tcp port range",
+    {
+      ...base,
+      capabilities: {
+        network: { mode: "outbound", tcp: [{ host: "example.com", ports: [65536] }] },
+      },
+    },
+    "ports must be integers from 0 to 65535",
+  );
+  refuses(
+    "schema version range",
+    { ...base, events: { consumers: [{ type: "book_added", schema_versions: [-1] }] } },
+    "schema_versions entries must be integers",
+  );
+  refuses(
+    "bad cron before the registry rule",
+    { ...base, entrypoints: ["storage"], triggers: { crons: ["bad"] } },
+    "5 fields",
+  );
+  const queue = {
+    ...base,
+    runtime: "workerd",
+    workerd: { compatibility_date: "2026-08-01", main_module: "index.js" },
+    queues: { producers: [{ binding: "SOCKETS", queue: "jobs" }] },
+  };
+  check(queue);
+  if (!envPropertiesFor(queue).some((p) => p.name === "SOCKETS")) {
+    console.error("FAIL types refused a SOCKETS queue producer the host accepts");
     process.exit(1);
   }
 }

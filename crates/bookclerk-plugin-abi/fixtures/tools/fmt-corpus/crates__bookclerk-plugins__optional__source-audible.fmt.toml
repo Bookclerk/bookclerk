@@ -1,0 +1,176 @@
+api_version = 3
+id = "audible"
+name = "Audible"
+version = "0.1.0"
+logo = "https://www.google.com/s2/favicons?domain=audible.com&sz=128"
+runtime = "native"
+command = "./bookclerk-plugin-source-audible"
+entrypoints = ["storefront"]
+credentials = "single_keeper"
+
+[vars]
+
+[[settings]]
+key = "bitrate"
+label = "Bitrate"
+type = "enum"
+default = "high"
+
+[[settings.values]]
+id = "high"
+label = "High"
+
+[[settings.values]]
+id = "normal"
+label = "Normal"
+
+[secrets]
+
+[work_fs]
+
+[oauth]
+
+[media]
+works = [
+    "book",
+    "podcast",
+]
+lists = ["audio"]
+fetches = ["audio"]
+
+[acquire]
+downloads_per_day = 100
+min_gap_seconds = 30
+cooldown_seconds = 86400
+
+[capabilities.network]
+mode = "outbound"
+
+[[capabilities.network.tcp]]
+host = "*.audible.com"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "*.amazon.com"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "*.audible.co.uk"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "*.amazon.co.uk"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "*.audible.de"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "*.amazon.de"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "*.audible.fr"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "*.amazon.fr"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "*.audible.ca"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "*.amazon.ca"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "*.audible.it"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "*.amazon.it"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "*.audible.com.au"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "*.amazon.com.au"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "*.audible.in"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "*.amazon.in"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "*.audible.co.jp"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "*.amazon.co.jp"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "*.audible.es"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "*.amazon.es"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "*.audible.com.br"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "*.amazon.com.br"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "*.media-amazon.com"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "*.amazonaws.com"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "api.audnex.us"
+ports = [443]
+
+[capabilities.network.own_user_agent]
+hosts = [
+    "*.audible.com",
+    "*.amazon.com",
+    "*.audible.co.uk",
+    "*.amazon.co.uk",
+    "*.audible.de",
+    "*.amazon.de",
+    "*.audible.fr",
+    "*.amazon.fr",
+    "*.audible.ca",
+    "*.amazon.ca",
+    "*.audible.it",
+    "*.amazon.it",
+    "*.audible.com.au",
+    "*.amazon.com.au",
+    "*.audible.in",
+    "*.amazon.in",
+    "*.audible.co.jp",
+    "*.amazon.co.jp",
+    "*.audible.es",
+    "*.amazon.es",
+    "*.audible.com.br",
+    "*.amazon.com.br",
+    "*.media-amazon.com",
+    "*.amazonaws.com",
+]
+reason = "Audible's sign-in, device registration, app API and content servers answer only Audible's own iOS and Android apps."

@@ -231,6 +231,9 @@ The daemon offers the same operations to an operator session:
 | `GET` / `PUT` | `/api/config/plugin-instances/{id}/filter` (a storage destination's filter: `PUT` takes `{rules: [{field, value, effect}]}`, and both answer `{plugin_instance_id, revision, filter}` with the rules under `filter`; see [Output](output.md#choosing-which-books-a-destination-takes)) |
 | `GET` / `PUT` / `DELETE` | `/api/config/plugin-instances/{id}/intake` (whether a storage instance is a drop folder: `PUT` takes the settings, `DELETE` makes it a destination again, and both `GET` and `PUT` answer `{plugin_instance_id, revision, intake}`; see [Drop folders](drop-folders.md)) |
 | `PUT` | `/api/config/plugin-instances/{id}/deployments/{node_id}` (`{desired, expected_revision}`) |
+| `GET` | `/api/config/plugin-instances/{id}/provisioning` (the plugin's [guided setup](../plugins/manifest.md#provisioning-guided-setup), or `null`; 409 when the plugin is not installed on this server) |
+| `POST` | `/api/config/plugin-instances/{id}/provision` (`{expected_revision, grant: {kind: "api_token", token}, inputs}`; runs the guided setup on this server and stores what it returns; the token is never stored or echoed) |
+| `POST` | `/api/config/plugin-instances/{id}/deprovision` (`{grant?}`; asks the plugin to remove what its setup created, before the instance is deleted) |
 | `GET` | `/api/config/nodes`; `/api/config/plugins/{key}` carries the pinned schema |
 
 ### Settings → Plugins

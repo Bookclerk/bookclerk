@@ -420,6 +420,23 @@ mode = "deny"
         validate_manifest(tomllib.loads(text))
 
 
+_FMT_CORPUS = FIXTURES / "fmt-corpus"
+_FMT_CORPUS_INDEX: dict[str, str] = json.loads(
+    (_FMT_CORPUS / "index.json").read_text(encoding="utf-8")
+)
+
+
+@pytest.mark.parametrize("name", sorted(_FMT_CORPUS_INDEX))
+def test_fmt_matches_the_rust_corpus(name: str, tmp_path: Path) -> None:
+    """``fmt`` writes what the Rust formatter wrote for each first-party manifest."""
+    target = tmp_path / "plugin.toml"
+    shutil.copyfile(ROOT / _FMT_CORPUS_INDEX[name], target)
+    fmt_plugin_toml(target, check_only=False)
+    # Bytes, so a CRLF write on Windows cannot pass as the LF fixture.
+    assert target.read_bytes() == (_FMT_CORPUS / name).read_bytes()
+    assert fmt_plugin_toml(_FMT_CORPUS / name, check_only=True).startswith("ok ")
+
+
 def test_format_manifest_does_not_insert_python_flags():
     rendered = format_manifest(
         {
@@ -1811,7 +1828,8 @@ def test_format_manifest_writes_the_defaults_a_manifest_leaves_out():
     consumer = parsed["events"]["consumers"][0]
     assert consumer["schema_versions"] == [1]
     assert consumer["resource_class"] == "network"
-    assert "filter" not in consumer
+    # The Rust formatter keeps an empty filter table (`Some({})`).
+    assert consumer["filter"] == {}
     assert parsed["capabilities"]["network"] == {"mode": "deny"}
     assert parsed["cli"]["commands"][0]["args"][0]["kind"] == "string"
     client = parsed["oidc"]["clients"][0]
@@ -2034,3 +2052,134 @@ def test_acquire_rejects_fields_the_host_does_not_know() -> None:
     for scalar in (False, 100, "fast", [1], date(1979, 5, 27)):
         with pytest.raises(ValueError, match=r"`\[acquire\]` must be a table"):
             validate_manifest({**base, "acquire": scalar})
+
+
+_DECODE_BASE: dict[str, Any] = {
+    "api_version": 3,
+    "id": "echo",
+    "version": "0.1.0",
+    "runtime": "native",
+    "command": "./echo",
+    "entrypoints": ["cli"],
+    "capabilities": {"network": {"mode": "deny"}},
+}
+
+
+@pytest.mark.parametrize(
+    ("label", "extra", "needle"),
+    [
+        (
+            "credentials enum",
+            {"entrypoints": ["storefront"], "credentials": "bogus"},
+            "`credentials` must be `shareable` or `single_keeper`",
+        ),
+        (
+            "tcp port range",
+            {
+                "capabilities": {
+                    "network": {
+                        "mode": "outbound",
+                        "tcp": [{"host": "example.com", "ports": [65536]}],
+                    }
+                }
+            },
+            "ports must be integers from 0 to 65535",
+        ),
+        (
+            "tcp port bool",
+            {
+                "capabilities": {
+                    "network": {
+                        "mode": "outbound",
+                        "tcp": [{"host": "example.com", "ports": [True]}],
+                    }
+                }
+            },
+            "ports must be integers from 0 to 65535",
+        ),
+        (
+            "schema version range",
+            {"events": {"consumers": [{"type": "book_added", "schema_versions": [-1]}]}},
+            "schema_versions entries must be integers",
+        ),
+        (
+            "bad cron before the registry rule",
+            {"entrypoints": ["storage"], "triggers": {"crons": ["bad"]}},
+            "5 fields",
+        ),
+        ("settings row shape", {"settings": [42]}, "row 0 must be a table"),
+        ("settings list shape", {"settings": {"key": "x"}}, "must be an array of tables"),
+        (
+            "webhook encoding",
+            {
+                "settings": [{"key": "hook_key", "type": "secret"}],
+                "webhooks": [
+                    {
+                        "name": "push",
+                        "signature": {
+                            "scheme": "hmac-sha256",
+                            "header": "x-signature",
+                            "secret_setting": "hook_key",
+                            "encoding": "base64url",
+                        },
+                    }
+                ],
+            },
+            "signature.encoding must be `hex` or `base64`",
+        ),
+    ],
+)
+def test_validate_refuses_what_the_host_cannot_decode(label: str, extra: dict, needle: str) -> None:
+    """Values the host refuses while decoding are refused by ``check`` too."""
+    from bookclerk_plugin_sdk.tools import validate_manifest
+
+    with pytest.raises(ValueError, match=None) as err:
+        validate_manifest({**_DECODE_BASE, **extra})
+    assert needle in str(err.value), (label, str(err.value))
+
+
+def test_secret_lookup_ignores_malformed_setting_keys() -> None:
+    """A list-valued setting key reaches settings validation, not a ``TypeError``."""
+    from bookclerk_plugin_sdk.tools import validate_manifest
+
+    with pytest.raises(ValueError):
+        validate_manifest({**_DECODE_BASE, "settings": [{"key": ["hook_key"], "type": "secret"}]})
+
+
+def test_long_port_and_cidr_text_is_refused_as_a_grant_error() -> None:
+    """Oversized digit runs are reported as bad grants, not int-conversion errors."""
+    from bookclerk_plugin_sdk.tools import validate_manifest
+
+    digits = "9" * 5000
+    for network in (
+        {
+            "mode": "outbound",
+            "tcp": [{"host": "example.com", "ports": [443]}],
+            "address_cidrs": [f"10.0.0.0/{digits}"],
+        },
+    ):
+        with pytest.raises(ValueError, match="invalid CIDR prefix"):
+            validate_manifest({**_DECODE_BASE, "capabilities": {"network": network}})
+    ok = {
+        "mode": "outbound",
+        "tcp": [{"host": "example.com", "ports": [443]}],
+        "address_cidrs": ["10.0.0.0/0008"],
+    }
+    validate_manifest({**_DECODE_BASE, "capabilities": {"network": ok}})
+
+
+def test_fmt_keeps_free_form_values_and_normalizes_crons() -> None:
+    """Keys needing quotes, array-of-tables rows and cron spacing survive ``fmt``."""
+    import tomllib
+
+    text = format_manifest(
+        {
+            **_DECODE_BASE,
+            "triggers": {"crons": ["0  3 * * MON"]},
+            "vars": {"key\n": "v", "rows": [{"id": 1}, {"meta": {"x": 2}}]},
+        }
+    )
+    assert 'crons = ["0 3 * * MON"]' in text
+    back = tomllib.loads(text)
+    assert back["vars"]["key\n"] == "v"
+    assert back["vars"]["rows"] == [{"id": 1}, {"meta": {"x": 2}}]

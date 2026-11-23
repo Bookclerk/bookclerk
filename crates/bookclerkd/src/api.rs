@@ -1415,6 +1415,15 @@ fn operator_only_routes() -> OpenApiRouter<Arc<AppState>> {
             crate::config_authority::put_plugin_instance_config
         ))
         .routes(routes!(
+            crate::config_authority::post_plugin_instance_provision
+        ))
+        .routes(routes!(
+            crate::config_authority::post_plugin_instance_deprovision
+        ))
+        .routes(routes!(
+            crate::config_authority::get_plugin_instance_provisioning
+        ))
+        .routes(routes!(
             crate::config_authority::get_destination_filter,
             crate::config_authority::put_destination_filter
         ))
