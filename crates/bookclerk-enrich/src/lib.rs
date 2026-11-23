@@ -34,8 +34,9 @@ pub use bookclerk_audible_catalog::{
 pub use bookclerk_library::decode_html_entities;
 pub use enrich::{
     apply_enrichment_to_edition, confidence_percent_to_fraction, enrich_editions_from_audible,
-    enrichment_for_asin, enrichment_from_record, lookup_by_metadata,
-    lookup_by_metadata_with_client, Enrichment, ScoredMatch, DEFAULT_ENRICH_MIN_CONFIDENCE,
+    enrichment_for_asin, enrichment_for_asin_checked, enrichment_from_record, lookup_by_metadata,
+    lookup_by_metadata_checked, lookup_by_metadata_with_client, Enrichment, ScoredMatch,
+    DEFAULT_ENRICH_MIN_CONFIDENCE,
 };
 pub use error::{EnrichError, Result};
 pub use match_score::{
@@ -46,5 +47,5 @@ pub use match_score::{
 pub use providers::{
     asin_identifier, chapter_info_from_layout, isbn_identifier, record_identifier, ChaptersAnswer,
     MetadataAnswer, MetadataProviders, NoMetadataProviders, ProvidedChapters, ProvidedRecord,
-    ProviderFailure, MAX_CHAPTER_DEPTH,
+    ProviderCoverage, ProviderFailure, MAX_CHAPTER_DEPTH,
 };

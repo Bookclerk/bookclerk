@@ -690,10 +690,12 @@ async fn start_clients(
         (cfg.paths().files_dir.clone(), cfg.clone())
     };
     // A failed discovery approves no platform plugin automatically.
-    let platform_payloads: std::collections::BTreeMap<String, String> =
-        tokio::task::spawn_blocking(move || consent::platform_payloads(&config))
-            .await
-            .unwrap_or_default();
+    let platform_installs: std::collections::BTreeMap<
+        String,
+        bookclerk_plugin_host::LocalPlatformInstall,
+    > = tokio::task::spawn_blocking(move || consent::platform_installs(&config))
+        .await
+        .unwrap_or_default();
     for link in pending {
         let keys = match load_library_link_keys(library, &link).await {
             Ok(keys) => keys,
@@ -769,7 +771,7 @@ async fn start_clients(
                 files_dir: files_dir.clone(),
                 handle: handle.clone(),
                 catalog,
-                platform_payloads: platform_payloads.clone(),
+                platform_installs: platform_installs.clone(),
             }
             .run(link_shutdown.clone()),
         )));

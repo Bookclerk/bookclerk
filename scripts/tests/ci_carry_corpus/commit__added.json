@@ -1,0 +1,14 @@
+{
+  "files": [
+    {
+      "filename": "ui/visual/baselines.lock",
+      "status": "added"
+    }
+  ],
+  "parents": [
+    {
+      "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
