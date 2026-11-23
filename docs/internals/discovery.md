@@ -73,6 +73,17 @@ operator, a household user, or a portal identity) has a **subject key**
    (Science Fiction, Fantasy, Mystery & Thriller, Romance, History &
    Biography, Self-help) through its catalog search, as far as its call
    budget reaches, so a new library still gets shelves.
+   Every taste is also browsed by **its own genres**: the genre labels its
+   seeds carry are counted (labels that differ only in case are one, a
+   label counts once per seed, and labels every store files most of its
+   catalog under, such as Fiction, are left out), and each store is asked
+   for the popular titles of the three most common through the same catalog
+   search. Without this a store's titles come only from what it relates to
+   single books. A store is asked one of these genres after every second
+   seed, so with the default budget of 32 calls and four stores each store
+   answers for its deals, five seeds and two genres. The titles join the
+   ranking like any other candidate and fill the same
+   "Popular in {Genre}" shelves as the starter genres.
    Every title a store returns goes into the **shared listing pool**
    (see [Shared listing pool](#shared-listing-pool)), and the person's
    `discover_candidates` rows are references to those listings plus what
@@ -994,7 +1005,7 @@ queue order; Discover personalizes the feed (including wishlist items).
 | Narrated by {Narrator} | `narrator` | Liked-narrator overlap |
 | Because you like {Genre} | `genre` | Category/subject overlap from finished titles |
 | Similar to books you finish | `similar_taste` | Embedding similarity |
-| Popular in {Genre} | `starter_genre` (`starter_genre:fantasy`, …) | Starter-genre browse while the taste is thin |
+| Popular in {Genre} | `starter_genre` (`starter_genre:fantasy`, …) | Genre browse: the genres the taste leans to, and the starter genres while it is thin |
 | Chirp deals right now | `chirp_deals` | Chirp top + free deals |
 | Picked for you on {Store} | `from_store` (`from_audible`, …) | Titles no personal shelf took, ranked by taste, under the store where they cost the person least |
 | Top picks for you | `top_picks` | Fallback when every other shelf is empty |

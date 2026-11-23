@@ -16,7 +16,8 @@ Discover shows rows of suggestions, each with its reason, for example:
   narrator you like.
 - **Because you like** a genre you finish books in.
 - **Similar to books you finish** and **Top picks for you**.
-- **Popular in** a genre, while Discover is still learning your taste.
+- **Popular in** a genre your books and wishes lean to (or a few common
+  genres while Discover is still learning your taste), ranked for you.
 - **Picked for you on** a store: the rest of your matches, each under the
   store where it costs you least, and **Chirp deals**.
 

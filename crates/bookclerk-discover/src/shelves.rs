@@ -330,14 +330,15 @@ pub fn build_discover_feed(
         SeriesRule::Cap,
     );
 
-    // Starter genres, browsed while the taste was thin: one shelf per genre,
-    // in the order the stores were asked.
+    // Genres the stores were browsed by (the genres the taste leans to,
+    // and the starter genres while it is thin): one shelf per genre, best
+    // title first.
     for genre in starter_genres(recs) {
         let id = format!("starter_genre:{}", slugish(&genre.to_lowercase()));
         builder.push(
             &id,
             &format!("Popular in {genre}"),
-            Some("Popular titles while Discover learns your taste"),
+            Some("Popular in the stores, ranked for you"),
             |r| {
                 r.starter_genre
                     .as_deref()
