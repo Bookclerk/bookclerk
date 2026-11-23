@@ -102,6 +102,10 @@ defaults to `[database].plugin = "sqlite"` until stamped to a PluginKey.
 - The host grants `library.db` (and its journal sidecars) in the jail
   allowlist, and passes the path as `BOOKCLERK_SQLITE_PATH` and context
   `sqlitePath`.
+- The guest may write those files but not delete anything in the files
+  directory, so it uses a `TRUNCATE` rollback journal that is emptied, never
+  removed. After a crash or power cut in the middle of a write, the next start
+  rolls the leftover journal back the same way, without deleting it.
 - The guest runs with `[sandbox].network = none`.
 
 ### D1 and PostgreSQL
