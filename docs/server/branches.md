@@ -1083,13 +1083,18 @@ C is B's.
   B. A title whose files would land on a key another book in A already
   uses is recorded, but its files aren't sent. A asks for them again only
   after a day or once B's file list for that title changes, not on every
-  sync. The files of an edition A already has aren't sent either (acquired there, or delivered by another branch),
+  sync. While B still has an upload of that title open, the refusal isn't
+  recorded. The files of an edition A already has aren't sent either (acquired there, or delivered by another branch),
   so each edition arrives once. If the branch that delivered an edition
   stops sharing it, its files stay on A, and another branch's title of the
   same edition counts as delivered by them when they are exactly that
   title's files: every key the title lists is on record for the edition,
   every audio key on record is in the title's list, and their media types
-  agree. That title can still be passed on to A's own library. If A has no output deployed, it records
+  agree. That title can still be passed on to A's own library. Only
+  files a branch left behind count this way: not files A acquired
+  itself, not a job's upload, and not files whose branch still holds the
+  title. A title that was delivered before under another file list
+  doesn't take them over either. If A has no output deployed, it records
   the titles without files. If a title A already has the files of later
   moves to another edition (an Administrator pins its listing there, or
   the listing is linked again to another edition), those files belong to
@@ -1232,7 +1237,8 @@ libraries:
   named in its question. If no edition of the work carries it, or several
   do, the answer is dropped. An ISBN-only answer never goes through the
   resolver's matching, so it can't create a work or edition, and it adds
-  no identifier to A's edition.
+  no identifier to A's edition. If A already stores that listing on
+  another edition, the answer is dropped rather than moving it.
 
 An answer names no store account, user, or other library. A asks only
 branches it still trusts, and records answers only for questions it sent

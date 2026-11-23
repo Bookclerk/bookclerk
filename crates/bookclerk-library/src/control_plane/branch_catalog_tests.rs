@@ -2556,6 +2556,67 @@ async fn a_deduplicated_title_is_delivered_by_files_its_writer_left() {
     assert!(forwardable_branch_titles_delivered(&store).await == 1);
 }
 
+/// Files are adopted only when the branch that wrote them left them
+/// behind: not while its holding is still held under a changed manifest,
+/// and never when the edition's audio was written by an acquire.
+#[tokio::test]
+async fn files_still_held_or_acquired_are_not_adopted() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, member) = world(dir.path()).await;
+    add_node(&store, "branch-c", "branch", Some(member)).await;
+    let key = "Author/p1/p1.m4b";
+    let fence = open_branch(&store, BRANCH, &[title_with("p1", key, &[])]).await;
+    deliver_local(&store, BRANCH, fence, "p1", &[key]).await;
+    open_branch(&store, "branch-c", &[title_with("p1", key, &[])]).await;
+    let delivered = || {
+        let store = store.clone();
+        async move {
+            list_branch_titles(&store, None, 10)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|row| row.node_id == "branch-c")
+                .unwrap()
+                .delivered
+        }
+    };
+
+    // The writer still shares the title, under a manifest it has not
+    // delivered yet: its files are not left behind.
+    holdings::Entity::update_many()
+        .col_expr(
+            holdings::Column::ShareDigest,
+            sea_orm::sea_query::Expr::value("changed"),
+        )
+        .filter(holdings::Column::NodeId.eq(BRANCH))
+        .exec(store.db())
+        .await
+        .unwrap();
+    assert!(pending_deliveries(&store, "branch-c", 10)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(!delivered().await, "a held writer's files are not adopted");
+
+    // The writer leaves, but the edition's audio is an acquire's.
+    open(&store, false, true).await;
+    edition_files::Entity::update_many()
+        .col_expr(
+            edition_files::Column::Writer,
+            sea_orm::sea_query::Expr::value(crate::store::ACQUIRE_WRITER),
+        )
+        .filter(edition_files::Column::StorageKey.eq(key))
+        .exec(store.db())
+        .await
+        .unwrap();
+    assert!(pending_deliveries(&store, "branch-c", 10)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(!delivered().await, "an acquire's files are not adopted");
+}
+
 /// How many branch holdings may be passed on now.
 async fn forwardable_branch_titles_delivered(store: &LibraryStore) -> usize {
     forwardable_branch_title_keys_page(store, None, 100)

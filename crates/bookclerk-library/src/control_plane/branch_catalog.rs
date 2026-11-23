@@ -750,6 +750,7 @@ async fn prepare_catalog_batch(
         ));
         if holding.delivered_digest.as_deref() != Some(digest.as_str())
             && wanted.len() < MAX_CATALOG_WANTED
+            && !refusal_stands(&holding, &digest, Utc::now())
             && !edition_has_other_audio(store, node_id, &plan.listing.edition_id, &holding.id)
                 .await?
         {
@@ -1133,7 +1134,10 @@ pub async fn pending_deliveries(
         for row in page {
             if out.len() >= limit
                 || row.delivered_digest == row.share_digest
-                || refusal_stands(&row, now)
+                || row
+                    .share_digest
+                    .as_deref()
+                    .is_some_and(|digest| refusal_stands(&row, digest, now))
             {
                 continue;
             }
@@ -1168,11 +1172,10 @@ pub async fn pending_deliveries(
 /// (that title removed or moved), so it is asked for again after this.
 const REFUSAL_RETRY_AFTER: chrono::Duration = chrono::Duration::days(1);
 
-/// True when node holding `row`'s current manifest was refused for good
+/// True when node holding `row` had manifest `digest` refused for good
 /// less than [`REFUSAL_RETRY_AFTER`] before `now`.
-fn refusal_stands(row: &holdings::Model, now: chrono::DateTime<Utc>) -> bool {
-    row.refused_digest.is_some()
-        && row.refused_digest == row.share_digest
+fn refusal_stands(row: &holdings::Model, digest: &str, now: chrono::DateTime<Utc>) -> bool {
+    row.refused_digest.as_deref() == Some(digest)
         && row
             .refused_at
             .as_deref()
@@ -1184,40 +1187,67 @@ fn refusal_stands(row: &holdings::Model, now: chrono::DateTime<Utc>) -> bool {
 /// (a key or folder another title holds here), recording the refusal
 /// against the holding's current manifest digest so the title is not asked
 /// for again on every session (#321). A changed manifest, or a day, lifts
-/// it. The record is a guarded write on the same digest; a failed write
-/// only means the title is asked for again.
-///
-/// # Errors
-///
-/// Returns an error when the write fails.
+/// it. The refusal is returned whether or not it could be recorded
+/// ([`record_refusal`]).
 async fn refused_for_good(
     store: &LibraryStore,
     row: &holdings::Model,
     reason: &'static str,
-) -> Result<UploadGrant> {
-    if let Some(digest) = row.share_digest.as_deref() {
-        let now = stamp();
-        let statements = vec![exec(
-            "UPDATE holdings SET refused_digest = ?, refused_at = ?, updated_at = ? \
-              WHERE id = ? AND holder_kind = 'node' AND share_digest = ?",
-            vec![
-                text(digest),
-                text(&now),
-                text(&now),
-                text(&row.id),
-                text(digest),
-            ],
-        )];
-        batch::execute_host_batch(
-            store,
-            request(
-                &format!("catalog-upload-refused:{}:{now}", row.id),
-                statements,
-            ),
-        )
-        .await?;
+) -> UploadGrant {
+    if let Err(err) = record_refusal(store, row).await {
+        tracing::warn!(
+            holding_id = %row.id,
+            reason,
+            error = %err,
+            "a lasting upload refusal was not recorded; the title is asked for again"
+        );
     }
-    Ok(UploadGrant::Refused(reason))
+    UploadGrant::Refused(reason)
+}
+
+/// Records a lasting refusal of node holding `row`'s current manifest, as
+/// one write guarded on the same digest. Nothing is recorded while the
+/// holding has an open upload of an unexpired token: that upload may still
+/// commit, and a refusal recorded beside it would only hide its title.
+///
+/// # Errors
+///
+/// Returns the read or write error.
+async fn record_refusal(store: &LibraryStore, row: &holdings::Model) -> Result<()> {
+    let Some(digest) = row.share_digest.as_deref() else {
+        return Ok(());
+    };
+    let now = stamp();
+    let open = node_upload_sessions::Entity::find()
+        .filter(node_upload_sessions::Column::HoldingId.eq(row.id.as_str()))
+        .filter(node_upload_sessions::Column::State.eq("open"))
+        .filter(node_upload_sessions::Column::ExpiresAt.gt(now.as_str()))
+        .count(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    if open > 0 {
+        return Ok(());
+    }
+    let statements = vec![exec(
+        "UPDATE holdings SET refused_digest = ?, refused_at = ?, updated_at = ? \
+          WHERE id = ? AND holder_kind = 'node' AND share_digest = ?",
+        vec![
+            text(digest),
+            text(&now),
+            text(&now),
+            text(&row.id),
+            text(digest),
+        ],
+    )];
+    batch::execute_host_batch(
+        store,
+        request(
+            &format!("catalog-upload-refused:{}:{now}", row.id),
+            statements,
+        ),
+    )
+    .await?;
+    Ok(())
 }
 
 /// Records node holding `row` (shared, not delivered) as delivered by the
@@ -1229,7 +1259,18 @@ async fn refused_for_good(
 /// audio key on record for the edition is in that manifest, and each media
 /// type both sides state agrees. Sizes and hashes are not compared:
 /// `edition_files` keeps no size, and an upload's digest is checked when
-/// it commits. The write is one guarded statement: it lands only while
+/// it commits.
+///
+/// Only files a branch left behind are adopted: every audio file on record
+/// must have been written by a committed catalog upload whose holding is
+/// gone, or by an upload whose session is gone with its node. Audio of an
+/// acquire, of an upload for a job, of an aborted or open upload, or of a
+/// holding still held (its branch still shares the title, under any
+/// digest) is never adopted. A holding delivered before under another
+/// digest is not either: its own earlier files are not the left-behind
+/// ones.
+///
+/// The write is one guarded statement: it lands only while
 /// the holding still shares the digest read here and no node holding of
 /// the edition has its current digest delivered, so a branch delivering
 /// meanwhile keeps the proof to itself.
@@ -1245,6 +1286,10 @@ async fn adopt_left_behind_files(
     let Some(digest) = row.share_digest.as_deref() else {
         return Ok(());
     };
+    if row.delivered_digest.is_some() || edition_delivered_elsewhere(store, row, edition_id).await?
+    {
+        return Ok(());
+    }
     let Some(title) = share_title_of(store, &row.id, digest)
         .await?
         .and_then(|text| serde_json::from_str::<CatalogTitle>(&text).ok())
@@ -1257,7 +1302,7 @@ async fn adopt_left_behind_files(
         .all(store.db())
         .await
         .map_err(LibraryError::Orm)?;
-    if !manifest_matches_files(&title, &recorded) {
+    if !manifest_matches_files(&title, &recorded) || !left_behind(store, &recorded).await? {
         return Ok(());
     }
     let now = stamp();
@@ -1292,6 +1337,82 @@ async fn adopt_left_behind_files(
         );
     }
     Ok(())
+}
+
+/// True when another node holding of `edition_id` than `row` has its
+/// current manifest delivered: such a holding keeps the edition's delivered
+/// proof, so [`adopt_left_behind_files`] has nothing to adopt and sends no
+/// write.
+///
+/// # Errors
+///
+/// Returns the read error.
+async fn edition_delivered_elsewhere(
+    store: &LibraryStore,
+    row: &holdings::Model,
+    edition_id: &str,
+) -> Result<bool> {
+    let found = find_holdings()
+        .filter(holdings::Column::HolderKind.eq("node"))
+        .filter(holdings::Column::Id.ne(row.id.as_str()))
+        .filter(sea_orm::sea_query::ExprTrait::equals(
+            Expr::col(holdings::Column::DeliveredDigest),
+            holdings::Column::ShareDigest,
+        ))
+        .filter(
+            holdings::Column::ListingId.in_subquery(
+                Query::select()
+                    .column(store_listings::Column::Id)
+                    .from(store_listings::Entity)
+                    .and_where(store_listings::Column::EditionId.eq(edition_id))
+                    .to_owned(),
+            ),
+        )
+        .count(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    Ok(found > 0)
+}
+
+/// True when every audio file in `recorded` is one a branch left behind,
+/// as [`adopt_left_behind_files`] requires: its writer is not an acquire,
+/// and its upload session is either gone (removed with its node) or a
+/// committed catalog upload whose holding no longer exists.
+///
+/// # Errors
+///
+/// Returns the read error.
+async fn left_behind(store: &LibraryStore, recorded: &[edition_files::Model]) -> Result<bool> {
+    let audio = crate::store::FileRole::Audio.as_str();
+    let writers: BTreeSet<&str> = recorded
+        .iter()
+        .filter(|file| file.role == audio)
+        .map(|file| file.writer.as_str())
+        .collect();
+    if writers
+        .iter()
+        .any(|writer| crate::store::AcquireWriter::is_acquire(writer))
+    {
+        return Ok(false);
+    }
+    let sessions = node_upload_sessions::Entity::find()
+        .filter(node_upload_sessions::Column::UploadId.is_in(writers.iter().copied()))
+        .all(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    for session in &sessions {
+        if session.job_id != CATALOG_ITEM || session.state != "committed" {
+            return Ok(false);
+        }
+    }
+    let held = holdings::Entity::find()
+        .filter(
+            holdings::Column::Id.is_in(sessions.iter().map(|session| session.holding_id.as_str())),
+        )
+        .count(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    Ok(held == 0)
 }
 
 /// The manifest-identity rule of [`adopt_left_behind_files`]: `title`'s
@@ -1429,14 +1550,14 @@ pub async fn grant_catalog_upload(
     }
     let keys: Vec<String> = declared.keys().map(|key| (*key).to_string()).collect();
     if keys_in_use(store, &edition_id, &shared.primary_key, &keys).await? {
-        return refused_for_good(store, &row, "key_in_use").await;
+        return Ok(refused_for_good(store, &row, "key_in_use").await);
     }
     // Any declared key, not only the primary's stem: a sidecar such as
     // another title's cover, `.cue`, chapter JSON or metadata file, or that
     // title's audio or PDF itself, even where no `edition_files` record says
     // who wrote it.
     if claims_another_titles_key(store, None, files).await? {
-        return refused_for_good(store, &row, "key_of_another_title").await;
+        return Ok(refused_for_good(store, &row, "key_of_another_title").await);
     }
     // The branch's own keys are the title's scope on every destination:
     // the folders they lie in, each key checked against the shared
@@ -1450,7 +1571,7 @@ pub async fn grant_catalog_upload(
     // A folder another title's audio lies in is that title's: a branch
     // writes nothing there or below it, whatever the file is named.
     if folders_of_another_title(store, &edition_id, node_id, &title_folders).await? {
-        return refused_for_good(store, &row, "folder_of_another_book").await;
+        return Ok(refused_for_good(store, &row, "folder_of_another_book").await);
     }
     let scoped: Vec<UploadDestination> = destinations
         .iter()
