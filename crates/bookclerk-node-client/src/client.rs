@@ -68,16 +68,16 @@ use bookclerk_library::control_plane::{
     LibraryLink, LibraryLinkKeys, NodeHeartbeat, NodeSampler, NODE_HEARTBEAT_INTERVAL,
 };
 use bookclerk_node_proto::{
-    claimed_problem, decode_nonce, open_instance_secrets, open_secrets, open_upload_token,
-    questions_problem, seal_account_offer, seal_secret_update, sign_artifact_request, sign_auth,
-    validate_box_public_key, window_page_problem, AccountBundle, AcquireTarget, ArtifactRequest,
-    AuthContext, Body, BranchRequest, CarriedAccount, CatalogRef, CatalogTitle, ClaimFilter,
-    ClaimScope, Frame, HeldFence, KeeperOutcome, LookupAnswer, LookupWork, PlanDestination,
-    RequestOutcome, SealError, SecretEntry, SecretRef, SecretValue, SigningKey, UploadAnswer,
-    UploadCommitRequest, UploadFile, WindowCursor, WindowWork, ACCOUNT_BUNDLE_VERSION,
-    ARTIFACTS_PATH, CATALOG_ITEM, CLOSE_PROTOCOL, CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS,
-    IDLE_TIMEOUT_SECS, ITEM_JOB, PING_INTERVAL_SECS, SEND_QUEUE_FRAMES, UPLOADS_PATH,
-    UPLOAD_AUTH_SCHEME, UPLOAD_PART_BYTES,
+    claimed_problem, decode_nonce, open_account_reconcile, open_instance_secrets, open_secrets,
+    open_upload_token, questions_problem, seal_account_offer, seal_secret_update,
+    sign_artifact_request, sign_auth, validate_box_public_key, window_page_problem, AccountBundle,
+    AcquireTarget, ArtifactRequest, AuthContext, Body, BranchRequest, CarriedAccount, CatalogRef,
+    CatalogTitle, ClaimFilter, ClaimScope, Frame, HeldFence, KeeperOutcome, LookupAnswer,
+    LookupWork, PlanDestination, RequestOutcome, SealError, SecretEntry, SecretRef, SecretValue,
+    SigningKey, UploadAnswer, UploadCommitRequest, UploadFile, WindowCursor, WindowWork,
+    ACCOUNT_BUNDLE_VERSION, ARTIFACTS_PATH, CATALOG_ITEM, CLOSE_PROTOCOL, CLOSE_REVOKED,
+    HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, ITEM_JOB, PING_INTERVAL_SECS, SEND_QUEUE_FRAMES,
+    UPLOADS_PATH, UPLOAD_AUTH_SCHEME, UPLOAD_PART_BYTES,
 };
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt as _, StreamExt as _};
@@ -323,6 +323,16 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The library's answer to a pushed sign-in ([`HostClientHandle::push_sign_in`]).
+#[derive(Debug)]
+pub struct SignInPushed {
+    /// What the library did with the sign-in.
+    pub outcome: KeeperOutcome,
+    /// With [`KeeperOutcome::Reconcile`] only: the library's own sign-in
+    /// of the same account.
+    pub library_sign_in: Option<CarriedAccount>,
 }
 
 /// What the library kept of an [`HostClientHandle::offer_accounts`].
@@ -1031,17 +1041,29 @@ impl HostClientHandle {
 
     /// Pushes the newest sign-in of one single-keeper store account this
     /// branch keeps up to the library (`accounts.update`), sealed like
-    /// [`Self::offer_accounts`], at the keeper's `revision`.
+    /// [`Self::offer_accounts`], at the keeper's `revision`. `keeps_own`
+    /// says the branch keeps this sign-in over the library's after a
+    /// [`KeeperOutcome::Reconcile`].
+    ///
+    /// # Returns
+    ///
+    /// What the library did, and with [`KeeperOutcome::Reconcile`] the
+    /// library's own sign-in of the same account, opened with this node's
+    /// box key.
     ///
     /// # Errors
     ///
     /// Returns [`OwnerCallError::Refused`] when the library refuses it, or
-    /// [`OwnerCallError::Unavailable`] when no connection answers.
+    /// [`OwnerCallError::Unavailable`] when no connection answers or the
+    /// answer is malformed (a `reconcile` without a sign-in of exactly
+    /// this account that opens here, or a sign-in with another outcome).
     pub async fn push_sign_in(
         &self,
         account: CarriedAccount,
         revision: i64,
-    ) -> Result<KeeperOutcome, OwnerCallError> {
+        keeps_own: bool,
+    ) -> Result<SignInPushed, OwnerCallError> {
+        let (plugin_key, account_id) = (account.plugin_key.clone(), account.account_id.clone());
         let conn = self
             .shared
             .wait_conn(Instant::now() + self.shared.timing.request_timeout)
@@ -1059,11 +1081,54 @@ impl HostClientHandle {
             .map_err(|_| OwnerCallError::Unavailable)?;
         drop(ephemeral);
         let answer = conn
-            .request(Body::AccountsUpdate { sealed, revision })
+            .request(Body::AccountsUpdate {
+                sealed,
+                revision,
+                keeps_own,
+            })
             .await
             .map_err(|Unavailable| OwnerCallError::Unavailable)?;
         match answer.body {
-            Body::AccountsUpdated { outcome } => Ok(outcome),
+            Body::AccountsUpdated {
+                outcome: KeeperOutcome::Reconcile,
+                sealed: Some(sealed),
+            } => {
+                let bundle = open_account_reconcile(
+                    &self.shared.box_secret,
+                    &self.shared.library_id,
+                    &self.shared.node_id,
+                    &sealed,
+                )
+                .map_err(|_| {
+                    tracing::warn!("the library's sign-in does not open with this node's box key");
+                    OwnerCallError::Unavailable
+                })?;
+                match <[CarriedAccount; 1]>::try_from(bundle.accounts) {
+                    Ok([own]) if own.plugin_key == plugin_key && own.account_id == account_id => {
+                        Ok(SignInPushed {
+                            outcome: KeeperOutcome::Reconcile,
+                            library_sign_in: Some(own),
+                        })
+                    }
+                    _ => Err(OwnerCallError::Unavailable),
+                }
+            }
+            Body::AccountsUpdated {
+                outcome: KeeperOutcome::Reconcile,
+                sealed: None,
+            }
+            | Body::AccountsUpdated {
+                outcome: KeeperOutcome::Applied | KeeperOutcome::Stale | KeeperOutcome::NotShared,
+                sealed: Some(_),
+            } => Err(OwnerCallError::Unavailable),
+            Body::AccountsUpdated {
+                outcome:
+                    outcome @ (KeeperOutcome::Applied | KeeperOutcome::Stale | KeeperOutcome::NotShared),
+                sealed: None,
+            } => Ok(SignInPushed {
+                outcome,
+                library_sign_in: None,
+            }),
             Body::Error { code, message } if code == "refused" => {
                 Err(OwnerCallError::Refused(message))
             }

@@ -38,6 +38,12 @@ pub const ACCOUNT_BUNDLE_AAD_DOMAIN: &[u8] = b"bookclerk-node.v1 account-bundle"
 /// one direction from opening as the other.
 pub const ACCOUNT_OFFER_AAD_DOMAIN: &[u8] = b"bookclerk-node.v1 account-offer";
 
+/// Domain of the associated data a library's own sign-in is sealed with
+/// when it answers a keeper's first push with
+/// [`crate::KeeperOutcome::Reconcile`] ([`seal_account_reconcile`]), so it
+/// never opens as a joining bundle or an offer.
+pub const ACCOUNT_RECONCILE_AAD_DOMAIN: &[u8] = b"bookclerk-node.v1 account-reconcile";
+
 /// Most accounts one bundle carries.
 pub const MAX_BUNDLE_ACCOUNTS: usize = 64;
 
@@ -123,6 +129,14 @@ pub fn account_bundle_aad(library_id: &str, node_id: &str) -> Vec<u8> {
 #[must_use]
 pub fn account_offer_aad(library_id: &str, node_id: &str) -> Vec<u8> {
     bound_aad(ACCOUNT_OFFER_AAD_DOMAIN, library_id, node_id)
+}
+
+/// Associated data of a library's sign-in answering a keeper's first push
+/// from `node_id`: [`ACCOUNT_RECONCILE_AAD_DOMAIN`], then the two ids as in
+/// [`account_bundle_aad`].
+#[must_use]
+pub fn account_reconcile_aad(library_id: &str, node_id: &str) -> Vec<u8> {
+    bound_aad(ACCOUNT_RECONCILE_AAD_DOMAIN, library_id, node_id)
 }
 
 /// `domain`, then each id as a 4-byte big-endian length and its bytes.
@@ -259,6 +273,28 @@ pub fn seal_account_offer(
     )
 }
 
+/// Seals a library's own sign-in of one account (`bundle`) to the keeping
+/// branch's box key `recipient`, for the `sealed` of an
+/// [`crate::Body::AccountsUpdated`] with
+/// [`crate::KeeperOutcome::Reconcile`]. Bound with
+/// [`account_reconcile_aad`].
+///
+/// # Errors
+///
+/// As [`seal_account_bundle`].
+pub fn seal_account_reconcile(
+    recipient: &[u8],
+    ephemeral_secret: &[u8; PUBLIC_KEY_LEN],
+    bundle: &AccountBundle,
+) -> Result<String, SealError> {
+    seal_bound(
+        recipient,
+        ephemeral_secret,
+        bundle,
+        &account_reconcile_aad(&bundle.library_id, &bundle.node_id),
+    )
+}
+
 /// Checks `bundle` against its own ids and its size, and seals it with
 /// `aad`, as base64url text.
 fn seal_bound(
@@ -318,6 +354,27 @@ pub fn open_account_offer(
         node_id,
         sealed,
         &account_offer_aad(library_id, node_id),
+    )
+}
+
+/// Opens a library's sign-in made by [`seal_account_reconcile`] with the
+/// branch's box secret, for the library it joined and its own node id.
+///
+/// # Errors
+///
+/// As [`open_account_bundle`].
+pub fn open_account_reconcile(
+    recipient_secret: &[u8; PUBLIC_KEY_LEN],
+    library_id: &str,
+    node_id: &str,
+    sealed: &str,
+) -> Result<AccountBundle, SealError> {
+    open_bound(
+        recipient_secret,
+        library_id,
+        node_id,
+        sealed,
+        &account_reconcile_aad(library_id, node_id),
     )
 }
 
@@ -413,6 +470,38 @@ mod tests {
             open_account_offer(&secret, "library-1", "node-1", &joining),
             Err(SealError::Open)
         );
+    }
+
+    #[test]
+    fn a_reconcile_answer_opens_only_as_one_for_its_library_and_node() {
+        let (secret, public) = recipient();
+        let answer = seal_account_reconcile(&public, &[9u8; 32], &bundle()).unwrap();
+        assert_eq!(
+            open_account_reconcile(&secret, "library-1", "node-1", &answer).unwrap(),
+            bundle()
+        );
+        assert_eq!(
+            open_account_reconcile(&secret, "library-2", "node-1", &answer),
+            Err(SealError::Open)
+        );
+        // It opens as no other box, and no other box opens as it.
+        assert_eq!(
+            open_account_bundle(&secret, "library-1", "node-1", &answer),
+            Err(SealError::Open)
+        );
+        assert_eq!(
+            open_account_offer(&secret, "library-1", "node-1", &answer),
+            Err(SealError::Open)
+        );
+        for other in [
+            seal_account_bundle(&public, &[9u8; 32], &bundle()).unwrap(),
+            seal_account_offer(&public, &[9u8; 32], &bundle()).unwrap(),
+        ] {
+            assert_eq!(
+                open_account_reconcile(&secret, "library-1", "node-1", &other),
+                Err(SealError::Open)
+            );
+        }
     }
 
     #[test]

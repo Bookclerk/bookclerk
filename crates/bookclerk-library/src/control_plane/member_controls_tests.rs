@@ -468,3 +468,167 @@ async fn a_promotion_after_authorization_stops_the_override_write() {
         );
     }
 }
+
+#[tokio::test]
+async fn a_change_keeps_controls_it_does_not_name() {
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        let sam = store
+            .create_user(UserRole::Member, Some("Sam"), None)
+            .await
+            .unwrap();
+        let operator = ConfigActor::Operator {
+            id: "operator".into(),
+        };
+
+        // Two editors that read the same default each change one control;
+        // the second keeps the first's change.
+        let first = change_default_member_controls(
+            store,
+            &operator,
+            &ControlOverrides::default().with(MemberControl::SeePrices, false),
+        )
+        .await
+        .unwrap();
+        assert!(!first.body.see_prices, "{name}");
+        let second = change_default_member_controls(
+            store,
+            &operator,
+            &ControlOverrides::default().with(MemberControl::Upload, true),
+        )
+        .await
+        .unwrap();
+        let expected = MemberControls {
+            see_prices: false,
+            upload: true,
+            ..MemberControls::default()
+        };
+        assert_eq!(second.body, expected, "{name}");
+        let same = change_default_member_controls(
+            store,
+            &operator,
+            &ControlOverrides::default().with(MemberControl::Upload, true),
+        )
+        .await
+        .unwrap();
+        assert_eq!(same.revision, second.revision, "{name}");
+
+        // The same for one patron's overrides, which end deleted once
+        // every control follows the default again.
+        let (_, one) = change_member_control_overrides_for(
+            store,
+            &sam,
+            &ControlChanges::default().with(MemberControl::Download, ControlChoice::Off),
+        )
+        .await
+        .unwrap();
+        assert_eq!(one.overrides.download, Some(false), "{name}");
+        let both = change_member_control_overrides(
+            store,
+            sam.id,
+            &ControlChanges::default().with(MemberControl::SeePrices, ControlChoice::On),
+        )
+        .await
+        .unwrap();
+        assert_eq!(both.overrides.download, Some(false), "{name}");
+        assert_eq!(both.overrides.see_prices, Some(true), "{name}");
+        assert!(
+            both.effective.see_prices && !both.effective.download,
+            "{name}"
+        );
+        // A change to what is already stored writes nothing and succeeds.
+        let unchanged = change_member_control_overrides(
+            store,
+            sam.id,
+            &ControlChanges::default().with(MemberControl::SeePrices, ControlChoice::On),
+        )
+        .await
+        .unwrap();
+        assert_eq!(unchanged.overrides, both.overrides, "{name}");
+        let cleared = change_member_control_overrides(
+            store,
+            sam.id,
+            &ControlChanges::default()
+                .with(MemberControl::Download, ControlChoice::Default)
+                .with(MemberControl::SeePrices, ControlChoice::Default),
+        )
+        .await
+        .unwrap();
+        assert!(cleared.overrides.is_empty(), "{name}");
+        assert_eq!(cleared.effective, expected, "{name}");
+        assert!(patron_controls::Entity::find_by_id(sam.id)
+            .one(store.db())
+            .await
+            .unwrap()
+            .is_none());
+
+        // A role change after the caller read the user refuses the change,
+        // even one that would write nothing.
+        let read = store.get_user(sam.id).await.unwrap().unwrap();
+        store
+            .set_user_role(sam.id, UserRole::Administrator)
+            .await
+            .unwrap();
+        for changes in [
+            ControlChanges::default().with(MemberControl::Download, ControlChoice::Off),
+            ControlChanges::default(),
+        ] {
+            let err = change_member_control_overrides_for(store, &read, &changes)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, LibraryError::Conflict(_)), "{name}: {err:?}");
+        }
+        assert!(member_control_overrides(store, sam.id)
+            .await
+            .unwrap()
+            .is_empty());
+
+        let err = change_member_control_overrides(
+            store,
+            987_654,
+            &ControlChanges::default().with(MemberControl::Download, ControlChoice::Off),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, LibraryError::NotFound(_)), "{err}");
+    }
+}
+
+#[test]
+fn patch_bodies_read_only_their_documented_shape() {
+    let changes =
+        parse_user_controls_patch(br#"{"changes":{"download":"off","upload":"default","see_prices":"on","edit_metadata":null}}"#)
+            .unwrap();
+    assert_eq!(changes.download, Some(ControlChoice::Off));
+    assert_eq!(changes.upload, Some(ControlChoice::Default));
+    assert_eq!(changes.see_prices, Some(ControlChoice::On));
+    assert_eq!(changes.edit_metadata, None);
+    let defaults = parse_default_controls_patch(br#"{"changes":{"upload":true}}"#).unwrap();
+    assert_eq!(
+        defaults,
+        ControlOverrides::default().with(MemberControl::Upload, true)
+    );
+    for refused in [
+        &br#"{"changes":{"download":{"off":null}}}"#[..],
+        br#"{"changes":{"download":false}}"#,
+        br#"{"changes":{"download":"OFF"}}"#,
+        br#"{"overrides":{}}"#,
+        br#"{"changes":{},"changes":{}}"#,
+    ] {
+        assert!(
+            matches!(
+                parse_user_controls_patch(refused),
+                Err(LibraryError::Invalid(_))
+            ),
+            "{}",
+            String::from_utf8_lossy(refused)
+        );
+    }
+    assert!(parse_default_controls_patch(br#"{"changes":{"upload":"on"}}"#).is_err());
+    assert!(parse_default_controls_patch(br#"{"upload":true}"#).is_err());
+    // What the writer gives, the reader takes back.
+    let json = serde_json::to_vec(&PatchUserControls { changes }).unwrap();
+    assert_eq!(parse_user_controls_patch(&json).unwrap(), changes);
+}

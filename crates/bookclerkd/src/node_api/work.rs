@@ -582,8 +582,13 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
         } => {
             super::host_accounts::remove(library, host, id.clone(), &plugin_key, &account_id).await
         }
-        Body::AccountsUpdate { sealed, revision } => {
-            super::host_accounts::update(library, host, id.clone(), &sealed, revision).await
+        Body::AccountsUpdate {
+            sealed,
+            revision,
+            keeps_own,
+        } => {
+            super::host_accounts::update(library, host, id.clone(), &sealed, revision, keeps_own)
+                .await
         }
         Body::CatalogQuestions {} => super::host_lookup::questions(library, host, id.clone()).await,
         Body::CatalogFound { answers, missing } => {

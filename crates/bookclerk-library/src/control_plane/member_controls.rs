@@ -282,6 +282,142 @@ impl ControlOverrides {
     }
 }
 
+/// What a change does to one control of one patron.
+// Read by a strict hand-written reader (module `strict`) that takes only
+// the three strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlChoice {
+    /// Allow the control for this patron, whatever the default says.
+    On,
+    /// Refuse the control for this patron, whatever the default says.
+    Off,
+    /// Follow the library's default again (for an Administrator: allowed).
+    Default,
+}
+
+impl ControlChoice {
+    /// The stored override: `Some(true)`, `Some(false)`, or `None` to
+    /// follow the default.
+    #[must_use]
+    pub fn value(self) -> Option<bool> {
+        match self {
+            Self::On => Some(true),
+            Self::Off => Some(false),
+            Self::Default => None,
+        }
+    }
+
+    /// The choice that stores `value`.
+    #[must_use]
+    pub fn of(value: Option<bool>) -> Self {
+        match value {
+            Some(true) => Self::On,
+            Some(false) => Self::Off,
+            None => Self::Default,
+        }
+    }
+
+    /// The wire spelling (`on`, `off`, `default`).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::On => "on",
+            Self::Off => "off",
+            Self::Default => "default",
+        }
+    }
+}
+
+/// Changes to some of one patron's overrides: a choice for each named
+/// control; a control left out (or `null`) keeps what it had, so two
+/// Administrators editing different controls do not undo each other.
+// Read by a strict hand-written reader (module `strict`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ControlChanges {
+    /// Change to [`MemberControl::LinkAccounts`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "off")]
+    pub link_accounts: Option<ControlChoice>,
+    /// Change to [`MemberControl::Download`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = json!(null))]
+    pub download: Option<ControlChoice>,
+    /// Change to [`MemberControl::EditMetadata`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = json!(null))]
+    pub edit_metadata: Option<ControlChoice>,
+    /// Change to [`MemberControl::Upload`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = json!(null))]
+    pub upload: Option<ControlChoice>,
+    /// Change to [`MemberControl::RequestBooks`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = json!(null))]
+    pub request_books: Option<ControlChoice>,
+    /// Change to [`MemberControl::SeePrices`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = json!(null))]
+    pub see_prices: Option<ControlChoice>,
+}
+
+impl ControlChanges {
+    /// The change to `control`, if any.
+    #[must_use]
+    pub fn get(&self, control: MemberControl) -> Option<ControlChoice> {
+        match control {
+            MemberControl::LinkAccounts => self.link_accounts,
+            MemberControl::Download => self.download,
+            MemberControl::EditMetadata => self.edit_metadata,
+            MemberControl::Upload => self.upload,
+            MemberControl::RequestBooks => self.request_books,
+            MemberControl::SeePrices => self.see_prices,
+        }
+    }
+
+    /// Sets or clears (`None`) the change to `control`.
+    pub fn set(&mut self, control: MemberControl, choice: Option<ControlChoice>) {
+        let slot = match control {
+            MemberControl::LinkAccounts => &mut self.link_accounts,
+            MemberControl::Download => &mut self.download,
+            MemberControl::EditMetadata => &mut self.edit_metadata,
+            MemberControl::Upload => &mut self.upload,
+            MemberControl::RequestBooks => &mut self.request_books,
+            MemberControl::SeePrices => &mut self.see_prices,
+        };
+        *slot = choice;
+    }
+
+    /// These changes with `control` set to `choice`.
+    #[must_use]
+    pub fn with(mut self, control: MemberControl, choice: ControlChoice) -> Self {
+        self.set(control, Some(choice));
+        self
+    }
+
+    /// `overrides` with these changes applied.
+    #[must_use]
+    pub fn apply(&self, overrides: ControlOverrides) -> ControlOverrides {
+        let mut next = overrides;
+        for control in MemberControl::ALL {
+            if let Some(choice) = self.get(control) {
+                next.set(control, choice.value());
+            }
+        }
+        next
+    }
+}
+
+impl ControlOverrides {
+    /// These overrides with `control` set to `value`.
+    #[must_use]
+    pub fn with(mut self, control: MemberControl, value: bool) -> Self {
+        self.set(control, Some(value));
+        self
+    }
+}
+
 /// A user's controls: the library's default, their overrides, and what
 /// applies to them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -348,6 +484,40 @@ pub async fn set_default_member_controls(
     actor: &ConfigActor,
     controls: MemberControls,
 ) -> Result<ConfigurationDocument<MemberControls>> {
+    write_default(store, actor, |_| controls).await
+}
+
+/// Changes only the named default controls under compare-and-swap: each
+/// attempt applies `changes` to the stored default it read, so a
+/// concurrent edit of another control is kept rather than overwritten.
+///
+/// # Arguments
+///
+/// * `store` - The library database.
+/// * `actor` - Who is writing, for authorization and the audit log.
+/// * `changes` - The new value of each control to change; a control left
+///   out keeps its stored value.
+///
+/// # Errors
+///
+/// Returns an error when the actor may not write, or
+/// [`LibraryError::Conflict`] when the document keeps changing underneath.
+pub async fn change_default_member_controls(
+    store: &LibraryStore,
+    actor: &ConfigActor,
+    changes: &ControlOverrides,
+) -> Result<ConfigurationDocument<MemberControls>> {
+    write_default(store, actor, |controls| changes.apply(controls)).await
+}
+
+/// Writes the default that `next` makes of the stored one, under
+/// compare-and-swap, creating the document when absent and retrying a few
+/// times on a concurrent edit.
+async fn write_default(
+    store: &LibraryStore,
+    actor: &ConfigActor,
+    next: impl Fn(MemberControls) -> MemberControls,
+) -> Result<ConfigurationDocument<MemberControls>> {
     let key = DocumentKey::library(MEMBER_CONTROLS_NAMESPACE);
     for attempt in 0..4 {
         let current = match load_default_member_controls(store).await? {
@@ -364,6 +534,7 @@ pub async fn set_default_member_controls(
                 .await?,
             )?,
         };
+        let controls = next(current.body);
         if current.body == controls {
             return Ok(current);
         }
@@ -621,6 +792,150 @@ pub async fn set_member_control_overrides_for(
     Ok((current, assigned))
 }
 
+/// Changes only the named overrides of `user_id`, keeping every other
+/// override as stored ([`change_member_control_overrides_for`]).
+///
+/// The caller has already checked that the actor may manage the user. The
+/// write is guarded on the role read here.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::NotFound`] for an unknown user, or the errors
+/// of [`change_member_control_overrides_for`].
+pub async fn change_member_control_overrides(
+    store: &LibraryStore,
+    user_id: i64,
+    changes: &ControlChanges,
+) -> Result<AssignedControls> {
+    let Some(user) = store.get_user(user_id).await? else {
+        return Err(LibraryError::not_found(EntityKind::User, user_id));
+    };
+    change_member_control_overrides_for(store, &user, changes)
+        .await
+        .map(|(_, assigned)| assigned)
+}
+
+/// Changes only the named overrides of `user`, as the caller read them
+/// when it checked that the actor may manage them.
+///
+/// Each attempt applies `changes` to the stored row it read and writes the
+/// result back in one atomic batch guarded on that row being unchanged and
+/// on the user still having the role in `user`. A concurrent edit of
+/// another control is therefore kept rather than overwritten, and a role
+/// change made after the caller authorized the write stops it. With no
+/// override left, the row is deleted and the user follows the library's
+/// default for every control again.
+///
+/// # Returns
+///
+/// The user as read after the write, with the controls that apply to them
+/// computed from that same record.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Conflict`] when the user did not have the role
+/// in `user` as the write ran (nothing was written; whether the role
+/// changes again afterwards does not matter) or the row keeps changing
+/// underneath,
+/// [`LibraryError::NotFound`] when the user is gone, or the read or write
+/// error.
+pub async fn change_member_control_overrides_for(
+    store: &LibraryStore,
+    user: &UserRecord,
+    changes: &ControlChanges,
+) -> Result<(UserRecord, AssignedControls)> {
+    let user_id = user.id;
+    let role = user.role.as_str();
+    let same_role = "EXISTS (SELECT 1 FROM users WHERE id = ? AND role = ?)";
+    let role_moved = || {
+        LibraryError::Conflict(format!(
+            "user {user_id} is no longer {role} as their controls were read; read them again"
+        ))
+    };
+    for attempt in 0..4 {
+        let row = patron_controls::Entity::find_by_id(user_id)
+            .one(store.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        let current = row.as_ref().map(parse_row).transpose()?.unwrap_or_default();
+        let next = changes.apply(current);
+        let now = Utc::now().to_rfc3339();
+        let json = serde_json::to_string(&next).map_err(|err| invalid(&err.to_string()))?;
+        let statement = match (&row, next.is_empty()) {
+            (_, _) if next == current => None,
+            (Some(old), true) => Some(batch::exec(
+                &format!(
+                    "DELETE FROM patron_controls WHERE user_id = ? AND controls_json = ? \
+                     AND {same_role}"
+                ),
+                vec![
+                    int(user_id),
+                    text(&old.controls_json),
+                    int(user_id),
+                    text(role),
+                ],
+            )),
+            (Some(old), false) => Some(batch::exec(
+                &format!(
+                    "UPDATE patron_controls SET controls_json = ?, updated_at = ? \
+                     WHERE user_id = ? AND controls_json = ? AND {same_role}"
+                ),
+                vec![
+                    text(&json),
+                    text(&now),
+                    int(user_id),
+                    text(&old.controls_json),
+                    int(user_id),
+                    text(role),
+                ],
+            )),
+            (None, _) => Some(batch::exec(
+                &format!(
+                    "INSERT OR IGNORE INTO patron_controls (user_id, controls_json, updated_at) \
+                     SELECT ?, ?, ? WHERE {same_role}"
+                ),
+                vec![
+                    int(user_id),
+                    text(&json),
+                    text(&now),
+                    int(user_id),
+                    text(role),
+                ],
+            )),
+        };
+        let written = match statement {
+            // Nothing to write; the role must still be the one read.
+            None => None,
+            Some(statement) => {
+                let operation_id = format!(
+                    "patron-controls-{user_id}-{attempt}-{}",
+                    uuid::Uuid::new_v4().simple()
+                );
+                let reply = store
+                    .execute_host_batch(batch::request(&operation_id, vec![statement]))
+                    .await?;
+                Some(batch::rows_affected(&reply, 0) == 1)
+            }
+        };
+        let Some(fresh) = store.get_user(user_id).await? else {
+            return Err(LibraryError::not_found(EntityKind::User, user_id));
+        };
+        // A write that went through did so while the role held, whatever
+        // the role is now; one that did not, or none at all, needs the
+        // role to still be the one read.
+        if written != Some(true) && fresh.role != user.role {
+            return Err(role_moved());
+        }
+        if written != Some(false) {
+            let assigned = assigned_member_controls(store, &fresh).await?;
+            return Ok((fresh, assigned));
+        }
+    }
+    Err(LibraryError::Conflict(format!(
+        "the controls of user {user_id} kept changing; retry"
+    )))
+}
+
 /// The stored state one decision on a control was made from, which a host
 /// batch re-checks so that a change made while the batch was being built
 /// stops it ([`control_guard`]).
@@ -733,49 +1048,64 @@ fn invalid(detail: &str) -> LibraryError {
     LibraryError::Invalid(format!("invalid member controls: {detail}"))
 }
 
-/// `PUT /api/users/{id}/controls` body.
+/// `PATCH /api/users/{id}/controls` body.
 // Read by a strict hand-written reader (module `strict`); the serde
 // attribute here shapes the schema and matches what that reader takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
-pub struct PutUserControls {
-    /// The controls set for this patron alone; an absent or `null`
-    /// control follows the library's default for a Member and is allowed
-    /// for an Administrator, so `{}` clears every override.
-    pub overrides: ControlOverrides,
+pub struct PatchUserControls {
+    /// The controls to change for this patron and how; a control left out
+    /// (or `null`) keeps what it had.
+    pub changes: ControlChanges,
 }
 
-/// Parses the body of `PUT /api/users/default-controls` from its raw
+/// `PATCH /api/users/default-controls` body.
+// Read by a strict hand-written reader (module `strict`); the serde
+// attribute here shapes the schema and matches what that reader takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PatchDefaultControls {
+    /// The new default of each control to change; a control left out (or
+    /// `null`) keeps its stored value.
+    pub changes: ControlOverrides,
+}
+
+/// Parses the body of `PATCH /api/users/default-controls` from its raw
 /// bytes, sans IO, the way the route reads it.
 ///
 /// # Returns
 ///
-/// The new default, with an absent control allowed.
+/// The new value of each named control; `None` for a control the body
+/// leaves out or sets to `null`, which keeps its stored value.
 ///
 /// # Errors
 ///
 /// Returns [`LibraryError::Invalid`] for bytes that are not one JSON
-/// object of known controls with boolean values and no repeated key.
-pub fn parse_member_controls(body: &[u8]) -> Result<MemberControls> {
-    serde_json::from_slice(body).map_err(|err| invalid(&format!("controls body: {err}")))
+/// object with exactly the key `changes`, itself an object of known
+/// controls with boolean or `null` values, with no repeated key.
+pub fn parse_default_controls_patch(body: &[u8]) -> Result<ControlOverrides> {
+    serde_json::from_slice::<PatchDefaultControls>(body)
+        .map(|body| body.changes)
+        .map_err(|err| invalid(&format!("default controls body: {err}")))
 }
 
-/// Parses the body of `PUT /api/users/{id}/controls` from its raw bytes,
+/// Parses the body of `PATCH /api/users/{id}/controls` from its raw bytes,
 /// sans IO, the way the route reads it.
 ///
 /// # Returns
 ///
-/// The patron's overrides, with an absent or `null` control following
-/// the default.
+/// The change to each named control; `None` for a control the body leaves
+/// out or sets to `null`, which keeps what it had.
 ///
 /// # Errors
 ///
 /// Returns [`LibraryError::Invalid`] for bytes that are not one JSON
-/// object with exactly the key `overrides`, itself an object of known
-/// controls with boolean or `null` values, with no repeated key.
-pub fn parse_user_controls_request(body: &[u8]) -> Result<ControlOverrides> {
-    serde_json::from_slice::<PutUserControls>(body)
-        .map(|body| body.overrides)
+/// object with exactly the key `changes`, itself an object of known
+/// controls whose values are `"on"`, `"off"`, `"default"` or `null`, with
+/// no repeated key.
+pub fn parse_user_controls_patch(body: &[u8]) -> Result<ControlChanges> {
+    serde_json::from_slice::<PatchUserControls>(body)
+        .map(|body| body.changes)
         .map_err(|err| invalid(&format!("user controls body: {err}")))
 }
 
@@ -794,7 +1124,10 @@ mod strict {
     use serde::de::{value::MapAccessDeserializer, Deserializer, MapAccess, Visitor};
     use serde::Deserialize;
 
-    use super::{allowed, refused, ControlOverrides, MemberControls, PutUserControls};
+    use super::{
+        allowed, refused, ControlChanges, ControlChoice, ControlOverrides, MemberControls,
+        PatchDefaultControls, PatchUserControls,
+    };
 
     /// Reads a JSON object, and only an object, as `T`.
     struct Object<T>(PhantomData<T>);
@@ -887,19 +1220,102 @@ mod strict {
         }
     }
 
-    /// [`PutUserControls`] as the derived reader takes it from an object.
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct RawPutUserControls {
-        /// See [`PutUserControls::overrides`].
-        overrides: ControlOverrides,
+    /// Reads a [`ControlChoice`] from one of its three strings, and only
+    /// from a string (a derived reader would also take `{"on": null}`).
+    struct Choice;
+
+    impl Visitor<'_> for Choice {
+        type Value = ControlChoice;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("\"on\", \"off\" or \"default\"")
+        }
+
+        fn visit_str<E: serde::de::Error>(self, raw: &str) -> Result<ControlChoice, E> {
+            match raw {
+                "on" => Ok(ControlChoice::On),
+                "off" => Ok(ControlChoice::Off),
+                "default" => Ok(ControlChoice::Default),
+                other => Err(E::unknown_variant(other, &["on", "off", "default"])),
+            }
+        }
     }
 
-    impl<'de> Deserialize<'de> for PutUserControls {
+    impl<'de> Deserialize<'de> for ControlChoice {
         fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
-            let raw: RawPutUserControls = de.deserialize_map(Object(PhantomData))?;
+            de.deserialize_str(Choice)
+        }
+    }
+
+    /// [`ControlChanges`] as the derived reader takes it from an object.
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct RawChanges {
+        /// See [`ControlChanges::link_accounts`].
+        #[serde(default)]
+        link_accounts: Option<ControlChoice>,
+        /// See [`ControlChanges::download`].
+        #[serde(default)]
+        download: Option<ControlChoice>,
+        /// See [`ControlChanges::edit_metadata`].
+        #[serde(default)]
+        edit_metadata: Option<ControlChoice>,
+        /// See [`ControlChanges::upload`].
+        #[serde(default)]
+        upload: Option<ControlChoice>,
+        /// See [`ControlChanges::request_books`].
+        #[serde(default)]
+        request_books: Option<ControlChoice>,
+        /// See [`ControlChanges::see_prices`].
+        #[serde(default)]
+        see_prices: Option<ControlChoice>,
+    }
+
+    impl<'de> Deserialize<'de> for ControlChanges {
+        fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+            let raw: RawChanges = de.deserialize_map(Object(PhantomData))?;
             Ok(Self {
-                overrides: raw.overrides,
+                link_accounts: raw.link_accounts,
+                download: raw.download,
+                edit_metadata: raw.edit_metadata,
+                upload: raw.upload,
+                request_books: raw.request_books,
+                see_prices: raw.see_prices,
+            })
+        }
+    }
+
+    /// [`PatchUserControls`] as the derived reader takes it from an object.
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct RawPatchUserControls {
+        /// See [`PatchUserControls::changes`].
+        changes: ControlChanges,
+    }
+
+    impl<'de> Deserialize<'de> for PatchUserControls {
+        fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+            let raw: RawPatchUserControls = de.deserialize_map(Object(PhantomData))?;
+            Ok(Self {
+                changes: raw.changes,
+            })
+        }
+    }
+
+    /// [`PatchDefaultControls`] as the derived reader takes it from an
+    /// object.
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct RawPatchDefaultControls {
+        /// See [`PatchDefaultControls::changes`].
+        changes: ControlOverrides,
+    }
+
+    impl<'de> Deserialize<'de> for PatchDefaultControls {
+        fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+            let raw: RawPatchDefaultControls = de.deserialize_map(Object(PhantomData))?;
+            Ok(Self {
+                changes: raw.changes,
             })
         }
     }

@@ -544,3 +544,251 @@ pub async fn apply_keeper_update(
         KeeperUpdate::NotShared
     })
 }
+
+/// When `rfc3339` was, in milliseconds since the Unix epoch.
+fn millis(rfc3339: &str) -> Result<i64> {
+    chrono::DateTime::parse_from_rfc3339(rfc3339)
+        .map(|at| at.timestamp_millis())
+        .map_err(|err| LibraryError::Invalid(format!("shared_at: {err}")))
+}
+
+/// The share row of `account` with `peer`, if there is one.
+async fn share_with(
+    store: &LibraryStore,
+    plugin_key: &str,
+    account_id: &str,
+    peer: &str,
+) -> Result<Option<account_shares::Model>> {
+    account_shares::Entity::find()
+        .filter(account_shares::Column::PluginKey.eq(plugin_key))
+        .filter(account_shares::Column::AccountId.eq(account_id))
+        .filter(account_shares::Column::Peer.eq(peer))
+        .one(store.db())
+        .await
+        .map_err(LibraryError::Orm)
+}
+
+/// True when two copies of an account hold the same secrets (each kind,
+/// name and value), in any order.
+fn same_secrets(a: &CarriedAccount, b: &CarriedAccount) -> bool {
+    let key = |account: &CarriedAccount| {
+        account
+            .secrets
+            .iter()
+            .map(|secret| {
+                (
+                    secret.kind.clone(),
+                    secret.name.clone(),
+                    secret.value.expose().to_vec(),
+                )
+            })
+            .collect::<BTreeSet<_>>()
+    };
+    a.secrets.len() == b.secrets.len() && key(a) == key(b)
+}
+
+/// The library's own sign-in to answer a keeper branch's push with instead
+/// of applying it ([`KeeperUpdate`]'s first-push race, issue 964).
+///
+/// Until a branch's first push of an account is applied, the library keeps
+/// the account itself and saves its own refreshes. A first push made from
+/// the copy the library sent (or a refresh of it) would then replace a
+/// newer refresh the library saved since. So the first push is answered
+/// with the library's sign-in when all of these hold: no push from the
+/// branch was applied yet, the library's secrets were written after it
+/// last sent the account to the branch, and the pushed secrets differ from
+/// the library's. The branch takes the library's sign-in when its own copy
+/// is still the one it was sent ([`still_as_received`]), and pushes it
+/// back, which then matches and is applied; otherwise it pushes its own
+/// again marked as kept on purpose, which is applied.
+///
+/// # Returns
+///
+/// The library's copy of the account to send back, or `None` to apply the
+/// push as usual.
+///
+/// # Errors
+///
+/// Returns a read or unseal error.
+pub async fn keeper_reconcile(
+    store: &LibraryStore,
+    user_id: i64,
+    node_id: &str,
+    account: &CarriedAccount,
+) -> Result<Option<CarriedAccount>> {
+    let (plugin_key, account_id) = (account.plugin_key.as_str(), account.account_id.as_str());
+    let peer = node_peer(node_id);
+    // One row by its primary key.
+    let pushed_before = account_credential_revisions::Entity::find_by_id((
+        plugin_key.to_owned(),
+        account_id.to_owned(),
+        peer.clone(),
+    ))
+    .one(store.db())
+    .await
+    .map_err(LibraryError::Orm)?
+    .is_some();
+    if pushed_before {
+        return Ok(None);
+    }
+    let Some(share) = share_with(store, plugin_key, account_id, &peer).await? else {
+        return Ok(None);
+    };
+    let Some(sign_in) = sign_in_revision(store, plugin_key, account_id).await? else {
+        return Ok(None);
+    };
+    if sign_in.at <= millis(&share.shared_at)? {
+        return Ok(None);
+    }
+    let keep = |key: &str, id: &str| key == plugin_key && id == account_id;
+    let Some(own) = super::accounts_to_carry_where(store, user_id, &keep)
+        .await?
+        .into_iter()
+        .next()
+    else {
+        return Ok(None);
+    };
+    Ok((!same_secrets(&own, account)).then_some(own))
+}
+
+/// True when this install's copy of an account it received from the
+/// library `library_id` is still the one it was sent: none of its secrets
+/// was written after the account last arrived from there.
+///
+/// # Errors
+///
+/// Returns a read error, or [`LibraryError::Invalid`] for a stored time
+/// that does not parse.
+pub async fn still_as_received(
+    store: &LibraryStore,
+    plugin_key: &str,
+    account_id: &str,
+    library_id: &str,
+) -> Result<bool> {
+    let peer = format!("{LINK_PEER}{library_id}");
+    let Some(share) = share_with(store, plugin_key, account_id, &peer).await? else {
+        return Ok(false);
+    };
+    let arrived = millis(&share.shared_at)?;
+    Ok(sign_in_revision(store, plugin_key, account_id)
+        .await?
+        .is_none_or(|sign_in| sign_in.at <= arrived))
+}
+
+/// Takes the library's sign-in of an account it answered a first push
+/// with ([`keeper_reconcile`]) as this install's own.
+///
+/// One atomic batch writes each of the library's secrets (re-sealed with
+/// this install's key), every statement applied only while the account is
+/// still shared with the library `library_id` and none of its secrets here
+/// was written after the account last arrived from there, other than by
+/// this batch. So a sign-in or refresh made here meanwhile is kept, and
+/// the caller pushes it instead.
+///
+/// # Returns
+///
+/// True when the library's sign-in was taken.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Invalid`] for an account without secrets, a
+/// seal error, or a read or write error.
+pub async fn adopt_library_sign_in(
+    store: &LibraryStore,
+    library_id: &str,
+    account: &CarriedAccount,
+) -> Result<bool> {
+    if account.secrets.is_empty() {
+        return Err(LibraryError::Invalid(
+            "the library's sign-in carries no secret".into(),
+        ));
+    }
+    let peer = format!("{LINK_PEER}{library_id}");
+    let Some(share) = share_with(store, &account.plugin_key, &account.account_id, &peer).await?
+    else {
+        return Ok(false);
+    };
+    let now = Utc::now().to_rfc3339();
+    // `updated_at` values are RFC 3339 UTC text written the same way, so
+    // they order as text; this batch's own writes carry `now`.
+    let held = "EXISTS (SELECT 1 FROM account_shares WHERE plugin_key = ? AND account_id = ? \
+                AND peer = ? AND shared_at = ?) \
+                AND NOT EXISTS (SELECT 1 FROM encrypted_secrets WHERE provider = ? \
+                AND account_type = ? AND account_id = ? AND updated_at > ? AND updated_at <> ?)";
+    let held_binds = || {
+        vec![
+            text(&account.plugin_key),
+            text(&account.account_id),
+            text(&peer),
+            text(&share.shared_at),
+            text(&account.plugin_key),
+            text(secret_account_type::INTEGRATION),
+            text(&account.account_id),
+            text(&share.shared_at),
+            text(&now),
+        ]
+    };
+    let mut statements = Vec::new();
+    let mut records = Vec::new();
+    for secret in &account.secrets {
+        let record = build_sealed_record(
+            secret.value.expose(),
+            &secret.kind,
+            &account.plugin_key,
+            secret_account_type::INTEGRATION,
+            &account.account_id,
+            &secret.name,
+        )?;
+        let sealed = vec![
+            text(&record.format),
+            batch::blob(&record.ciphertext),
+            batch::text_opt(record.cipher_algorithm.as_deref()),
+            batch::blob_opt(record.cipher_nonce.as_deref()),
+        ];
+        let names = vec![
+            text(&record.kind),
+            text(&account.plugin_key),
+            text(secret_account_type::INTEGRATION),
+            text(&account.account_id),
+            text(&record.name),
+        ];
+        let mut update = sealed.clone();
+        update.push(text(&now));
+        update.extend(names.clone());
+        update.extend(held_binds());
+        statements.push(batch::exec(
+            &format!(
+                "UPDATE encrypted_secrets SET format = ?, ciphertext = ?, cipher_algorithm = ?, \
+                 cipher_nonce = ?, kdf_algorithm = NULL, kdf_salt = NULL, kdf_m_cost = NULL, \
+                 kdf_t_cost = NULL, kdf_p_cost = NULL, updated_at = ? \
+                 WHERE kind = ? AND provider = ? AND account_type = ? AND account_id = ? \
+                 AND name = ? AND {held}"
+            ),
+            update,
+        ));
+        let mut insert = names;
+        insert.extend(sealed);
+        insert.push(text(&now));
+        insert.push(text(&now));
+        insert.extend(held_binds());
+        statements.push(batch::exec(
+            &format!(
+                "INSERT OR IGNORE INTO encrypted_secrets \
+                 (kind, provider, account_type, account_id, name, format, ciphertext, \
+                  cipher_algorithm, cipher_nonce, created_at, updated_at) \
+                 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE {held}"
+            ),
+            insert,
+        ));
+        records.push(record);
+    }
+    let count = statements.len();
+    let operation_id = format!("keeper-adopt-{}", uuid::Uuid::new_v4());
+    let reply = store
+        .execute_host_batch(batch::request(&operation_id, statements))
+        .await?;
+    for record in &records {
+        crate::secrets::forget_cached_secret(record);
+    }
+    Ok((0..count).any(|index| batch::rows_affected(&reply, index) > 0))
+}

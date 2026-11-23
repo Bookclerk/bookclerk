@@ -185,7 +185,7 @@ async fn the_default_limits_every_administrator_route_by_route() {
         "PUT",
         "/api/users/default-scope",
         &admin,
-        Some(r#"{"rules":[]}"#),
+        Some(r#"{"expected_version":"0123456789abcdef0123456789abcdef","scope":{"rules":[]}}"#),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");

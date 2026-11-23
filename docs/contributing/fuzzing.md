@@ -75,7 +75,7 @@ boundary extends it.
 | `mux_peer` | Peer frames on the multiplexed byte link | `bookclerk-plugin-sdk::mux` |
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
 | `node_frame` | Node-to-node frames on the library socket, including the public origin a branch reports in its heartbeat | `bookclerk-node-proto::Frame`, `BranchOrigin::parse` |
-| `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, a branch offers its library (`accounts.add`), and a sign-in a keeping branch pushes there (`accounts.update`) | `bookclerk-node-proto::parse_account_bundle` |
+| `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, a branch offers its library (`accounts.add`), and a sign-in a keeping branch pushes there (`accounts.update`) or the library answers its first push with (`reconcile`) | `bookclerk-node-proto::parse_account_bundle` |
 | `destination_filter` | A storage destination's filter: the body of `PUT /api/config/plugin-instances/{id}/filter` and the stored `core.destination` document | `bookclerk-config::parse_destination_filter` |
 | `intake_settings` | A drop folder's settings: the body of `PUT /api/config/plugin-instances/{id}/intake` and the stored `core.intake` document | `bookclerk-config::parse_intake_settings` |
 | `intake_items` | A drop folder's listing: object keys, sizes and change signatures grouped into items and settled | `bookclerk-intake::ItemGrouper`, `step` |
@@ -107,8 +107,8 @@ boundary extends it.
 | `branch_request` | An interlibrary request, the body of `POST /api/branch-requests`, and a request that the library download a book it holds, the body of `POST /api/download-requests` | `bookclerk-library::control_plane::parse_branch_request`, `parse_download_request` |
 | `members_books_request` | A library operator's "Acquire all of this branch's members' books" choice, the body of `PUT /api/config/branches/members-books` | `bookclerk-library::control_plane::parse_members_books_request` |
 | `upload_manifest` | What a patron sends to start and fill an upload: the body of `POST /api/uploads` and the `Upload-Offset` header of each `PATCH /api/uploads/{id}/files/{member_no}` | `bookclerk-library::control_plane::parse_upload_manifest`, `parse_upload_offset` |
-| `member_controls_request` | Member controls an Owner or Administrator sets: the bodies of `PUT /api/users/default-controls` and `PUT /api/users/{id}/controls` | `bookclerk-library::control_plane::parse_member_controls`, `parse_user_controls_request` |
-| `patron_scope_request` | A patron scope an Owner or Administrator sets: the bodies of `PUT /api/users/default-scope` and `PUT /api/users/{id}/scope` | `bookclerk-library::control_plane::parse_patron_scope`, `parse_user_scope_request` |
+| `member_controls_request` | Member controls an Owner or Administrator changes: the bodies of `PATCH /api/users/default-controls` and `PATCH /api/users/{id}/controls` | `bookclerk-library::control_plane::parse_default_controls_patch`, `parse_user_controls_patch` |
+| `patron_scope_request` | A patron scope an Owner or Administrator sets: the bodies of `PUT /api/users/default-scope` and `PUT /api/users/{id}/scope` | `bookclerk-library::control_plane::parse_default_scope_request`, `parse_user_scope_request` |
 | `chapter_request` | An Administrator's chapter list for an edition or the claim to pin, the bodies of `PUT /api/library/editions/{id}/chapters` and `PUT /api/library/editions/{id}/chapters/pin` | `bookclerk-library::parse_chapter_edit_request`, `parse_chapter_pin_request` |
 | `work_split_request` | An Administrator's choice of expressions to move out of a wrongly merged work, the body of `POST /api/library/works/{id}/split` | `bookclerk-library::parse_work_split_request` |
 | `playback_request` | What a player sends the playback routes: the bodies of `POST /api/playback/sessions`, `.../{id}/sync` and `.../close`, `PUT /api/playback/progress/{edition_id}`, `POST /api/library/editions/{id}/bookmarks` and `PUT /api/playback/bookmarks/{id}`, the `cursor` of `GET /api/playback/progress`, and the path of `GET /api/playback/sessions/{id}/tracks/{n}` | `bookclerk-library::parse_playback_sync_request`, `parse_progress_cursor`, `parse_open_session_request`, `parse_progress_edit_request`, `parse_new_bookmark_request`, `parse_bookmark_edit_request`, `parse_track_path` |
@@ -782,7 +782,7 @@ only that. The others check:
   (at most 512 bytes, no `.` or `..` segment, backslash, control
   character or drive prefix), each at most 1 TiB, exactly one of them the
   primary audio. The `copy_*` seeds' names say whether the receiver takes
-  the frame, and the replay test checks each against its name. Seeds cover `accounts.update`, `accounts.updated`,
+  the frame, and the replay test checks each against its name. Seeds cover `accounts.update` (with and without `keeps_own`), `accounts.updated` (with a `reconcile` answer),
   `scan.removed`, `scan.pass_end`, a `work` frame with scan tokens,
   `deployments.list` and `acquire.plan` with and without a cursor, paged
   and out-of-order `deployments`, `release` with the old `resumed` flag
@@ -992,15 +992,14 @@ only that. The others check:
   `bookclerk-library`.
 - **`member_controls_request`**: the first byte picks the body (`d` for
   the default, `u` for a patron's overrides) and the oracle reads the rest
-  as an untyped JSON value. The default is accepted exactly when it is one
-  object with no repeated keys whose keys are among `link_accounts`,
-  `download`, `edit_metadata`, `upload`, `request_books` and `see_prices`,
-  each a boolean; a control left out is allowed. A patron's body is
-  accepted exactly when it is one object with no repeated keys and exactly
-  the key `overrides`, an object of those keys with boolean or `null`
-  values; a control left out or `null` follows the default. The parser
-  then returns exactly those values, and otherwise refuses the body as
-  `Invalid`. The shared oracle is `fuzz/oracles/member_controls_request.rs`,
+  as an untyped JSON value. Each body is accepted exactly when it is one
+  object with no repeated keys and exactly the key `changes`, an object
+  with no repeated keys whose keys are among `link_accounts`, `download`,
+  `edit_metadata`, `upload`, `request_books` and `see_prices`. In the
+  default's changes each value is a boolean or `null`; in a patron's, the
+  string `on`, `off` or `default`, or `null`. A control left out or `null`
+  is not changed. The parser then returns exactly those changes, and
+  otherwise refuses the body as `Invalid`. The shared oracle is `fuzz/oracles/member_controls_request.rs`,
   replayed from `bookclerk-library`.
 - **`patron_scope_request`**: the first byte picks the body (`d` for the
   default scope, `u` for a user's) and the oracle reads the rest as an
@@ -1010,9 +1009,12 @@ only that. The others check:
   `narrator`), `value` (a string, 1 to 256 bytes once trimmed, no NUL) and
   `effect` (`include` or `exclude`), with no two rules sharing field,
   effect and lowercase trimmed value, and the trimmed rules come to at
-  most 1,024 bytes as compact JSON. A user's body is at most the key
-  `scope`, `null` or such a scope. The parser then returns the rules in
-  order with trimmed values, and otherwise refuses the body as `Invalid`.
+  most 1,024 bytes as compact JSON. Both bodies carry `expected_version`,
+  32 lowercase hex digits. The default's body is exactly `scope`, such a
+  scope, and `expected_version`; a user's body is `expected_version` and
+  at most the key `scope`, `null` or such a scope. The parser then returns
+  the rules in order with trimmed values and the version, and otherwise
+  refuses the body as `Invalid`.
   The shared oracle is `fuzz/oracles/patron_scope_request.rs`, replayed
   from `bookclerk-library`.
 - **`chapter_request`**: an input's first byte picks the route (even:
