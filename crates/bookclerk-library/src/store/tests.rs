@@ -285,6 +285,57 @@ async fn the_probe_backfill_writes_only_the_row_it_read() {
     );
 }
 
+/// A probe a walk stored while a write was still under way is cleared
+/// when the writer's own probe fails, and the row goes back to the walk.
+#[tokio::test]
+async fn a_cleared_probe_returns_the_row_to_the_walk() {
+    const LATER: &str = "9999-01-01T00:00:00Z";
+    let store = kit_store().await;
+    let owner = crate::FileOwner::Edition("ed-cleared".into());
+    assert!(store
+        .record_edition_file("local", "C/C.m4b", &owner, crate::FileRole::Audio)
+        .await
+        .unwrap());
+    let destinations = ["local".to_string()];
+    let row = store
+        .unprobed_audio_files(&destinations, LATER, None, 10)
+        .await
+        .unwrap()
+        .remove(0);
+    let probe = crate::FileProbe {
+        content_type: "audio/mp4".to_string(),
+        bitrate_kbps: Some(64),
+        lossless: false,
+        source_store: None,
+    };
+    assert!(store
+        .set_backfilled_file_probe(&row, &probe, &crate::AudioStream::default())
+        .await
+        .unwrap());
+    assert!(store
+        .clear_edition_file_probe("local", "C/C.m4b", &owner)
+        .await
+        .unwrap());
+    assert_eq!(
+        store.edition_file_probe("local", "C/C.m4b").await.unwrap(),
+        None
+    );
+    let left = store
+        .unprobed_audio_files(&destinations, LATER, None, 10)
+        .await
+        .unwrap();
+    assert_eq!(left.len(), 1);
+    // Another owner's clear changes nothing.
+    assert!(!store
+        .clear_edition_file_probe(
+            "local",
+            "C/C.m4b",
+            &crate::FileOwner::Edition("other".into())
+        )
+        .await
+        .unwrap());
+}
+
 #[tokio::test]
 async fn a_title_acquired_again_after_a_reset_publishes_again() {
     use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
@@ -324,6 +375,62 @@ async fn a_title_acquired_again_after_a_reset_publishes_again() {
         );
         write(AcquireStatus::Acquired).await.unwrap();
         assert_eq!(acquired().await, 2);
+    }
+}
+
+/// A reset written through another holding of the edition also makes the
+/// next acquire a new `book_acquired`.
+#[tokio::test]
+async fn a_reset_through_another_holding_lets_the_next_acquire_publish() {
+    use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
+    for store in [kit_store().await, in_process_store().await] {
+        let mut titles = Vec::new();
+        for account in ["user-1", "user-2"] {
+            store
+                .upsert_account("audible", account, "us", None, true, "audible")
+                .await
+                .unwrap();
+            let book = store
+                .upsert_book(&NewBook::minimal("B00S", account, "us", "Shared"))
+                .await
+                .unwrap();
+            titles.push(
+                store
+                    .acquire_title_of_holding(&book.holding_id)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+        let (first, second) = (&titles[0], &titles[1]);
+        assert_eq!(first.edition_id, second.edition_id, "one shared edition");
+        let acquired = || async {
+            crate::entities::domain_events::Entity::find()
+                .filter(crate::entities::domain_events::Column::EventType.eq("book_acquired"))
+                .filter(crate::entities::domain_events::Column::OrderingKey.eq(&first.holding_id))
+                .count(store.db())
+                .await
+                .unwrap()
+        };
+        let write = |holding: &str, status| {
+            let holding = holding.to_string();
+            let store = &store;
+            async move {
+                store
+                    .set_holding_acquire_status(&holding, status, Some("Shared/Shared.m4b"), None)
+                    .await
+                    .unwrap();
+            }
+        };
+        write(&first.holding_id, AcquireStatus::Acquired).await;
+        assert_eq!(acquired().await, 1);
+        write(&second.holding_id, AcquireStatus::NotAcquired).await;
+        write(&first.holding_id, AcquireStatus::Acquired).await;
+        assert_eq!(
+            acquired().await,
+            2,
+            "a reset through the other holding counts"
+        );
     }
 }
 

@@ -282,6 +282,11 @@ async fn walk_file_probes(
             // the work lock until the write is done: holding it here keeps
             // the probe from reading a file mid-replacement.
             let _writes = state.work_lock.lock().await;
+            // The lock may have been held for a long acquire: a cancel
+            // that came meanwhile stops the walk before the next read.
+            if ctx.is_some_and(JobExecCtx::is_cancelled) {
+                anyhow::bail!("cancelled");
+            }
             match probe_one(&library, destination, file).await? {
                 Probed::Stored => stored += 1,
                 Probed::Unreadable => unreadable += 1,

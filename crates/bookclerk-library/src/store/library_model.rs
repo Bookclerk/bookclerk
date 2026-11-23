@@ -238,8 +238,13 @@ const LINK_ATTEMPTS: usize = 3;
 /// with room for the receipt statements.
 const CREDIT_BATCH_STATEMENTS: usize = 30;
 
+/// Most row inserts in one credit batch: one statement of every batch is
+/// kept for the `edition_updated` event the last batch carries
+/// ([`announce_credits`]), so the event commits with the rows it announces.
+const CREDIT_ROW_STATEMENTS: usize = CREDIT_BATCH_STATEMENTS - 1;
+
 // One listing's series (a series row and an entry each) fit in one batch.
-const _: () = assert!(2 * resolve::listing::MAX_SERIES <= CREDIT_BATCH_STATEMENTS);
+const _: () = assert!(2 * resolve::listing::MAX_SERIES <= CREDIT_ROW_STATEMENTS);
 
 /// Fresh UUIDs for new rows; an edition's is derived from the listing that
 /// first named it ([`edition_id_for_listing`]) unless `random_editions`.
@@ -653,7 +658,7 @@ fn link_params(
 }
 
 /// The credit and series batches for `plan`, each within
-/// [`CREDIT_BATCH_STATEMENTS`]; every batch carries the contributors and
+/// [`CREDIT_ROW_STATEMENTS`]; every batch carries the contributors and
 /// series its rows reference.
 fn credit_batches(plan: &resolve::Plan) -> Vec<CreditBatchParams> {
     let mut batches = Vec::new();
@@ -663,7 +668,7 @@ fn credit_batches(plan: &resolve::Plan) -> Vec<CreditBatchParams> {
     let mut writes: Vec<&resolve::CreditWrite> = plan.credits.iter().collect();
     writes.sort_by_key(|w| std::cmp::Reverse(w.position));
     for write in writes {
-        if batch.statement_count() + 2 > CREDIT_BATCH_STATEMENTS {
+        if batch.statement_count() + 2 > CREDIT_ROW_STATEMENTS {
             batches.push(std::mem::take(&mut batch));
         }
         let name_key = write.credit.name_key();
@@ -687,7 +692,7 @@ fn credit_batches(plan: &resolve::Plan) -> Vec<CreditBatchParams> {
     // A work's series go in one batch: the snapshot treats any stored entry
     // as the whole set, so they must never be part-written.
     if batch.statement_count() > 0
-        && batch.statement_count() + 2 * plan.series.len() > CREDIT_BATCH_STATEMENTS
+        && batch.statement_count() + 2 * plan.series.len() > CREDIT_ROW_STATEMENTS
     {
         batches.push(std::mem::take(&mut batch));
     }
@@ -714,8 +719,9 @@ fn credit_batches(plan: &resolve::Plan) -> Vec<CreditBatchParams> {
     batches
 }
 
-/// `batches` with one `edition_updated` for the listing's edition after
-/// the last of them, so consumers that derive from credits and series see
+/// `batches` with one `edition_updated` for the listing's edition in the
+/// last of them (which always has room for it), committed with the rows
+/// it announces, so consumers that derive from credits and series see
 /// them once they are written: the link that refreshed the edition's work
 /// ran before them, in its own batch (#986). No credit batch, no event.
 /// The event is written only while some listing of the edition is held
@@ -745,12 +751,9 @@ fn announce_credits(
         ordering_key: edition_id,
         id,
     };
-    match batches.last_mut() {
-        Some(last) if last.statement_count() < CREDIT_BATCH_STATEMENTS => last.events.push(event),
-        _ => batches.push(CreditBatchParams {
-            events: vec![event],
-            ..CreditBatchParams::default()
-        }),
+    // The last batch always has room: rows stop at CREDIT_ROW_STATEMENTS.
+    if let Some(last) = batches.last_mut() {
+        last.events.push(event);
     }
     batches
 }
@@ -4222,9 +4225,19 @@ mod store_tests {
         assert!(batches.len() > 1);
         assert!(batches
             .iter()
-            .all(|b| b.statement_count() <= CREDIT_BATCH_STATEMENTS));
+            .all(|b| b.statement_count() <= CREDIT_ROW_STATEMENTS));
         let credits: usize = batches.iter().map(|b| b.credits.len()).sum();
         assert_eq!(credits, 40);
+
+        // The announcing event rides in the last batch, never one of its
+        // own, and every batch stays inside the cap.
+        let count = batches.len();
+        let announced = announce_credits(batches, &listing, &plan);
+        assert_eq!(announced.len(), count);
+        assert_eq!(announced.last().map(|b| b.events.len()), Some(1));
+        assert!(announced
+            .iter()
+            .all(|b| b.statement_count() <= CREDIT_BATCH_STATEMENTS));
     }
 
     #[test]

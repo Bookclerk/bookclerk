@@ -279,7 +279,11 @@ are all through one store. It leaves a row written in the last hour for
 a later job, since an acquire records a key before it writes the file and
 probes the file itself. It reads each file while no acquire is running on
 the node (it waits for the one that is), and a file written again since
-the job read its row keeps no probe from the old one. A file it still cannot read is tried again by the
+the job read its row keeps no probe from the old one. An acquire's own
+probe, taken once its write is done, replaces whatever a job on another
+node sharing the destination stored meanwhile; when that probe fails, the
+acquire clears the row's probe instead, so the next job reads the new
+file. A file it still cannot read is tried again by the
 next day's job; until then, comparing copies treats it as unknown
 quality.
 

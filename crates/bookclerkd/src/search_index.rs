@@ -185,6 +185,22 @@ fn parse_change(event: &DomainEventRecord) -> Result<Change, String> {
     }
 }
 
+/// What one change's lookup came to, which decides how its delivery is
+/// settled.
+#[derive(Debug, PartialEq, Eq)]
+enum Lookup {
+    /// The change names a work, so the batch's refresh decides the
+    /// delivery.
+    Work,
+    /// Nothing is left to refresh for the change (its edition is gone, or
+    /// a gone listing marked the index for a rebuild): the delivery is
+    /// acked whatever the refresh of other works does.
+    Settled,
+    /// The lookup failed with this message: the delivery is retried by
+    /// itself.
+    Failed(String),
+}
+
 /// Writes the changes of a batch into the index: every work they touched
 /// is refreshed once.
 ///
@@ -193,8 +209,8 @@ fn parse_change(event: &DomainEventRecord) -> Result<Change, String> {
 ///
 /// # Returns
 ///
-/// Per change, in order, the error of its lookup (`None` when it
-/// succeeded), and the outcome of refreshing the works the successful
+/// Per change, in order, what its lookup came to ([`Lookup`]), and the
+/// outcome of refreshing the works the successful
 /// lookups found: how many documents were written, or
 /// [`SearchError::Busy`] when another writer holds the index, or the
 /// library or index error.
@@ -202,7 +218,7 @@ async fn apply_changes(
     works: &WorkSearchIndex,
     library: &LibraryStore,
     changes: &[&Change],
-) -> (Vec<Option<String>>, bookclerk_search::Result<usize>) {
+) -> (Vec<Lookup>, bookclerk_search::Result<usize>) {
     let mut touched = std::collections::BTreeSet::new();
     let mut lookups = Vec::with_capacity(changes.len());
     for change in changes {
@@ -219,11 +235,12 @@ async fn apply_changes(
             },
         };
         match work {
-            Ok(work) => {
-                touched.extend(work);
-                lookups.push(None);
+            Ok(Some(work)) => {
+                touched.insert(work);
+                lookups.push(Lookup::Work);
             }
-            Err(err) => lookups.push(Some(err.to_string())),
+            Ok(None) => lookups.push(Lookup::Settled),
+            Err(err) => lookups.push(Lookup::Failed(err.to_string())),
         }
     }
     let refreshed = if touched.is_empty() {
@@ -347,17 +364,23 @@ pub(crate) async fn run_search_batch(
     };
     for (i, (event, delivery, change)) in readable.iter().enumerate() {
         let fence = delivery.fence();
-        let lookup = lookups.get(i).and_then(Option::as_deref);
+        // No lookup ran when the index could not be opened for writing:
+        // the refresh outcome decides every delivery.
+        let lookup = lookups.get(i).unwrap_or(&Lookup::Work);
         let result = match (lookup, &outcome) {
-            (Some(err), _) => {
+            (Lookup::Failed(err), _) => {
                 warn!(event_id = %event.id, error = %err, "search index lookup failed");
                 library.fail_event_delivery(&fence, err).await
             }
-            (None, Ok(written)) => {
+            (Lookup::Settled, _) => {
+                debug!(event_id = %event.id, ?change, "search index change left nothing to refresh");
+                library.ack_event_delivery(&fence).await
+            }
+            (Lookup::Work, Ok(written)) => {
                 debug!(event_id = %event.id, ?change, written, "search index refreshed");
                 library.ack_event_delivery(&fence).await
             }
-            (None, Err(SearchError::Busy)) => {
+            (Lookup::Work, Err(SearchError::Busy)) => {
                 let run_after = chrono::Duration::from_std(BUSY_RETRY)
                     .map(|d| Utc::now() + d)
                     .unwrap_or_else(|_| Utc::now());
@@ -369,7 +392,7 @@ pub(crate) async fn run_search_batch(
                     )
                     .await
             }
-            (None, Err(err)) => {
+            (Lookup::Work, Err(err)) => {
                 warn!(event_id = %event.id, error = %err, "search index refresh failed");
                 library.fail_event_delivery(&fence, &err.to_string()).await
             }
@@ -654,7 +677,7 @@ mod tests {
         assert!(WorkSearchIndex::is_complete(&works_dir));
         let (lookups, written) =
             apply_changes(&works, &library, &[&parse_change(&gone).expect("parse")]).await;
-        assert_eq!(lookups, [None]);
+        assert_eq!(lookups, [Lookup::Settled]);
         assert_eq!(written.expect("apply"), 0);
         assert!(!WorkSearchIndex::is_complete(&works_dir));
     }

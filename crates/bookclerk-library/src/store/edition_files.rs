@@ -992,6 +992,56 @@ impl LibraryStore {
         }))
     }
 
+    /// Clears any probe and stream values on `owner`'s row of `key` on
+    /// `destination`, leaving it for the next `file_probe` walk.
+    ///
+    /// An acquire whose own probe of a file it just wrote failed calls this:
+    /// a walk on another node sharing the destination may have stored a
+    /// probe of the bytes the write replaced, and only a probe taken after
+    /// the write may stand.
+    ///
+    /// # Returns
+    ///
+    /// `true` when the row was `owner`'s.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the write fails.
+    pub async fn clear_edition_file_probe(
+        &self,
+        destination: &str,
+        key: &str,
+        owner: &FileOwner,
+    ) -> Result<bool> {
+        let updated = edition_files::Entity::update_many()
+            .col_expr(edition_files::Column::Lossless, Expr::value(0))
+            .col_expr(
+                edition_files::Column::BitrateKbps,
+                Expr::value(Option::<i64>::None),
+            )
+            .col_expr(
+                edition_files::Column::ContentType,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(
+                edition_files::Column::SourceStore,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(
+                edition_files::Column::ProbedAt,
+                Expr::value(Option::<String>::None),
+            )
+            .clear_stream()
+            .filter(edition_files::Column::Destination.eq(destination))
+            .filter(edition_files::Column::StorageKey.eq(key))
+            .filter(edition_files::Column::OwnerKind.eq(owner.kind()))
+            .filter(edition_files::Column::OwnerId.eq(owner.id()))
+            .exec(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(updated.rows_affected > 0)
+    }
+
     /// Stores what a probe found in `owner`'s file at `key` on
     /// `destination`, stamped with the time of the write.
     ///

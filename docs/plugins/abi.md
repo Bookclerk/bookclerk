@@ -1030,10 +1030,12 @@ piling up work.
 (the account holding as `titleId`, the edition, storage key, product ids;
 never media bytes). The holding is also the event's correlation and
 ordering key. It sets the envelope `source` to the book's storefront
-plugin id. Each acquire of a title publishes once: a write that only
-repeats an acquire already announced (no `edition_acquire_changed` for
-the edition since) is dropped as a duplicate, while a title acquired
-again after it was reset or failed publishes a new `book_acquired`.
+plugin id. A write that only repeats an acquire already announced (no
+`edition_acquire_changed` for the edition since, through any of its
+holdings) is dropped as a duplicate, while a title acquired again after
+it was reset or failed publishes a new `book_acquired`. Two writes that
+both read the outbox before either commits can each publish one, so a
+consumer can receive more than one `book_acquired` for the same acquire.
 
 **`edition_acquire_changed`.** Any other acquire state change of a title
 (queued, downloading, failed, or reset to not acquired) writes

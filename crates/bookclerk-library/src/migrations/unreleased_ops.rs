@@ -952,6 +952,12 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_domain_events_wake_pending ON domain_events(created_at, id) WHERE wake_pending = 1",
     ),
+    // Prefix reads of one event type's dedup keys across accounts and
+    // sources: whether an edition's acquire state changed through any of
+    // its holdings since its last `book_acquired`.
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_domain_events_type_key ON domain_events(queue_name, event_type, dedup_key)",
+    ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS event_deliveries (
         id TEXT PRIMARY KEY NOT NULL,

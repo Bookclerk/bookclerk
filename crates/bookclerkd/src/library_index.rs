@@ -315,7 +315,8 @@ pub(crate) async fn handle_library_index_batch(
         if let Ok(Some(work_id)) = &lookup {
             works.insert(work_id.clone());
         }
-        looked_up.push((event, delivery, change, lookup.map(|_| ())));
+        // `Ok(true)`: the delivery found a work, so the refresh decides it.
+        looked_up.push((event, delivery, change, lookup.map(|work| work.is_some())));
     }
     let works: Vec<String> = works.into_iter().collect();
     let refreshed = if works.is_empty() {
@@ -325,9 +326,11 @@ pub(crate) async fn handle_library_index_batch(
     };
     for (event, delivery, change, lookup) in &looked_up {
         let fence = delivery.fence();
+        // A delivery that found no work has nothing the refresh could
+        // fail for it.
         let failure = match (lookup, &refreshed) {
-            (Err(err), _) | (Ok(()), Err(err)) => Some(err),
-            (Ok(()), Ok(_)) => None,
+            (Err(err), _) | (Ok(true), Err(err)) => Some(err),
+            (Ok(true), Ok(_)) | (Ok(false), _) => None,
         };
         let result = match failure {
             None => {

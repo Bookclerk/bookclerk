@@ -93,6 +93,16 @@ impl RecordingBackend {
             Ok(probed) => probed,
             Err(err) => {
                 tracing::debug!(key, error = %err, "written audio file was not probed");
+                // A walk on another node sharing this destination may have
+                // probed the bytes this write replaced: no probe stands
+                // that was not taken after the write.
+                if let Err(err) = self
+                    .library
+                    .clear_edition_file_probe(self.destination.as_str(), key, &self.owner)
+                    .await
+                {
+                    tracing::warn!(key, error = %err, "could not clear a replaced file's probe");
+                }
                 return;
             }
         };

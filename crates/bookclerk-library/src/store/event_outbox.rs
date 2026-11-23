@@ -3110,9 +3110,11 @@ fn book_acquired_key_prefix(title_id: &str, edition_id: &str) -> String {
 /// any of its holdings): nothing reset, queued or failed the edition in
 /// between. An acquire of an edition the title never announced is new. A repeat reuses
 /// that event's key, so a retried acquire is dropped as a duplicate while
-/// an acquire after a reset publishes again. Both reads go through the
-/// outbox's unique key (`queue_name, account_id, source, event_type,
-/// dedup_key`) by key prefix.
+/// an acquire after a reset publishes again. Both reads are key-prefix
+/// range reads: the `book_acquired` one through the outbox's unique key
+/// (`queue_name, account_id, source, event_type, dedup_key`), the
+/// `edition_acquire_changed` one, which spans every holding's account and
+/// source, through `idx_domain_events_type_key`.
 ///
 /// Two writers that race past this read both publish; consumers already
 /// take an event more than once.
@@ -3125,7 +3127,9 @@ pub(crate) async fn acquired_event_key<C: ConnectionTrait>(
     title: AcquireEventTitle<'_>,
     edition_id: &str,
 ) -> Result<Option<String>> {
-    let newest = |event_type: &str, prefix: String, ordering_key: Option<&str>| {
+    // `holding` narrows the read to the acquiring holding (its account,
+    // source and ordering key); without it every holding's rows count.
+    let newest = |event_type: &str, prefix: String, holding: bool| {
         // The prefix's range: every key that starts with it sorts at or
         // after it and before the prefix with its last byte (`:`) raised.
         let mut end = prefix.clone();
@@ -3133,13 +3137,13 @@ pub(crate) async fn acquired_event_key<C: ConnectionTrait>(
         end.push(';');
         domain_events::Entity::find()
             .filter(domain_events::Column::QueueName.eq(CORE_EVENTS_QUEUE))
-            .filter(domain_events::Column::AccountId.eq(title.account_id))
-            .filter(domain_events::Column::Source.eq(title.source))
             .filter(domain_events::Column::EventType.eq(event_type))
             .filter(domain_events::Column::DedupKey.gte(prefix))
             .filter(domain_events::Column::DedupKey.lt(end))
-            .apply_if(ordering_key, |q, key| {
-                q.filter(domain_events::Column::OrderingKey.eq(key))
+            .apply_if(holding.then_some(title), |q, title| {
+                q.filter(domain_events::Column::AccountId.eq(title.account_id))
+                    .filter(domain_events::Column::Source.eq(title.source))
+                    .filter(domain_events::Column::OrderingKey.eq(title.title_id))
             })
             .order_by_desc(domain_events::Column::CreatedAt)
             .order_by_desc(domain_events::Column::Id)
@@ -3147,7 +3151,7 @@ pub(crate) async fn acquired_event_key<C: ConnectionTrait>(
     let Some(acquired) = newest(
         "book_acquired",
         book_acquired_key_prefix(title.title_id, edition_id),
-        Some(title.title_id),
+        true,
     )
     .one(db)
     .await
@@ -3157,8 +3161,9 @@ pub(crate) async fn acquired_event_key<C: ConnectionTrait>(
     };
     let changed = newest(
         crate::EDITION_ACQUIRE_CHANGED,
+        // A reset through any holding of the edition counts.
         format!("{}:{edition_id}:", crate::EDITION_ACQUIRE_CHANGED),
-        None,
+        false,
     )
     .one(db)
     .await
