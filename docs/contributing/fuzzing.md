@@ -2061,6 +2061,13 @@ passes through from what the patron typed, and the receiver's
 runs seeded text mutations in `npm test` (the `workerd_guests` check);
 `FUZZ_SEED` and `FUZZ_ITERATIONS` pick another run.
 
+Seeds that need an acceptable secret use `whsec_/wAQ/wAQ…`, a 32-byte key
+whose base64 has a `/` every four characters. A secret written as one long
+run of letters and digits after `whsec_` looks like a live signing secret
+to GitHub secret scanning and raises an alert, so fixtures here and in the
+tests avoid that shape (the tests build their keys at run time, and the
+Standard Webhooks reference secret is joined from two parts).
+
 - **Address documents** (`parseAddress`). Oracle: accepted exactly when
   the text is at most 4 KiB, a JSON object with only `url` and `secret`,
   both strings; the URL, trimmed, is at most 2048 characters, has no `#`,
