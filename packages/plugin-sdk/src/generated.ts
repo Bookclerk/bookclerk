@@ -1653,6 +1653,19 @@ export interface Origin {
    * @returns {@link OriginFetchReply}
    */
   fetch(request: OriginRequest, body: ByteSource): Promise<OriginFetchReply>;
+  /**
+   * Open a WebSocket to the library for one upgrade request the provider
+   * delivers. An accepted upgrade becomes a socket in the instance's
+   * `Bindings.sockets`: its messages arrive on `Entrypoints.socketHandler`
+   * and the plugin answers with `Sockets.send` and `Sockets.close`, as on
+   * any socket it dialed. Needs `[sockets]`. These sockets count toward
+   * `maxOriginSocketsPerInstance`, not `maxSocketsPerInstance`.
+   *
+   * @param request - A `GET` with `upgrade: websocket`.
+   * @param attachment - Initial attachment, at most `maxSocketAttachmentBytes`.
+   * @returns {@link OriginConnectReply}
+   */
+  connect(request: OriginRequest, attachment: Uint8Array): Promise<OriginConnectReply>;
 }
 
 /**
@@ -4662,6 +4675,33 @@ export interface OriginRequest {
    */
   clientAddress?: string;
 }
+
+/**
+ * The library's answer to an `Origin.connect` it did not upgrade: an
+ * ordinary response (`401`, `403`, `404`, ...) for the plugin to hand back
+ * to the client.
+ */
+export interface OriginRefusal {
+  /** HTTP status code, 200 to 599 and never `101`. */
+  status: number;
+  /**
+   * Response header fields in order, at most `maxOriginHeaders` and
+   * `maxOriginHeaderBytes`.
+   */
+  headers: OriginHeader[];
+  /** Response body, at most `maxOriginRefusalBodyBytes`. */
+  body: Uint8Array;
+}
+
+/** Success payload of `Origin.connect`. */
+export type OriginConnected =
+  | { kind: "socket"; value: SocketInfo } // The library accepted the upgrade; the socket is open in `Bindings.sockets`. Its `protocol` is the subprotocol the library chose.
+  | { kind: "refused"; value: OriginRefusal }; // The library answered without upgrading.
+
+/** Result union of `Origin.connect`. */
+export type OriginConnectReply =
+  | { kind: "ok"; value: OriginConnected } // Success: an open socket or the library's refusal.
+  | { kind: "err"; value: PluginError }; // Typed failure: the request was refused before the library saw it (`invalid_params`, `forbidden` without `[sockets]`, `limit_exceeded` when the instance holds `maxOriginSocketsPerInstance`) or the library is unavailable.
 
 /** Success payload of `Ingress.start`. */
 export interface IngressStarted {

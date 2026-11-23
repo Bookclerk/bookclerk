@@ -230,14 +230,16 @@ Playwright pull request fails this job until the image's tag and digest
 version in that pull request. A new browser can render some screenshots
 differently; approve those in the visual comment as usual.
 
-Each run first records a full set of screenshots, then, once a set is
-approved, compares with it. The job uploads a `ui-visual` artifact:
+Each run first records a full set of screenshots, then, once any are
+approved, compares with them. The job uploads a `ui-visual` artifact:
 `baselines/` holds the recorded set, `record/` and `compare/` the HTML
-reports, with the expected, actual and diff image of each mismatch.
+reports and Playwright's JSON report (`results.json`), with the expected,
+actual and diff image of each mismatch, and `compared.lock` the lock the
+comparison used.
 
 > [!NOTE]
-> While `ui/visual/baselines.lock` says `none`, the job only records. The
-> accessibility checks still fail the run.
+> While `ui/visual/baselines.lock` lists no screenshots, the job only
+> records. The accessibility checks still fail the run.
 
 ## Baselines
 
@@ -248,39 +250,53 @@ built docs live in `Bookclerk/bookclerk-docs`.
 
 ### Layout
 
-- Each baseline set is one commit in the baselines repository, with one
-  folder per viewport: `desktop/<id>--<theme>.png` and
-  `phone/<id>--<theme>.png`, where the id is a story id, `app--<page>`, or
-  a Worker page or building block.
-- `ui/visual/baselines.lock` in this repository names the commit a
-  Bookclerk commit is checked against (or `none`). So every Bookclerk
-  commit, including a release tag, pins the exact images it was approved
-  with.
+- Each proposed set is one commit in the baselines repository holding the
+  screenshots it adds or changes, with one folder per viewport:
+  `desktop/<id>--<theme>.png` and `phone/<id>--<theme>.png`, where the id
+  is a story id, `app--<page>`, or a Worker page or building block. Its
+  message lists every change with one `Change: <added|changed|removed>
+  <path>` line.
+- `ui/visual/baselines.lock` in this repository has one entry per
+  screenshot: its path and the set commit that holds its approved image.
+  So every Bookclerk commit, including a release tag, pins the exact images
+  it was approved with. Entries are sorted, with a blank line between
+  them, so pull requests that approve different screenshots merge without
+  conflicts.
 - `pending/pr-<number>` holds the set a pull request proposes;
   `approved/<commit>` tags keep every approved set.
 
 ### How CI compares
 
-The `ui-visual` job reads the lock with `scripts/visual_baselines.py lock`
-and first checks that the commit carries an `approved/<commit>` tag. Only
-the approval workflow creates those tags, so a lock that names a pending
-set, copied by hand, fails the job instead of skipping the approval. It
-then checks the baselines repository out at that commit. The repository is
-public, so this needs no token and works the same on a pull request from a
-fork. It sets `CI_VISUAL_BASELINES` to that checkout, and the check
-compares after recording.
+The `ui-visual` job runs `scripts/visual_baselines.py assemble`, which
+first checks that every commit the lock names carries an
+`approved/<commit>` tag. Only the approval workflow creates those tags, so
+a lock that names a pending set, copied by hand, fails the job instead of
+skipping the approval. It then fetches those commits from the baselines
+repository and writes each screenshot's image into one folder. The
+repository is public, so this needs no token and works the same on a pull
+request from a fork. It sets `CI_VISUAL_BASELINES` to that folder, and the
+check compares after recording.
 
 The `Visual baselines` workflow compares against the same lock CI used:
 the one in the pull request merged into its base branch. A pull request
-that leaves the lock alone is compared with the base branch's approved set,
-so it only gets a comment when its own change alters a screenshot. Without
-a merge ref (the pull request conflicts with its base), the head's lock
-stands in when it names an approved set, and otherwise the base branch's
-lock does, so a branch started before the first approval isn't shown every
-image as new. Merging the base branch in still gives the exact comparison,
-and lets CI run on the merged code. Like CI, the workflow treats an
-untagged lock as no set at all, so every image needs approval. The comment
-names the approved set it compared with.
+that leaves the lock alone is compared with the base branch's approved
+images, so it only gets a comment when its own change alters a screenshot.
+Without a merge ref (the pull request conflicts with its base), the base
+branch's lock stands in, with the head's entries over it, so screenshots
+approved on the pull request stay approved and a branch started before
+the first approval isn't shown every image as new. Merging the base branch
+in still gives the exact comparison, and lets CI run on the merged code.
+Like CI, the workflow ignores entries whose commit has no `approved` tag,
+so those screenshots need approval.
+
+The pinned browser doesn't always anti-alias edges the same way twice, so
+a recording can differ in bytes from its approved image while looking the
+same. The comparison allows for that with Playwright's per-pixel colour
+threshold. When the comparison ran to the end (its `results.json` has no
+errors) against the same lock the workflow reads, and every failed test
+left a failed screenshot, an image whose bytes differ only counts as
+changed if the comparison failed it. Otherwise, such as when a test failed
+before its screenshot, every difference in bytes counts.
 
 ### How a pull request changes them
 
@@ -289,7 +305,8 @@ its new screenshots are approved. The `Visual baselines` workflow
 (`.github/workflows/visual-baselines.yml`) handles the rest:
 
 1. When CI finishes, the workflow reads the run's recorded set. If it
-   differs from the approved set CI compared with, it pushes the set to
+   differs from the approved images CI compared with, it pushes the added
+   and changed images, with the list of changes in the commit message, to
    `pending/pr-<number>` and posts one comment on the pull request. The
    comment opens with how many screenshots are changed, new and removed,
    and the approval checkbox. Below that, each category is a collapsed
@@ -304,13 +321,18 @@ its new screenshots are approved. The `Visual baselines` workflow
    notified.
 2. An approver ticks the checkbox. Ticking needs write access, so a visual
    reviewer without it replies `@bookclerk approve-visuals` instead, the
-   same form as the other bot commands.
+   same form as the other bot commands. The workflow adds an eyes reaction
+   to the ticked comment or the reply as soon as it starts, which can take
+   a few minutes when every runner is busy. A reply also gets a rocket
+   reaction and an answer that mentions the approver once the approval
+   lands, or a confused reaction and the reason when it doesn't.
 3. The workflow checks the approver and that the pull request is open. It
-   then tags the set `approved/<commit>` and commits
-   the new lock to the pull request's branch through the API, so GitHub
-   signs the commit. For a fork, the comment gives the author the lock line
-   to commit.
-4. The next run compares against the new set and passes.
+   then tags the set `approved/<commit>` and, in the lock on the pull
+   request's branch, points the screenshots the set adds or changes at it
+   and drops the ones it removes, leaving every other entry alone. It
+   commits that through the API, so GitHub signs the commit. For a fork,
+   the comment tells the author which entries to change.
+4. The next run compares against the new images and passes.
 
 A tick from anyone else is undone with the reason. The approval is of the
 images the comment shows, not of a commit, so a push after the comment
@@ -321,11 +343,48 @@ comment is approved, a run that records different images updates it in
 place, and a run that records the same images leaves it alone.
 
 Because the pull request carries its own lock, the merge queue checks each
-pull request against its own approved images. Two pull requests that both
-approve new images change the same lock line, so the second one to merge
-conflicts. Merging the base branch into it resolves that: CI then compares
-with the newly approved set, and the comment shows only that pull
-request's own changes.
+pull request against its own approved images. Two pull requests that
+approve different screenshots change different lock entries, so both merge
+cleanly, and neither needs approving again when the other lands. They
+conflict only when both change the same screenshot, or add new
+screenshots that sort next to each other. Merging the base branch in
+resolves that: keep both sides' entries, and for a screenshot both changed,
+keep only the base branch's entry. CI then compares with the base branch's
+image and the comment asks for approval again.
+
+### Rechecks after main moves
+
+Each pull request's check compares it with main as main was when the check
+ran. Two pull requests can each pass and still draw something nobody
+approved once both land, for example when one adds a page and the other
+changes a component on it. The merge group then fails on the screenshots
+of the combination. The `Visual recheck` workflow
+(`.github/workflows/visual-recheck.yml`) catches this before the queue:
+
+1. After each push to main, it asks CI's planner whether the visual checks
+   see anything the push changed. If not, it stops.
+2. It picks the open pull requests into main that are ready, have
+   auto-merge on and change something the visual checks see. It waits for
+   GitHub to rebuild each one's merge commit on the new main commit, and
+   leaves out pull requests that conflict with it. At most 20 are picked,
+   lowest numbers first.
+3. For each one, it runs the same steps as CI's `ui-visual` job on that
+   merge commit, four at a time.
+4. The `Visual baselines` workflow then proposes what differs on each pull
+   request, the same way as for a CI run, as long as the pull request is
+   still open, at the same head and has auto-merge on. Approving the
+   comment commits the lock change, so the pull request runs CI again
+   before it reaches the queue.
+
+> [!NOTE]
+> A pull request queued behind another one that hasn't landed yet is
+> compared with main without it. If the two clash, the merge group still
+> fails, and the recheck that runs when the first one lands proposes the
+> fix on the second.
+
+A newer push to main cancels the recheck of an older one. The workflow's
+result is not a required check, so a recheck that finds differences never
+blocks a pull request by itself.
 
 ### Who can approve
 
@@ -340,8 +399,19 @@ The workflow runs from the default branch through `workflow_run` and
 recorded set comes from a run of the pull request's own code, so it is
 untrusted. `scripts/visual_baselines.py` accepts only PNG files with the
 expected names, folders and sizes, and only a comment edit that ticks the
-box and changes nothing else (see
+box and changes nothing else. Line endings don't count as a change: a
+tick saved from the browser comes back with CRLF line endings (see
 [Fuzzing](../fuzzing.md#visual-baselines-python)).
+
+The recheck works the same way. Its first job runs main's code only and
+uploads the list of pull requests, head commits and merge commits before
+any job that runs pull request code starts. Artifact names can't be
+reused within a run, so no later job can replace the list, and the bot
+reads it strictly (`parse_targets`). The jobs that build and screenshot a
+merge commit have a read-only token and no secrets, like the CI jobs of a
+pull request. Only pull requests a maintainer queued are rechecked,
+because turning on auto-merge needs write access, and every proposal
+still needs approval.
 
 The `ui-visual` job holds no secrets. The workflow's App tokens are
 narrowed per step: Contents on the baselines repository alone for sets and
@@ -370,16 +440,18 @@ Before the first approval, an organization owner:
    request for a team that can see the repository; Read grants no code
    write.
 
-The lock stays `none` until the first set is approved. Until then every
-pull request that touches `ui/` is compared with an empty set and its
-comment shows every screenshot as new. Approving one of them and merging
-it sets the lock on the default branch, and later pull requests are
-compared with that set.
+A new repository's lock lists no screenshots until the first set is
+approved. Until then every pull request that touches `ui/` is compared
+with nothing and its comment shows every screenshot as new. Approving one
+of them and merging it fills the lock on the default branch, and later
+pull requests are compared with those images.
 
 ### Keeping the repository small
 
 - Screenshots cover each story's or building block's own box, not the whole
   viewport, so most images are a few kilobytes. The first sets average about 22 KB per image.
+- A proposed set holds only the screenshots it adds or changes, so an
+  approval stores just the images that changed.
 - Only sets that an `approved/*` tag points at need to be kept. Pending
   refs are overwritten on each proposal, so a pull request that never
   merges leaves at most one pending set behind.

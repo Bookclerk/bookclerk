@@ -130,6 +130,10 @@ const maxSocketFrameBytes :UInt32 = 262144;
 const maxSocketAttachmentBytes :UInt32 = 2048;
 # Most host-brokered sockets one plugin instance may hold open at once.
 const maxSocketsPerInstance :UInt32 = 8;
+# Most sockets into the library (accepted `Origin.connect` upgrades) one
+# relay ingress instance may hold at once, apart from `maxSocketsPerInstance`:
+# the host holds them in process, not in the socket broker.
+const maxOriginSocketsPerInstance :UInt32 = 256;
 # Most heartbeat pairs one `Sockets.connect` may declare.
 const maxSocketAutoResponses :UInt32 = 4;
 # Largest heartbeat request or response frame, in bytes.
@@ -148,6 +152,9 @@ const maxOriginHeaderBytes :UInt32 = 65536;
 const maxOriginTargetBytes :UInt32 = 8192;
 # Longest `IngressStarted.origin`, in bytes.
 const maxIngressOriginBytes :UInt32 = 253;
+# Largest body of an `OriginRefusal` (the library's answer to a WebSocket
+# upgrade it did not accept), in bytes; a longer body is cut to this.
+const maxOriginRefusalBodyBytes :UInt32 = 65536;
 # Most deliveries one `Webhooks.pull` returns.
 const maxWebhookPullBatch :UInt32 = 100;
 # Longest `WebhookDelivery.leaseId`, in bytes.
@@ -203,6 +210,10 @@ const featureStorageDeleteMany :Text = "storage.deleteMany";
 const featureStorageHeadMany :Text = "storage.headMany";
 # Guest enforces `WriteOptions.ifMatch` / `ifNoneMatch` (`storage.conditionalWrite`).
 const featureStorageConditionalWrite :Text = "storage.conditionalWrite";
+# Guest enforces `WriteOptions.ifMatch` / `ifNoneMatch` by writing, then
+# checking and withdrawing its write when another got in first
+# (`storage.checkedWrite`); a reader may briefly see the losing write.
+const featureStorageCheckedWrite :Text = "storage.checkedWrite";
 # Guest implements `Destination.changes` (`storage.changes`).
 const featureStorageChanges :Text = "storage.changes";
 # Guest implements `Destination.translateKeys` (`storage.translateKeys`).
@@ -1572,6 +1583,16 @@ interface Origin {
       request :OriginRequest,  # Method, target, headers, client address.
       body :ByteSource  # Request body; null when the request has none.
   ) -> (result :OriginFetchReply);
+  # Open a WebSocket to the library for one upgrade request the provider
+  # delivers. An accepted upgrade becomes a socket in the instance's
+  # `Bindings.sockets`: its messages arrive on `Entrypoints.socketHandler`
+  # and the plugin answers with `Sockets.send` and `Sockets.close`, as on
+  # any socket it dialed. Needs `[sockets]`. These sockets count toward
+  # `maxOriginSocketsPerInstance`, not `maxSocketsPerInstance`.
+  connect @1 (
+      request :OriginRequest,  # A `GET` with `upgrade: websocket`.
+      attachment :Data  # Initial attachment, at most `maxSocketAttachmentBytes`.
+  ) -> (result :OriginConnectReply);
 }
 
 # A public address provider (`Entrypoints.ingress`): the one `ingress`
@@ -4341,6 +4362,44 @@ struct OriginRequest {
   # IP address of the client, from the provider's own connection metadata;
   # empty when the provider gives none.
   clientAddress @3 :Text $optional;
+}
+
+# The library's answer to an `Origin.connect` it did not upgrade: an
+# ordinary response (`401`, `403`, `404`, ...) for the plugin to hand back
+# to the client.
+struct OriginRefusal {
+  # HTTP status code, 200 to 599 and never `101`.
+  status @0 :UInt16;
+  # Response header fields in order, at most `maxOriginHeaders` and
+  # `maxOriginHeaderBytes`.
+  headers @1 :List(OriginHeader);
+  # Response body, at most `maxOriginRefusalBodyBytes`.
+  body @2 :Data;
+}
+
+# Success payload of `Origin.connect`.
+struct OriginConnected {
+  union {
+    # The library accepted the upgrade; the socket is open in
+    # `Bindings.sockets`. Its `protocol` is the subprotocol the library
+    # chose.
+    socket @0 :SocketInfo;
+    # The library answered without upgrading.
+    refused @1 :OriginRefusal;
+  }
+}
+
+# Result union of `Origin.connect`.
+struct OriginConnectReply {
+  union {
+    # Success: an open socket or the library's refusal.
+    ok @0 :OriginConnected;
+    # Typed failure: the request was refused before the library saw it
+    # (`invalid_params`, `forbidden` without `[sockets]`, `limit_exceeded`
+    # when the instance holds `maxOriginSocketsPerInstance`) or the library
+    # is unavailable.
+    err @1 :PluginError;
+  }
 }
 
 # Success payload of `Ingress.start`.

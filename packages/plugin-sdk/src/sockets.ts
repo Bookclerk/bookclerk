@@ -303,5 +303,8 @@ export function socketsBinding(transport: SocketsTransport): SocketsBinding {
       const sockets = Array.isArray(reply.sockets) ? (reply.sockets as SocketFields[]) : [];
       return sockets.map((info) => new HostSocket(transport, info));
     },
+    getWebSocket(id: string): HostWebSocket {
+      return new HostSocket(transport, { socket: String(id ?? "") });
+    },
   });
 }

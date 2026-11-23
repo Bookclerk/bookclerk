@@ -4379,6 +4379,42 @@ pub struct OriginRequest {
     pub client_address: Option<String>,
 }
 
+/// The library's answer to an `Origin.connect` it did not upgrade: an
+/// ordinary response (`401`, `403`, `404`, ...) for the plugin to hand back
+/// to the client.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OriginRefusal {
+    /// HTTP status code, 200 to 599 and never `101`.
+    #[serde(default)]
+    pub status: u16,
+    /// Response header fields in order, at most `maxOriginHeaders` and
+    /// `maxOriginHeaderBytes`.
+    #[serde(default)]
+    pub headers: Vec<OriginHeader>,
+    /// Response body, at most `maxOriginRefusalBodyBytes`.
+    #[serde(default, with = "crate::json_bytes::b64")]
+    pub body: Vec<u8>,
+}
+
+/// Success payload of `Origin.connect`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
+pub enum OriginConnected {
+    /// The library accepted the upgrade; the socket is open in
+    /// `Bindings.sockets`. Its `protocol` is the subprotocol the library
+    /// chose.
+    Socket(SocketInfo),
+    /// The library answered without upgrading.
+    Refused(OriginRefusal),
+}
+
+impl Default for OriginConnected {
+    fn default() -> Self {
+        Self::Socket(Default::default())
+    }
+}
+
 /// Success payload of `Ingress.start`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -10404,6 +10440,115 @@ pub fn read_origin_request(
     })
 }
 
+/// Encode a [`OriginRefusal`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_origin_refusal(
+    mut b: plugin_capnp::origin_refusal::Builder<'_>,
+    v: &OriginRefusal,
+) -> capnp::Result<()> {
+    b.set_status(v.status);
+    {
+        let mut items = b.reborrow().init_headers(list_len(v.headers.len())?);
+        for (i, item) in v.headers.iter().enumerate() {
+            write_origin_header(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    b.set_body(&v.body);
+    Ok(())
+}
+
+/// Decode a [`OriginRefusal`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_origin_refusal(
+    r: plugin_capnp::origin_refusal::Reader<'_>,
+) -> capnp::Result<OriginRefusal> {
+    Ok(OriginRefusal {
+        status: r.get_status(),
+        headers: r
+            .get_headers()?
+            .iter()
+            .map(|item| read_origin_header(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+        body: r.get_body()?.to_vec(),
+    })
+}
+
+/// Encode a `OriginConnected` union.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_origin_connected(
+    b: plugin_capnp::origin_connected::Builder<'_>,
+    v: &OriginConnected,
+) -> capnp::Result<()> {
+    match v {
+        OriginConnected::Socket(value) => {
+            write_socket_info(b.init_socket(), value)?;
+        }
+        OriginConnected::Refused(value) => {
+            write_origin_refusal(b.init_refused(), value)?;
+        }
+    }
+    Ok(())
+}
+
+/// Decode a `OriginConnected` union.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_origin_connected(
+    r: plugin_capnp::origin_connected::Reader<'_>,
+) -> capnp::Result<OriginConnected> {
+    Ok(match r.which()? {
+        plugin_capnp::origin_connected::Socket(value) => {
+            OriginConnected::Socket(read_socket_info(value?)?)
+        }
+        plugin_capnp::origin_connected::Refused(value) => {
+            OriginConnected::Refused(read_origin_refusal(value?)?)
+        }
+    })
+}
+
+/// Encode a `OriginConnectReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_origin_connect_reply(
+    b: plugin_capnp::origin_connect_reply::Builder<'_>,
+    v: &Result<OriginConnected, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_origin_connected(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `OriginConnectReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_origin_connect_reply(
+    r: plugin_capnp::origin_connect_reply::Reader<'_>,
+) -> capnp::Result<Result<OriginConnected, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::origin_connect_reply::Ok(ok) => Ok(Ok(read_origin_connected(ok?)?)),
+        plugin_capnp::origin_connect_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
 /// Encode a [`IngressStarted`] onto a Cap'n Proto builder.
 ///
 /// # Errors
@@ -10822,7 +10967,7 @@ pub fn read_webhook_delivered(
 
 /// Number of root structs [`read_any_message`] can decode; selectors are
 /// `0..READ_ANY_COUNT` in schema order.
-pub const READ_ANY_COUNT: u8 = 170;
+pub const READ_ANY_COUNT: u8 = 173;
 
 /// Decodes `bytes` as an unpacked single-segment Cap'n Proto message whose
 /// root is the struct `selector` names, through that struct's `read_*`
@@ -11542,64 +11687,79 @@ pub fn read_any_message(selector: u8, bytes: &[u8]) -> capnp::Result<()> {
             )?;
         }
         157 => {
+            let _ = read_origin_refusal(
+                reader.get_root::<plugin_capnp::origin_refusal::Reader<'_>>()?,
+            )?;
+        }
+        158 => {
+            let _ = read_origin_connected(
+                reader.get_root::<plugin_capnp::origin_connected::Reader<'_>>()?,
+            )?;
+        }
+        159 => {
+            let _ = read_origin_connect_reply(
+                reader.get_root::<plugin_capnp::origin_connect_reply::Reader<'_>>()?,
+            )?;
+        }
+        160 => {
             let _ = read_ingress_started(
                 reader.get_root::<plugin_capnp::ingress_started::Reader<'_>>()?,
             )?;
         }
-        158 => {
+        161 => {
             let _ = read_ingress_start_reply(
                 reader.get_root::<plugin_capnp::ingress_start_reply::Reader<'_>>()?,
             )?;
         }
-        159 => {
+        162 => {
             let _ = read_webhook_url(reader.get_root::<plugin_capnp::webhook_url::Reader<'_>>()?)?;
         }
-        160 => {
+        163 => {
             let _ = read_webhook_url_reply(
                 reader.get_root::<plugin_capnp::webhook_url_reply::Reader<'_>>()?,
             )?;
         }
-        161 => {
+        164 => {
             let _ = read_webhook_pull_request(
                 reader.get_root::<plugin_capnp::webhook_pull_request::Reader<'_>>()?,
             )?;
         }
-        162 => {
+        165 => {
             let _ = read_webhook_header(
                 reader.get_root::<plugin_capnp::webhook_header::Reader<'_>>()?,
             )?;
         }
-        163 => {
+        166 => {
             let _ = read_webhook_delivery(
                 reader.get_root::<plugin_capnp::webhook_delivery::Reader<'_>>()?,
             )?;
         }
-        164 => {
+        167 => {
             let _ = read_webhook_pull_page(
                 reader.get_root::<plugin_capnp::webhook_pull_page::Reader<'_>>()?,
             )?;
         }
-        165 => {
+        168 => {
             let _ = read_webhook_pull_reply(
                 reader.get_root::<plugin_capnp::webhook_pull_reply::Reader<'_>>()?,
             )?;
         }
-        166 => {
+        169 => {
             let _ = read_ingress_health(
                 reader.get_root::<plugin_capnp::ingress_health::Reader<'_>>()?,
             )?;
         }
-        167 => {
+        170 => {
             let _ = read_ingress_health_reply(
                 reader.get_root::<plugin_capnp::ingress_health_reply::Reader<'_>>()?,
             )?;
         }
-        168 => {
+        171 => {
             let _ = read_webhook_ack_request(
                 reader.get_root::<plugin_capnp::webhook_ack_request::Reader<'_>>()?,
             )?;
         }
-        169 => {
+        172 => {
             let _ = read_webhook_delivered(
                 reader.get_root::<plugin_capnp::webhook_delivered::Reader<'_>>()?,
             )?;
@@ -18339,6 +18499,136 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             }
         }
         157 => {
+            let first = read_origin_refusal(
+                reader.get_root::<plugin_capnp::origin_refusal::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_origin_refusal(
+                message.init_root::<plugin_capnp::origin_refusal::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_origin_refusal(again.get_root::<plugin_capnp::origin_refusal::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_origin_refusal(
+                    message.init_root::<plugin_capnp::origin_refusal::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded OriginRefusal value".to_string(),
+                    ));
+                }
+            }
+        }
+        158 => {
+            let first = read_origin_connected(
+                reader.get_root::<plugin_capnp::origin_connected::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_origin_connected(
+                message.init_root::<plugin_capnp::origin_connected::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_origin_connected(
+                    again.get_root::<plugin_capnp::origin_connected::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_origin_connected(
+                    message.init_root::<plugin_capnp::origin_connected::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded OriginConnected value".to_string(),
+                    ));
+                }
+            }
+        }
+        159 => {
+            let first = read_origin_connect_reply(
+                reader.get_root::<plugin_capnp::origin_connect_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_origin_connect_reply(
+                message.init_root::<plugin_capnp::origin_connect_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_origin_connect_reply(
+                    again.get_root::<plugin_capnp::origin_connect_reply::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_origin_connect_reply(
+                    message.init_root::<plugin_capnp::origin_connect_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded OriginConnectReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        160 => {
             let first = read_ingress_started(
                 reader.get_root::<plugin_capnp::ingress_started::Reader<'_>>()?,
             )?;
@@ -18380,7 +18670,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        158 => {
+        161 => {
             let first = read_ingress_start_reply(
                 reader.get_root::<plugin_capnp::ingress_start_reply::Reader<'_>>()?,
             )?;
@@ -18424,7 +18714,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        159 => {
+        162 => {
             let first =
                 read_webhook_url(reader.get_root::<plugin_capnp::webhook_url::Reader<'_>>()?)?;
             let mut message = capnp::message::Builder::new_default();
@@ -18465,7 +18755,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        160 => {
+        163 => {
             let first = read_webhook_url_reply(
                 reader.get_root::<plugin_capnp::webhook_url_reply::Reader<'_>>()?,
             )?;
@@ -18509,7 +18799,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        161 => {
+        164 => {
             let first = read_webhook_pull_request(
                 reader.get_root::<plugin_capnp::webhook_pull_request::Reader<'_>>()?,
             )?;
@@ -18553,7 +18843,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        162 => {
+        165 => {
             let first = read_webhook_header(
                 reader.get_root::<plugin_capnp::webhook_header::Reader<'_>>()?,
             )?;
@@ -18595,7 +18885,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        163 => {
+        166 => {
             let first = read_webhook_delivery(
                 reader.get_root::<plugin_capnp::webhook_delivery::Reader<'_>>()?,
             )?;
@@ -18639,7 +18929,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        164 => {
+        167 => {
             let first = read_webhook_pull_page(
                 reader.get_root::<plugin_capnp::webhook_pull_page::Reader<'_>>()?,
             )?;
@@ -18683,7 +18973,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        165 => {
+        168 => {
             let first = read_webhook_pull_reply(
                 reader.get_root::<plugin_capnp::webhook_pull_reply::Reader<'_>>()?,
             )?;
@@ -18727,7 +19017,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        166 => {
+        169 => {
             let first = read_ingress_health(
                 reader.get_root::<plugin_capnp::ingress_health::Reader<'_>>()?,
             )?;
@@ -18769,7 +19059,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        167 => {
+        170 => {
             let first = read_ingress_health_reply(
                 reader.get_root::<plugin_capnp::ingress_health_reply::Reader<'_>>()?,
             )?;
@@ -18813,7 +19103,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        168 => {
+        171 => {
             let first = read_webhook_ack_request(
                 reader.get_root::<plugin_capnp::webhook_ack_request::Reader<'_>>()?,
             )?;
@@ -18857,7 +19147,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 }
             }
         }
-        169 => {
+        172 => {
             let first = read_webhook_delivered(
                 reader.get_root::<plugin_capnp::webhook_delivered::Reader<'_>>()?,
             )?;

@@ -163,6 +163,13 @@ export const MAX_SOCKET_ATTACHMENT_BYTES = 2048 as const;
 /** Most host-brokered sockets one plugin instance may hold open at once. */
 export const MAX_SOCKETS_PER_INSTANCE = 8 as const;
 
+/**
+ * Most sockets into the library (accepted `Origin.connect` upgrades) one
+ * relay ingress instance may hold at once, apart from `maxSocketsPerInstance`:
+ * the host holds them in process, not in the socket broker.
+ */
+export const MAX_ORIGIN_SOCKETS_PER_INSTANCE = 256 as const;
+
 /** Most heartbeat pairs one `Sockets.connect` may declare. */
 export const MAX_SOCKET_AUTO_RESPONSES = 4 as const;
 
@@ -192,6 +199,12 @@ export const MAX_ORIGIN_TARGET_BYTES = 8192 as const;
 
 /** Longest `IngressStarted.origin`, in bytes. */
 export const MAX_INGRESS_ORIGIN_BYTES = 253 as const;
+
+/**
+ * Largest body of an `OriginRefusal` (the library's answer to a WebSocket
+ * upgrade it did not accept), in bytes; a longer body is cut to this.
+ */
+export const MAX_ORIGIN_REFUSAL_BODY_BYTES = 65536 as const;
 
 /** Most deliveries one `Webhooks.pull` returns. */
 export const MAX_WEBHOOK_PULL_BATCH = 100 as const;
@@ -263,6 +276,13 @@ export const FEATURE_STORAGE_HEAD_MANY = "storage.headMany" as const;
 
 /** Guest enforces `WriteOptions.ifMatch` / `ifNoneMatch` (`storage.conditionalWrite`). */
 export const FEATURE_STORAGE_CONDITIONAL_WRITE = "storage.conditionalWrite" as const;
+
+/**
+ * Guest enforces `WriteOptions.ifMatch` / `ifNoneMatch` by writing, then
+ * checking and withdrawing its write when another got in first
+ * (`storage.checkedWrite`); a reader may briefly see the losing write.
+ */
+export const FEATURE_STORAGE_CHECKED_WRITE = "storage.checkedWrite" as const;
 
 /** Guest implements `Destination.changes` (`storage.changes`). */
 export const FEATURE_STORAGE_CHANGES = "storage.changes" as const;

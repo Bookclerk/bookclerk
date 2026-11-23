@@ -1,5 +1,5 @@
 //! The Lite runtime gives the ids full SentencePiece gave for the fixture
-//! model (`tests/fixtures/make_fixture.py` recorded them).
+//! models (`tests/fixtures/make_fixture.py` recorded them).
 // Test code: a failed read or parse is the test failing.
 #![allow(clippy::expect_used, clippy::missing_panics_doc)]
 
@@ -20,10 +20,10 @@ fn as_u32(value: &serde_json::Value) -> u32 {
     u32::try_from(value.as_u64().expect("number")).expect("fits u32")
 }
 
-#[test]
-fn ids_match_full_sentencepiece() {
-    let tokenizer = tiny();
-    let reference = reference();
+/// Checks one fixture's recorded ids against the Lite runtime.
+fn assert_ids_match(model: &[u8], recorded: &str) {
+    let tokenizer = Tokenizer::from_bytes(model.to_vec()).expect("fixture loads");
+    let reference: serde_json::Value = serde_json::from_str(recorded).expect("fixture json");
     let texts = reference["texts"].as_array().expect("texts");
     assert!(texts.len() >= 10);
     for case in texts {
@@ -39,6 +39,22 @@ fn ids_match_full_sentencepiece() {
         assert_eq!(got.total, want.len());
         assert!(!got.truncated());
     }
+}
+
+#[test]
+fn ids_match_full_sentencepiece() {
+    assert_ids_match(
+        include_bytes!("fixtures/tiny.spm.fb"),
+        include_str!("fixtures/tiny.ids.json"),
+    );
+}
+
+#[test]
+fn ids_match_for_a_model_without_a_leading_word_boundary() {
+    assert_ids_match(
+        include_bytes!("fixtures/plain.spm.fb"),
+        include_str!("fixtures/plain.ids.json"),
+    );
 }
 
 #[test]

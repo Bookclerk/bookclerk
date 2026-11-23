@@ -75,6 +75,7 @@ export {
   FEATURE_STORAGE_DELETE_MANY,
   FEATURE_STORAGE_HEAD_MANY,
   FEATURE_STORAGE_CONDITIONAL_WRITE,
+  FEATURE_STORAGE_CHECKED_WRITE,
   FEATURE_STORAGE_CHANGES,
   MAX_BATCH_KEYS,
   MAX_CHANGES_PAGE,
@@ -248,6 +249,9 @@ export type {
 } from "./env.js";
 export type {
   OriginBinding,
+  OriginConnectOptions,
+  OriginConnectResult,
+  OriginConnectTransportReply,
   OriginFetchOptions,
   OriginTransport,
   OriginTransportReply,

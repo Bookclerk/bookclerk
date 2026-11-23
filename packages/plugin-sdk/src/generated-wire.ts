@@ -795,6 +795,25 @@ export interface OriginFetchResults {
 }
 
 /**
+ * Params envelope of `Origin.connect`.
+ *
+ * @internal
+ */
+export interface OriginConnectParams {
+  request: T.OriginRequest;
+  attachment: Uint8Array;
+}
+
+/**
+ * Results envelope of `Origin.connect`.
+ *
+ * @internal
+ */
+export interface OriginConnectResults {
+  result: T.OriginConnectReply;
+}
+
+/**
  * Params envelope of `Ingress.start`.
  *
  * @internal
@@ -10546,6 +10565,112 @@ export const OriginRequestCodec: StructCodec<T.OriginRequest> = {
 };
 
 /**
+ * Wire codec for `OriginRefusal` (1 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const OriginRefusalCodec: StructCodec<T.OriginRefusal> = {
+  dataWords: 1,
+  pointerCount: 2,
+  write(s, v, caps) {
+    s.setUint16(0, v.status ?? 0);
+    {
+      const list = v.headers ?? [];
+      const items = s.initStructList(0, list.length, 0, 2);
+      for (let i = 0; i < items.length; i++) {
+        OriginHeaderCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    s.setData(1, v.body ?? EMPTY_BYTES);
+  },
+  read(s, caps) {
+    return {
+      status: s.getUint16(0),
+      headers: s.getStructList(0, 0, 2).map((item) => OriginHeaderCodec.read(item, caps)),
+      body: s.getData(1),
+    };
+  },
+};
+
+/**
+ * Wire codec for `OriginConnected` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const OriginConnectedCodec: StructCodec<T.OriginConnected> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "socket":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          SocketInfoCodec.write(s.initStruct(0, 0, 4), v.value, caps);
+        }
+        break;
+      case "refused":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          OriginRefusalCodec.write(s.initStruct(0, 1, 2), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("OriginConnected", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "socket", value: SocketInfoCodec.read(s.getStruct(0, 0, 4), caps) };
+      case 1:
+        return { kind: "refused", value: OriginRefusalCodec.read(s.getStruct(0, 1, 2), caps) };
+      default:
+        throw unknownUnion("OriginConnected", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `OriginConnectReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const OriginConnectReplyCodec: StructCodec<T.OriginConnectReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          OriginConnectedCodec.write(s.initStruct(0, 1, 1), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("OriginConnectReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: OriginConnectedCodec.read(s.getStruct(0, 1, 1), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("OriginConnectReply", disc);
+    }
+  },
+};
+
+/**
  * Wire codec for `IngressStarted` (0 data words, 1 pointers).
  *
  * @internal
@@ -13892,6 +14017,48 @@ export const OriginFetchResultsCodec: StructCodec<OriginFetchResults> = {
   read(s, caps) {
     return {
       result: OriginFetchReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Origin.connect` params envelope (0 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const OriginConnectParamsCodec: StructCodec<OriginConnectParams> = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    if (v.request != null) {
+      OriginRequestCodec.write(s.initStruct(0, 0, 4), v.request, caps);
+    }
+    s.setData(1, v.attachment ?? EMPTY_BYTES);
+  },
+  read(s, caps) {
+    return {
+      request: OriginRequestCodec.read(s.getStruct(0, 0, 4), caps),
+      attachment: s.getData(1),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Origin.connect` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const OriginConnectResultsCodec: StructCodec<OriginConnectResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      OriginConnectReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: OriginConnectReplyCodec.read(s.getStruct(0, 1, 1), caps),
     };
   },
 };

@@ -1,0 +1,10 @@
+# Packages `scripts/model_packs.py build` and `check` import. Compile with:
+#   uv pip compile --generate-hashes --no-header --python-version 3.12 \
+#     --python-platform x86_64-manylinux_2_28 \
+#     scripts/model-packs/requirements.in -o scripts/model-packs/requirements.txt
+numpy==2.5.3
+onnx==1.23.2
+onnxruntime==1.32.0
+protobuf==7.36.1
+sentencepiece==0.2.3
+tokenizers==0.23.3

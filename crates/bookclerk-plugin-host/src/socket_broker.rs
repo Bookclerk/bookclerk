@@ -18,6 +18,11 @@
 //! The guest reaches the broker through [`BrokerSockets`], the `SOCKETS`
 //! binding a session hands out only when the manifest declares
 //! `[sockets]` and the covering grant has the `sockets` token.
+//!
+//! A relay ingress's `Origin.connect` adds sockets of a second kind: a
+//! WebSocket into the library itself ([`LocalSocket`]), which the host
+//! holds in process instead of in the broker. They share the instance's id
+//! space, socket cap and sink, so the guest cannot tell them apart.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -30,9 +35,13 @@ use std::task::{Context, Poll};
 
 use async_trait::async_trait;
 use bookclerk_config::Config;
+use bookclerk_plugin_abi::sockets::{
+    check_socket_attachment, check_socket_close, check_socket_frame,
+};
 use bookclerk_plugin_abi::{
-    PluginError as AbiError, Result as AbiResult, SocketClosed, SocketConnectRequest, SocketFrame,
-    SocketHandler, SocketInfo, SocketMessage, SocketMessageOk, Sockets,
+    LimitExceeded, PluginError as AbiError, Result as AbiResult, SocketClosed,
+    SocketConnectRequest, SocketFrame, SocketHandler, SocketInfo, SocketMessage, SocketMessageOk,
+    Sockets, MAX_ORIGIN_SOCKETS_PER_INSTANCE, MAX_SOCKETS_PER_INSTANCE,
 };
 use bookclerk_workerd::socket_broker::SOCKET_BROKER_ENV;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -73,6 +82,68 @@ pub trait SocketSink: Send + Sync {
         &self,
         event: SocketEvent,
     ) -> std::result::Result<SocketMessageOk, String>;
+}
+
+/// What the library's side of a [`LocalSocket`] delivers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalInbound {
+    /// One message from the library.
+    Frame(SocketFrame),
+    /// The socket ended; nothing more arrives on it.
+    Closed {
+        /// WebSocket close code; 1006 when it dropped without one.
+        code: u16,
+        /// Close reason the library sent; `None` when none.
+        reason: Option<String>,
+        /// Whether the close handshake completed.
+        clean: bool,
+    },
+}
+
+/// What the guest asks of the library's side of a [`LocalSocket`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalOutbound {
+    /// Send one message to the library.
+    Frame(SocketFrame),
+    /// Close the socket with this code (already checked) and reason.
+    Close {
+        /// WebSocket close code.
+        code: u16,
+        /// Close reason, at most 123 bytes.
+        reason: String,
+    },
+}
+
+/// A WebSocket into the library that the host holds for a plugin instance:
+/// an `Origin.connect` the library accepted.
+///
+/// The library's side runs on `runtime` and talks to the host through the
+/// two channels. Dropping `outbound` (the instance is retired) tells it to
+/// close the socket; it reports every close on `inbound` once, last.
+pub struct LocalSocket {
+    /// Runtime the host's delivery task runs on; it outlives the guest's
+    /// sessions, so a sleeping guest keeps the socket.
+    pub runtime: tokio::runtime::Handle,
+    /// URL the guest sees for the socket, without credentials.
+    pub url: String,
+    /// Subprotocol the library chose; `None` when none.
+    pub protocol: Option<String>,
+    /// Messages and the close for the library.
+    pub outbound: mpsc::Sender<LocalOutbound>,
+    /// Messages and the close from the library.
+    pub inbound: mpsc::Receiver<LocalInbound>,
+}
+
+/// An open [`LocalSocket`] as the host tracks it.
+struct LocalEntry {
+    /// URL the guest sees.
+    url: String,
+    /// Subprotocol the library chose.
+    protocol: Option<String>,
+    /// The attachment the guest last set.
+    attachment: Vec<u8>,
+    /// Where the guest's sends and close go.
+    outbound: mpsc::Sender<LocalOutbound>,
 }
 
 /// One request for the broker thread.
@@ -121,6 +192,11 @@ struct Inner {
     /// Woken when the sink is installed and when this state is dropped,
     /// so an event waiting for a sink ends either way.
     sink_ready: Arc<tokio::sync::Notify>,
+    /// Open sockets into the library, by guest id (`o<n>`). Lock after
+    /// `open` when both are held.
+    local: Mutex<BTreeMap<String, LocalEntry>>,
+    /// Counter for the next local socket id; never reset.
+    local_next: AtomicU64,
 }
 
 /// A socket as the host tracks it: the broker generation that opened it
@@ -200,6 +276,50 @@ impl Inner {
             .collect()
     }
 
+    /// Locks the local socket table; a poisoned lock still holds a map.
+    fn local(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, LocalEntry>> {
+        self.local
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Refuses one more outbound socket once the instance holds its most.
+    ///
+    /// # Errors
+    ///
+    /// `limit_exceeded` at [`MAX_SOCKETS_PER_INSTANCE`].
+    fn check_capacity(&self) -> AbiResult<()> {
+        let held = self.open().len();
+        if held >= MAX_SOCKETS_PER_INSTANCE as usize {
+            return Err(AbiError::limit_exceeded(LimitExceeded::new(
+                "maxSocketsPerInstance",
+                u64::from(MAX_SOCKETS_PER_INSTANCE),
+                u64::try_from(held + 1).unwrap_or(u64::MAX),
+            )));
+        }
+        Ok(())
+    }
+
+    /// Refuses one more origin socket once the instance holds its most.
+    ///
+    /// Origin sockets have their own cap, apart from outbound ones, because
+    /// each live connection a visitor opens through a public address is one.
+    ///
+    /// # Errors
+    ///
+    /// `limit_exceeded` at [`MAX_ORIGIN_SOCKETS_PER_INSTANCE`].
+    fn check_local_capacity(&self) -> AbiResult<()> {
+        let held = self.local().len();
+        if held >= MAX_ORIGIN_SOCKETS_PER_INSTANCE as usize {
+            return Err(AbiError::limit_exceeded(LimitExceeded::new(
+                "maxOriginSocketsPerInstance",
+                u64::from(MAX_ORIGIN_SOCKETS_PER_INSTANCE),
+                u64::try_from(held + 1).unwrap_or(u64::MAX),
+            )));
+        }
+        Ok(())
+    }
+
     /// The sink, while the instance's guest proxy is alive.
     fn sink(&self) -> Option<Arc<dyn SocketSink>> {
         self.sink.get().and_then(Weak::upgrade)
@@ -236,6 +356,8 @@ impl SocketBroker {
                 closed_early: Mutex::new(BTreeSet::new()),
                 generation: AtomicU64::new(0),
                 sink_ready: Arc::new(tokio::sync::Notify::new()),
+                local: Mutex::new(BTreeMap::new()),
+                local_next: AtomicU64::new(0),
             }),
         }
     }
@@ -249,14 +371,82 @@ impl SocketBroker {
         self.inner.sink_ready.notify_waiters();
     }
 
-    /// Ids of the sockets the host believes open, oldest id first.
+    /// Ids of the sockets the host believes open: broker sockets oldest
+    /// id first, then local ones.
     #[must_use]
     pub fn open_sockets(&self) -> Vec<String> {
-        self.inner
+        let mut ids: Vec<String> = self
+            .inner
             .open()
             .keys()
             .map(|(generation, socket)| guest_socket(*generation, socket))
-            .collect()
+            .collect();
+        ids.extend(self.inner.local().keys().cloned());
+        ids
+    }
+
+    /// Makes a WebSocket into the library a socket of this instance and
+    /// starts delivering what arrives on it.
+    ///
+    /// # Arguments
+    ///
+    /// * `socket` - The library's side.
+    /// * `attachment` - The guest's initial attachment.
+    ///
+    /// # Returns
+    ///
+    /// The socket as the guest sees it.
+    ///
+    /// # Errors
+    ///
+    /// `payload_too_large` for an oversized attachment; `limit_exceeded`
+    /// when the instance holds its most origin sockets. The socket is closed
+    /// either way.
+    pub fn adopt_local(&self, socket: LocalSocket, attachment: Vec<u8>) -> AbiResult<SocketInfo> {
+        let LocalSocket {
+            runtime,
+            url,
+            protocol,
+            outbound,
+            inbound,
+        } = socket;
+        check_socket_attachment(&attachment)?;
+        self.inner.check_local_capacity()?;
+        let n = self.inner.local_next.fetch_add(1, Ordering::SeqCst) + 1;
+        let id = local_socket(n);
+        self.inner.local().insert(
+            id.clone(),
+            LocalEntry {
+                url: url.clone(),
+                protocol: protocol.clone(),
+                attachment: attachment.clone(),
+                outbound,
+            },
+        );
+        runtime.spawn(pump_local(Arc::downgrade(&self.inner), id.clone(), inbound));
+        Ok(SocketInfo {
+            socket: id,
+            url,
+            protocol,
+            attachment,
+        })
+    }
+
+    /// Refuses when the instance already holds its most origin sockets.
+    ///
+    /// # Errors
+    ///
+    /// `limit_exceeded` at [`MAX_ORIGIN_SOCKETS_PER_INSTANCE`].
+    pub(crate) fn check_room(&self) -> AbiResult<()> {
+        self.inner.check_local_capacity()
+    }
+
+    /// The local socket `socket`'s outbound channel, when it is open.
+    fn local_outbound(&self, socket: &str) -> Option<mpsc::Sender<LocalOutbound>> {
+        self.inner
+            .local()
+            .get(socket)
+            .map(|entry| entry.outbound.clone())
     }
 
     /// Sends one command to the running broker.
@@ -281,6 +471,8 @@ impl SocketBroker {
     /// The broker's refusal or dial failure, or `unavailable` when the
     /// broker cannot be started.
     pub async fn connect(&self, request: SocketConnectRequest) -> AbiResult<SocketInfo> {
+        // Checked here too so a full instance is refused without a dial.
+        self.inner.check_capacity()?;
         // A broker that is stopping after its last close may drop the
         // command; one retry starts a fresh one.
         for _ in 0..2 {
@@ -310,6 +502,13 @@ impl SocketBroker {
     ///
     /// `not_found` when the socket is not open; the broker's refusal.
     pub async fn send(&self, socket: String, frame: SocketFrame) -> AbiResult<()> {
+        if let Some(outbound) = self.local_outbound(&socket) {
+            check_socket_frame(&frame)?;
+            return outbound
+                .send(LocalOutbound::Frame(frame))
+                .await
+                .map_err(|_| not_open(&socket));
+        }
         let missing = not_open(&socket);
         self.ask(|reply| Command::Send(socket, frame, reply))
             .await
@@ -322,6 +521,12 @@ impl SocketBroker {
     ///
     /// The broker's refusal of the code or reason.
     pub async fn close(&self, socket: String, code: u16, reason: String) -> AbiResult<()> {
+        if let Some(outbound) = self.local_outbound(&socket) {
+            let code = check_socket_close(code, &reason)?;
+            // A socket the library already closed has nothing to close.
+            let _ = outbound.send(LocalOutbound::Close { code, reason }).await;
+            return Ok(());
+        }
         self.ask(|reply| Command::Close(socket, code, reason, reply))
             .await
             .unwrap_or(Ok(()))
@@ -333,6 +538,11 @@ impl SocketBroker {
     ///
     /// `not_found` when the socket is not open; the broker's refusal.
     pub async fn set_attachment(&self, socket: String, attachment: Vec<u8>) -> AbiResult<()> {
+        if let Some(entry) = self.inner.local().get_mut(&socket) {
+            check_socket_attachment(&attachment)?;
+            entry.attachment = attachment;
+            return Ok(());
+        }
         let missing = not_open(&socket);
         let kept = attachment.clone();
         let id = socket.clone();
@@ -354,7 +564,14 @@ impl SocketBroker {
     ///
     /// The broker's failure to answer.
     pub async fn list(&self) -> AbiResult<Vec<SocketInfo>> {
-        self.ask(Command::List).await.unwrap_or(Ok(Vec::new()))
+        let mut sockets = self.ask(Command::List).await.unwrap_or(Ok(Vec::new()))?;
+        sockets.extend(self.inner.local().iter().map(|(id, entry)| SocketInfo {
+            socket: id.clone(),
+            url: entry.url.clone(),
+            protocol: entry.protocol.clone(),
+            attachment: entry.attachment.clone(),
+        }));
+        Ok(sockets)
     }
 }
 
@@ -804,6 +1021,64 @@ async fn serve(
     }
 }
 
+/// Delivers what the library sends on local socket `id` until it closes,
+/// then forgets the socket and delivers its close.
+///
+/// Runs on the library's runtime, one event at a time, so the guest sees
+/// messages in order; the library stops reading while a delivery waits.
+async fn pump_local(inner: Weak<Inner>, id: String, mut inbound: mpsc::Receiver<LocalInbound>) {
+    loop {
+        let event = match inbound.recv().await {
+            Some(LocalInbound::Frame(frame)) => {
+                let Some(attachment) = inner
+                    .upgrade()
+                    .and_then(|inner| inner.local().get(&id).map(|e| e.attachment.clone()))
+                else {
+                    return;
+                };
+                SocketEvent::Message(SocketMessage {
+                    socket: id.clone(),
+                    frame,
+                    attachment,
+                })
+            }
+            closed => {
+                let (code, reason, clean) = match closed {
+                    Some(LocalInbound::Closed {
+                        code,
+                        reason,
+                        clean,
+                    }) => (code, reason, clean),
+                    _ => (CLOSE_ABNORMAL, None, false),
+                };
+                let Some(entry) = inner.upgrade().and_then(|inner| inner.local().remove(&id))
+                else {
+                    return;
+                };
+                deliver(
+                    &inner,
+                    SocketEvent::Closed(SocketClosed {
+                        socket: id,
+                        code,
+                        reason,
+                        clean,
+                        attachment: entry.attachment,
+                    }),
+                )
+                .await;
+                return;
+            }
+        };
+        deliver(&inner, event).await;
+    }
+}
+
+/// The id a guest sees for the host's `n`th local socket. It has no `_`,
+/// so [`broker_socket`] never reads it as a broker's.
+fn local_socket(n: u64) -> String {
+    format!("o{n}")
+}
+
 /// The id a guest sees for broker `generation`'s socket `socket`.
 ///
 /// Each broker mints its own ids, and two brokers' ids can match; the
@@ -861,4 +1136,4 @@ impl Sockets for BrokerSockets {
 
 #[cfg(test)]
 #[path = "socket_broker_tests.rs"]
-mod tests;
+pub(crate) mod tests;

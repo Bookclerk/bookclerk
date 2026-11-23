@@ -62,6 +62,7 @@ boundary extends it.
 | `s3_event` | Messages on an S3 bucket's notification queue, which the `s3` guest turns into change-feed entries: S3 event notifications, SNS envelopes and EventBridge events, the percent-encoded keys of S3 and SNS records, buckets and prefixes | `bookclerk-storage::s3_events` |
 | `r2_event` | What the `r2` guest reads from Cloudflare to serve its change feed: Queues HTTP pull replies (the envelope, lease ids and base64 or text bodies) and the R2 event notifications in them, with their accounts, buckets and prefixes | `bookclerk-storage::r2_events` |
 | `b2_reply` | What the `b2` guest reads from Backblaze B2: native API replies (authorization, buckets, upload URLs, file versions, file-name and file-version listings, uploaded parts, errors) and download headers, and the percent-encoding of file names | `bookclerk-storage::b2_api` |
+| `b2_event` | What the `b2` guest reads to serve its change feed: B2 event notification webhook bodies (event types, buckets, object names, times) and `b2_get_bucket_notification_rules` / `b2_set_bucket_notification_rules` replies | `bookclerk-storage::b2_events` |
 | `socket_request` | A plugin's host-brokered socket request (`Sockets.connect`): its URL, headers, subprotocols, heartbeat pairs and attachment, and the `SocketMessage` the host delivers to a socket handler | `bookclerk-plugin-abi::sockets` |
 | `origin_request` | What a relay ingress plugin hands the host: the framed `POST /origin/fetch` body on the isolate bridge, request heads (method, target, headers, client address), response heads, and the public origin `Ingress.start` reports | `bookclerk-plugin-abi::origin` |
 | `socket_broker` | What the socket broker does with a remote WebSocket server's frames and closes and a plugin's socket requests: heartbeat answers, deliveries, attachments, the per-instance limit and close reporting | `bookclerk-workerd::socket_table` |
@@ -606,6 +607,21 @@ only that. The others check:
   and a body no longer than the file. Percent-encoding any text matches
   the oracle's own encoder and decodes back to the text. The shared
   oracle is `fuzz/oracles/b2_reply.rs`, replayed from `bookclerk-storage`.
+- **`b2_event`**: byte 0 picks the boundary (even: one webhook body, with
+  bit 1 picking the destination's key prefix, clear: none, set:
+  `library/`; odd: a notification-rules reply). Parsing never panics and
+  answers the same twice; a body over 1 MiB is refused as too large. An
+  accepted body agrees with an independent walk of the same JSON: the same
+  keys in order, each a non-empty `changed` entry without listing fields,
+  version or sequencer, and the same times; and a body that walk finds
+  well formed is accepted. Events of other types (test events, live
+  reads) or for another bucket, and names outside the prefix, are skipped
+  before the name is checked. An accepted rules reply lists at most 100
+  rules whose names match the walk, in order, are distinct and 1 to 63
+  bytes, every signing secret it reports is 32 letters or digits, and
+  sending back the rules that are not the destination's own keeps each one
+  as listed without B2's computed fields. The shared oracle is
+  `fuzz/oracles/b2_event.rs`, replayed from `bookclerk-storage`.
 - **`socket_request`**: byte 0 modulo 3 picks a socket URL (0), a Cap'n
   Proto `SocketConnectRequest` (1) or a `SocketMessage` (2). Every URL the
   parser accepts is one a WHATWG URL parser (the `url` crate) reads as the
@@ -618,9 +634,10 @@ only that. The others check:
   restated id, frame and attachment bounds; and a decoded message
   survives `write` then `read` unchanged. The shared oracle is
   `fuzz/oracles/socket_request.rs`, replayed from `bookclerk-plugin-abi`.
-- **`origin_request`**: byte 0 modulo 4 picks a framed `POST /origin/fetch`
-  body (0), a request head's JSON (1), a response head's JSON (2) or an
-  ingress origin (3). Splitting waits for more bytes exactly while the frame
+- **`origin_request`**: byte 0 modulo 6 picks a framed `POST /origin/fetch`
+  body (0), a request head's JSON (1), a response head's JSON (2), an
+  ingress origin (3), a `POST /origin/connect` body (4) or an upgrade
+  refusal's JSON (5). Splitting waits for more bytes exactly while the frame
   is incomplete, refuses exactly the declared lengths past the head cap, and
   otherwise returns the declared head and every byte after it, so the
   request body starts at the right byte and a plugin can't make the host
@@ -632,8 +649,14 @@ only that. The others check:
   An origin is accepted exactly when the restated host-name rules hold, and
   a WHATWG URL parser (the `url` crate) reads every accepted origin as
   `https` and the same host with no port, user info, path, query or
-  fragment. The shared oracle is `fuzz/oracles/origin_request.rs`, replayed
-  from `bookclerk-plugin-abi`.
+  fragment. A connect body is accepted exactly when its head passes the
+  restated request rules, its method is `GET` and its attachment is
+  base64 of at most 2 KiB; an accepted upgrade keeps every field but the
+  handshake ones (`sec-websocket-key`, `-version`, `-extensions`,
+  `-accept`). A refusal is accepted exactly when its status is 200 to 599,
+  its headers pass the response rules and its body is at most 64 KiB. The
+  shared oracle is `fuzz/oracles/origin_request.rs`, replayed from
+  `bookclerk-plugin-abi`.
 - **`socket_broker`**: the input is a script of operations on the broker's
   socket table (connect requests, handshake outcomes, frames and closes
   from the server, sends, attachments and closes from the plugin), checked
@@ -1258,6 +1281,26 @@ The tests live in `scripts/tests/`, and each corpus beside them.
     only when `configured` is exactly `true` and `version` is 40 lowercase
     hex digits, each checked character by character.
 
+### Model packs (Python)
+
+- **Registry reply readers** (`parse_token_reply` and `upload_target` in
+  `scripts/model_packs.py`). `model-packs.yml` publishes each pack with
+  the registry's HTTP API. The registry's token reply becomes a request
+  header, and its `Location` answer is where the token and the blob are
+  sent next.
+  - Test and corpus: `scripts/tests/test_model_packs.py`,
+    `scripts/tests/model_packs_corpus/` (token replies under `token/`,
+    `Location` values under `location/`).
+  - Oracle: a token only when the reply is a JSON object whose `token` is
+    1 to 8,192 characters, each checked against the bearer-token
+    alphabet; an upload address only when the location is a path, or an
+    https address on the registry's own host, of URL characters checked
+    one by one, never starting with `//`.
+
+The upstream model files the builder reads are not a boundary of this
+kind: each is refused unless its size and SHA-256 match the pin in
+`scripts/model-packs/models.json` before anything parses it.
+
 ### Tool versions bump (Python)
 
 - **Releases listing and digest readers** (`select_release` and
@@ -1278,19 +1321,27 @@ The tests live in `scripts/tests/`, and each corpus beside them.
 
 ### Visual baselines (Python)
 
-- **Lock, screenshot set, approval and role readers** (`parse_lock`,
-  `png_size`, `validate_set`, `parse_approval`, `parse_command`,
-  `parse_membership` and `parse_role` in `scripts/visual_baselines.py`).
-  The `ui-visual` CI job reads a pull request's `ui/visual/baselines.lock`
-  as a git ref, and the `Visual baselines` workflow commits the screenshots
-  a pull request's run recorded and acts on edits of its review comment.
+- **Lock, screenshot set, comparison report, change list, recheck
+  targets, approval and role readers** (`parse_lock`, `png_size`,
+  `validate_set`, `compare_finished`, `parse_changes`, `parse_targets`,
+  `parse_approval`, `parse_command`, `parse_membership` and `parse_role` in
+  `scripts/visual_baselines.py`).
+  The `ui-visual` CI job fetches the commits a pull request's
+  `ui/visual/baselines.lock` names, and the `Visual baselines` workflow
+  commits the screenshots a pull request's run recorded, reads that run's
+  comparison report, reads the pull requests a visual recheck run lists,
+  and acts on edits of its review comment.
   - Test and corpus: `scripts/tests/test_visual_baselines.py`,
     `scripts/tests/visual_baselines_corpus/` (named `<kind>__<case>`).
-  - Oracle: an independent byte-by-byte reading of the lock (`none` or 40
-    lowercase hex digits), of the PNG signature and `IHDR` header with
+  - Oracle: an independent byte-by-byte reading of the lock (sorted
+    `<path> <40 lowercase hex digits>` lines after optional comments), of
+    each `Change:` line, of the report's `errors` and counts by exact JSON
+    types, of the recheck targets by exact keys and JSON types with
+    commit ids checked character by character, of the PNG signature and `IHDR` header with
     hand-decoded big-endian sizes, of each path piece by piece, and of
     each event by exact JSON types, accepting an edit only when ticking the
-    one checkbox turns the old body into the new one, and a reply only when
+    one checkbox turns the old body into the new one (CRLF line endings
+    read as LF on both sides), and a reply only when
     it is exactly `@bookclerk approve-visuals` in ASCII, case and
     surrounding whitespace aside (look-alike letters are refused).
 
@@ -1952,10 +2003,12 @@ pick another run.
 
 The `cloudflare_relay` guest and the relay Worker it deploys parse what
 the other end sends: the plugin parses the relay's frames, request heads
-and notices, and the relay parses the plugin's frames and response heads.
+and notices, and the relay parses the plugin's frames and response heads; each parses
+the other's live frames.
 Both run `crates/bookclerk-plugins/optional/ingress-cloudflare/src/protocol.ts`.
-Its `test/fuzz.test.ts` replays `fuzz/frame/` (hex bytes), `fuzz/head/`
-and `fuzz/notice/` and runs seeded byte and text mutations in `npm test`
+Its `test/fuzz.test.ts` replays `fuzz/frame/` (hex bytes), `fuzz/head/`,
+`fuzz/notice/` and `fuzz/live/` (hex bytes) and runs seeded byte and text
+mutations in `npm test`
 (the `workerd_guests` check); `FUZZ_SEED` and `FUZZ_ITERATIONS` pick
 another run.
 
@@ -1969,13 +2022,21 @@ another run.
   limits: a method token of at most 32 bytes, a target of one `/` and
   visible ASCII without `#`, at most 128 lowercase header fields and
   64 KiB of names and values, no connection fields, no provider or
-  forwarding fields in a request, a status of 200 to 599. An accepted head
-  survives `encodeFrame` and a second parse unchanged.
+  forwarding fields in a request, `upgrade` only as `true` on a `GET`, a
+  status of 101 or 200 to 599. An accepted head survives `encodeFrame` and
+  a second parse unchanged.
 - **Notices and client addresses** (`parseNotice`, `isIpAddress`). Oracle
   for addresses: Node's `net.isIP`, less IPv6 zones, which the host's
   parser refuses too. A notice is accepted exactly when it is a JSON object
   of at most 256 characters with `t = "request"` and an id of 1 to 64
   letters, digits and dashes.
+- **Live frames** (`parseLiveFrame`). Oracle: an independent decoder of
+  the layout (an op byte of 1, 2 or 3, an id length, an id of 1 to 64
+  letters, digits and dashes, then the payload) within the host's 256 KiB
+  frame limit, with text and close reasons valid UTF-8 and close codes
+  those RFC 6455 lets an endpoint send (1000 to 1003, 1007 to 1014, 3000
+  to 4999) with at most 123 bytes of reason. An accepted frame encodes
+  back to the same bytes.
 
 ### Metadata file dialect guests
 

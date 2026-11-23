@@ -1,0 +1,9 @@
+# Approved visual baselines (docs/contributing/ui/visual-testing.md).
+# One entry per screenshot: its path and the approved set commit of the
+# baselines repository that holds its image. The approval workflow
+# writes it. Entries stay sorted and apart, so pull requests that change
+# different screenshots merge without conflicts.
+
+desktop/a--light.png 0123456789abcdef0123456789abcdef01234567
+
+phone/a--dark.png 89abcdef0123456789abcdef0123456789abcdef

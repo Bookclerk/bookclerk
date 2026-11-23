@@ -10,14 +10,16 @@
 use bookclerk_plugin_sdk::{
     ChangesPage, ChangesRequest, KeyOutcome, ListOptions, ListPage, MoveManyPage, MoveManyRequest,
     MoveManyTarget, ObjectChange as AbiObjectChange, ObjectInfo as AbiObjectInfo, ObjectMetadata,
-    PluginError, WriteOptions, FEATURE_STORAGE_CHANGES, FEATURE_STORAGE_CONDITIONAL_WRITE,
-    FEATURE_STORAGE_DELETE_MANY, FEATURE_STORAGE_HEAD_MANY, FEATURE_STORAGE_MOVE,
-    FEATURE_STORAGE_MOVE_MANY, FEATURE_STORAGE_TRANSLATE_KEYS, MAX_BATCH_KEYS,
+    PluginError, WriteOptions, FEATURE_STORAGE_CHANGES, FEATURE_STORAGE_CHECKED_WRITE,
+    FEATURE_STORAGE_CONDITIONAL_WRITE, FEATURE_STORAGE_DELETE_MANY, FEATURE_STORAGE_HEAD_MANY,
+    FEATURE_STORAGE_MOVE, FEATURE_STORAGE_MOVE_MANY, FEATURE_STORAGE_TRANSLATE_KEYS,
+    MAX_BATCH_KEYS,
 };
 
 use crate::error::StorageError;
 use crate::intent::{
-    KeyResult, ListRequest, MoveOptions, MoveResult, StorageCapabilities, WriteCondition,
+    ChangeFeedPage, KeyResult, ListRequest, MoveOptions, MoveResult, StorageCapabilities,
+    WriteCondition,
 };
 use crate::traits::{ObjectInfo, ObjectProbe, StorageBackend};
 
@@ -54,6 +56,7 @@ pub fn storage_features(capabilities: StorageCapabilities) -> Vec<String> {
         delete_many,
         head_many,
         conditional_write,
+        checked_write,
         changes,
         translate_keys,
     } = capabilities;
@@ -63,6 +66,12 @@ pub fn storage_features(capabilities: StorageCapabilities) -> Vec<String> {
         (delete_many, FEATURE_STORAGE_DELETE_MANY),
         (head_many, FEATURE_STORAGE_HEAD_MANY),
         (conditional_write, FEATURE_STORAGE_CONDITIONAL_WRITE),
+        // A backend that enforces conditions atomically never also claims
+        // the weaker guarantee.
+        (
+            checked_write && !conditional_write,
+            FEATURE_STORAGE_CHECKED_WRITE,
+        ),
         (changes, FEATURE_STORAGE_CHANGES),
         (translate_keys, FEATURE_STORAGE_TRANSLATE_KEYS),
     ]
@@ -324,16 +333,23 @@ pub async fn changes<B: StorageBackend + ?Sized>(
         .changes(request.cursor.as_deref(), request.limit)
         .await
         .map_err(plugin_error)?;
+    Ok(changes_page(page))
+}
+
+/// The ABI page of a change-feed page; `None` (no feed) is an empty page
+/// that says changes may have been missed, so the host lists instead.
+#[must_use]
+pub fn changes_page(page: Option<ChangeFeedPage>) -> ChangesPage {
     let Some(page) = page else {
-        return Ok(ChangesPage {
+        return ChangesPage {
             changes: Vec::new(),
             cursor: NO_FEED_CURSOR.into(),
             more: false,
             complete: false,
             live_watch: false,
-        });
+        };
     };
-    Ok(ChangesPage {
+    ChangesPage {
         changes: page
             .changes
             .into_iter()
@@ -347,12 +363,12 @@ pub async fn changes<B: StorageBackend + ?Sized>(
         more: page.more,
         complete: page.complete,
         live_watch: page.live_watch,
-    })
+    }
 }
 
 /// The cursor of a page from a backend with no change feed; the host only
 /// hands it back, and it always reads as incomplete.
-const NO_FEED_CURSOR: &str = "none";
+pub(crate) const NO_FEED_CURSOR: &str = "none";
 
 /// Refuses a batch over [`MAX_BATCH_KEYS`] keys.
 fn require_batch(keys: &[String], op: &str) -> GuestResult<()> {

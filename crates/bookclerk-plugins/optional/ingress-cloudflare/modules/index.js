@@ -5,11 +5,12 @@
  * Cloudflare account (see `cloudflare.ts`), opens {@link RELAY_SOCKETS}
  * host-brokered WebSockets to it and returns its `workers.dev` origin. Each
  * public request the relay announces on a socket is served in that socket's
- * message handler (see `serve.ts`). `health` reopens sockets that closed.
+ * message handler (see `serve.ts`); a WebSocket upgrade becomes a socket
+ * to the library whose messages travel as live frames on the relay socket
+ * that served it. `health` reopens sockets that closed.
  */
 import { BookclerkEntrypoint, IngressEntrypoint, } from "@bookclerk/plugin-sdk/workerd";
-import { relayToken } from "./cloudflare.js";
-import { handleMessage, hostOf, liveContext, relayHealth, startRelay, stopRelay, targetOf, topUpSockets, } from "./lifecycle.js";
+import { handleClose, handleMessage, liveContext, relayHealth, startRelay, stopRelay, } from "./lifecycle.js";
 // workerd treats every named export of this module as an entrypoint, so it
 // exports only the entrypoint classes; the logic lives in `lifecycle.ts`.
 /** `ingress` entrypoint: the relay's lifecycle. */
@@ -43,10 +44,11 @@ export class Ingress extends IngressEntrypoint {
 /** Default entrypoint: the relay sockets' handlers. */
 export default class CloudflareRelay extends BookclerkEntrypoint {
     /**
-     * Serves the request a relay notice announces.
+     * Serves the request a relay notice announces, or passes a live
+     * connection's message on.
      *
      * @param ws - The socket.
-     * @param message - The notice.
+     * @param message - The notice, live frame or library message.
      * @returns Nothing for the host to do.
      */
     async webSocketMessage(ws, message) {
@@ -54,22 +56,16 @@ export default class CloudflareRelay extends BookclerkEntrypoint {
         return {};
     }
     /**
-     * Reopens a socket the relay or the network closed, unless the plugin
-     * closed it itself.
+     * Passes a live connection's close to the relay, or ends the
+     * connections of a relay socket that closed and reopens it unless the
+     * plugin closed it itself.
      *
      * @param ws - The closed socket.
      * @param code - The close code.
-     * @returns Resolves once a replacement was attempted.
+     * @param reason - The close reason.
+     * @returns Resolves once the close was handled.
      */
-    async webSocketClose(ws, code) {
-        const host = hostOf(ws);
-        if (host === null || code === 1000)
-            return;
-        try {
-            await topUpSockets(this.env.SOCKETS, host, await relayToken(targetOf(this.env)));
-        }
-        catch {
-            // `health` tops the sockets up again.
-        }
+    async webSocketClose(ws, code, reason) {
+        await handleClose(this.env, ws, code, reason);
     }
 }

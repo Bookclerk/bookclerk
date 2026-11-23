@@ -45,6 +45,7 @@ var FEATURE_STORAGE_MOVE_MANY = "storage.moveMany";
 var FEATURE_STORAGE_DELETE_MANY = "storage.deleteMany";
 var FEATURE_STORAGE_HEAD_MANY = "storage.headMany";
 var FEATURE_STORAGE_CONDITIONAL_WRITE = "storage.conditionalWrite";
+var FEATURE_STORAGE_CHECKED_WRITE = "storage.checkedWrite";
 var FEATURE_STORAGE_CHANGES = "storage.changes";
 var OBJECT_CHANGE_KINDS = ["changed", "upserted", "removed"];
 var PLUGIN_ERROR_CODES = ["invalid_params", "unauthorized", "forbidden", "not_found", "unavailable", "unsupported", "internal", "payload_too_large", "deadline_exceeded", "invalid_cursor", "cancelled", "conflict", "limit_exceeded", "rate_limited", "network_not_granted"];
@@ -12051,6 +12052,9 @@ function socketsBinding(transport) {
       const reply = await call(transport, "list", {});
       const sockets = Array.isArray(reply.sockets) ? reply.sockets : [];
       return sockets.map((info) => new HostSocket(transport, info));
+    },
+    getWebSocket(id) {
+      return new HostSocket(transport, { socket: String(id ?? "") });
     }
   });
 }
@@ -12091,8 +12095,61 @@ function requestHeaders(headers) {
   });
   return out;
 }
-function originBinding(transport) {
+function bytesOf(text) {
+  if (typeof text !== "string" || !text)
+    return new Uint8Array();
+  const binary = atob(text);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++)
+    out[i] = binary.charCodeAt(i);
+  return out;
+}
+function base64Of(bytes) {
+  let binary = "";
+  for (const byte of bytes)
+    binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+function connectResultOf(answer, sockets) {
+  const socket = answer.socket;
+  if (socket && typeof socket === "object") {
+    return { socket: hostWebSocketOf(sockets, socket) };
+  }
+  const refused = answer.refused;
+  if (refused && typeof refused === "object" && typeof refused.status === "number") {
+    const headers = new Headers();
+    if (Array.isArray(refused.headers)) {
+      for (const field of refused.headers) {
+        if (typeof field?.name === "string" && typeof field.value === "string") {
+          headers.append(field.name, field.value);
+        }
+      }
+    }
+    const nullBody = [204, 205, 304].includes(refused.status);
+    return {
+      response: new Response(nullBody ? null : bytesOf(refused.body), {
+        status: refused.status,
+        headers
+      })
+    };
+  }
+  throw PluginError.fromWire("internal", "the origin's upgrade answer is neither a socket nor a refusal");
+}
+function originBinding(transport, sockets) {
   return Object.freeze({
+    async connect(request, options) {
+      const head = {
+        method: request.method,
+        target: originTarget(request.url),
+        headers: requestHeaders(request.headers),
+        ...options?.clientAddress ? { clientAddress: options.clientAddress } : {}
+      };
+      const attachment = base64Of(encodeAttachment(options?.attachment));
+      const reply = await transport.connect(head, attachment);
+      if ("err" in reply)
+        throw PluginError.fromWire(reply.err.code, reply.err.message);
+      return connectResultOf(reply.ok, sockets);
+    },
     async fetch(request, options) {
       const head = {
         method: request.method,
@@ -12244,6 +12301,29 @@ async function grantedOriginFetch(granted, auth, head, body) {
   } catch (err) {
     return { err: errorOf(err) };
   }
+}
+async function grantedOriginConnect(granted, auth, head, attachment) {
+  let resp;
+  try {
+    resp = await granted.fetch("http://granted/origin/connect", {
+      method: "POST",
+      headers: { ...auth, "content-type": "application/json" },
+      body: JSON.stringify({ request: head, attachment })
+    });
+  } catch (err) {
+    return { err: { code: "unavailable", message: `origin connect: ${messageOf(err)}` } };
+  }
+  const value = await resp.json().catch(() => null);
+  if (resp.status !== 200 || !value || typeof value !== "object") {
+    const error = value?.error ?? null;
+    return {
+      err: {
+        code: error?.code || "internal",
+        message: error?.message || `origin connect HTTP ${resp.status}`
+      }
+    };
+  }
+  return { ok: value };
 }
 function errorOf(err) {
   if (err instanceof PluginError)
@@ -12715,7 +12795,7 @@ function invocationEnv(rawEnv, context) {
     if (sockets)
       merged[sockets.name] = socketsBinding(sockets.sockets);
     if (context.origin)
-      merged.ORIGIN = originBinding(context.origin);
+      merged.ORIGIN = originBinding(context.origin, sockets?.sockets);
     if (context.webhooks)
       merged.WEBHOOKS = webhooksBinding(context.webhooks);
     if (context.network && typeof context.network === "object") {
@@ -14878,6 +14958,16 @@ var GrantedOrigin = class extends RpcTarget {
   fetch(head, body) {
     return grantedOriginFetch(this.#granted, this.#auth, head, body);
   }
+  /**
+   * Hands one WebSocket upgrade to the library.
+   *
+   * @param head - The upgrade's head.
+   * @param attachment - The socket's initial attachment, base64.
+   * @returns The route's answer, or a typed failure; never throws.
+   */
+  connect(head, attachment) {
+    return grantedOriginConnect(this.#granted, this.#auth, head, attachment);
+  }
 };
 var GrantedWebhooks = class extends RpcTarget {
   /** Granted reverse channel that serves `POST /webhooks/<op>`. */
@@ -15897,6 +15987,7 @@ export {
   ExecuteStreamDecoder,
   FEATURE_SCALAR_LIMITS,
   FEATURE_STORAGE_CHANGES,
+  FEATURE_STORAGE_CHECKED_WRITE,
   FEATURE_STORAGE_CONDITIONAL_WRITE,
   FEATURE_STORAGE_COPY,
   FEATURE_STORAGE_DELETE_MANY,

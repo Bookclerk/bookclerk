@@ -80,6 +80,13 @@ request, so reviewers and Codecov see their results before it is queued.
 `CI Gate` in the merge group requires every platform, so a Windows or macOS
 failure ejects the pull request from the queue and keeps it out of `main`.
 
+A file name Windows cannot check out (a reserved device name such as `nul`
+or `con`, a name ending in a dot or a space, or a forbidden character) would
+fail every Windows job in the queue, for its own pull request and for the
+ones queued behind it. `scripts/tests/test_portable_paths.py` (in the `plan`
+job) refuses such a name on the pull request, along with two names that
+differ only by letter case.
+
 ### Full suite on Windows and macOS
 
 The jobs above run chosen parts of the suite on Windows and macOS, and in
@@ -858,10 +865,18 @@ fails when a web app component rendered in no story or page.
 A change under `ui/`, `tools/site/`, `tools/diagnostics-collector/` or
 `assets/brand/`, or to `SECURITY.md` or the daemon's OpenAPI document,
 selects it; any other change to the host that serves `ui/dist`, or to
-`docs/`, doesn't. Baselines live in a separate repository, named by
-`ui/visual/baselines.lock`; the job records a set every run and compares
-with the locked one when there is one. See
+`docs/`, doesn't. Baselines live in a separate repository, and
+`ui/visual/baselines.lock` names the approved image of each screenshot;
+the job records a set every run and compares with the locked images when
+there are any. See
 [Visual and accessibility testing](ui/visual-testing.md#baselines).
+
+After a push to main that the job would see, the `Visual recheck` workflow
+runs the same steps for each ready pull request with auto-merge on, merged
+into the new main commit, so a combination nobody approved shows up on the
+pull request before the merge queue fails on it. It is not a required check
+and runs at most four legs at once (see
+[Rechecks after main moves](ui/visual-testing.md#rechecks-after-main-moves)).
 
 ### Small-VPS envelope
 
@@ -988,6 +1003,11 @@ These run outside `CI Gate`:
   builds and checks the contributor image (see below).
 - **ABS Integration** (`.github/workflows/abs-integration.yml`) tests the
   `audiobookshelf` plugin against a real Audiobookshelf server (see below).
+- **Model packs** (`.github/workflows/model-packs.yml`) builds the
+  embedding models, checks them against the published ones and, on `main`,
+  publishes them (see [Model packs](packaging.md#model-packs)). A pull
+  request runs it only when it changes the builder, the pack layout, the
+  tokenizer or the `embedder` plugin, and skips drafts.
 
 ### CodeQL
 
@@ -1874,7 +1894,10 @@ run, so it gets a runner before the jobs that fan out after `plan`. The
 queue also deletes a group's branch after merging it, so the check comes
 after the job's `CI Gate` test, and the job looks again for a started
 `CI Gate` just before it cancels. A transport error counts as the branch
-being present. A cancelled run doesn't trigger
+being present. The step shell runs with `-e`, so the script catches
+`ls-remote`'s exit code with `||`; reading `$?` afterwards ended the step
+with status 2 instead, leaving the dropped group's jobs running to the end
+and the job marked failed. A cancelled run doesn't trigger
 [re-enqueue](#merge-queue-re-enqueue), because its jobs carry no
 not-acquired annotation.
 

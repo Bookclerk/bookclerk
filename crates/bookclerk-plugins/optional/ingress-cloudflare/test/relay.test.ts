@@ -77,6 +77,7 @@ function library(
         headers: { "x-library": "yes", "content-type": "text/plain" },
       });
     },
+    connect: () => Promise.reject(new Error("no upgrades here")),
   };
 }
 
@@ -95,9 +96,10 @@ function pluginSocket(hub: RelayHub, origin: OriginBinding, outcomes: ServeOutco
       const notice = parseNotice(text);
       assert.notEqual(typeof notice, "string", `bad notice ${text}`);
       if (typeof notice === "string") return;
-      void serveRequest({ fetch: hubFetch(hub), origin, host: HOST, token: TOKEN }, notice.id).then(
-        (outcome) => outcomes.push(outcome),
-      );
+      void serveRequest(
+        { fetch: hubFetch(hub), origin, host: HOST, token: TOKEN, via: "r0" },
+        notice.id,
+      ).then((outcome) => outcomes.push(outcome));
     },
   };
 }
@@ -187,7 +189,7 @@ test("a request no socket takes in time gets 503, and one never answered gets 50
   const busy = new RelayHub(TOKEN, { queueMs: 20, headMs: 60 });
   // The socket takes the first notice and never answers it.
   const notices: string[] = [];
-  busy.attach({ send: (text) => notices.push(text) });
+  busy.attach({ send: (text) => notices.push(String(text)) });
   const [first, second] = await Promise.all([
     busy.fetch(new Request("https://lib.example/one")),
     busy.fetch(new Request("https://lib.example/two")),
@@ -375,6 +377,7 @@ test("a library failure becomes a 502 for the client", async () => {
   const outcomes: ServeOutcome[] = [];
   const failing: OriginBinding = {
     fetch: () => Promise.reject(new Error("down")),
+    connect: () => Promise.reject(new Error("down")),
   };
   hub.attach(pluginSocket(hub, failing, outcomes));
   const response = await hub.fetch(new Request("https://lib.example/"));
@@ -388,12 +391,12 @@ test("serveRequest reports a request that is gone or a relay that is unreachable
   const origin = library([]);
   const gone: Fetch = () => Promise.resolve(new Response("no", { status: 404 }));
   assert.equal(
-    await serveRequest({ fetch: gone, origin, host: HOST, token: TOKEN }, "abc"),
+    await serveRequest({ fetch: gone, origin, host: HOST, token: TOKEN, via: "r0" }, "abc"),
     "gone",
   );
   const down: Fetch = () => Promise.reject(new Error("offline"));
   assert.equal(
-    await serveRequest({ fetch: down, origin, host: HOST, token: TOKEN }, "abc"),
+    await serveRequest({ fetch: down, origin, host: HOST, token: TOKEN, via: "r0" }, "abc"),
     "gone",
   );
 });
@@ -419,14 +422,20 @@ test("serveRequest answers a malformed pulled frame or head with an error push",
     };
   assert.equal(
     await serveRequest(
-      { fetch: relay(new Uint8Array([0, 0, 0, 9, 1])), origin, host: HOST, token: TOKEN },
+      {
+        fetch: relay(new Uint8Array([0, 0, 0, 9, 1])),
+        origin,
+        host: HOST,
+        token: TOKEN,
+        via: "r0",
+      },
       "a",
     ),
     "bad_request",
   );
   const badHead = encodeFrame({ method: "GET", target: "no-slash", headers: [] });
   assert.equal(
-    await serveRequest({ fetch: relay(badHead), origin, host: HOST, token: TOKEN }, "b"),
+    await serveRequest({ fetch: relay(badHead), origin, host: HOST, token: TOKEN, via: "r0" }, "b"),
     "bad_request",
   );
   assert.deepEqual(pushed, [502, 400]);
@@ -438,7 +447,7 @@ test("serveRequest reports a push the relay refused", async () => {
   const relay: Fetch = async (input) =>
     input.includes(RELAY_PULL_PATH) ? new Response(head) : new Response("gone", { status: 404 });
   assert.equal(
-    await serveRequest({ fetch: relay, origin, host: HOST, token: TOKEN }, "a"),
+    await serveRequest({ fetch: relay, origin, host: HOST, token: TOKEN, via: "r0" }, "a"),
     "push_failed",
   );
   const throwing: Fetch = async (input) => {
@@ -446,7 +455,7 @@ test("serveRequest reports a push the relay refused", async () => {
     throw new Error("reset");
   };
   assert.equal(
-    await serveRequest({ fetch: throwing, origin, host: HOST, token: TOKEN }, "a"),
+    await serveRequest({ fetch: throwing, origin, host: HOST, token: TOKEN, via: "r0" }, "a"),
     "push_failed",
   );
 });
