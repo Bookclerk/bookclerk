@@ -5,6 +5,7 @@
   "crates__bookclerk-plugins__optional__destination-b2.fmt.toml": "crates/bookclerk-plugins/optional/destination-b2/plugin.toml",
   "crates__bookclerk-plugins__optional__destination-r2.fmt.toml": "crates/bookclerk-plugins/optional/destination-r2/plugin.toml",
   "crates__bookclerk-plugins__optional__destination-s3.fmt.toml": "crates/bookclerk-plugins/optional/destination-s3/plugin.toml",
+  "crates__bookclerk-plugins__optional__ingress-cloudflare-tunnel.fmt.toml": "crates/bookclerk-plugins/optional/ingress-cloudflare-tunnel/plugin.toml",
   "crates__bookclerk-plugins__optional__ingress-cloudflare.fmt.toml": "crates/bookclerk-plugins/optional/ingress-cloudflare/plugin.toml",
   "crates__bookclerk-plugins__optional__ingress-ngrok.fmt.toml": "crates/bookclerk-plugins/optional/ingress-ngrok/plugin.toml",
   "crates__bookclerk-plugins__optional__integration-audiobookshelf.fmt.toml": "crates/bookclerk-plugins/optional/integration-audiobookshelf/plugin.toml",
