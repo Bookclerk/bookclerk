@@ -7106,6 +7106,11 @@ async fn discover_catalog_search(
     })
     .await
     .map_err(internal_err)?;
+    bookclerk_discover::join_search_library_copies(&library, &mut page.items, |id| {
+        plugin_keys.get(id).cloned()
+    })
+    .await
+    .map_err(internal_err)?;
     for hit in &mut page.items {
         state
             .covers

@@ -759,9 +759,12 @@ A row is one recording, never one title. Two stores' hits share a row when
 they share an ISBN or ASIN, or when the shared listing pool resolved both
 store products into the same expression (`LibraryStore::listing_expressions`).
 
-Stores rarely share a record number, so hits from two different stores that
-share none of those still share a row when all of these hold
-(`same_recording_by_runtime` in `bookclerk-discover`):
+Stores rarely share a record number, so hits that share none of those still
+share a row when all of these hold (`same_recording_by_runtime` in
+`bookclerk-discover`). This also joins one store's two products of one
+recording, which happens when two distributors deliver it: Chirp lists Cyril
+Taylor-Carr's *Aleister Crowley* from both Icon Audio Arts and Author's
+Republic, 2 seconds apart, and search shows one row.
 
 1. Both report a runtime, and the runtimes differ by at most 1 minute
    (stores round a recording's length differently, by less than a minute).
@@ -771,10 +774,11 @@ share none of those still share a row when all of these hold
 3. They credit the same, non-empty set of narrators.
 4. Nothing tells them apart: no two different ISBNs or ASINs, no abridged
    against unabridged, no two different languages, and no two different
-   expressions in the pool.
+   expressions in the pool. For two products of one store, no two different
+   subtitles either (stores word subtitles differently, so this is not
+   checked across stores).
 
-Two products of one store never merge this way, and title and authors alone
-never merge hits. A narration and a dramatisation of one book, or an
+Title and authors alone never merge hits. A narration and a dramatisation of one book, or an
 unabridged and an abridged recording, stay separate rows with their own
 cover, narrators and price. Each merged row keeps every store's edition, so
 every store's price is still offered, and a field one store left out (a
@@ -788,6 +792,18 @@ a tie the first one stays.
 > David Baldacci's *First Family*, read by Ron McLarty, is the reference
 > case: Audible, Chirp and Libro.fm each list an unabridged (871 minutes)
 > and an abridged (370 minutes) recording, and search shows two rows.
+
+Search is a store browser, so unlike the shelves it keeps books the library
+already holds and marks them instead (`in_library` on each hit, filled by
+`join_search_library_copies` when a page is read, never stored):
+
+- `this_edition` ("In your library"): one of the hit's ASIN, ISBN or store
+  products belongs to an edition an account or a branch holds.
+- `other_edition` ("Another edition in your library"): none of those is
+  held, but the hit's work is. The work is that of a store listing the
+  shared listing pool holds for the hit, or else the work the library's
+  resolver would place the hit in, as it places a scanned listing. That is
+  another recording of the book, or the same recording from another store.
 
 Stores give ISBNs where they can: Audible's catalog `isbn` attribute and
 Libro.fm's product ids are ISBNs, and Chirp, which lists none, names a
