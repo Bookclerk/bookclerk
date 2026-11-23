@@ -188,7 +188,7 @@ export interface WorkSummary {
   purchased_at?: string | null;
   /**
    * Held editions an acquire would still queue (neither acquired, queued
-   * nor downloading); see {@link rowOffersAcquire}.
+   * nor downloading); the row offers Acquire while it is above zero.
    */
   acquirable_editions?: number;
 }
