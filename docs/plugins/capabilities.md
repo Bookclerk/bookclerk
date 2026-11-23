@@ -276,7 +276,9 @@ grants no new reach: every socket URL must also pass the network rules
 above (a `domains` entry for its host, or a `tcp` entry for its host and
 port, plus the address-space rules), and the broker owns the handshake
 headers, so a plugin can't use a socket to reach a host its grant doesn't
-cover. The consent token is `sockets`.
+cover. A raw TLS stream (`tls://host:port`) needs a `tcp` entry for its
+host and port; a `domains` entry doesn't cover it. The consent token is
+`sockets`.
 
 ### Inbound webhooks
 

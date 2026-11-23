@@ -4267,7 +4267,8 @@ pub struct AiRunOk {
     pub model: Option<String>,
 }
 
-/// One WebSocket message.
+/// One WebSocket message, or one chunk of a `tls://` stream (always
+/// `binary`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "camelCase")]
 pub enum SocketFrame {
@@ -4312,22 +4313,32 @@ pub struct SocketAutoResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SocketConnectRequest {
-    /// `wss://` or `ws://` URL, at most `maxSocketUrlBytes`. The host must be on
-    /// the plugin's network grant.
+    /// `wss://` or `ws://` URL, at most `maxSocketUrlBytes`, or
+    /// `tls://host:port` for a raw TLS byte stream (port required, nothing
+    /// after it). The host must be on the plugin's network grant; a `tls://`
+    /// stream needs a `tcp` grant for that host and port.
     #[serde(default)]
     pub url: String,
-    /// Requested subprotocols, at most `maxSocketHeaders`.
+    /// Requested subprotocols, at most `maxSocketHeaders`; on a `tls://`
+    /// stream, the ALPN protocol ids to offer (visible ASCII, 1 to 255 bytes).
     #[serde(default)]
     pub protocols: Vec<String>,
-    /// Extra request headers, at most `maxSocketHeaders`.
+    /// Extra request headers, at most `maxSocketHeaders`; none on `tls://`.
     #[serde(default)]
     pub headers: Vec<SocketHeader>,
-    /// Heartbeats the broker answers, at most `maxSocketAutoResponses`.
+    /// Heartbeats the broker answers, at most `maxSocketAutoResponses`; none on
+    /// `tls://`.
     #[serde(default)]
     pub auto_responses: Vec<SocketAutoResponse>,
     /// Initial attachment, at most `maxSocketAttachmentBytes`.
     #[serde(default, with = "crate::json_bytes::b64")]
     pub attachment: Vec<u8>,
+    /// `tls://` only: DER root certificates, at most `maxSocketTrustAnchors` of
+    /// at most `maxSocketTrustAnchorBytes` each, that the server's chain must
+    /// end in instead of Mozilla's roots, for a service that signs its own
+    /// (an ngrok or Cloudflare Tunnel agent endpoint). Empty uses Mozilla's.
+    #[serde(default)]
+    pub trust_anchors: Vec<Vec<u8>>,
 }
 
 /// One open host-brokered socket.
@@ -4340,7 +4351,8 @@ pub struct SocketInfo {
     /// URL the socket was opened to, without credentials.
     #[serde(default)]
     pub url: String,
-    /// Subprotocol the server chose; empty when none.
+    /// Subprotocol the server chose (on `tls://`, the negotiated ALPN id);
+    /// empty when none.
     /// `None` when absent (wire zero value).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol: Option<String>,
@@ -10159,6 +10171,14 @@ pub fn write_socket_connect_request(
         }
     }
     b.set_attachment(&v.attachment);
+    {
+        let mut items = b
+            .reborrow()
+            .init_trust_anchors(list_len(v.trust_anchors.len())?);
+        for (i, item) in v.trust_anchors.iter().enumerate() {
+            items.set(list_len(i)?, item);
+        }
+    }
     Ok(())
 }
 
@@ -10184,6 +10204,11 @@ pub fn read_socket_connect_request(
             .map(|item| read_socket_auto_response(item))
             .collect::<capnp::Result<Vec<_>>>()?,
         attachment: r.get_attachment()?.to_vec(),
+        trust_anchors: r
+            .get_trust_anchors()?
+            .iter()
+            .map(|d| d.map(<[u8]>::to_vec))
+            .collect::<capnp::Result<Vec<_>>>()?,
     })
 }
 

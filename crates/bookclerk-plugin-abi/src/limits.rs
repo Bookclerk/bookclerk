@@ -55,6 +55,13 @@ pub const MAX_SOCKET_AUTO_RESPONSES: u32 = crate::plugin_capnp::MAX_SOCKET_AUTO_
 /// Largest heartbeat request or response frame, in bytes.
 pub const MAX_SOCKET_AUTO_RESPONSE_BYTES: u32 = crate::plugin_capnp::MAX_SOCKET_AUTO_RESPONSE_BYTES;
 
+/// Most trust anchors one `tls://` `Sockets.connect` may supply.
+pub const MAX_SOCKET_TRUST_ANCHORS: u32 = crate::plugin_capnp::MAX_SOCKET_TRUST_ANCHORS;
+
+/// Largest DER certificate a `tls://` `Sockets.connect` may supply as a trust
+/// anchor, in bytes.
+pub const MAX_SOCKET_TRUST_ANCHOR_BYTES: u32 = crate::plugin_capnp::MAX_SOCKET_TRUST_ANCHOR_BYTES;
+
 /// Longest `Sockets.connect` URL, in bytes.
 pub const MAX_SOCKET_URL_BYTES: u32 = crate::plugin_capnp::MAX_SOCKET_URL_BYTES;
 

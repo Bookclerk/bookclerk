@@ -73,7 +73,8 @@ pub struct RouteAutoResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RouteConnect {
-    /// `wss://` or `ws://` URL on the plugin's network grant.
+    /// `wss://`, `ws://` or `tls://host:port` URL on the plugin's network
+    /// grant.
     pub url: String,
     /// Requested subprotocols.
     #[serde(default)]
@@ -87,6 +88,9 @@ pub struct RouteConnect {
     /// Initial attachment, base64.
     #[serde(default, with = "bookclerk_plugin_abi::json_bytes::b64")]
     pub attachment: Vec<u8>,
+    /// `tls://` only: DER root certificates, each base64.
+    #[serde(default)]
+    pub trust_anchors: Vec<String>,
 }
 
 /// `POST /sockets/send` body.
@@ -224,6 +228,14 @@ pub fn parse_socket_call(op: &str, body: &[u8]) -> Result<SocketCall, PluginErro
                     })
                     .collect(),
                 attachment: route.attachment,
+                trust_anchors: route
+                    .trust_anchors
+                    .iter()
+                    .map(|text| bookclerk_plugin_abi::json_bytes::decode_text(text))
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| {
+                        PluginError::invalid_params("a trust anchor is not valid base64")
+                    })?,
             };
             validate_socket_connect(&request)?;
             Ok(SocketCall::Connect(request))

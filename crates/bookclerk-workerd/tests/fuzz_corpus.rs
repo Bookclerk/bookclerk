@@ -442,6 +442,13 @@ fn socket_route_seeds_are_current() {
             ),
         ),
         (
+            "connect_tls.bin",
+            route_seed(
+                0,
+                r#"{"url":"tls://connect.ngrok-agent.com:443","protocols":["x-tunnel/1"],"attachment":"aGk=","trustAnchors":["MAMCAQA="]}"#,
+            ),
+        ),
+        (
             "connect_extra_field.bin",
             route_seed(0, r#"{"url":"wss://a.example/","proxy":"x"}"#),
         ),

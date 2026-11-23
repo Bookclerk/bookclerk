@@ -14,8 +14,8 @@
 //! reused within one table.
 
 use bookclerk_plugin_abi::sockets::{
-    auto_response_for, check_socket_attachment, check_socket_close, check_socket_frame,
-    socket_frame_len, validate_socket_connect, SocketTarget,
+    auto_response_for, check_socket_attachment, check_socket_close, check_socket_frame_for,
+    socket_frame_len, validate_socket_connect, SocketScheme, SocketTarget,
 };
 use bookclerk_plugin_abi::{
     LimitExceeded, PluginError, Result, SocketAutoResponse, SocketClosed, SocketConnectRequest,
@@ -46,6 +46,8 @@ struct Entry {
     id: String,
     /// URL the guest asked for, as given.
     url: String,
+    /// WebSocket or `tls://` stream; a stream takes binary frames only.
+    scheme: SocketScheme,
     /// Subprotocol the server chose; `None` before the handshake or when
     /// it chose none.
     protocol: Option<String>,
@@ -166,6 +168,7 @@ impl SocketTable {
         self.entries.push(Entry {
             id: id.clone(),
             url: request.url.clone(),
+            scheme: target.scheme,
             protocol: None,
             attachment: request.attachment.clone(),
             auto_responses: request.auto_responses.clone(),
@@ -241,16 +244,16 @@ impl SocketTable {
     /// `not_found` when the socket is not open, or the frame check's
     /// refusal.
     pub fn outbound(&self, socket: &str, frame: &SocketFrame) -> Result<()> {
-        if !self
+        let Some(entry) = self
             .entries
             .iter()
-            .any(|e| e.id == socket && e.phase == Phase::Open)
-        {
+            .find(|e| e.id == socket && e.phase == Phase::Open)
+        else {
             return Err(PluginError::not_found(format!(
                 "socket `{socket}` is not open"
             )));
-        }
-        check_socket_frame(frame)
+        };
+        check_socket_frame_for(entry.scheme, frame)
     }
 
     /// Checks a close the guest asked for.

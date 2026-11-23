@@ -45,20 +45,36 @@ export interface SocketAutoResponsePair {
 
 /** Options for {@link SocketsBinding.connect}. */
 export interface SocketConnectOptions {
-  /** Subprotocols to request (`Sec-WebSocket-Protocol`), at most 16. */
+  /**
+   * Subprotocols to request (`Sec-WebSocket-Protocol`), at most 16. For a
+   * `tls://` stream, the ALPN ids to offer instead (1 to 255 visible ASCII
+   * bytes each).
+   */
   protocols?: string[];
   /**
    * Extra request headers, at most 16. Values may be credentials; the host
-   * never logs them. Handshake and hop-by-hop headers are refused.
+   * never logs them. Handshake and hop-by-hop headers are refused. A
+   * `tls://` stream takes none.
    */
   headers?: Record<string, string> | Array<[string, string]>;
-  /** Heartbeats the host answers without waking the plugin, at most 4. */
+  /**
+   * Heartbeats the host answers without waking the plugin, at most 4. A
+   * `tls://` stream takes none.
+   */
   autoResponses?: SocketAutoResponsePair[];
   /**
    * Initial attachment, as {@link HostWebSocket.serializeAttachment} would
    * store it.
    */
   attachment?: unknown;
+  /**
+   * `tls://` only: root certificates the server's chain must end in instead
+   * of Mozilla's roots, for a service that signs its endpoint with its own
+   * CA. Each is DER bytes or one PEM `CERTIFICATE` block; at most
+   * `MAX_SOCKET_TRUST_ANCHORS`, each at most `MAX_SOCKET_TRUST_ANCHOR_BYTES`
+   * of DER.
+   */
+  trustAnchors?: Array<Uint8Array | string>;
 }
 
 /**
@@ -75,13 +91,18 @@ export interface HostWebSocket {
   readonly id: string;
   /** URL the socket was opened to, without credentials; empty in a handler. */
   readonly url: string;
-  /** Subprotocol the server chose; empty when none or unknown. */
+  /**
+   * Subprotocol the server chose (the negotiated ALPN id for a `tls://`
+   * stream); empty when none or unknown.
+   */
   readonly protocol: string;
   /**
    * Send one message.
    *
-   * @param message - Text or bytes, at most `MAX_SOCKET_FRAME_BYTES`.
-   * @throws PluginError `not_found` when the socket has closed.
+   * @param message - Text or bytes, at most `MAX_SOCKET_FRAME_BYTES`; bytes
+   *   only on a `tls://` stream, written to it as they are.
+   * @throws PluginError `not_found` when the socket has closed,
+   *   `invalid_params` for text on a `tls://` stream.
    */
   send(message: SocketSendData): Promise<void>;
   /**
@@ -110,17 +131,24 @@ export interface HostWebSocket {
 
 /**
  * `SOCKETS` binding (`[sockets]`, renamed by `binding = "..."`): outbound
- * WebSockets the host holds open while the plugin sleeps. Messages and
- * closes reach the default entrypoint's `webSocketMessage(ws, message)` and
- * `webSocketClose(ws, code, reason, wasClean)`.
+ * WebSockets, and raw TLS byte streams (`tls://host:port`), that the host
+ * holds open while the plugin sleeps. Messages and closes reach the default
+ * entrypoint's `webSocketMessage(ws, message)` and
+ * `webSocketClose(ws, code, reason, wasClean)`. A stream's reads arrive as
+ * binary messages in order (up to 64 KiB each, with no message boundaries
+ * of their own), and the server ending the stream is a clean close with
+ * code 1000.
  */
 export interface SocketsBinding {
   /**
    * Open a socket once the handshake finishes. It belongs to the plugin
    * instance and outlives this invocation.
    *
-   * @param url - `wss://` or `ws://` URL on the plugin's network grant.
-   * @param options - Subprotocols, headers, heartbeats and attachment.
+   * @param url - `wss://` or `ws://` URL on the plugin's network grant, or
+   *   `tls://host:port` (port required, nothing after it) on a TCP grant
+   *   (`[capabilities.network] tcp`) for that host and port.
+   * @param options - Subprotocols (ALPN ids for `tls://`), headers,
+   *   heartbeats and attachment.
    * @returns The open socket.
    * @throws PluginError `forbidden` for a host outside the network grant,
    *   `limit_exceeded` when the instance already holds `MAX_SOCKETS_PER_INSTANCE`

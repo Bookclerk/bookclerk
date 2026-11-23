@@ -176,6 +176,12 @@ export const MAX_SOCKET_AUTO_RESPONSES = 4 as const;
 /** Largest heartbeat request or response frame, in bytes. */
 export const MAX_SOCKET_AUTO_RESPONSE_BYTES = 256 as const;
 
+/** Most trust anchors one `tls://` `Sockets.connect` may supply. */
+export const MAX_SOCKET_TRUST_ANCHORS = 4 as const;
+
+/** Largest DER certificate in `SocketConnectRequest.trustAnchors`, in bytes. */
+export const MAX_SOCKET_TRUST_ANCHOR_BYTES = 8192 as const;
+
 /** Longest `SocketConnectRequest.url`, in bytes. */
 export const MAX_SOCKET_URL_BYTES = 2048 as const;
 

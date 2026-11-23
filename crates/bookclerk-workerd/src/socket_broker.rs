@@ -1,5 +1,5 @@
-//! The socket broker: holds a plugin instance's WebSockets while its guest
-//! sleeps.
+//! The socket broker: holds a plugin instance's WebSockets and raw TLS
+//! streams while its guest sleeps.
 //!
 //! The host starts `bookclerk-workerd` in broker mode
 //! ([`SOCKET_BROKER_ENV`]) inside the plugin's jail, under the plugin's
@@ -13,6 +13,11 @@
 //!   ([`target_granted`]), and the broker connects only to resolved
 //!   addresses the policy allows, with no redirects;
 //! - `wss://` uses rustls on the hosts' one provider with Mozilla's roots;
+//! - a `tls://host:port` stream needs a TCP grant for its host and port,
+//!   offers the guest's ALPN ids, checks the server against the guest's own
+//!   trust anchors when it sends any (else Mozilla's roots), and carries bytes: each read becomes a
+//!   binary message and each binary frame the guest sends is written as is;
+//!   the peer ending the stream is a clean close (1000);
 //! - heartbeat frames the guest declared at connect are answered here and
 //!   never wake the guest ([`SocketTable::inbound`]);
 //! - other messages queue per socket and reach the host one at a time; the
@@ -30,7 +35,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bookclerk_plugin_abi::sockets::SocketTarget;
+use bookclerk_plugin_abi::sockets::{SocketTarget, SOCKET_CLOSE_NORMAL};
 use bookclerk_plugin_abi::{
     LimitExceeded, PluginError, Result, SocketClosed, SocketConnectRequest, SocketFrame,
     SocketHandler, SocketInfo, SocketMessage, Sockets, MAX_SOCKETS_PER_INSTANCE,
@@ -38,11 +43,11 @@ use bookclerk_plugin_abi::{
 };
 use bookclerk_plugin_manifest::EgressPolicy;
 use futures::{SinkExt as _, StreamExt as _};
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
-use tokio_rustls::rustls::pki_types::ServerName;
+use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName};
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
 use tokio_tungstenite::tungstenite::http::header::{
@@ -89,6 +94,9 @@ const CLOSE_NO_STATUS: u16 = 1005;
 /// Close code reported when the broker itself goes away.
 const CLOSE_GOING_AWAY: u16 = 1001;
 
+/// Most bytes one read of a `tls://` stream hands the guest as a message.
+const STREAM_CHUNK_BYTES: usize = 64 * 1024;
+
 /// A byte stream the broker runs a WebSocket over (plain TCP or TLS).
 trait BrokerIo: AsyncRead + AsyncWrite + Unpin {}
 
@@ -96,6 +104,14 @@ impl<T: AsyncRead + AsyncWrite + Unpin> BrokerIo for T {}
 
 /// An open WebSocket as the broker holds it.
 type Socket = WebSocketStream<Box<dyn BrokerIo>>;
+
+/// An open connection: a WebSocket, or a `tls://` byte stream.
+enum Conn {
+    /// A WebSocket.
+    Ws(Box<Socket>),
+    /// A raw TLS byte stream.
+    Stream(Box<dyn BrokerIo>),
+}
 
 /// What the guest asked one socket's task to do.
 enum Command {
@@ -273,7 +289,7 @@ impl Sockets for SocketBroker {
             shared: Rc::clone(&self.shared),
             id: id.clone(),
         };
-        let (socket, protocol) = dial(&self.shared, &request, &target).await?;
+        let (conn, protocol) = dial(&self.shared, &request, &target).await?;
         let info = self
             .shared
             .table
@@ -289,14 +305,17 @@ impl Sockets for SocketBroker {
             counted: Cell::new(false),
         });
         tokio::task::spawn_local(deliver(Rc::clone(&task), delivery_rx));
-        tokio::task::spawn_local(pump(
-            Rc::clone(&self.shared),
-            id,
-            socket,
-            command_rx,
-            deliveries,
-            task,
-        ));
+        let shared = Rc::clone(&self.shared);
+        match conn {
+            Conn::Ws(socket) => {
+                tokio::task::spawn_local(pump(shared, id, *socket, command_rx, deliveries, task));
+            }
+            Conn::Stream(stream) => {
+                tokio::task::spawn_local(pump_stream(
+                    shared, id, stream, command_rx, deliveries, task,
+                ));
+            }
+        }
         Ok(info)
     }
 
@@ -349,10 +368,15 @@ fn not_open(socket: &str) -> PluginError {
 /// grants the target's port covers it (an entry with no port grants 80 and
 /// 443, as for `fetch`); a TCP grant for the host and port covers it too, since that grant
 /// already lets the plugin open the same connection and speak the protocol
-/// itself. Either way the addresses are checked afterwards.
+/// itself. A `tls://` stream is raw TCP, so only a TCP grant covers it.
+/// Either way the addresses are checked afterwards.
 #[must_use]
 pub fn target_granted(policy: &EgressPolicy, target: &SocketTarget) -> bool {
-    policy.allows_fetch(&target.host, target.port) || policy.allows_tcp(&target.host, target.port)
+    let tcp = policy.allows_tcp(&target.host, target.port);
+    if target.scheme.is_stream() {
+        return tcp;
+    }
+    policy.allows_fetch(&target.host, target.port) || tcp
 }
 
 /// The typed refusal for a target the grant does not cover, naming the
@@ -466,47 +490,35 @@ fn upgrade_request(
     Ok(upgrade)
 }
 
-/// Dials, secures and upgrades one socket.
+/// Dials, secures and upgrades one socket (or, for `tls://`, dials and
+/// secures one stream).
 ///
 /// # Returns
 ///
-/// The open socket and the subprotocol the server chose.
+/// The open connection and the subprotocol the server chose (the
+/// negotiated ALPN id for a stream).
 ///
 /// # Errors
 ///
-/// `forbidden` for an egress refusal; `unavailable` for a network, TLS or
+/// `invalid_params` for an unusable `tls://` trust anchor; `forbidden` for
+/// an egress refusal; `unavailable` for a network, TLS or
 /// handshake failure or a server that refused the upgrade;
 /// `deadline_exceeded` when a step timed out.
 async fn dial(
     shared: &Shared,
     request: &SocketConnectRequest,
     target: &SocketTarget,
-) -> Result<(Socket, Option<String>)> {
+) -> Result<(Conn, Option<String>)> {
+    if target.scheme.is_stream() {
+        // Settle the TLS settings first, so a bad trust anchor costs no dial.
+        let config = stream_tls(shared, request)?;
+        let stream = dial_tcp(shared, target).await?;
+        return secure_stream(config, request, target, stream).await;
+    }
+    let stream = dial_tcp(shared, target).await?;
     let upgrade = upgrade_request(&shared.policy, request, target)?;
-    let connect = async {
-        if let Some(tunnels) = &shared.tunnels {
-            // Same refusal text as a direct dial; the host checks again and
-            // resolves and checks every address itself.
-            if !target_granted(&shared.policy, target) {
-                return Err(not_granted(&shared.policy, target));
-            }
-            let tunnel_target = crate::egress_relay::TunnelTarget {
-                host: target.host.to_ascii_lowercase(),
-                port: target.port,
-            };
-            let stream = crate::egress_relay::open_tunnel(tunnels.as_ref(), &tunnel_target)
-                .await
-                .map_err(|err| PluginError::unavailable(format!("could not connect: {err}")))?;
-            return Ok(Box::new(stream) as Box<dyn BrokerIo>);
-        }
-        let addresses = allowed_addresses(&shared.policy, target).await?;
-        Ok(Box::new(connect_tcp(&addresses).await?) as Box<dyn BrokerIo>)
-    };
-    let stream = tokio::time::timeout(CONNECT_TIMEOUT, connect)
-        .await
-        .map_err(|_| PluginError::deadline_exceeded("timed out connecting the socket"))??;
     let handshake = async {
-        let io: Box<dyn BrokerIo> = if target.secure {
+        let io: Box<dyn BrokerIo> = if target.scheme.uses_tls() {
             let name = ServerName::try_from(target.host.clone())
                 .map_err(|err| PluginError::invalid_params(format!("TLS name: {err}")))?;
             let tls = tokio_rustls::TlsConnector::from(Arc::clone(&shared.tls))
@@ -545,7 +557,119 @@ async fn dial(
             )));
         }
     }
-    Ok((socket, protocol))
+    Ok((Conn::Ws(Box::new(socket)), protocol))
+}
+
+/// Secures a `tls://` stream with the settings [`stream_tls`] chose.
+///
+/// # Returns
+///
+/// The stream and the negotiated ALPN id, if any.
+///
+/// # Errors
+///
+/// `unavailable` for a TLS failure or an ALPN id the guest did not offer;
+/// `deadline_exceeded` when the handshake timed out.
+async fn secure_stream(
+    config: ClientConfig,
+    request: &SocketConnectRequest,
+    target: &SocketTarget,
+    stream: Box<dyn BrokerIo>,
+) -> Result<(Conn, Option<String>)> {
+    let name = ServerName::try_from(target.host.clone())
+        .map_err(|err| PluginError::invalid_params(format!("TLS name: {err}")))?;
+    let handshake = tokio_rustls::TlsConnector::from(Arc::new(config)).connect(name, stream);
+    let tls = tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake)
+        .await
+        .map_err(|_| PluginError::deadline_exceeded("timed out in the TLS handshake"))?
+        .map_err(|err| PluginError::unavailable(format!("TLS failed: {err}")))?;
+    let protocol = tls
+        .get_ref()
+        .1
+        .alpn_protocol()
+        .map(|p| String::from_utf8_lossy(p).into_owned());
+    if let Some(chosen) = &protocol {
+        if !request.protocols.iter().any(|p| p == chosen) {
+            return Err(PluginError::unavailable(
+                "the server chose an ALPN protocol that was not offered",
+            ));
+        }
+    }
+    Ok((Conn::Stream(Box::new(tls)), protocol))
+}
+
+/// TLS settings for a `tls://` stream: Mozilla's roots, or only the guest's
+/// trust anchors when it sent any, offering the guest's ALPN ids.
+///
+/// # Errors
+///
+/// `invalid_params` when an anchor is not a usable root certificate.
+fn stream_tls(shared: &Shared, request: &SocketConnectRequest) -> Result<ClientConfig> {
+    let mut config = if request.trust_anchors.is_empty() {
+        (*shared.tls).clone()
+    } else {
+        anchored_tls(&request.trust_anchors)?
+    };
+    config.alpn_protocols = request
+        .protocols
+        .iter()
+        .map(|p| p.as_bytes().to_vec())
+        .collect();
+    Ok(config)
+}
+
+/// TLS settings that trust only the guest's own roots, for a `tls://`
+/// service that signs its endpoint with a private CA.
+///
+/// # Errors
+///
+/// `invalid_params` when an anchor is not a usable root certificate.
+fn anchored_tls(anchors: &[Vec<u8>]) -> Result<ClientConfig> {
+    let mut roots = RootCertStore::empty();
+    for der in anchors {
+        roots
+            .add(CertificateDer::from(der.clone()))
+            .map_err(|err| PluginError::invalid_params(format!("trust anchor: {err}")))?;
+    }
+    Ok(
+        ClientConfig::builder_with_provider(bookclerk_tls::crypto_provider())
+            .with_safe_default_protocol_versions()
+            .map_err(|err| PluginError::internal(format!("TLS settings: {err}")))?
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    )
+}
+
+/// Connects TCP for one socket, through the host's tunnel in production.
+///
+/// # Errors
+///
+/// `network_not_granted` or `forbidden` for an egress refusal;
+/// `unavailable` for a network failure; `deadline_exceeded` after
+/// [`CONNECT_TIMEOUT`].
+async fn dial_tcp(shared: &Shared, target: &SocketTarget) -> Result<Box<dyn BrokerIo>> {
+    let connect = async {
+        if let Some(tunnels) = &shared.tunnels {
+            // Same refusal text as a direct dial; the host checks again and
+            // resolves and checks every address itself.
+            if !target_granted(&shared.policy, target) {
+                return Err(not_granted(&shared.policy, target));
+            }
+            let tunnel_target = crate::egress_relay::TunnelTarget {
+                host: target.host.to_ascii_lowercase(),
+                port: target.port,
+            };
+            let stream = crate::egress_relay::open_tunnel(tunnels.as_ref(), &tunnel_target)
+                .await
+                .map_err(|err| PluginError::unavailable(format!("could not connect: {err}")))?;
+            return Ok(Box::new(stream) as Box<dyn BrokerIo>);
+        }
+        let addresses = allowed_addresses(&shared.policy, target).await?;
+        Ok(Box::new(connect_tcp(&addresses).await?) as Box<dyn BrokerIo>)
+    };
+    tokio::time::timeout(CONNECT_TIMEOUT, connect)
+        .await
+        .map_err(|_| PluginError::deadline_exceeded("timed out connecting the socket"))?
 }
 
 /// The WebSocket message for a guest frame.
@@ -689,6 +813,46 @@ async fn pump(
     // pump that no longer serves them.
     drop(commands);
     drop(socket);
+    finish(
+        shared,
+        id,
+        Ended {
+            code,
+            reason,
+            clean,
+        },
+        held,
+        deliveries,
+        task,
+    )
+    .await;
+}
+
+/// How a socket ended, as its close reports it.
+struct Ended {
+    /// Close code reported to the guest.
+    code: u16,
+    /// Close reason reported to the guest.
+    reason: String,
+    /// Whether the close handshake (or stream shutdown) completed.
+    clean: bool,
+}
+
+/// Frees an ended socket's slot and hands its last held message, then its
+/// close, to the delivery task.
+async fn finish(
+    shared: Rc<Shared>,
+    id: String,
+    ended: Ended,
+    held: Option<Delivery>,
+    deliveries: mpsc::Sender<Delivery>,
+    task: Rc<DeliveryTask>,
+) {
+    let Ended {
+        code,
+        reason,
+        clean,
+    } = ended;
     shared.links.borrow_mut().remove(&id);
     let closed = shared.table.borrow_mut().closed(&id, code, &reason, clean);
     // The socket's slot is free, but its delivery task still holds work
@@ -704,6 +868,135 @@ async fn pump(
     if let Some(event) = closed {
         let _ = deliveries.send(Delivery::Closed(event)).await;
     }
+}
+
+/// Ends a `tls://` stream the guest closed: TLS close_notify, then waits
+/// for the peer to end its side.
+///
+/// # Returns
+///
+/// True when the peer ended the stream within [`CLOSE_TIMEOUT`].
+async fn close_stream(stream: &mut Box<dyn BrokerIo>) -> bool {
+    let drained = async {
+        if stream.shutdown().await.is_err() {
+            return false;
+        }
+        let mut sink = vec![0_u8; STREAM_CHUNK_BYTES];
+        loop {
+            match stream.read(&mut sink).await {
+                Ok(0) => return true,
+                Ok(_) => {}
+                Err(_) => return false,
+            }
+        }
+    };
+    matches!(tokio::time::timeout(CLOSE_TIMEOUT, drained).await, Ok(true))
+}
+
+/// Writes bytes to a `tls://` stream and flushes them.
+///
+/// # Returns
+///
+/// False when the write failed or the peer stopped reading.
+async fn write_stream(stream: &mut Box<dyn BrokerIo>, bytes: &[u8]) -> bool {
+    let written = async {
+        stream.write_all(bytes).await?;
+        stream.flush().await
+    };
+    matches!(
+        tokio::time::timeout(WRITE_TIMEOUT, written).await,
+        Ok(Ok(()))
+    )
+}
+
+/// Runs one open `tls://` stream as [`pump`] runs a WebSocket: each read
+/// becomes a binary message, each binary frame the guest sends is written
+/// as is, and the peer ending the stream is a clean close (1000).
+async fn pump_stream(
+    shared: Rc<Shared>,
+    id: String,
+    mut stream: Box<dyn BrokerIo>,
+    mut commands: mpsc::Receiver<Command>,
+    deliveries: mpsc::Sender<Delivery>,
+    task: Rc<DeliveryTask>,
+) {
+    let mut buffer = vec![0_u8; STREAM_CHUNK_BYTES];
+    let mut held: Option<Delivery> = None;
+    let (code, reason, clean) = loop {
+        tokio::select! {
+            command = commands.recv() => match command {
+                Some(Command::Send(SocketFrame::Binary(bytes))) => {
+                    if !write_stream(&mut stream, &bytes).await {
+                        break (CLOSE_ABNORMAL, String::new(), false);
+                    }
+                }
+                // The table refuses text on a stream before it is queued.
+                Some(Command::Send(SocketFrame::Text(_))) => {}
+                Some(Command::Close(code, reason)) => {
+                    let clean = close_stream(&mut stream).await;
+                    break (code, reason, clean);
+                }
+                None => {
+                    let clean = close_stream(&mut stream).await;
+                    break (CLOSE_GOING_AWAY, String::new(), clean);
+                }
+            },
+            permit = deliveries.reserve(), if held.is_some() => match (permit, held.take()) {
+                (Ok(permit), Some(item)) => permit.send(item),
+                (Ok(_), None) => {}
+                (Err(_), _) => break (CLOSE_GOING_AWAY, String::new(), false),
+            },
+            read = stream.read(&mut buffer), if held.is_none() => {
+                let frame = match read {
+                    Ok(0) => break (SOCKET_CLOSE_NORMAL, String::new(), true),
+                    Ok(n) => SocketFrame::Binary(buffer.get(..n).unwrap_or_default().to_vec()),
+                    Err(_) => break (CLOSE_ABNORMAL, String::new(), false),
+                };
+                let decision = shared.table.borrow().inbound(&id, frame);
+                match decision {
+                    // A stream declares no heartbeats, so nothing is
+                    // answered here; a reply would be written as is.
+                    Inbound::Reply(SocketFrame::Binary(reply)) => {
+                        if !write_stream(&mut stream, &reply).await {
+                            break (CLOSE_ABNORMAL, String::new(), false);
+                        }
+                    }
+                    Inbound::Reply(SocketFrame::Text(_)) | Inbound::Ignore => {}
+                    Inbound::Deliver(message) => {
+                        match deliveries.try_send(Delivery::Message(message)) {
+                            Ok(()) => {}
+                            Err(TrySendError::Full(item)) => {
+                                shared.queue_full.set(shared.queue_full.get() + 1);
+                                held = Some(item);
+                            }
+                            Err(TrySendError::Closed(_)) => {
+                                break (CLOSE_GOING_AWAY, String::new(), false);
+                            }
+                        }
+                    }
+                    Inbound::TooBig => {
+                        let _ = close_stream(&mut stream).await;
+                        break (CLOSE_TOO_BIG, "message too big".to_string(), false);
+                    }
+                }
+            }
+        }
+    };
+    drop(commands);
+    drop(stream);
+    finish(
+        shared,
+        id,
+        Ended {
+            code,
+            reason,
+            clean,
+        },
+        held,
+        deliveries,
+        task,
+    )
+    .await;
 }
 
 /// Hands one socket's messages, then its close, to the host in order.

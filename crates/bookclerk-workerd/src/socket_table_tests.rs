@@ -23,7 +23,7 @@ fn open_one() -> (SocketTable, String) {
     let (id, target) = table
         .reserve(&request("wss://abs.example.com/socket.io/"))
         .unwrap();
-    assert!(target.secure);
+    assert_eq!(target.scheme, SocketScheme::Wss);
     assert_eq!(target.port, 443);
     assert!(table.establish(&id, Some("chat".into())).is_some());
     (table, id)
@@ -136,4 +136,22 @@ fn close_requests_check_code_and_tolerate_unknown_sockets() {
     assert_eq!(table.close_request("nope", 1000, "").unwrap(), None);
     assert!(table.close_request(&id, 1005, "").is_err());
     assert!(table.close_request(&id, 1000, &"r".repeat(200)).is_err());
+}
+
+#[test]
+fn a_tls_stream_takes_binary_frames_only() {
+    let mut table = SocketTable::new("s");
+    let req = SocketConnectRequest {
+        url: "tls://connect.example.com:443".into(),
+        protocols: vec!["x-tunnel".into()],
+        ..SocketConnectRequest::default()
+    };
+    let (id, target) = table.reserve(&req).unwrap();
+    assert_eq!(target.scheme, SocketScheme::Tls);
+    assert!(table.establish(&id, Some("x-tunnel".into())).is_some());
+    let err = table
+        .outbound(&id, &SocketFrame::Text("x".into()))
+        .unwrap_err();
+    assert_eq!(err.code, PluginErrorCode::InvalidParams);
+    assert!(table.outbound(&id, &SocketFrame::Binary(vec![1])).is_ok());
 }

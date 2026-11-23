@@ -4543,7 +4543,10 @@ export type AiRunReply =
   | { kind: "ok"; value: AiRunOk } // The model ran.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
 
-/** One WebSocket message. */
+/**
+ * One WebSocket message, or one chunk of a `tls://` stream (always
+ * `binary`).
+ */
 export type SocketFrame =
   | { kind: "text"; value: string } // Text message, UTF-8.
   | { kind: "binary"; value: Uint8Array }; // Binary message.
@@ -4570,18 +4573,33 @@ export interface SocketAutoResponse {
 /** Arguments of `Sockets.connect`. */
 export interface SocketConnectRequest {
   /**
-   * `wss://` or `ws://` URL, at most `maxSocketUrlBytes`. The host must be on
-   * the plugin's network grant.
+   * `wss://` or `ws://` URL, at most `maxSocketUrlBytes`, or
+   * `tls://host:port` for a raw TLS byte stream (port required, nothing
+   * after it). The host must be on the plugin's network grant; a `tls://`
+   * stream needs a `tcp` grant for that host and port.
    */
   url: string;
-  /** Requested subprotocols, at most `maxSocketHeaders`. */
+  /**
+   * Requested subprotocols, at most `maxSocketHeaders`; on a `tls://`
+   * stream, the ALPN protocol ids to offer (visible ASCII, 1 to 255 bytes).
+   */
   protocols: string[];
-  /** Extra request headers, at most `maxSocketHeaders`. */
+  /** Extra request headers, at most `maxSocketHeaders`; none on `tls://`. */
   headers: SocketHeader[];
-  /** Heartbeats the broker answers, at most `maxSocketAutoResponses`. */
+  /**
+   * Heartbeats the broker answers, at most `maxSocketAutoResponses`; none on
+   * `tls://`.
+   */
   autoResponses: SocketAutoResponse[];
   /** Initial attachment, at most `maxSocketAttachmentBytes`. */
   attachment: Uint8Array;
+  /**
+   * `tls://` only: DER root certificates, at most `maxSocketTrustAnchors` of
+   * at most `maxSocketTrustAnchorBytes` each, that the server's chain must
+   * end in instead of Mozilla's roots, for a service that signs its own
+   * (an ngrok or Cloudflare Tunnel agent endpoint). Empty uses Mozilla's.
+   */
+  trustAnchors: Uint8Array[];
 }
 
 /** One open host-brokered socket. */
@@ -4591,7 +4609,8 @@ export interface SocketInfo {
   /** URL the socket was opened to, without credentials. */
   url: string;
   /**
-   * Subprotocol the server chose; empty when none.
+   * Subprotocol the server chose (on `tls://`, the negotiated ALPN id);
+   * empty when none.
    * Omitted when absent (wire zero value).
    */
   protocol?: string;

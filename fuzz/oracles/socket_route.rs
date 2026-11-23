@@ -40,7 +40,14 @@ mod socket_request;
 /// Fields each operation's body may carry.
 fn allowed_fields(op: &str) -> &'static [&'static str] {
     match op {
-        "connect" => &["url", "protocols", "headers", "autoResponses", "attachment"],
+        "connect" => &[
+            "url",
+            "protocols",
+            "headers",
+            "autoResponses",
+            "attachment",
+            "trustAnchors",
+        ],
         "send" => &["socket", "frame"],
         "close" => &["socket", "code", "reason"],
         "attachment" => &["socket", "attachment"],
@@ -80,6 +87,11 @@ fn route_body(call: &SocketCall) -> Vec<u8> {
                 })
                 .collect(),
             attachment: request.attachment.clone(),
+            trust_anchors: request
+                .trust_anchors
+                .iter()
+                .map(|der| bookclerk_plugin_abi::json_bytes::encode(der))
+                .collect(),
         }),
         SocketCall::Send { socket, frame } => serde_json::to_vec(&RouteSend {
             socket: socket.clone(),

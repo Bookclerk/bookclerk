@@ -12049,8 +12049,16 @@ function connectBody(url, options) {
       request: routeFrame(pair.request),
       response: routeFrame(pair.response)
     })),
-    attachment: toBase64(encodeAttachment(options?.attachment))
+    attachment: toBase64(encodeAttachment(options?.attachment)),
+    trustAnchors: (options?.trustAnchors ?? []).map((anchor) => typeof anchor === "string" ? pemBody(anchor) : toBase64(anchor))
   };
+}
+function pemBody(pem) {
+  const match = /-----BEGIN CERTIFICATE-----([A-Za-z0-9+/=\s]+)-----END CERTIFICATE-----/.exec(pem);
+  if (!match) {
+    throw new PluginError("invalid_params", "a trust anchor PEM holds no CERTIFICATE block");
+  }
+  return match[1].replace(/\s+/g, "");
 }
 function socketsBinding(transport) {
   return Object.freeze({

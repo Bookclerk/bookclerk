@@ -12,10 +12,17 @@
 //! - every URL [`parse_socket_url`] accepts is one a WHATWG URL parser (the
 //!   `url` crate, which WebSocket clients use) reads as the same scheme,
 //!   host and port, with no credentials or fragment, so the network grant
-//!   and the connection can never disagree about the target;
+//!   and the connection can never disagree about the target (a `tls://` URL
+//!   is non-special to WHATWG, so its host compares without case and its
+//!   port must be explicit, with nothing after it);
 //! - [`validate_socket_connect`] accepts a decoded request exactly when the
 //!   URL parses and the independent restatement of the header, subprotocol,
-//!   heartbeat and attachment rules below holds;
+//!   heartbeat and attachment rules below holds (for `tls://`: ALPN ids of
+//!   1 to 255 visible ASCII bytes, no headers and no heartbeats, and trust
+//!   anchors that are each one DER SEQUENCE of at most 8 KiB, which a
+//!   WebSocket may not send);
+//! - [`check_socket_frame_for`] refuses text on a `tls://` stream and
+//!   otherwise agrees with the frame size check;
 //! - [`auto_response_for`] answers exactly the frames equal (same kind, same
 //!   bytes) to a declared heartbeat request, with the first such pair;
 //! - a delivery passes the id, frame and attachment checks exactly when the
@@ -24,14 +31,15 @@
 //!   unchanged.
 
 use bookclerk_plugin_abi::sockets::{
-    auto_response_for, check_socket_attachment, check_socket_frame, check_socket_id,
-    parse_socket_url, validate_socket_connect, SocketTarget,
+    auto_response_for, check_socket_attachment, check_socket_frame, check_socket_frame_for,
+    check_socket_id, parse_socket_url, validate_socket_connect, SocketScheme, SocketTarget,
 };
 use bookclerk_plugin_abi::{
     roundtrip_socket_message, RoundTripFailure, SocketAutoResponse, SocketCodec,
     SocketConnectRequest, SocketFrame, SocketWireMessage, MAX_SOCKET_ATTACHMENT_BYTES,
     MAX_SOCKET_AUTO_RESPONSES, MAX_SOCKET_AUTO_RESPONSE_BYTES, MAX_SOCKET_FRAME_BYTES,
-    MAX_SOCKET_HEADERS, MAX_SOCKET_URL_BYTES,
+    MAX_SOCKET_HEADERS, MAX_SOCKET_TRUST_ANCHORS, MAX_SOCKET_TRUST_ANCHOR_BYTES,
+    MAX_SOCKET_URL_BYTES,
 };
 
 /// Largest input worth parsing; a real connect request is under 64 KiB.
@@ -69,8 +77,46 @@ fn frame_len(frame: &SocketFrame) -> usize {
     }
 }
 
+/// The non-URL rules of a `tls://` connect request restated.
+fn stream_rules_hold(request: &SocketConnectRequest) -> bool {
+    request.protocols.len() <= MAX_SOCKET_HEADERS as usize
+        && request
+            .protocols
+            .iter()
+            .all(|p| (1..=255).contains(&p.len()) && p.bytes().all(|b| (0x21..=0x7e).contains(&b)))
+        && request.headers.is_empty()
+        && request.auto_responses.is_empty()
+        && request.attachment.len() <= MAX_SOCKET_ATTACHMENT_BYTES as usize
+        && request.trust_anchors.len() <= MAX_SOCKET_TRUST_ANCHORS as usize
+        && request.trust_anchors.iter().all(|der| der_shape(der))
+}
+
+/// One DER SEQUENCE covering all of `der`, restated with a general
+/// definite-length reader and the size cap.
+fn der_shape(der: &[u8]) -> bool {
+    if der.len() > MAX_SOCKET_TRUST_ANCHOR_BYTES as usize || der.len() < 2 || der[0] != 0x30 {
+        return false;
+    }
+    let first = der[1];
+    if first < 0x80 {
+        return usize::from(first) == der.len() - 2;
+    }
+    let count = usize::from(first & 0x7f);
+    if count == 0 || count > 4 || der.len() < 2 + count || der[2] == 0 {
+        return false;
+    }
+    let len = der[2..2 + count]
+        .iter()
+        .fold(0usize, |acc, &b| (acc << 8) | usize::from(b));
+    // DER: the long form only for lengths the short form can't carry.
+    len >= 0x80 && len == der.len() - 2 - count
+}
+
 /// The non-URL connect rules restated.
-fn connect_rules_hold(request: &SocketConnectRequest) -> bool {
+fn connect_rules_hold(request: &SocketConnectRequest, scheme: SocketScheme) -> bool {
+    if scheme == SocketScheme::Tls {
+        return stream_rules_hold(request);
+    }
     let max_headers = MAX_SOCKET_HEADERS as usize;
     let protocols_ok =
         request.protocols.len() <= max_headers && request.protocols.iter().all(|p| token(p));
@@ -93,7 +139,7 @@ fn connect_rules_hold(request: &SocketConnectRequest) -> bool {
             })
         });
     let attachment_ok = request.attachment.len() <= MAX_SOCKET_ATTACHMENT_BYTES as usize;
-    protocols_ok && headers_ok && heartbeats_ok && attachment_ok
+    protocols_ok && headers_ok && heartbeats_ok && attachment_ok && request.trust_anchors.is_empty()
 }
 
 /// Checks an accepted URL against the WHATWG parse.
@@ -104,8 +150,20 @@ fn check_accepted_url(url: &str, target: &SocketTarget) {
     );
     let parsed = url::Url::parse(url)
         .unwrap_or_else(|err| panic!("accepted {url:?} that WHATWG refuses: {err}"));
-    let scheme = if target.secure { "wss" } else { "ws" };
+    let stream = target.scheme == SocketScheme::Tls;
+    let scheme = match target.scheme {
+        SocketScheme::Ws => "ws",
+        SocketScheme::Wss => "wss",
+        SocketScheme::Tls => "tls",
+    };
     assert_eq!(parsed.scheme(), scheme, "scheme of {url:?}");
+    if stream {
+        assert!(
+            matches!(parsed.path(), "" | "/") && parsed.query().is_none(),
+            "tls url {url:?} has more than a host and port"
+        );
+        assert!(parsed.port().is_some(), "tls url {url:?} has no port");
+    }
     assert!(parsed.username().is_empty(), "credentials in {url:?}");
     assert!(parsed.password().is_none(), "credentials in {url:?}");
     assert!(parsed.fragment().is_none(), "fragment in {url:?}");
@@ -121,6 +179,8 @@ fn check_accepted_url(url: &str, target: &SocketTarget) {
         target.host.parse::<std::net::IpAddr>(),
     ) {
         (Ok(a), Ok(b)) => assert_eq!(a, b, "address of {url:?}"),
+        // WHATWG keeps a non-special (tls://) host's case.
+        _ if stream => assert!(host.eq_ignore_ascii_case(&target.host), "host of {url:?}"),
         _ => assert_eq!(host, target.host, "host of {url:?}"),
     }
     assert_eq!(
@@ -140,7 +200,8 @@ fn check_url(url: &str) {
 /// Checks a decoded connect request against the restated rules.
 pub fn check_connect(request: &SocketConnectRequest) {
     check_url(&request.url);
-    let expected = parse_socket_url(&request.url).is_ok() && connect_rules_hold(request);
+    let expected = parse_socket_url(&request.url)
+        .is_ok_and(|target| connect_rules_hold(request, target.scheme));
     let actual = validate_socket_connect(request);
     assert_eq!(
         actual.is_ok(),
@@ -186,10 +247,13 @@ fn check_delivery(socket: &str, frame: &SocketFrame, attachment: &[u8]) {
         id_ok,
         "socket id {socket:?}"
     );
-    assert_eq!(
-        check_socket_frame(frame).is_ok(),
-        frame_len(frame) <= MAX_SOCKET_FRAME_BYTES as usize
-    );
+    let fits = frame_len(frame) <= MAX_SOCKET_FRAME_BYTES as usize;
+    assert_eq!(check_socket_frame(frame).is_ok(), fits);
+    for scheme in [SocketScheme::Ws, SocketScheme::Wss, SocketScheme::Tls] {
+        let text = matches!(frame, SocketFrame::Text(_));
+        let expected = fits && !(scheme == SocketScheme::Tls && text);
+        assert_eq!(check_socket_frame_for(scheme, frame).is_ok(), expected);
+    }
     assert_eq!(
         check_socket_attachment(attachment).is_ok(),
         attachment.len() <= MAX_SOCKET_ATTACHMENT_BYTES as usize
