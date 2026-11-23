@@ -104,7 +104,10 @@ operator, a household user, or a portal identity) has a **subject key**
    `discover_feed` job, which ranks the stored candidates into shelves with
    no network calls and stores the result. It uses only candidates fetched
    for the person's current seeds (their own, or the household's), and none
-   when `discovery.storefront_candidates` is off.
+   when `discovery.storefront_candidates` is off. A feed wider than one
+   cell or statement of the database plugin (the stored feed may reach
+   192 KiB, and D1 statements are much smaller) is stored in
+   `discover_feed_parts` pieces that the feed row names by version.
 
    The fetch reads the library once: the taste and the set of titles the
    library already holds (by ASIN, ISBN and store product id, used to keep
@@ -380,27 +383,124 @@ The host loads no model. Models run in plugins and are called through
 one router (see the [model plugins ADR](../adr/ai-models.md) and
 [Model plugins](../plugins/abi.md#model-plugins)).
 
-Until Discover is moved onto that router, its shelves rank with the
-**local-hash** embedder (`local-hash-v1`, 384 numbers): a hash of the
-words of a text. It needs no download and no extra runtime, and it
-carries no meaning, so two books score alike only when their texts share
-words. Hash vectors are stored under their own model id and are never
-compared with a model's vectors.
+Discover ranks with the model the library chose for text embeddings
+(`@library/text-embeddings`) once that model has embedded every work.
+Until then, and on a library with no model plugin, it ranks with the
+**local-hash** stand-in (`local-hash-v1`, 384 numbers): a hash of the
+words of a text. The stand-in needs no download and no extra runtime, and
+it carries no meaning, so two books score alike only when their texts
+share words.
 
 The [embedding model benchmarks](embedding-benchmarks.md) record what a
-real model adds and which models the first-party plugin will ship.
+real model adds, and compare MiniLM with newer and multilingual models on
+taste quality, memory and speed.
 
-[Embedding model benchmarks](embedding-benchmarks.md) compares MiniLM with
-newer and multilingual models on taste quality, memory and speed.
+### Vector spaces
 
-### Refreshing work vectors
+A **vector space** is a model and one revision of it. The stand-in is a
+space of its own. Two vectors are compared only inside one space, so
+every row of `embeddings` is stamped with:
 
-`embed_dirty_works` keeps one vector per work and model in `embeddings`,
-stamped with a hash of the text it was computed from. It first deletes the
-vectors of works that no longer exist, then walks `works` in id order, 128
-at a time. Each page costs one read of the works, one read of their stored
-hashes, and one embedder call for the works whose text changed, so a large
-library is neither held in memory at once nor read one hash per work.
+| Column | Meaning |
+| --- | --- |
+| `model` | `@<plugin>/<model>`, or `local-hash-v1` |
+| `revision` | The digest the model listed when it made the vector (empty for the stand-in) |
+| `packs` | The language packs loaded then; recorded, not part of the space |
+| `text_hash` | SHA-256 of the text the vector was made from |
+
+A row is one of two kinds:
+
+- `work`: the vector of a library work, keyed by the work's id.
+- `text`: the vector of a text that is not a work (a store candidate or a
+  wishlist entry), keyed by the hash of the text. Everyone whose ranking
+  meets the same text reads the same row, so a candidate is embedded
+  once for the whole library.
+
+The text of a work and of a candidate is built the same way: title,
+authors, series, genres and the first 1,200 characters of the
+description. Narrators are left out: a narrator reads books of every
+kind.
+
+### Which space serves
+
+A space **covers** the library when it holds a vector for every work. A
+ranking reads the first of:
+
+1. this node's model, when its space covers the library;
+2. another model's space that covers it (the newest): the model the
+   library used before a change, or the one another node embeds with;
+3. the stand-in.
+
+So a model that was just installed, changed to another model or updated
+to a new revision does not serve at once. The vectors the library had
+keep serving until the new model has embedded every work, and no ranking
+ever mixes the two.
+
+The rule is worked out from the table on every ranking; nothing records
+which space is "current". A node without the model plugin ranks on the
+vectors another node stored. It cannot embed new candidates in that
+space, so those rank without a similarity score until a node with the
+model ranks them.
+
+### Embedding the library
+
+The stand-in's work vectors cost next to nothing, so the ranking job
+makes them itself while the stand-in serves.
+
+A model's work vectors are made by a `discover_embed` job, pinned to the
+node whose plugin serves the model. It is queued when:
+
+- a model is installed on the node (the model router reports a change);
+- a ranking finds that the node's model does not serve yet;
+- a ranking runs and the node has not looked for changed works for an
+  hour.
+
+The job walks `works` in id order, 128 at a time. Each page costs one
+read of the works, one read of their stored text hashes, and model runs
+of 16 texts for the works whose vector is missing or whose text changed.
+It embeds in 10-second slices under the Discover gate, so a ranking
+waits one slice at most, and it stops between slices when cancelled.
+Vectors written before a failure stay, and the next job continues from
+them. If the model changes revision while the job runs, the job fails
+and the next one starts on the new revision.
+
+When the job changed what rankings read, it queues a `discover_feed` job
+for every subject with a stored feed.
+
+Candidate texts with no stored vector are embedded inside the ranking,
+for up to 45 seconds a ranking; the rest rank without similarity and are
+embedded by a later ranking.
+
+The CLI runs no model plugin: `bookclerk discover embed` and
+`bookclerk discover recommend` make and rank on the stand-in's vectors.
+
+### Removing vectors
+
+- A work's vectors go when the work goes.
+- A `text` vector no ranking has read for 14 days is removed.
+- Once a model's space serves, vectors of every other space that were
+  not written for a day are removed. That includes the stand-in's, and
+  the previous model's after a change. While the stand-in serves,
+  nothing of another space is removed: a model part-way through
+  embedding keeps its progress.
+
+### Scoring similarity
+
+A candidate's similarity is the cosine between its vector and the
+centroid of the reader's taste works.
+
+- **Stand-in**: a cosine above 0.15 adds `cosine × 12` points.
+- **Model**: a model's cosines sit in a narrow, high band (unrelated
+  books often score above 0.5), so a fixed threshold does not work. The
+  ranking takes the mean and standard deviation of the similarities of
+  all its candidates. A candidate more than 0.5 deviations above the
+  mean adds 2.5 points per deviation, up to 3 deviations. A ranking of
+  fewer than 12 texts gets no similarity score.
+
+> [!NOTE]
+> The model weights are a first setting, chosen so that similarity
+> counts for about as much as it did with the stand-in. They are tested
+> on small built libraries, not measured on real ones.
 
 ### OSV / `paste`
 
@@ -454,6 +554,7 @@ Candidates are **unowned** storefront hits (plus open wishlist items), scored by
    but that does not make them the seed's genre. Each liked genre counts
    once per candidate, however often the store's genre ladders repeat it.
 5. Embedding similarity to finished / highly rated / recently listened works
+   (see [Scoring similarity](#scoring-similarity))
 6. Wishlist boost (`wish_count × 40` on the shared queue / Discover merge)
 7. Purchase hints resolved at view time (see below)
 

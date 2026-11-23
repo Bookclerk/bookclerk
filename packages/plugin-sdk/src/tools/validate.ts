@@ -173,6 +173,8 @@ export type Manifest = {
     network: {
       mode: string;
       domains?: string[];
+      /** TCP grants (`host` + `ports`), for `connect()` and `tls://` streams. */
+      tcp?: Array<{ host: string; ports: number[] }>;
       /**
        * Hosts that receive the plugin's own `User-Agent` instead of the
        * host's `bookclerk/<version>` agent, with the reason the consent form
@@ -1388,12 +1390,14 @@ export function validateManifest(m: Manifest): void {
     validateAuthorCompatibilityDate(m.workerd.compatibility_date);
     validateModuleDeclarations(m.workerd.main_module, m.modules ?? []);
     validateAuthorCompatibilityFlags(m.workerd.compatibility_flags ?? [], declaresPython(m));
+    // `fetch` needs `domains`; a host-held `tls://` stream needs `tcp`.
     if (
       m.capabilities?.network?.mode === "outbound" &&
-      (!m.capabilities.network.domains || m.capabilities.network.domains.length === 0)
+      (!m.capabilities.network.domains || m.capabilities.network.domains.length === 0) &&
+      (!m.capabilities.network.tcp || m.capabilities.network.tcp.length === 0)
     ) {
       throw new Error(
-        'plugin.toml: capabilities.network.domains is required when runtime = "workerd" and mode = "outbound"',
+        'plugin.toml: capabilities.network.domains or tcp is required when runtime = "workerd" and mode = "outbound"',
       );
     }
   } else {

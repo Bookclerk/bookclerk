@@ -195,7 +195,6 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
             job_id,
             fence,
             reason,
-            resumed,
         } => {
             tracing::info!(
                 node_id = %host.node_id,
@@ -204,9 +203,11 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
                 reason = bounded(&reason),
                 "branch node gives a job back"
             );
-            finish_release(library, host, id.clone(), job_id, fence, resumed).await
+            finish_release(library, host, id.clone(), job_id, fence).await
         }
-        Body::DeploymentsList {} => deployments(library, host, id.clone()).await,
+        Body::DeploymentsList { after } => {
+            deployments(library, host, id.clone(), after.as_deref()).await
+        }
         Body::InstanceConfigGet { instance_id } => {
             instance_config(library, host, id.clone(), &instance_id).await
         }
@@ -489,8 +490,20 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
         Body::JobStatus { job_ids } => {
             super::host_requests::job_status(library, host, id.clone(), job_ids).await
         }
-        Body::AcquirePlan { job_id, fence } => {
-            super::host_results::acquire_plan(library, host, id.clone(), job_id, fence).await
+        Body::AcquirePlan {
+            job_id,
+            fence,
+            after,
+        } => {
+            super::host_results::acquire_plan(
+                library,
+                host,
+                id.clone(),
+                job_id,
+                fence,
+                after.as_deref(),
+            )
+            .await
         }
         Body::UploadGrant {
             job_id,
@@ -863,8 +876,9 @@ async fn finish(
     })
 }
 
-/// `release`: the job goes back to pending unspent; a resumed claim
-/// (`resumed`, as its `work` frame said) is resumable again.
+/// `release`: the job goes back to pending unspent; a resumed claim (as
+/// this library recorded it when it handed the claim out, not as the
+/// branch says) is resumable again.
 ///
 /// A released run (a consent revoke, a host shutting down) commits none of
 /// its open uploads, so they are aborted and what they had received is
@@ -877,18 +891,10 @@ async fn finish_release(
     id: String,
     job_id: String,
     fence: i64,
-    resumed: bool,
 ) -> bookclerk_library::Result<Frame> {
     super::uploads::discard_job_uploads(&host.state, library, &host.node_id, &job_id, fence).await;
-    let released = release_remote_job(
-        library,
-        &host.node_id,
-        &job_id,
-        fence,
-        resumed,
-        host.settings.limits,
-    )
-    .await?;
+    let released =
+        release_remote_job(library, &host.node_id, &job_id, fence, host.settings.limits).await?;
     Ok(match released {
         RemoteFinish::Done => Frame::new(id, Body::Accepted {}),
         RemoteFinish::Lost => lost(id, job_id, fence),
@@ -921,11 +927,13 @@ fn remote_version(version: &PluginVersion) -> RemoteVersion {
     }
 }
 
-/// `deployments.list`: the deployments that target this host.
+/// `deployments.list`: one page of the deployments that target this host,
+/// after `after` ([`deployments_page`]).
 async fn deployments(
     library: &LibraryStore,
     host: &HostContext,
     id: String,
+    after: Option<&str>,
 ) -> bookclerk_library::Result<Frame> {
     let items = remote_deployments_for_node(library, &host.node_id)
         .await?
@@ -940,16 +948,94 @@ async fn deployments(
             version: entry.version.as_ref().map(remote_version),
         })
         .collect();
-    let frame = Frame::new(id.clone(), Body::Deployments { items });
-    if frame.to_text().len() > MAX_FRAME_BYTES {
-        tracing::warn!(node_id = %host.node_id, "host deployment list does not fit a frame");
-        return Ok(error(
-            id,
-            "too_large",
-            "the deployment list does not fit a frame",
-        ));
+    let page = deployments_page(&id, items, after);
+    for deployment_id in &page.oversized {
+        tracing::warn!(
+            node_id = %host.node_id,
+            deployment_id = %deployment_id,
+            "a deployment does not fit a frame on its own; it is left out of the branch's list"
+        );
     }
-    Ok(frame)
+    Ok(page.frame)
+}
+
+/// Bytes of a frame kept free of [`RemoteDeployment`] entries for the
+/// envelope (`v`, the frame id, `type`, the brackets and `next`).
+const DEPLOYMENT_PAGE_MARGIN: usize = 4096;
+
+/// One `deployments` page and what it had to leave out.
+#[derive(Debug)]
+pub(crate) struct DeploymentsPage {
+    /// The answer frame.
+    pub frame: Frame,
+    /// Deployment ids passed over because their entry alone does not fit
+    /// a frame. Nothing of theirs runs on the branch, which is the fail
+    /// closed answer; the library logs them.
+    pub oversized: Vec<String>,
+}
+
+/// Packs the `items` after `after` (in deployment-id order) into one
+/// `deployments` frame of at most [`MAX_FRAME_BYTES`], so a branch with
+/// many deployments, or large manifests, pages through the list instead of
+/// being refused it whole. `next` names the last entry the page passed
+/// (included or [oversized](DeploymentsPage::oversized)) while more remain,
+/// so every page moves the cursor forward.
+///
+/// # Arguments
+///
+/// * `id` - The request's frame id, answered.
+/// * `items` - Every deployment that targets the branch.
+/// * `after` - The branch's cursor (the previous page's `next`); untrusted,
+///   only compared.
+///
+/// # Returns
+///
+/// The page, or `error {code: "too_large"}` should the packed page still
+/// not fit (the margin makes that unreachable for well-formed ids).
+pub(crate) fn deployments_page(
+    id: &str,
+    mut items: Vec<RemoteDeployment>,
+    after: Option<&str>,
+) -> DeploymentsPage {
+    let budget = MAX_FRAME_BYTES.saturating_sub(DEPLOYMENT_PAGE_MARGIN);
+    items.sort_by(|a, b| a.deployment_id.cmp(&b.deployment_id));
+    let mut page = Vec::new();
+    let mut oversized = Vec::new();
+    let mut used = 0usize;
+    let mut passed: Option<String> = None;
+    let mut next = None;
+    for item in items
+        .into_iter()
+        .filter(|item| after.is_none_or(|after| item.deployment_id.as_str() > after))
+    {
+        // The entry's own JSON plus the comma that separates it.
+        let size =
+            serde_json::to_string(&item).map_or(usize::MAX, |text| text.len().saturating_add(1));
+        if size > budget {
+            passed = Some(item.deployment_id.clone());
+            oversized.push(item.deployment_id);
+            continue;
+        }
+        if used.saturating_add(size) > budget {
+            next = passed;
+            break;
+        }
+        used += size;
+        passed = Some(item.deployment_id.clone());
+        page.push(item);
+    }
+    let frame = Frame::new(id.to_string(), Body::Deployments { items: page, next });
+    if frame.to_text().len() > MAX_FRAME_BYTES {
+        return DeploymentsPage {
+            frame: error(
+                id.to_string(),
+                "too_large",
+                "the deployment page does not fit a frame",
+            ),
+            oversized,
+        };
+    }
+    DeploymentsPage { frame, oversized }
 }
 
 /// True when `now` is the same version, under the same grant, as `then`.
@@ -1099,13 +1185,7 @@ async fn instance_config(
 /// claimable again at once instead of after its lease expires. Does
 /// nothing for any other answer.
 pub(crate) async fn release_unsent(library: &LibraryStore, host: &HostContext, answer: &Frame) {
-    let Body::Work {
-        job,
-        fence,
-        resumed,
-        ..
-    } = &answer.body
-    else {
+    let Body::Work { job, fence, .. } = &answer.body else {
         return;
     };
     match release_remote_job(
@@ -1113,7 +1193,6 @@ pub(crate) async fn release_unsent(library: &LibraryStore, host: &HostContext, a
         &host.node_id,
         &job.id,
         *fence,
-        *resumed,
         host.settings.limits,
     )
     .await
@@ -1195,3 +1274,7 @@ pub(crate) async fn resume(
         unchecked,
     }
 }
+
+#[cfg(test)]
+#[path = "work_tests.rs"]
+mod tests;

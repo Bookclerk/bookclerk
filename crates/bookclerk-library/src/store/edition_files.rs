@@ -34,8 +34,63 @@ use crate::entities::{
 use crate::error::{LibraryError, Result};
 use crate::models::AcquireStatus;
 
-/// The `writer` of a key an acquire run on this node wrote.
+/// The `writer` of a key an acquire on this node wrote without a run of
+/// its own (a branch's import of its owner's title), and the prefix of
+/// every acquire run's own writer ([`AcquireWriter`]).
 pub const ACQUIRE_WRITER: &str = "acquire";
+
+/// The `writer` one acquire run records its keys under:
+/// `acquire:<32 hex>`, unique to the run.
+///
+/// Each run has its own, so a write that fails can release exactly the
+/// record this run made for it ([`LibraryStore::release_run_edition_file`])
+/// and never a concurrent run's record of the same key. It is never a host
+/// upload id, so no upload's claim mistakes a run's key for its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcquireWriter(String);
+
+impl AcquireWriter {
+    /// A writer no other run has.
+    #[must_use]
+    pub fn for_run() -> Self {
+        Self(format!(
+            "{ACQUIRE_WRITER}:{}",
+            uuid::Uuid::new_v4().simple()
+        ))
+    }
+
+    /// The stored `writer` value.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// True when `writer` is an acquire's: [`ACQUIRE_WRITER`] or a run's
+    /// own writer.
+    #[must_use]
+    pub fn is_acquire(writer: &str) -> bool {
+        writer == ACQUIRE_WRITER
+            || writer
+                .strip_prefix(ACQUIRE_WRITER)
+                .and_then(|rest| rest.strip_prefix(':'))
+                .is_some_and(|run| !run.is_empty())
+    }
+}
+
+/// What recording a key an acquire run is about to write did
+/// ([`LibraryStore::record_run_edition_file`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordedFile {
+    /// The key was unrecorded: this run's record is new, and is this
+    /// run's to release when its write fails.
+    New,
+    /// The key was already the owner's (or a stale holder's) and is now
+    /// recorded for this run: the earlier file may still be there, so a
+    /// failed write leaves the record.
+    TakenOver,
+    /// Another live edition holds the key; nothing changed.
+    Refused,
+}
 
 /// Who a recorded file key belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -165,7 +220,8 @@ impl FileRole {
 pub struct EditionFile {
     /// The edition (or branch title) the file belongs to.
     pub owner: FileOwner,
-    /// The host upload id that claimed the key last, or [`ACQUIRE_WRITER`].
+    /// The host upload id that claimed the key last, or an acquire's
+    /// writer ([`AcquireWriter`]).
     pub writer: String,
     /// What the file is.
     pub role: FileRole,
@@ -561,10 +617,83 @@ impl LibraryStore {
         role: FileRole,
         copy: Option<&bookclerk_config::OutputCopy>,
     ) -> Result<bool> {
+        let recorded = self
+            .record_file_as(destination, key, owner, role, copy, ACQUIRE_WRITER)
+            .await?;
+        Ok(recorded != RecordedFile::Refused)
+    }
+
+    /// [`Self::record_edition_copy_file`] for one acquire run, recorded
+    /// under the run's own `writer`.
+    ///
+    /// # Returns
+    ///
+    /// Whether the record is new (the run's to release when its write
+    /// fails, [`Self::release_run_edition_file`]), taken over from the
+    /// owner's earlier record, or refused because another live edition
+    /// holds the key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a write fails.
+    pub async fn record_run_edition_file(
+        &self,
+        destination: &str,
+        key: &str,
+        owner: &FileOwner,
+        role: FileRole,
+        copy: Option<&bookclerk_config::OutputCopy>,
+        writer: &AcquireWriter,
+    ) -> Result<RecordedFile> {
+        self.record_file_as(destination, key, owner, role, copy, writer.as_str())
+            .await
+    }
+
+    /// Releases the record an acquire run made of `key` on `destination`
+    /// ([`RecordedFile::New`]) after its write failed, so the key is free
+    /// again for a host upload of the same title.
+    ///
+    /// Only a record still naming `writer` goes: a concurrent run or an
+    /// upload that recorded the key since keeps its record.
+    ///
+    /// # Returns
+    ///
+    /// `true` when the record was removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the delete fails.
+    pub async fn release_run_edition_file(
+        &self,
+        destination: &str,
+        key: &str,
+        writer: &AcquireWriter,
+    ) -> Result<bool> {
+        let removed = edition_files::Entity::delete_many()
+            .filter(edition_files::Column::Destination.eq(destination))
+            .filter(edition_files::Column::StorageKey.eq(key))
+            .filter(edition_files::Column::Writer.eq(writer.as_str()))
+            .exec(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(removed.rows_affected > 0)
+    }
+
+    /// Records `key` for `owner` under `writer`, as
+    /// [`Self::record_run_edition_file`] describes.
+    async fn record_file_as(
+        &self,
+        destination: &str,
+        key: &str,
+        owner: &FileOwner,
+        role: FileRole,
+        copy: Option<&bookclerk_config::OutputCopy>,
+        writer: &str,
+    ) -> Result<RecordedFile> {
         let now = now_str();
         let copy_format = copy.map(|copy| copy.format.as_str().to_string());
         let copy_quality = copy.map(|copy| copy.quality.to_string());
-        edition_files::Entity::insert(edition_files::ActiveModel {
+        let inserted = edition_files::Entity::insert(edition_files::ActiveModel {
             destination: Set(destination.to_string()),
             storage_key: Set(key.to_string()),
             owner_kind: Set(owner.kind().to_string()),
@@ -583,7 +712,7 @@ impl LibraryStore {
             channels: Set(None),
             sample_rate_hz: Set(None),
             duration_ms: Set(None),
-            writer: Set(ACQUIRE_WRITER.to_string()),
+            writer: Set(writer.to_string()),
             written_at: Set(now.clone()),
         })
         .on_conflict(
@@ -597,6 +726,9 @@ impl LibraryStore {
         .exec_without_returning(self.db())
         .await
         .map_err(LibraryError::Orm)?;
+        if inserted > 0 {
+            return Ok(RecordedFile::New);
+        }
         let live_edition = Condition::all()
             .add(edition_files::Column::OwnerKind.eq("edition"))
             .add(
@@ -641,7 +773,7 @@ impl LibraryStore {
                 edition_files::Column::CopyQuality,
                 Expr::value(copy_quality),
             )
-            .col_expr(edition_files::Column::Writer, Expr::value(ACQUIRE_WRITER))
+            .col_expr(edition_files::Column::Writer, Expr::value(writer))
             .col_expr(edition_files::Column::WrittenAt, Expr::value(now))
             .filter(edition_files::Column::Destination.eq(destination))
             .filter(edition_files::Column::StorageKey.eq(key))
@@ -649,7 +781,11 @@ impl LibraryStore {
             .exec(self.db())
             .await
             .map_err(LibraryError::Orm)?;
-        Ok(recorded.rows_affected > 0)
+        Ok(if recorded.rows_affected > 0 {
+            RecordedFile::TakenOver
+        } else {
+            RecordedFile::Refused
+        })
     }
 
     /// Claims `key` on `destination` for `owner`, with `writer` (a host
@@ -947,6 +1083,75 @@ impl LibraryStore {
             .count(self.db())
             .await
             .map_err(LibraryError::Orm)
+    }
+
+    /// True when a live edition other than `edition` holds `key` on
+    /// `destination`, so writing there would replace that edition's file.
+    ///
+    /// A key that is unrecorded, recorded for `edition`, or recorded for an
+    /// edition no longer in the library is free. With `edition` `None`
+    /// (the title has no edition here), any live edition's record counts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the read fails.
+    pub async fn key_held_by_another_edition(
+        &self,
+        destination: &str,
+        key: &str,
+        edition: Option<&str>,
+    ) -> Result<bool> {
+        let Some(row) =
+            edition_files::Entity::find_by_id((destination.to_string(), key.to_string()))
+                .one(self.db())
+                .await
+                .map_err(LibraryError::Orm)?
+        else {
+            return Ok(false);
+        };
+        // A row of an owner kind this build does not know holds its key
+        // against every writer, as it does against every claim.
+        if row.owner_kind != "edition" {
+            return Ok(true);
+        }
+        if edition == Some(row.owner_id.as_str()) {
+            return Ok(false);
+        }
+        let live = editions::Entity::find_by_id(row.owner_id)
+            .one(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(live.is_some())
+    }
+
+    /// The edition a store's listing sells; `None` while the listing is
+    /// not in this library.
+    ///
+    /// # Arguments
+    ///
+    /// * `plugin_key` - The store's PluginKey.
+    /// * `marketplace` - The store's marketplace (any case; blank for one).
+    /// * `product_id` - The store's product id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the read fails.
+    pub async fn edition_of_listing(
+        &self,
+        plugin_key: &str,
+        marketplace: &str,
+        product_id: &str,
+    ) -> Result<Option<String>> {
+        let marketplace = bookclerk_resolve::stored_marketplace(marketplace);
+        let product_id = bookclerk_resolve::stored_product_id(product_id);
+        Ok(store_listings::Entity::find()
+            .filter(store_listings::Column::PluginKey.eq(plugin_key))
+            .filter(store_listings::Column::Marketplace.eq(marketplace.as_str()))
+            .filter(store_listings::Column::ProductId.eq(product_id.as_str()))
+            .one(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+            .map(|listing| listing.edition_id))
     }
 
     /// Who holds `key` on `destination`; `None` when it is unrecorded.

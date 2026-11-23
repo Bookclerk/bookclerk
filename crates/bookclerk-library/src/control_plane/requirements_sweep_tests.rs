@@ -748,6 +748,7 @@ async fn pinned_job_of_a_silent_node_fails_after_grace() {
         }),
         public_origin: None,
     };
+    crate::test_support::register_test_node(&store, "node-a").await;
     let status = record_node_heartbeat(&store, "node-a", &heartbeat)
         .await
         .unwrap();
@@ -822,6 +823,7 @@ async fn a_live_pinned_job_still_has_its_requirements_reconciled() {
         cache: None,
         public_origin: None,
     };
+    crate::test_support::register_test_node(&store, "node-a").await;
     record_node_heartbeat(&store, "node-a", &heartbeat)
         .await
         .unwrap();

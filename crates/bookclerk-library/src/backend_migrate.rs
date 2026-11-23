@@ -68,6 +68,7 @@ pub const LEFT_BEHIND_TABLES: &[(&str, &str)] = &[
         "transient: stored webhook requests, which the plugins' listing fallback covers",
     ),
     ("discover_feeds", "derived: Discover jobs re-rank it"),
+    ("discover_feed_parts", "derived: Discover jobs re-rank it"),
     ("discover_fetches", "derived: Discover jobs refetch it"),
     (
         "discover_request_queue",

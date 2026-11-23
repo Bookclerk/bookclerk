@@ -92,11 +92,7 @@ pub async fn run_discover_request_queue(
     }
     // Same options the route used when it ranked per request: local-hash
     // taste only, so the pass stays cheap.
-    let mut opts = crate::discover_jobs::discover_options(
-        &cfg,
-        false,
-        String::from(bookclerk_discover::MODEL_LOCAL_HASH_V1),
-    );
+    let mut opts = crate::discover_jobs::discover_options(&cfg, None);
     opts.fetch_storefront_candidates = false;
     opts.storefront_seed_limit = 0;
     opts.storefront_max_remote_calls = 0;

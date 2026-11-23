@@ -203,7 +203,7 @@ impl LibraryStore {
         let own: BTreeSet<String> = super::library_model::find_chunked_paged::<
             expressions::Entity,
             _,
-        >(self, &owner, |part| {
+        >(self, &owner, &[expressions::Column::Id], |part| {
             expressions::Entity::find()
                 .filter(expressions::Column::WorkId.is_in(part.iter().cloned()))
         })
@@ -271,6 +271,7 @@ impl LibraryStore {
         let found: Vec<String> = super::library_model::find_chunked_paged::<editions::Entity, _>(
             self,
             expression_ids,
+            &[editions::Column::Id],
             |part| {
                 editions::Entity::find()
                     .filter(editions::Column::ExpressionId.is_in(part.iter().cloned()))

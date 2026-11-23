@@ -183,26 +183,32 @@ impl LibraryStore {
 
         let edition_ids: Vec<String> = page.iter().map(|e| e.id.clone()).collect();
         // An edition may have more listings than one read returns.
-        let mut listings =
-            find_chunked_paged::<store_listings::Entity, _>(self, &edition_ids, |part| {
+        let mut listings = find_chunked_paged::<store_listings::Entity, _>(
+            self,
+            &edition_ids,
+            &[store_listings::Column::Id],
+            |part| {
                 store_listings::Entity::find()
                     .filter(store_listings::Column::EditionId.is_in(part.to_vec()))
-                    .order_by_asc(store_listings::Column::Id)
-            })
-            .await?;
+            },
+        )
+        .await?;
         listings.sort_by(|a, b| a.id.cmp(&b.id));
         let listing_ids: Vec<String> = listings.iter().map(|l| l.id.clone()).collect();
         // A listing may have more holdings than one read returns.
-        let held: HashSet<String> =
-            find_chunked_paged::<holdings::Entity, _>(self, &listing_ids, |part| {
+        let held: HashSet<String> = find_chunked_paged::<holdings::Entity, _>(
+            self,
+            &listing_ids,
+            &[holdings::Column::Id],
+            |part| {
                 super::holdings::find_holdings()
                     .filter(holdings::Column::ListingId.is_in(part.to_vec()))
-                    .order_by_asc(holdings::Column::Id)
-            })
-            .await?
-            .into_iter()
-            .map(|h| h.listing_id)
-            .collect();
+            },
+        )
+        .await?
+        .into_iter()
+        .map(|h| h.listing_id)
+        .collect();
         let mut by_edition: HashMap<&str, Vec<&store_listings::Model>> = HashMap::new();
         for listing in &listings {
             by_edition
@@ -243,17 +249,22 @@ impl LibraryStore {
         let held_ids: Vec<String> = held_editions.iter().map(|e| e.id.clone()).collect();
         // The smallest ISBN and ASIN of each edition, keyed by scheme.
         let mut smallest: HashMap<(String, String), String> = HashMap::new();
-        for identifier in
-            find_chunked_paged::<edition_identifiers::Entity, _>(self, &held_ids, |part| {
+        for identifier in find_chunked_paged::<edition_identifiers::Entity, _>(
+            self,
+            &held_ids,
+            &[
+                edition_identifiers::Column::EditionId,
+                edition_identifiers::Column::Scheme,
+                edition_identifiers::Column::Value,
+                edition_identifiers::Column::Marketplace,
+            ],
+            |part| {
                 edition_identifiers::Entity::find()
                     .filter(edition_identifiers::Column::EditionId.is_in(part.to_vec()))
                     .filter(edition_identifiers::Column::Scheme.is_in(["isbn", "asin"]))
-                    .order_by_asc(edition_identifiers::Column::EditionId)
-                    .order_by_asc(edition_identifiers::Column::Scheme)
-                    .order_by_asc(edition_identifiers::Column::Value)
-                    .order_by_asc(edition_identifiers::Column::Marketplace)
-            })
-            .await?
+            },
+        )
+        .await?
         {
             let entry = smallest
                 .entry((identifier.edition_id, identifier.scheme))

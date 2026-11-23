@@ -763,7 +763,10 @@ only that. The others check:
   a copy (where one is stated) with a lowercase media type, a
   bitrate of 1 to 20000 kbit/s, a short lowercase source store and a
   plain version, and a plain next cursor (up to 64 letters, digits and `-`)
-  sorting past the one asked with. A `scan.removed` or
+  sorting past the one asked with. A `deployments` page that passes its
+  validator lists deployment ids in strictly rising byte order, each past
+  the cursor asked with, and a next cursor past that cursor and not before
+  the last entry. A `scan.removed` or
   `scan.pass_end` that passes its validator names an account and carries
   at most 500 product ids, each non-blank, at most 512 bytes and free of
   control characters, or a sync token of at most 4096 bytes with no
@@ -779,8 +782,10 @@ only that. The others check:
   character or drive prefix), each at most 1 TiB, exactly one of them the
   primary audio. The `copy_*` seeds' names say whether the receiver takes
   the frame, and the replay test checks each against its name. Seeds cover `accounts.update`, `accounts.updated`,
-  `scan.removed`, `scan.pass_end`, a `work` frame with scan tokens, and
-  `acquire.targets` with a destination subset, an empty list and a list
+  `scan.removed`, `scan.pass_end`, a `work` frame with scan tokens,
+  `deployments.list` and `acquire.plan` with and without a cursor, paged
+  and out-of-order `deployments`, `release` with the old `resumed` flag
+  (ignored), and `acquire.targets` with a destination subset, an empty list and a list
   that does not fit its plan. The shared oracle is `fuzz/oracles/node_frame.rs`,
   replayed from `bookclerk-node-proto`.
 - **`node_account_bundle`**: an accepted bundle is within the size limit,
@@ -1314,7 +1319,8 @@ The tests live in `scripts/tests/`, and each corpus beside them.
 
 The upstream model files the builder reads are not a boundary of this
 kind: each is refused unless its size and SHA-256 match the pin in
-`scripts/model-packs/models.json` before anything parses it.
+`scripts/model-packs/models.json` before anything parses it. That holds
+for a copy restored from the workflow's cache as for a download.
 
 ### Tool versions bump (Python)
 
@@ -2087,6 +2093,43 @@ another run.
   those RFC 6455 lets an endpoint send (1000 to 1003, 1007 to 1014, 3000
   to 4999) with at most 123 bytes of reason. An accepted frame encodes
   back to the same bytes.
+
+### ngrok guest
+
+The `ngrok` guest parses everything on its agent connection: muxado
+frames and RPC replies from ngrok's servers, and, inside each proxied
+stream, the proxy header and the HTTP/1.1 request any internet client
+sends. `crates/bookclerk-plugins/optional/ingress-ngrok/test/fuzz.test.ts`
+replays `fuzz/frame/`, `fuzz/chunked/`, `fuzz/proxy/` and `fuzz/rpc/` (hex
+bytes) and `fuzz/head/` (a JSON string per head), and runs seeded byte and
+text mutations in `npm test` (the `workerd_guests` check); `FUZZ_SEED` and
+`FUZZ_ITERATIONS` pick another run.
+
+- **Frames** (`FrameReader` in `src/mux.ts`). Oracle: an independent
+  decoder of muxado's framing (a 24-bit length up to the 256 KiB window, a
+  type and flag nibble, a 31-bit stream id; RST and WNDINC carry one
+  32-bit word, GOAWAY at least two; no DATA on stream 0; unknown types
+  skipped). The reader gives the same frames and leftover bytes whatever
+  the chunk boundaries.
+- **Request heads** (`parseRequestHead` in `src/http1.ts`). Oracle, written
+  from RFC 9110 and RFC 9112: an accepted head has a token method other
+  than `CONNECT`, an origin-form target, `HTTP/1.1` or `HTTP/1.0`, at most
+  128 lowercase token field names and values without CR, LF, NUL or
+  surrounding spaces; its body framing matches an independent restatement
+  of section 6 (Transfer-Encoding with Content-Length refused, only a lone
+  `chunked` coding, one decimal Content-Length); bytes after the head
+  change nothing.
+- **Chunked bodies** (`ChunkedDecoder`). Oracle: an independent decoder of
+  section 7.1 (hex sizes of at most 8 digits with extensions, CRLF after
+  each chunk, trailers to an empty line). The decoder gives the same body
+  and trailing bytes whatever the chunk boundaries, and never accepts what
+  the oracle refuses.
+- **Proxy headers** (`parseProxyHeader` in `src/messages.ts`). Oracle: an
+  independent little-endian length read (at most 16 KiB, high word zero)
+  and `JSON.parse` of an object; an accepted header survives
+  `encodeProxyHeader` and a second parse.
+- **RPC replies** (`parseRpcObject`). Oracle: `JSON.parse` of the same
+  UTF-8 text, with only JSON's own whitespace around it.
 
 ### Webhook notifier guest
 

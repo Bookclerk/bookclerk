@@ -449,11 +449,16 @@ impl LibraryStore {
     /// attempt, as if the claim had not happened.
     ///
     /// Used when the claim is refused at handoff (the node is no longer
-    /// trusted with the job). `resumed` says the claim resumed a suspended
-    /// job: its attempt count was not raised, and the one-shot resume flag
-    /// is set again. Otherwise the count the claim added is taken back. The
-    /// lease generation stays bumped, so the refused claimer's fence can
-    /// never write to the row again.
+    /// trusted with the job), and when a branch gives a claim back unrun.
+    /// Whether the claim resumed a suspended job is read from the row
+    /// ([`JobPayload::resumed_generation`], recorded by the claim), never
+    /// taken from the claimant: a resumed claim did not raise the attempt
+    /// count, so the one-shot resume flag is set again; otherwise the count
+    /// the claim added is taken back. `keep_spent` keeps the attempt spent
+    /// and the job resumable even for a claim that was not a resume (a
+    /// checkpointed job given back resumes from its checkpoint). The lease
+    /// generation stays bumped, so the released claimer's fence can never
+    /// write to the row again.
     ///
     /// # Returns
     ///
@@ -464,7 +469,7 @@ impl LibraryStore {
     ///
     /// Returns [`LibraryError::Orm`] when a read or write fails, or
     /// [`LibraryError::Other`] when the stored payload is not valid JSON.
-    pub async fn release_job_claim(&self, fence: &JobFence, resumed: bool) -> Result<bool> {
+    pub async fn release_job_claim(&self, fence: &JobFence, keep_spent: bool) -> Result<bool> {
         let Some(model) = jobs::Entity::find_by_id(&fence.job_id)
             .one(&self.db)
             .await
@@ -495,9 +500,10 @@ impl LibraryStore {
                 jobs::Column::UpdatedAt,
                 sea_orm::sea_query::Expr::value(now_str()),
             );
-        if resumed {
-            let mut payload: JobPayload = serde_json::from_str(&model.payload)
-                .map_err(|err| LibraryError::Other(anyhow::anyhow!("job payload: {err}")))?;
+        let mut payload: JobPayload = serde_json::from_str(&model.payload)
+            .map_err(|err| LibraryError::Other(anyhow::anyhow!("job payload: {err}")))?;
+        let resumed = payload.resumed_generation == Some(fence.generation);
+        if resumed || keep_spent {
             payload.resume_pending = true;
             let payload_json = serde_json::to_string(&payload)
                 .map_err(|err| LibraryError::Other(anyhow::anyhow!("job payload: {err}")))?;
@@ -1937,8 +1943,12 @@ async fn claim_candidate_on<C: ConnectionTrait>(
     } else {
         model.attempt_count + 1
     };
+    let generation = model.lease_generation + 1;
     let payload_json = if resuming {
         payload.resume_pending = false;
+        // The release of this claim reads it back
+        // ([`LibraryStore::release_job_claim`]).
+        payload.resumed_generation = Some(generation);
         Some(
             serde_json::to_string(&payload)
                 .map_err(|err| LibraryError::Other(anyhow::anyhow!("job payload: {err}")))?,
@@ -1946,7 +1956,6 @@ async fn claim_candidate_on<C: ConnectionTrait>(
     } else {
         None
     };
-    let generation = model.lease_generation + 1;
     let started = model
         .started_at
         .clone()

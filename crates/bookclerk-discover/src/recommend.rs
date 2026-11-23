@@ -15,7 +15,10 @@ use bookclerk_source::SourceRegistry;
 use crate::listening::ListeningSignal;
 
 use crate::candidates::{gather_storefront_candidates, select_taste_seeds, CandidateFetchOptions};
-use crate::embed::{bytes_to_vector, cosine, open_embedder, Embedder};
+use crate::embed::{
+    bytes_to_vector, cosine, embed_text, is_stand_in, text_hash, text_vectors, EmbedFields,
+    VectorSource,
+};
 use crate::error::Result;
 use crate::identity::{
     merge_recommendation, push_edition, push_shelf_category, recommendation_map_key,
@@ -35,8 +38,9 @@ pub const WISH_COUNT_WEIGHT: f64 = 40.0;
 pub struct RecommendOptions {
     /// Maximum number of recommendations to return.
     pub limit: usize,
-    /// Model id of the vectors compared for similarity (`local-hash-v1`, …).
-    pub embedding_model: String,
+    /// The vectors compared for similarity: the space the library's
+    /// rankings read, and what embeds a text that has no vector there.
+    pub vectors: VectorSource,
     /// Marketplace / region code (`us`, `uk`, …) for catalog lookups.
     pub region: String,
     /// When true, attach buy links to each recommendation.
@@ -69,7 +73,7 @@ impl Default for RecommendOptions {
     fn default() -> Self {
         Self {
             limit: 20,
-            embedding_model: String::from(crate::embed::MODEL_LOCAL_HASH_V1),
+            vectors: VectorSource::stand_in(),
             region: String::from("us"),
             include_purchase_hints: true,
             external_user_id: None,
@@ -511,22 +515,22 @@ pub async fn rank_request_queue_taste(
     let listening = load_listening(library, &opts).await?;
     let profile =
         build_taste_profile(library, &books, &TasteWeights::new(), &listening, &opts).await?;
-    let mut embedder = open_candidate_embedder(&opts);
+    let texts: Vec<String> = queue.iter().map(queue_entry_text).collect();
+    let similarity = TasteSimilarity::load(library, &profile, &opts, &texts).await?;
 
     let mut ranks = Vec::with_capacity(queue.len());
-    for entry in queue {
+    for (entry, text) in queue.into_iter().zip(&texts) {
         let owned = library_owns_work(library, &entry).await?;
         let (taste_score, reasons, _) = if owned {
             (0.0, Vec::new(), Vec::new())
         } else {
             score_work_against_taste(
-                &entry.title,
                 entry.authors.as_deref(),
                 None,
                 None,
                 None,
                 &profile,
-                embedder.as_mut(),
+                similarity.boost(text),
             )
         };
         ranks.push(bookclerk_library::QueueRank {
@@ -688,18 +692,25 @@ pub(crate) async fn rank_candidates(
     let candidates = retain_reader_languages(candidates, languages);
     let candidates = retain_unowned_works(library, candidates).await?;
     let profile = TasteProfile::from_scores(library, scores, opts).await?;
-    let mut embedder = open_candidate_embedder(opts);
+    let queue = library.list_global_request_queue().await?;
+    let candidate_texts: Vec<String> = candidates.iter().map(candidate_text).collect();
+    let queue_texts: Vec<String> = queue.iter().map(queue_entry_text).collect();
+    let all_texts: Vec<String> = candidate_texts
+        .iter()
+        .chain(&queue_texts)
+        .cloned()
+        .collect();
+    let similarity = TasteSimilarity::load(library, &profile, opts, &all_texts).await?;
     let mut scored: HashMap<String, Recommendation> = HashMap::new();
 
-    for c in candidates {
+    for (c, text) in candidates.into_iter().zip(&candidate_texts) {
         let (mut score, mut reasons, mut categories) = score_work_against_taste(
-            &c.title,
             c.authors.as_deref(),
             c.narrators.as_deref(),
             c.series.as_deref(),
             c.series_index.as_deref(),
             &profile,
-            embedder.as_mut(),
+            similarity.boost(text),
         );
         // Origin / category / deals are candidate-specific (not on wishlist rows).
         reasons.insert(0, c.origin.clone());
@@ -802,18 +813,17 @@ pub(crate) async fn rank_candidates(
     }
 
     // Global wishlist works: recommend taste + heavy multi-user wish boost.
-    for entry in library.list_global_request_queue().await? {
+    for (entry, text) in queue.into_iter().zip(&queue_texts) {
         if library_owns_work(library, &entry).await? {
             continue;
         }
         let (taste_score, mut reasons, mut categories) = score_work_against_taste(
-            &entry.title,
             entry.authors.as_deref(),
             None,
             None,
             None,
             &profile,
-            embedder.as_mut(),
+            similarity.boost(text),
         );
         if entry.wish_count > 1 {
             reasons.push(format!("wishlisted by {} people", entry.wish_count));
@@ -934,8 +944,7 @@ impl TasteProfile {
         scores: TasteScores,
         opts: &RecommendOptions,
     ) -> Result<Self> {
-        let seed_centroid =
-            seed_embedding_centroid(library, &scores.seed_work_ids, &opts.embedding_model).await?;
+        let seed_centroid = seed_embedding_centroid(library, &scores.seed_work_ids, opts).await?;
         Ok(Self {
             liked_authors: scores.liked_authors,
             liked_narrators: scores.liked_narrators,
@@ -1046,13 +1055,12 @@ pub(crate) fn build_taste_scores(
 
 /// Scores a candidate against liked people, series completion, and embedding similarity.
 fn score_work_against_taste(
-    title: &str,
     authors: Option<&str>,
     narrators: Option<&str>,
     series: Option<&str>,
     series_index: Option<&str>,
     profile: &TasteProfile,
-    embedder: Option<&mut Box<dyn Embedder>>,
+    similar: Option<SimilarityBoost>,
 ) -> (f64, Vec<String>, Vec<String>) {
     let mut score = 1.0;
     let mut reasons = Vec::new();
@@ -1088,41 +1096,187 @@ fn score_work_against_taste(
         &mut categories,
     );
 
-    if let (Some(centroid), Some(embedder)) = (&profile.seed_centroid, embedder) {
-        let text = wishlist_embed_text(title, authors, narrators, series);
-        if let Ok(vectors) = embedder.embed(&[text]) {
-            if let Some(v) = vectors.first() {
-                let sim = cosine(centroid, v);
-                if sim > 0.15 {
-                    score += f64::from(sim) * 12.0;
-                    reasons.push(format!("similar to titles you finish (sim {sim:.2})"));
-                    push_shelf_category(&mut categories, "similar_taste");
-                }
-            }
-        }
+    if let Some(similar) = similar {
+        score += similar.score;
+        reasons.push(format!(
+            "similar to titles you finish (sim {:.2})",
+            similar.similarity
+        ));
+        push_shelf_category(&mut categories, "similar_taste");
     }
 
     (score, reasons, categories)
 }
 
-/// Joins title, authors, narrators, and series into embedder input text.
-fn wishlist_embed_text(
-    title: &str,
-    authors: Option<&str>,
-    narrators: Option<&str>,
-    series: Option<&str>,
-) -> String {
-    let mut parts = vec![title.to_string()];
-    if let Some(a) = authors {
-        parts.push(a.to_string());
+/// What a text's closeness to a taste's seed works adds to its score.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SimilarityBoost {
+    /// Points added to the score.
+    score: f64,
+    /// Cosine similarity between the text's vector and the seed centroid.
+    similarity: f32,
+}
+
+/// Least cosine similarity a hash vector needs to count as similar.
+const STAND_IN_MIN_SIMILARITY: f32 = 0.15;
+
+/// Points per unit of cosine similarity between hash vectors.
+const STAND_IN_SIMILARITY_WEIGHT: f64 = 12.0;
+
+/// Fewest texts in one ranking for a model's similarities to be judged
+/// against each other; a smaller ranking gets no similarity score.
+const MODEL_MIN_POOL: usize = 12;
+
+/// How far above the ranking's mean similarity, in standard deviations, a
+/// text must be to count as similar.
+const MODEL_MIN_STANDING: f32 = 0.5;
+
+/// Standing past which more similarity adds nothing.
+const MODEL_MAX_STANDING: f32 = 3.0;
+
+/// Points per standard deviation above the mean.
+const MODEL_STANDING_WEIGHT: f64 = 2.5;
+
+/// Longest one ranking spends embedding texts that have no stored vector;
+/// the rest are ranked without similarity and embedded by a later ranking.
+const TEXT_EMBED_BUDGET: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// How close each text of one ranking is to a taste's seed works.
+///
+/// A model's vectors all point roughly the same way, so their cosine
+/// similarities sit in a narrow band well above zero and a fixed threshold
+/// means nothing across models. The texts of one ranking are therefore
+/// judged against each other: a text counts as similar when it stands
+/// above the ranking's mean by [`MODEL_MIN_STANDING`] deviations. The
+/// stand-in's hash vectors are near zero unless texts share words, and
+/// keep their fixed threshold.
+struct TasteSimilarity {
+    /// Similarity to the seed centroid by [`text_hash`]; a text without a
+    /// vector has none.
+    similarities: HashMap<String, f32>,
+    /// Mean and standard deviation of `similarities`, for a model's space
+    /// with at least [`MODEL_MIN_POOL`] texts; `None` otherwise.
+    spread: Option<(f32, f32)>,
+    /// Whether the vectors are the stand-in's.
+    stand_in: bool,
+}
+
+impl TasteSimilarity {
+    /// No text is similar: similarity is off, or the taste has no centroid.
+    fn none() -> Self {
+        Self {
+            similarities: HashMap::new(),
+            spread: None,
+            stand_in: true,
+        }
     }
-    if let Some(n) = narrators {
-        parts.push(n.to_string());
+
+    /// The similarities of `texts` to `profile`'s seed centroid, in the
+    /// space `opts` names. Texts with no stored vector are embedded and
+    /// stored when `opts` carries an embedder of that space.
+    ///
+    /// # Errors
+    ///
+    /// Returns the library error.
+    async fn load(
+        library: &LibraryStore,
+        profile: &TasteProfile,
+        opts: &RecommendOptions,
+        texts: &[String],
+    ) -> Result<Self> {
+        let Some(centroid) = profile
+            .seed_centroid
+            .as_deref()
+            .filter(|_| opts.embeddings_enabled)
+        else {
+            return Ok(Self::none());
+        };
+        let space = &opts.vectors.space;
+        let deadline = std::time::Instant::now() + TEXT_EMBED_BUDGET;
+        let vectors = match &opts.vectors.embedder {
+            Some(shared) => {
+                let mut embedder = shared.lock().await;
+                text_vectors(
+                    library,
+                    space,
+                    Some(embedder.as_mut()),
+                    texts,
+                    Some(deadline),
+                )
+                .await?
+            }
+            None => text_vectors(library, space, None, texts, None).await?,
+        };
+        let similarities: HashMap<String, f32> = vectors
+            .into_iter()
+            .filter(|(_, vector)| vector.len() == centroid.len())
+            .map(|(hash, vector)| (hash, cosine(centroid, &vector)))
+            .collect();
+        let stand_in = is_stand_in(space);
+        let spread = (!stand_in && similarities.len() >= MODEL_MIN_POOL)
+            .then(|| mean_and_deviation(similarities.values().copied()))
+            .filter(|(_, deviation)| *deviation > 1e-6);
+        Ok(Self {
+            similarities,
+            spread,
+            stand_in,
+        })
     }
-    if let Some(s) = series {
-        parts.push(s.to_string());
+
+    /// What `text`'s similarity adds to its score, when it counts as
+    /// similar.
+    fn boost(&self, text: &str) -> Option<SimilarityBoost> {
+        let similarity = *self.similarities.get(&text_hash(text))?;
+        if self.stand_in {
+            return (similarity > STAND_IN_MIN_SIMILARITY).then(|| SimilarityBoost {
+                score: f64::from(similarity) * STAND_IN_SIMILARITY_WEIGHT,
+                similarity,
+            });
+        }
+        let (mean, deviation) = self.spread?;
+        let standing = (similarity - mean) / deviation;
+        (standing > MODEL_MIN_STANDING).then(|| SimilarityBoost {
+            score: f64::from(standing.min(MODEL_MAX_STANDING)) * MODEL_STANDING_WEIGHT,
+            similarity,
+        })
     }
-    parts.join("\n")
+}
+
+/// Mean and (population) standard deviation of `values`; zeros when empty.
+fn mean_and_deviation(values: impl Iterator<Item = f32> + Clone) -> (f32, f32) {
+    let (sum, count) = values.clone().fold((0.0f64, 0u32), |(sum, count), v| {
+        (sum + f64::from(v), count + 1)
+    });
+    if count == 0 {
+        return (0.0, 0.0);
+    }
+    let mean = sum / f64::from(count);
+    let variance = values.map(|v| (f64::from(v) - mean).powi(2)).sum::<f64>() / f64::from(count);
+    // Narrowing a mean and a deviation of f32 values back to f32.
+    #[allow(clippy::cast_possible_truncation)]
+    (mean as f32, variance.sqrt() as f32)
+}
+
+/// The text embedded for a storefront candidate.
+fn candidate_text(candidate: &crate::candidates::StorefrontCandidate) -> String {
+    embed_text(&EmbedFields {
+        title: &candidate.title,
+        authors: candidate.authors.as_deref(),
+        series: candidate.series.as_deref(),
+        genres: candidate.categories.as_deref(),
+        description: candidate.description.as_deref(),
+    })
+}
+
+/// The text embedded for a wishlist entry.
+fn queue_entry_text(entry: &bookclerk_library::GlobalQueueEntry) -> String {
+    embed_text(&EmbedFields {
+        title: &entry.title,
+        authors: entry.authors.as_deref(),
+        series: None,
+        genres: None,
+        description: entry.description.as_deref(),
+    })
 }
 
 /// Seeds trusted storefront purchase URLs, then looks up remaining hints live.
@@ -1847,49 +2001,55 @@ pub fn listening_engagement(row: &ListeningSignal) -> f64 {
 
 pub use crate::identity::parse_series_index;
 
-/// Averages stored work embeddings for seed ids; returns `None` when none are stored.
+/// Averages the seed works' stored vectors in the space `opts` names;
+/// `None` when similarity is off or none is stored there.
 async fn seed_embedding_centroid(
     library: &LibraryStore,
     seed_work_ids: &std::collections::BTreeSet<String>,
-    model: &str,
+    opts: &RecommendOptions,
 ) -> Result<Option<Vec<f32>>> {
-    let mut query: Option<Vec<f32>> = None;
-    let mut count = 0usize;
-    for wid in seed_work_ids {
-        if let Some((_, blob)) = library.get_embedding_vector("work", wid, model).await? {
-            let v = bytes_to_vector(&blob);
-            match &mut query {
-                Some(acc) => {
-                    if acc.len() == v.len() {
-                        for i in 0..acc.len() {
-                            acc[i] += v[i];
-                        }
-                        count += 1;
-                    }
+    if !opts.embeddings_enabled || seed_work_ids.is_empty() {
+        return Ok(None);
+    }
+    let ids: Vec<String> = seed_work_ids.iter().cloned().collect();
+    let stored = library
+        .vectors(
+            bookclerk_library::VECTOR_KIND_WORK,
+            &opts.vectors.space,
+            &ids,
+        )
+        .await?;
+    let mut sum: Option<Vec<f32>> = None;
+    let mut count = 0u32;
+    // In id order, so the same seeds always sum to the same centroid.
+    for id in &ids {
+        let Some(bytes) = stored.get(id) else {
+            continue;
+        };
+        let vector = bytes_to_vector(bytes);
+        match &mut sum {
+            Some(acc) if acc.len() == vector.len() => {
+                for (total, x) in acc.iter_mut().zip(&vector) {
+                    *total += x;
                 }
-                None => {
-                    query = Some(v);
-                    count = 1;
-                }
+                count += 1;
+            }
+            Some(_) => {}
+            None => {
+                sum = Some(vector);
+                count = 1;
             }
         }
     }
-    if let Some(mut q) = query {
-        if count > 0 {
-            for x in &mut q {
-                *x /= count as f32;
-            }
+    Ok(sum.map(|mut centroid| {
+        // A count of seed works, far below f32's exact integers.
+        #[allow(clippy::cast_precision_loss)]
+        let count = count as f32;
+        for x in &mut centroid {
+            *x /= count;
         }
-        Ok(Some(q))
-    } else {
-        Ok(None)
-    }
-}
-
-/// Opens the candidate embedder: none when similarity is off, otherwise
-/// the local-hash stand-in.
-fn open_candidate_embedder(opts: &RecommendOptions) -> Option<Box<dyn Embedder>> {
-    opts.embeddings_enabled.then(open_embedder)
+        centroid
+    }))
 }
 
 /// Weight of a liked genre the candidate itself lists.
@@ -2159,22 +2319,6 @@ mod tests {
             upsert_recommendation(&mut map, rec);
         }
         assert_eq!(map.len(), 2, "{:?}", map.keys());
-    }
-
-    #[test]
-    fn candidates_use_local_hash_when_similarity_is_on() {
-        let embedder = open_candidate_embedder(&RecommendOptions::default())
-            .expect("similarity is on by default");
-        assert_eq!(embedder.model_id(), crate::embed::MODEL_LOCAL_HASH_V1);
-    }
-
-    #[test]
-    fn candidates_skip_similarity_when_it_is_off() {
-        let opts = RecommendOptions {
-            embeddings_enabled: false,
-            ..RecommendOptions::default()
-        };
-        assert!(open_candidate_embedder(&opts).is_none());
     }
 
     /// A ranked queue entry names the library work its wishes resolve to, so

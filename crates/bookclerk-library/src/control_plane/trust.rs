@@ -47,6 +47,7 @@ use super::semaphore::release_permits;
 use crate::entities::{account_links, accounts, nodes, portal_identities, users};
 use crate::error::{LibraryError, Result};
 use crate::models::{JobKind, JobPayload, JobRecord, JobState, UserRole, UserStatus};
+use crate::store::keyset::read_keyset;
 use crate::store::LibraryStore;
 use crate::AcquireTitle;
 
@@ -587,7 +588,7 @@ pub async fn handoff_routed_job(
     let Some(fence) = claim.job.fence().filter(|f| f.owner == request.owner) else {
         return Ok(None);
     };
-    store.release_job_claim(&fence, claim.resumed).await?;
+    store.release_job_claim(&fence, false).await?;
     release_permits(store, &claim.permits).await?;
     Ok(None)
 }
@@ -620,7 +621,10 @@ fn claim_owns_job(
 /// Matches the way the scan executor resolves an account needle
 /// (`SourceRegistry::account_needle_matches`): the account id or the label,
 /// ignoring ASCII case. A narrower match here would let a Host approve a
-/// job that the executor then runs against another user's account.
+/// job that the executor then runs against another user's account. The
+/// rows are read in keyset pages within the database plugin's result
+/// limit and matched here: SQL `lower` folds more than ASCII on Postgres,
+/// so matching in the database could widen the match on one backend.
 pub(super) async fn accounts_named(
     store: &LibraryStore,
     needle: &str,
@@ -630,10 +634,8 @@ pub(super) async fn accounts_named(
     if let Some(key) = plugin_key {
         query = query.filter(accounts::Column::PluginKey.eq(key));
     }
-    Ok(query
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?
+    Ok(read_keyset(store, query, &[accounts::Column::Id])
+        .await?
         .into_iter()
         .filter(|row| {
             row.account_id.eq_ignore_ascii_case(needle)

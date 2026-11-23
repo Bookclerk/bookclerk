@@ -163,7 +163,11 @@ repository and commit, and the size and SHA-256 of each file.
 A build has four steps:
 
 1. **`fetch`** downloads the pinned files and refuses any whose size or
-   digest differs.
+   digest differs. A file already in the work directory is kept only when
+   it matches its pin. A download that fails in a way that may pass (HTTP
+   408, 429 or 5xx, a refused, reset or timed-out connection, a reply cut
+   short) is tried again after 5, 20 and 60 seconds; one that arrives but
+   does not match is never retried.
 2. **`build`** cuts the graph, writes every token's row to `base.rows`,
    converts `tokenizer.json` to a SentencePiece model and then, with
    upstream's `spm_to_fb`, to the Lite file, and writes `model.json` and
@@ -225,7 +229,23 @@ vocabulary as a SentencePiece model:
 
 [`.github/workflows/model-packs.yml`](../../.github/workflows/model-packs.yml)
 runs the four steps for each model on every pull request that touches the
-builder, the layout, the tokenizer or the plugin. On `main` it also
+builder, the layout, the tokenizer or the plugin. It caches the upstream
+files under `model-upstream-<model id>-<sources digest>`, where the digest
+(`model_packs.py sources-digest`) covers each file's repository, revision,
+path, size and SHA-256 and nothing else, so an unchanged model is not
+downloaded again and a changed pin misses the cache. `fetch` measures a
+restored file like any other, so a cache entry cannot change what is
+built.
+
+The built pack is cached too, by `main` only and only after `check` and
+`pin` pass, under a key that hashes every file that can change its bytes:
+`models.json`, `scripts/model_packs.py`, the builder's
+`requirements.txt`, `build-spm-to-fb.sh`, `vendor-sentencepiece-lite.sh`
+and `third_party/sentencepiece-lite/`. While none of them changes, a run
+restores that pack and skips building the converter and the pack; `check`
+and `pin` run on it as on a fresh build. A change to any of those files
+misses the cache, so it is always built and compared with the pins before
+it can merge. On `main` it also
 publishes each pack to the GitHub Container Registry as an OCI artifact:
 
 ```text
@@ -336,7 +356,9 @@ node (512 MiB by default) cannot be picked there.
 
 The chosen model becomes the one `@library/text-embeddings` names once
 it is installed. Vectors of two models are never compared, so features
-that store vectors embed the library again after a change.
+that store vectors embed the library again after a change, and the
+vectors of the model before keep serving until that is done (see
+[Which space serves](discovery.md#which-space-serves)).
 
 ### Nodes that do not download
 
@@ -465,6 +487,17 @@ which packs a node holds.
   `echo_workerd_ts` example run `@library/text-embeddings` through its
   `AI` binding and compares the vector with the model's arithmetic. That
   is two real plugins in two jails with the host routing between them.
+
+- Discover's use of a model is tested with fake models, not a real one:
+  the daemon's tests (`crates/bookclerkd/src/embedding.rs`) deploy a
+  model plugin that answers through the real router, and check that the
+  job embeds every work in runs of 16, that the model serves only once
+  it covers the library, that a new revision takes over only after its
+  own pass, that vectors of an unlisted revision are refused, and that
+  installing a model queues the job. `bookclerk-discover`'s tests check
+  the serving rule, shared candidate vectors, pruning and that a model's
+  similarities rank by standing. The store's tests run under every
+  database profile.
 
 ## Next steps
 
