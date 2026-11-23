@@ -586,6 +586,66 @@ node that answers. It lists only held works inside the caller's
 [patron scope](../guide/sharing.md#limit-what-a-patron-sees), and a work outside the scope
 answers `404` as its own page does.
 
+### The taste radar
+
+A book's dialog shows how close the book is to each part of the viewer's
+taste, as a radar: `POST /api/discover/taste/radar`
+(`crates/bookclerkd/src/taste_radar.rs`).
+
+**Axes.** The axes are the genre labels most of the viewer's seed works
+carry (`taste_axes` in `crates/bookclerk-discover/src/radar.rs`), so an
+axis has a name a person knows and the same taste gives the same axes.
+The seed works are the ones the viewer's stored taste names
+(`discover_tastes`, see [Taste events](#taste-events)); their genres are
+split into labels as for the [taste genres](#candidate-generation-storefronts-first).
+
+| Rule | Value |
+| --- | --- |
+| Axes on a radar | 3 to 6, most common label first, then by name |
+| Seed works a label needs | 2 |
+| Label carried by more than 4 in 5 labelled seeds | Left out: it is the whole taste |
+| Two labels sharing more than 4 in 5 of their works | One axis, named by the more common |
+| Fewer than 3 labels qualify | No radar (`no_taste`) |
+
+An axis points at the mean of the vectors of the viewer's works that
+carry its label, in the space the [search by meaning](#searching-by-meaning)
+reads. It is the viewer's own corner of the genre, not the genre as stores
+file it.
+
+**Score.** A book's score on an axis is how far its similarity to that
+mean stands out among all the library's works: 0 at one standard
+deviation below the library's mean similarity to the axis, 1 at three
+above. A library with fewer than three embedded works, or with no
+spread, uses the similarity itself.
+
+> [!NOTE]
+> The two ends of the score are first settings, not yet measured on real
+> libraries.
+
+**The book.** A library work is sent as `work_id` and read from the
+node's index of work vectors; a work outside the caller's
+[patron scope](../guide/sharing.md#limit-what-a-patron-sees) answers
+`404`. A store title is sent as its title, authors, series, genres and
+description (at most 16 KiB together) and embedded by the node's model
+from the same text a candidate is, within 15 seconds. That vector is kept
+in memory only, beside the [store search](#ordering-a-page-with-its-meaning)
+vectors.
+
+**Examples.** Each axis names up to three of the viewer's own works on
+it, nearest the book first, and how many works make the axis. The book
+is never its own example.
+
+The axes of a taste are kept in memory per viewer (32 viewers) until
+their taste is stored again or the index is rebuilt. Nothing is written
+to the database.
+
+| `state` | Meaning |
+| --- | --- |
+| `ready` | `axes` places the book |
+| `no_taste` | No stored taste yet, or too few seed works share a genre |
+| `no_model` | No model serves the library (for a store title: none on this node) |
+| `embedding` | The library, or this work, is not embedded with the model yet |
+
 ### OSV / `paste`
 
 `lofty`, the tag library `bookclerk-media` uses, pulls crates.io `paste`
@@ -968,7 +1028,7 @@ still resolve by ASIN (e.g. English *A Game of Thrones* `B002UZZ93G`).
 | Surface | Commands / routes |
 | --- | --- |
 | CLI | `bookclerk discover recommend` (prints shelves), `embed`, `sync-listening`, `wishlist …` |
-| Daemon | `GET /api/discover/recommendations` (stored feed), `GET /api/discover/status`, `POST /api/discover/refresh`, `GET /api/discover/search?q=` (paged multi-store catalog browse + typeahead), `POST /api/discover/purchase-hints` (+ `/batch`), `GET`/`POST` `/api/wishlist`, `DELETE /api/wishlist/{uuid}`, `GET /api/request-queue`, `GET`/`PATCH /api/preferences` |
+| Daemon | `GET /api/discover/recommendations` (stored feed), `GET /api/discover/status`, `POST /api/discover/refresh`, `GET /api/discover/search?q=` (paged multi-store catalog browse + typeahead), `POST /api/discover/taste/radar` (one book on the viewer's taste radar), `POST /api/discover/purchase-hints` (+ `/batch`), `GET`/`POST` `/api/wishlist`, `DELETE /api/wishlist/{uuid}`, `GET /api/request-queue`, `GET`/`PATCH /api/preferences` |
 | GUI | **Discover** — personalized shelves + catalog search (filter rail, sort + direction, language, Hide Virtual Voice); **Wishlist** — personal list with global queue sidebar |
 
 A patron's scope ([ADR](../adr/patron-scopes.md)) filters the feed and

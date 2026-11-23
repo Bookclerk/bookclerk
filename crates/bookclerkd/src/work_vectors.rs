@@ -155,6 +155,31 @@ impl WorkMatrix {
         });
         scored
     }
+
+    /// The mean and the standard deviation of every work's similarity to
+    /// `query`: what a similarity to `query` is measured against to say
+    /// how far a work stands out in this library.
+    ///
+    /// # Returns
+    ///
+    /// `None` when `query` is not of this space's length or the matrix
+    /// holds fewer than three works, which have no spread to speak of.
+    pub(crate) fn spread(&self, query: &[f32]) -> Option<(f32, f32)> {
+        if self.dims == 0 || query.len() != self.dims || self.ids.len() < 3 {
+            return None;
+        }
+        let mut query = query.to_vec();
+        unit(&mut query);
+        let scores: Vec<f32> = self
+            .data
+            .chunks_exact(self.dims)
+            .map(|row| row.iter().zip(&query).map(|(a, b)| a * b).sum())
+            .collect();
+        let n = scores.iter().fold(0.0_f32, |n, _| n + 1.0);
+        let mean = scores.iter().sum::<f32>() / n;
+        let deviation = (scores.iter().map(|s| (s - mean).powi(2)).sum::<f32>() / n).sqrt();
+        Some((mean, deviation))
+    }
 }
 
 /// The leading rows of `ranked` (best first) that stand at least
@@ -223,6 +248,8 @@ pub(crate) struct WorkVectors {
     held: Mutex<Held>,
     /// Vectors of store search hits.
     hits: Mutex<HitCache>,
+    /// The radar axes built for the subjects asked about lately.
+    pub(crate) radars: crate::taste_radar::AxisCache,
 }
 
 impl WorkVectors {
@@ -289,10 +316,12 @@ impl WorkVectors {
         self.held.lock().await.looked = None;
     }
 
-    /// Forgets the matrix and every query vector: the daemon reads another
+    /// Forgets the matrix, every query vector and the radar axes: the
+    /// daemon reads another
     /// library store now, whose vectors may carry the same stamp.
     pub(crate) async fn reset(&self) {
         *self.held.lock().await = Held::default();
+        self.radars.clear().await;
     }
 
     /// The vector an earlier page of the same search made for `text`.

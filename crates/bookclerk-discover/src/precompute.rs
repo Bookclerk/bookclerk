@@ -121,6 +121,24 @@ const BROAD_GENRES: [&str; 8] = [
     "general",
 ];
 
+/// The genre labels of one title, each once, as (label as written,
+/// lowercase key): the comma-, semicolon- or `>`-separated parts of its
+/// genres, without the empty ones and those in [`BROAD_GENRES`].
+pub(crate) fn genre_labels(genres: &str) -> Vec<(String, String)> {
+    let mut labels: Vec<(String, String)> = Vec::new();
+    for label in genres.split([',', ';', '>']).map(str::trim) {
+        let key = label.to_lowercase();
+        if key.is_empty()
+            || BROAD_GENRES.contains(&key.as_str())
+            || labels.iter().any(|(_, seen)| *seen == key)
+        {
+            continue;
+        }
+        labels.push((label.to_string(), key));
+    }
+    labels
+}
+
 /// The genres a person's taste leans to, most common first: the labels
 /// their seeds (books and wishes) carry, counted, at most [`TASTE_GENRES`].
 ///
@@ -140,17 +158,11 @@ pub fn taste_genres(seeds: &[SeedTitle]) -> Vec<String> {
         let Some(categories) = seed.categories.as_deref() else {
             continue;
         };
-        let mut seen: Vec<String> = Vec::new();
-        for label in categories.split([',', ';', '>']).map(str::trim) {
-            let key = label.to_lowercase();
-            if key.is_empty() || BROAD_GENRES.contains(&key.as_str()) || seen.contains(&key) {
-                continue;
-            }
+        for (label, key) in genre_labels(categories) {
             match counted.iter_mut().find(|(_, of, _)| *of == key) {
                 Some((_, _, count)) => *count += 1,
-                None => counted.push((label.to_string(), key.clone(), 1)),
+                None => counted.push((label, key, 1)),
             }
-            seen.push(key);
         }
     }
     // A stable sort: equal counts keep the order of first mention.

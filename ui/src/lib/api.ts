@@ -4080,6 +4080,80 @@ export async function fetchSimilarWorks(id: string, limit = 12): Promise<Similar
   return parseJson(res);
 }
 
+/** One of the viewer's own books on a radar axis. */
+export interface TasteRadarExample {
+  /** The work. */
+  work_id: string;
+  /** Its display title. */
+  title: string;
+}
+
+/** One axis of a taste radar, with the book placed on it. */
+export interface TasteRadarAxis {
+  /** The genre that names the axis, as the viewer's books carry it. */
+  name: string;
+  /**
+   * How close the book is to the viewer's books of this genre, 0 to 1:
+   * 0 is further from them than most of the library, 1 as close as the
+   * closest few.
+   */
+  score: number;
+  /** How many of the viewer's books make the axis. */
+  books: number;
+  /** The viewer's books of this genre nearest the book, nearest first. */
+  examples: TasteRadarExample[];
+}
+
+/** What {@link fetchTasteRadar} reports. */
+export interface TasteRadar {
+  /**
+   * `ready` when `axes` places the book; otherwise why it is empty: no
+   * embedding model, the library still being embedded, or a taste with too
+   * few books that share a genre.
+   */
+  state: MeaningState | "no_taste";
+  /** Three to six axes; empty unless `state` is `ready`. */
+  axes: TasteRadarAxis[];
+}
+
+/** The book a radar is asked for: a library work, or a store title. */
+export interface TasteRadarQuery {
+  /** The library work; when set, the other fields are not read. */
+  work_id?: string | null;
+  /** Display title of a store title. */
+  title?: string | null;
+  /** Its authors, as one comma-separated line. */
+  authors?: string | null;
+  /** Its series names, as one comma-separated line. */
+  series?: string | null;
+  /** Its genres or categories, as one line. */
+  genres?: string | null;
+  /** Its synopsis; the daemon reads the first 1,200 characters. */
+  description?: string | null;
+}
+
+/** Most characters of a synopsis sent for a radar; the daemon reads fewer. */
+const RADAR_DESCRIPTION_CHARS = 2000;
+
+/**
+ * Asks how close one book is to each part of the viewer's taste.
+ *
+ * @param query - The library work, or what is known of a store title.
+ * @returns The radar, or the reason it has no axes.
+ */
+export async function fetchTasteRadar(query: TasteRadarQuery): Promise<TasteRadar> {
+  const res = await fetchRetryingBusy("/api/discover/taste/radar", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ...query,
+      description: query.description?.slice(0, RADAR_DESCRIPTION_CHARS) ?? null,
+    }),
+  });
+  return parseJson(res);
+}
+
 /**
  * Fetches one page of a facet's values across the library's held works.
  *

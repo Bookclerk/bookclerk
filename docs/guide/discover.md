@@ -50,6 +50,22 @@ shelves** until they land. **Refresh** asks for a rebuild right away.
 
 To hide rows you do not want, open **Preferences** in the top bar.
 
+## How a book fits your taste
+
+Open a book on Discover, the wishlist or the library and its details show
+**How it fits your taste**: a chart with one spoke for each genre your
+books lean to. The shape reaches further along a spoke the closer the book
+is to your own books of that genre.
+
+Point at a spoke, or tap it, to see how close the book is and which of
+your books it is nearest to. With a keyboard, move between spokes with
+<kbd>Tab</kbd>.
+
+The chart appears when your library has an
+[embedding model](../server/configuration.md#model-downloads) and you have at least two books
+in each of three genres. It reads the same taste as your rows, so it
+changes when they do.
+
 ## Search every store
 
 The search box at the top searches every store's catalog at once. Each book
