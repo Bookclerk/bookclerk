@@ -87,9 +87,10 @@ CHUNK = 1 << 20
 #: length plus one is the number of attempts.
 FETCH_BACKOFF = (5.0, 20.0, 60.0)
 
-#: HTTP statuses worth asking again for: rate limiting and server errors.
-#: Anything else (404, 403) is an answer that a retry would not change.
-RETRY_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+#: HTTP statuses worth asking again for besides every 5xx server error: a
+#: request time-out and rate limiting. Anything else (404, 403) is an answer
+#: that a retry would not change.
+RETRY_STATUSES = frozenset({408, 429})
 
 
 class PackError(Exception):
@@ -384,12 +385,12 @@ def is_transient(error: BaseException) -> bool:
         error: What the download raised.
 
     Returns:
-        True for a retryable HTTP status, a connection that failed or broke
+        True for HTTP 408, 429 and any 5xx status, a connection that failed or broke
         off (a body cut short included), and a time-out; False for every other HTTP status and for
         anything that is not a transport error (a digest mismatch included).
     """
     if isinstance(error, urllib.error.HTTPError):
-        return error.code in RETRY_STATUSES
+        return error.code in RETRY_STATUSES or 500 <= error.code <= 599
     return isinstance(error, (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException))
 
 
@@ -420,6 +421,13 @@ def _download(pin: SourcePin, target: Path, open_url: Callable[[str], BinaryIO])
                     break
                 digest.update(chunk)
                 handle.write(chunk)
+            # A reply that ends before its declared length is a broken
+            # connection, not a different file: `http.client` returns the
+            # short body without raising, and leaves the bytes it still
+            # expected in `length`.
+            missing = getattr(response, "length", None)
+            if isinstance(missing, int) and missing > 0 and size <= pin.pin.bytes:
+                raise http.client.IncompleteRead(b"", missing)
         if FilePin(size, digest.hexdigest()) != pin.pin:
             raise PackError(f"{pin.url} does not match its pin")
         partial.replace(target)

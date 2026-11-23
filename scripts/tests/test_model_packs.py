@@ -301,6 +301,36 @@ class FetchTest(unittest.TestCase):
                 mp.fetch(self.pin, self.dir, lambda _url, error=error: (_ for _ in ()).throw(error), backoff=(1,), sleep=waits.append)
             self.assertEqual(waits, [])
 
+    def test_a_reply_shorter_than_its_content_length_is_retried(self) -> None:
+        # A real `http.client` reply whose connection closes after two of
+        # its five declared bytes: `read` returns the short body without
+        # raising, so the length left unread is what marks it as cut short.
+        class Socket:
+            def __init__(self, raw: bytes) -> None:
+                self.raw = raw
+
+            def makefile(self, *_args: object, **_kwargs: object) -> io.BytesIO:
+                return io.BytesIO(self.raw)
+
+        def reply(body: bytes) -> http.client.HTTPResponse:
+            raw = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n" + body
+            response = http.client.HTTPResponse(Socket(raw))  # type: ignore[arg-type]
+            response.begin()
+            return response
+
+        bodies = [b"he", self.body]
+        waits: list[float] = []
+        path = mp.fetch(self.pin, self.dir, lambda _url: reply(bodies.pop(0)), backoff=(1,), sleep=waits.append)
+        self.assertEqual((path.read_bytes(), waits), (self.body, [1]))
+
+        # A complete reply of the declared length that is not the pinned
+        # file is still a mismatch, never retried.
+        path.unlink()
+        waits.clear()
+        with self.assertRaises(mp.PackError):
+            mp.fetch(self.pin, self.dir, lambda _url: reply(b"hellp"), backoff=(1,), sleep=waits.append)
+        self.assertEqual(waits, [])
+
     def test_a_mismatch_is_never_retried(self) -> None:
         waits: list[float] = []
         with self.assertRaises(mp.PackError):
@@ -319,9 +349,9 @@ class FetchTest(unittest.TestCase):
 
     def test_only_transport_failures_count_as_transient(self) -> None:
         message = email.message.Message()
-        for code in (408, 429, 500, 502, 503, 504):
+        for code in (408, 429, 500, 502, 503, 504, 520, 599):
             self.assertTrue(mp.is_transient(urllib.error.HTTPError("https://x", code, "", message, None)), code)
-        for code in (400, 401, 403, 404, 410):
+        for code in (400, 401, 403, 404, 410, 600):
             self.assertFalse(mp.is_transient(urllib.error.HTTPError("https://x", code, "", message, None)), code)
         self.assertTrue(mp.is_transient(urllib.error.URLError("no route")))
         self.assertTrue(mp.is_transient(TimeoutError()))
