@@ -1497,7 +1497,7 @@ pub enum JobKind {
 impl JobKind {
     /// Every kind, in declaration order; the SQL plans derive their kind
     /// lists from it so a new kind cannot be left unclaimable.
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::Scan,
         Self::Acquire,
         Self::ListenSync,
