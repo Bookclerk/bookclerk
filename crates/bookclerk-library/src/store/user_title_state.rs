@@ -109,7 +109,7 @@ impl LibraryStore {
     ///
     /// # Errors
     ///
-    /// Returns [`LibraryError::Orm`] when a read fails.
+    /// Returns a [`LibraryError`](crate::error::LibraryError) when a read fails.
     pub async fn user_title_states(&self, user_ids: &[i64]) -> Result<Vec<UserTitleState>> {
         let users: Vec<i64> = user_ids
             .iter()
@@ -152,7 +152,7 @@ impl LibraryStore {
     ///
     /// # Errors
     ///
-    /// Returns [`LibraryError::Orm`] when a read fails.
+    /// Returns a [`LibraryError`](crate::error::LibraryError) when a read fails.
     pub async fn user_title_states_of_works(
         &self,
         user_id: i64,
@@ -194,7 +194,7 @@ impl LibraryStore {
     ///
     /// # Errors
     ///
-    /// Returns [`LibraryError::Orm`] when a read fails.
+    /// Returns a [`LibraryError`](crate::error::LibraryError) when a read fails.
     pub async fn users_linked_to_account(
         &self,
         plugin_key: &str,

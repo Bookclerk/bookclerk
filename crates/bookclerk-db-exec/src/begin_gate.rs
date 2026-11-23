@@ -549,6 +549,10 @@ mod tests {
         );
         let uncapped = with_uncapped_reads(gate.query(select())).await;
         assert_eq!(uncapped.unwrap().len(), 3, "a test's own look");
+        assert!(
+            gate.execute(select()).await.is_ok(),
+            "writes are not held to the read caps"
+        );
         handle.cap_reads(None);
         assert_eq!(gate.query(select()).await.unwrap().len(), 3, "lifted");
     }
