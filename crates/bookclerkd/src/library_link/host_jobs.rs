@@ -248,6 +248,23 @@ pub trait HostGuests: Send + Sync + 'static {
         &self,
     ) -> impl Future<Output = anyhow::Result<Vec<LocalDestination>>> + Send;
 
+    /// True when this host keeping a file of `book` at `key` on its own
+    /// destination `destination` would replace another edition's file:
+    /// another live edition in this install's own library holds the key
+    /// (`edition_files`). A key the title's own edition here holds, or an
+    /// unrecorded one, is free.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this install's library cannot be read; the
+    /// caller then keeps no copy rather than risk another edition's file.
+    fn local_key_held_elsewhere(
+        &self,
+        book: &NewBook,
+        destination: &DestinationId,
+        key: &str,
+    ) -> impl Future<Output = anyhow::Result<bool>> + Send;
+
     /// Where per-job scratch lives (under this host's files dir).
     fn work_dir(&self) -> PathBuf;
 
@@ -453,12 +470,13 @@ impl HostGuests for GuestHost {
         refreshed: Arc<dyn RefreshedCredentialSink>,
         title: &HostTitle,
         outbox: &Path,
-        _cancel: Arc<AtomicBool>,
+        cancel: Arc<AtomicBool>,
     ) -> anyhow::Result<AcquiredTitle> {
-        // The pipeline has no cancel input; the transport drops this call
-        // (and with it the guest) once the job is cancelled, and all of the
-        // title's scratch (its library, and the pipeline's download and
-        // packaging dirs) sits under the job dir it removes.
+        // The transport drops this call once the job is cancelled; the
+        // flag also reaches the guest's store fetch, which runs on the
+        // plugin's own thread and would otherwise go on downloading. All
+        // of the title's scratch (its library, and the pipeline's download
+        // and packaging dirs) sits under the job dir the transport removes.
         let source = self.open_source(bindings, refreshed).await?;
         let cfg = self.state.config.read().await.clone();
         let scratch_dir = outbox.with_extension("library");
@@ -474,6 +492,7 @@ impl HostGuests for GuestHost {
             outbox,
             &title_cache_dir(outbox),
             metadata,
+            cancel,
         )
         .await;
         drop(scratch);
@@ -488,6 +507,21 @@ impl HostGuests for GuestHost {
             .into_iter()
             .map(|dest| (dest.id, dest.backend.clone_box()))
             .collect())
+    }
+
+    async fn local_key_held_elsewhere(
+        &self,
+        book: &NewBook,
+        destination: &DestinationId,
+        key: &str,
+    ) -> anyhow::Result<bool> {
+        let library = self.state.library_snapshot().await;
+        let edition = library
+            .edition_of_listing(&book.plugin_key, &book.marketplace, &book.product_id)
+            .await?;
+        Ok(library
+            .key_held_by_another_edition(destination.as_str(), key, edition.as_deref())
+            .await?)
     }
 
     fn work_dir(&self) -> PathBuf {
@@ -682,6 +716,7 @@ pub fn acquire_request(
         placement: None,
         job_id: None,
         temp_quota_bytes: Some(cfg.jobs.temp_quota_bytes),
+        cancel: None,
         call_number: None,
         parent_call_number: None,
         metadata: bookclerk_acquire::AcquireMetadata::default(),
@@ -703,7 +738,10 @@ pub fn title_cache_dir(outbox: &Path) -> PathBuf {
 
 /// Runs the acquire pipeline for `title` against `scratch`, writing only
 /// to `outbox`, with its scratch under `cache_dir`, asking `metadata` for the
-/// plain-audio overlay.
+/// plain-audio overlay; `cancel` stops the store fetch in flight.
+// Each argument is one input of the title's acquire; grouping them would
+// only rename them.
+#[allow(clippy::too_many_arguments)]
 async fn acquire_into(
     scratch: &LibraryStore,
     cfg: &bookclerk_config::Config,
@@ -712,6 +750,7 @@ async fn acquire_into(
     outbox: &Path,
     cache_dir: &Path,
     metadata: bookclerk_acquire::AcquireMetadata,
+    cancel: Arc<AtomicBool>,
 ) -> anyhow::Result<AcquiredTitle> {
     scratch
         .scope(title.book.plugin_key.as_str(), title.book.source.as_str())
@@ -754,6 +793,7 @@ async fn acquire_into(
         .parent_call_number
         .clone_from(&title.parent_call_number);
     request.metadata = metadata;
+    request.cancel = Some(cancel);
     let result =
         bookclerk_acquire::acquire_book_indexed(scratch, &destinations, request, None, source)
             .await?;
@@ -1738,7 +1778,14 @@ pub(crate) async fn upload_manifest_probed_by(
 pub type LocalCopy = (Arc<dyn StorageBackend>, String);
 
 /// Copies one title's files (the primary destination's keys) to every one
-/// of this host's own destinations. Any failed copy fails the title. Each
+/// of this host's own destinations. Any failed copy fails the title.
+///
+/// No file is copied when any of them would replace another edition's
+/// file in this install's own library
+/// ([`HostGuests::local_key_held_elsewhere`]), or when that cannot be told:
+/// the host then keeps no copy of the title (an empty answer), which is
+/// still uploaded to the owner, and a title of the owner's is not imported
+/// here. Each
 /// copy this run created (its key was not there before) is put in `copied`
 /// as soon as it is written, so the caller removes exactly what this run
 /// created ([`remove_local_copies`]) whether this fails or is dropped
@@ -1754,6 +1801,7 @@ pub type LocalCopy = (Arc<dyn StorageBackend>, String);
 /// Returns an error when the destinations cannot be used or a copy fails.
 pub async fn copy_to_local_destinations<G: HostGuests>(
     guests: &G,
+    book: &NewBook,
     book_uuid: &str,
     outbox: &Path,
     acquired: &AcquiredTitle,
@@ -1766,6 +1814,23 @@ pub async fn copy_to_local_destinations<G: HostGuests>(
         .into_iter()
         .map(|(id, backend)| (id, Arc::from(backend)))
         .collect();
+    // Every key is checked before any is written, so a title is kept here
+    // whole or not at all.
+    for key in acquired.keys.first().into_iter().flatten() {
+        for (id, _) in &local {
+            let held = match guests.local_key_held_elsewhere(book, id, key).await {
+                Ok(held) => held,
+                Err(err) => {
+                    tracing::warn!(book_uuid, %key, error = %err, "could not check this host's own library for the title's file key; keeping no copy here");
+                    true
+                }
+            };
+            if held {
+                tracing::warn!(book_uuid, destination = %id, %key, "another edition in this host's own library holds the title's file key; keeping no copy here");
+                return Ok(Vec::new());
+            }
+        }
+    }
     let mut placed = Vec::new();
     // This host's own copy follows the owner's primary destination naming.
     let primary = destination_outbox(outbox, 0);
@@ -1776,8 +1841,8 @@ pub async fn copy_to_local_destinations<G: HostGuests>(
                 ..ObjectMeta::default()
             };
             // Only a key this run creates is this run's to roll back: one
-            // already there (an earlier acquire of the title, or another
-            // writer's file) is overwritten as before but never deleted by
+            // already there (an earlier copy of the title, or a file no
+            // edition here records) is overwritten but never deleted by
             // this run's cleanup. An unreadable probe counts as present,
             // so a failure leaves the file rather than risk another's.
             let existed = destination.exists(key).await.unwrap_or(true);
@@ -1865,7 +1930,8 @@ async fn upload_title<G: HostGuests>(
     .await?;
     let placed = match copied {
         Some(copied) => {
-            copy_to_local_destinations(guests, book_uuid, outbox, acquired, copied).await?
+            copy_to_local_destinations(guests, &title.book, book_uuid, outbox, acquired, copied)
+                .await?
         }
         None => Vec::new(),
     };

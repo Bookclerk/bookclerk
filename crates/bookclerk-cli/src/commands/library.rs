@@ -556,6 +556,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                     placement: None,
                     job_id: None,
                     temp_quota_bytes: None,
+                    cancel: None,
                     call_number: None,
                     parent_call_number: None,
                     // Only plans the storage key; nothing is fetched.

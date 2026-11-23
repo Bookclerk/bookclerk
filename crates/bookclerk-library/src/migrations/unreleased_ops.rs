@@ -1598,7 +1598,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // titles share. A title a branch shares here is a node holding, so its
     // keys are its edition's too. `writer` is the host upload id that
     // claimed the key last (a branch's catalog upload included), or
-    // `acquire` for an acquire run on the node itself. `role` says what the file is. The probe
+    // `acquire:<32 hex>` for the acquire run on the node itself that wrote
+    // it (`acquire` for a branch's import of its owner's title). `role` says what the file is. The probe
     // result (`content_type`, `bitrate_kbps`, `lossless`, set at
     // `probed_at`) and the storefront the copy came from (`source_store`)
     // decide whether a later copy of the same edition replaces it, and tell
