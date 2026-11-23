@@ -81,6 +81,7 @@ mod restart;
 mod samples;
 mod scheduler;
 mod search_index;
+mod search_rerank;
 #[cfg(test)]
 mod startup_tests;
 mod totp;

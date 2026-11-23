@@ -57,6 +57,12 @@ shows up once, with where to buy it and the best current price.
 Prices take the stores you have connected into account, so a member price
 counts where you are a member.
 
+When your library has an embedding model, results sorted by relevance are
+ordered by what you asked for as well as by the stores' own ranking, so a
+description such as "a slow mystery in a small town" brings the closest
+titles of each page forward. The suggestions under the search box keep the
+stores' order.
+
 ## Available through a branch
 
 When your library has [branches](branches.md), a book one of them can supply

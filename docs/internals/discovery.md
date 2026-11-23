@@ -883,6 +883,7 @@ it.
 | `sort` | `relevance` (default) / `popularity` / `rating` / `title` / `author` / `price` / `length` — storefront rank (`rankHint`, declared by Audible today) for relevance/popularity; host re-ranks price/length/rating/title/author. Rating sort uses a Bayesian average of `rating_overall` with `rating_count` (prior mean 4.0, strength 100) so tiny sample 5.0s do not outrank high-volume 4.8s |
 | `sort_dir` | `asc` / `desc` (defaults: desc for relevance/popularity/rating/price; asc for title/author/length). Relevance ignores direction for ranking |
 | `field` | Optional scoped search: `author` / `narrator` / `series` / `genre` |
+| `rank` | `meaning` (default) / `store` — how a `relevance` page is ordered; see [Ordering a page with its meaning](#ordering-a-page-with-its-meaning) |
 | `lang` | Default language (BCP-47); hard-include when `language` omitted |
 | `language` | Comma-separated language codes to include |
 | `all_languages` | `1` / `true` — no hard language filter |
@@ -898,6 +899,50 @@ purchase-hints round-trip). The UI infinite-scrolls with `next_cursor` and
 dedupes rare cross-page `work_key`s. Facet option lists grow from loaded pages
 (not full upstream facet counts). Typeahead still uses a small first page
 (`page_size=10`).
+
+### Ordering a page with its meaning
+
+A store orders its results by its own relevance, which matches words. When
+the answering node has the library's embedding model, a page sorted by
+`relevance` is also ordered by how close each result is to the query in
+meaning (`crates/bookclerkd/src/search_rerank.rs`):
+
+1. The query is embedded as a query. Its vector is shared with the
+   Library's search by meaning, which keeps the last 32.
+2. Each result on the page is embedded as a document from its title with
+   its subtitle, its authors and its series, and nothing else. A search page
+   carries little more, and short texts keep a page of 24 results never
+   seen before at about 0.7 s on one core with the default model
+   ([Embedding benchmarks](embedding-benchmarks.md)).
+3. Each result has two places: its place in the stores' order and its place
+   by closeness to the query. The page is ordered by the sum of the two,
+   and the stores' order decides between equals. A result must do well in
+   both to lead, so an exact title match the stores put first stays near
+   the top. The equal weights are a first setting, not yet measured on real
+   searches.
+
+The page is ordered before it is returned, so nothing moves after a client
+shows it. Only the results of one page are ordered among themselves: pages
+still follow each other in the stores' order.
+
+Result vectors are never stored. A store's catalog is not the library's, so
+they stay out of the `embeddings` table and live in a cache in memory (the
+last 4,096 texts of the current model). A result seen again, on a later
+search or a repeated page, costs nothing.
+
+The model gets at most 3 seconds, inside what is left of the search's
+15 second budget. The page keeps the stores' order, and the search answers
+as before, when:
+
+- the node has no embedding model (the hash stand-in carries no meaning and
+  is never used here);
+- the model misses the deadline, for example a sleeping model plugin that
+  must first load its model, or fails;
+- the page has one result, or less than 250 ms of the budget is left;
+- the search is scoped with `field`, which asks for a name, or sorted by
+  anything but `relevance`;
+- the client sent `rank=store`. The web app does for the suggestions under
+  the search box, which are asked for while the person types.
 
 Per-user Discover defaults live on `GET`/`PATCH /api/preferences`:
 `discover_sort`, `discover_sort_dir`, `discover_language` (`null` = browser

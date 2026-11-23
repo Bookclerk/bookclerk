@@ -34122,6 +34122,15 @@
               "type": "integer",
               "format": "int64"
             }
+          },
+          {
+            "name": "rank",
+            "in": "query",
+            "description": "How a page sorted by relevance is ordered: `meaning` (default) or\n`store`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/CatalogRank"
+            }
           }
         ],
         "responses": {

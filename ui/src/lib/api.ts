@@ -5457,6 +5457,12 @@ export async function searchCatalog(
     /** When true, do not hard-filter by language. */
     allLanguages?: boolean;
     filters?: CatalogSearchFilters;
+    /**
+     * `"store"` keeps the stores' order without asking the embedding
+     * model, for suggestions shown while the person types. Default: the
+     * server orders a relevance page with its meaning when it can.
+     */
+    rank?: "meaning" | "store";
   },
 ): Promise<CatalogSearchPage> {
   const trimmed = q.trim();
@@ -5481,6 +5487,7 @@ export async function searchCatalog(
   if (opts?.field) sp.set("field", opts.field);
   sp.set("lang", opts?.lang?.trim() || browserCatalogLanguage());
   if (opts?.allLanguages) sp.set("all_languages", "true");
+  if (opts?.rank) sp.set("rank", opts.rank);
   const f = opts?.filters;
   if (f?.authors?.length) sp.set("author", f.authors.join(","));
   if (f?.narrators?.length) sp.set("narrator", f.narrators.join(","));

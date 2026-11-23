@@ -29,6 +29,10 @@ const REVALIDATE_EVERY: Duration = Duration::from_secs(5);
 /// Query vectors kept, so the pages of one search embed its text once.
 const QUERY_CACHE_ENTRIES: usize = 32;
 
+/// Store hit vectors kept ([`WorkVectors::cached_hits`]). A vector is a
+/// few kilobytes at most, so this stays within a few megabytes.
+const HIT_CACHE_ENTRIES: usize = 4096;
+
 /// How many standard deviations above the library's mean similarity a
 /// work must stand to be a match of a search by meaning. A model's
 /// cosines sit in a narrow band, so a fixed cosine would admit everything
@@ -197,12 +201,28 @@ struct Held {
     queries: VecDeque<(VectorSpace, String, Arc<Vec<f32>>)>,
 }
 
+/// Vectors of store search hits, by the text each was embedded from.
+/// They are never stored: a store's catalog is not the library's, and a
+/// hit seen again within the daemon's life is all the reuse there is.
+#[derive(Default)]
+struct HitCache {
+    /// The space every held vector is in; a model change empties the
+    /// cache.
+    space: Option<VectorSpace>,
+    /// Vector by embedded text.
+    vectors: HashMap<String, Arc<Vec<f32>>>,
+    /// The texts, oldest first.
+    order: VecDeque<String>,
+}
+
 /// This node's index of work vectors. One per daemon.
 #[derive(Default)]
 pub(crate) struct WorkVectors {
     /// The matrix; the lock is held across a rebuild, so two requests
     /// that find it stale read the table once.
     held: Mutex<Held>,
+    /// Vectors of store search hits.
+    hits: Mutex<HitCache>,
 }
 
 impl WorkVectors {
@@ -300,6 +320,49 @@ impl WorkVectors {
         }
         held.queries
             .push_back((space.clone(), text.to_string(), vector));
+    }
+
+    /// The vectors kept for store hits embedded from `texts` in `space`,
+    /// in the order of `texts`; `None` where a text was not embedded yet
+    /// or has been forgotten.
+    pub(crate) async fn cached_hits(
+        &self,
+        space: &VectorSpace,
+        texts: &[String],
+    ) -> Vec<Option<Arc<Vec<f32>>>> {
+        let hits = self.hits.lock().await;
+        let same = hits.space.as_ref().is_some_and(|of| of.same_as(space));
+        texts
+            .iter()
+            .map(|text| same.then(|| hits.vectors.get(text).cloned()).flatten())
+            .collect()
+    }
+
+    /// Keeps the vectors of store hits, each with the text it was embedded
+    /// from, forgetting the oldest beyond [`HIT_CACHE_ENTRIES`] and
+    /// everything of another space.
+    pub(crate) async fn cache_hits(
+        &self,
+        space: &VectorSpace,
+        embedded: Vec<(String, Arc<Vec<f32>>)>,
+    ) {
+        let mut hits = self.hits.lock().await;
+        if !hits.space.as_ref().is_some_and(|of| of.same_as(space)) {
+            *hits = HitCache {
+                space: Some(space.clone()),
+                ..HitCache::default()
+            };
+        }
+        for (text, vector) in embedded {
+            if hits.vectors.insert(text.clone(), vector).is_none() {
+                hits.order.push_back(text);
+            }
+        }
+        while hits.order.len() > HIT_CACHE_ENTRIES {
+            if let Some(oldest) = hits.order.pop_front() {
+                hits.vectors.remove(&oldest);
+            }
+        }
     }
 }
 
@@ -453,6 +516,42 @@ mod tests {
         assert_eq!(standing_out(scored(&[0.5, 0.5, 0.5]), 1.0).len(), 3);
         assert_eq!(standing_out(scored(&[0.9, 0.1]), 1.0).len(), 2);
         assert!(standing_out(Vec::new(), 1.0).is_empty());
+    }
+
+    #[tokio::test]
+    async fn hit_vectors_are_kept_by_text_within_one_space() {
+        let index = WorkVectors::default();
+        let (bekko, other) = (space("bekko"), space("other"));
+        let vector = Arc::new(vec![1.0_f32, 0.0]);
+        index
+            .cache_hits(&bekko, vec![("Dune".into(), Arc::clone(&vector))])
+            .await;
+        let texts = [String::from("Dune"), String::from("Emma")];
+        let held = index.cached_hits(&bekko, &texts).await;
+        assert_eq!(held[0].as_deref(), Some(&*vector));
+        assert!(held[1].is_none());
+        // Another model's question finds nothing, and its vectors replace
+        // the first model's.
+        assert!(index.cached_hits(&other, &texts).await[0].is_none());
+        index
+            .cache_hits(&other, vec![("Emma".into(), Arc::clone(&vector))])
+            .await;
+        assert!(index.cached_hits(&bekko, &texts).await[0].is_none());
+        assert!(index.cached_hits(&other, &texts).await[1].is_some());
+    }
+
+    #[tokio::test]
+    async fn the_hit_cache_forgets_the_oldest() {
+        let index = WorkVectors::default();
+        let bekko = space("bekko");
+        let vector = Arc::new(vec![1.0_f32]);
+        let embedded = (0..=HIT_CACHE_ENTRIES)
+            .map(|n| (format!("text {n}"), Arc::clone(&vector)))
+            .collect();
+        index.cache_hits(&bekko, embedded).await;
+        let texts = [String::from("text 0"), String::from("text 1")];
+        let held = index.cached_hits(&bekko, &texts).await;
+        assert!(held[0].is_none() && held[1].is_some());
     }
 
     #[tokio::test]

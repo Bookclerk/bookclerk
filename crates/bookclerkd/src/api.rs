@@ -6456,6 +6456,23 @@ struct CatalogSearchQuery {
     min_length_minutes: Option<i64>,
     /// Maximum runtime in minutes; values ≤ 0 are ignored.
     max_length_minutes: Option<i64>,
+    /// How a page sorted by relevance is ordered: `meaning` (default) or
+    /// `store`.
+    rank: Option<CatalogRank>,
+}
+
+/// How a page of store results sorted by relevance is ordered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+enum CatalogRank {
+    /// The stores' order blended with how close each result is to the
+    /// query in meaning, when this node has the library's embedding model
+    /// and it answers in time; else the stores' order.
+    #[default]
+    Meaning,
+    /// The stores' order, without asking the model. For lists a person
+    /// is still typing into, where a fast answer matters more.
+    Store,
 }
 
 /// Returns the caller's stored Discover shelves; never builds them on the request.
@@ -7020,6 +7037,7 @@ async fn discover_catalog_search(
             sort_dir: String::from("desc"),
         }));
     }
+    let started = Instant::now();
     let region = q.region.unwrap_or_else(|| String::from("us"));
     let page_size = q.page_size.or(q.limit).unwrap_or(24).clamp(1, 48);
     let sort = q
@@ -7113,6 +7131,22 @@ async fn discover_catalog_search(
     })
     .await
     .map_err(internal_err)?;
+    // A page in the stores' own relevance order is ordered with its
+    // meaning before it is returned, inside what is left of the budget. A
+    // scoped search asks for a name, and every other sort is the caller's
+    // choice of order: both stay as they are.
+    if sort == bookclerk_discover::CatalogSearchSort::Relevance
+        && field.is_none()
+        && q.rank.unwrap_or_default() == CatalogRank::Meaning
+    {
+        crate::search_rerank::by_meaning(
+            &state,
+            &query,
+            &mut page.items,
+            CATALOG_SEARCH_TIMEOUT.saturating_sub(started.elapsed()),
+        )
+        .await;
+    }
     for hit in &mut page.items {
         state
             .covers
