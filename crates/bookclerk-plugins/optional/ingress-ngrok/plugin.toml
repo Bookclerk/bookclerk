@@ -64,6 +64,11 @@ name = "version.js"
 path = "version.js"
 type = "js"
 
+[[modules]]
+name = "ws.js"
+path = "ws.js"
+type = "js"
+
 [ingress]
 kind = "relay"
 
@@ -72,7 +77,8 @@ mode = "outbound"
 # ngrok's agent endpoint, as one TLS stream the host holds (`tls://`).
 tcp = [{ host = "connect.ngrok-agent.com", ports = [443] }]
 
-# The connection to ngrok; the host holds it while the plugin waits.
+# The connection to ngrok, and the clients' WebSockets to the library; the
+# host holds them while the plugin waits.
 [sockets]
 
 [vars]

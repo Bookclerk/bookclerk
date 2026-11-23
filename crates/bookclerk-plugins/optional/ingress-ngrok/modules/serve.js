@@ -10,8 +10,13 @@
  * length that allows byte ranges is sent in pieces instead: the head and
  * the first bytes now, then each later piece fetched from the library with
  * a `Range` request when the window opens ({@link Continuation}).
+ *
+ * An upgrade ({@link serveUpgrade}) opens a WebSocket to the library
+ * through `ORIGIN.connect`; the agent then carries frames between it and
+ * the client's stream.
  */
-import { encodeResponseHead, errorResponse } from "./http1.js";
+import { encodeResponseHead, encodeSwitchingHead, errorResponse, } from "./http1.js";
+import { acceptKey, validKey } from "./ws.js";
 /** Largest request body the agent buffers before handing it on, in bytes. */
 export const MAX_REQUEST_BODY = 32 * 1024 * 1024;
 /** Largest response the agent buffers whole, in bytes. */
@@ -31,6 +36,12 @@ const REQUEST_HOP_BY_HOP = new Set([
     "upgrade",
     "expect",
     "content-length",
+]);
+/** WebSocket handshake fields the agent answers itself, never passed on. */
+const HANDSHAKE_FIELDS = new Set([
+    "sec-websocket-key",
+    "sec-websocket-version",
+    "sec-websocket-extensions",
 ]);
 /**
  * Reads a body until it ends or passes `limit` bytes.
@@ -192,12 +203,6 @@ function continuable(method, response) {
  * @returns The answer to write.
  */
 export async function serveRequest(library, domain, head, body, clientAddress) {
-    if (head.upgrade) {
-        return {
-            bytes: errorResponse(501, "WebSocket connections are not supported through ngrok yet."),
-            more: null,
-        };
-    }
     const fields = requestFields(head);
     let response;
     try {
@@ -206,6 +211,19 @@ export async function serveRequest(library, domain, head, body, clientAddress) {
     catch {
         return { bytes: errorResponse(502, "The library could not serve the request."), more: null };
     }
+    return shapeResponse(head, fields, clientAddress, response);
+}
+/**
+ * Shapes the library's response for the stream: buffered whole, or its
+ * first piece and how to fetch the rest.
+ *
+ * @param head - The request head.
+ * @param fields - The request fields the library saw.
+ * @param clientAddress - The client's IP.
+ * @param response - The library's response.
+ * @returns The answer to write.
+ */
+async function shapeResponse(head, fields, clientAddress, response) {
     const status = response.status >= 200 && response.status <= 599 ? response.status : 502;
     const out = responseFields(response.headers);
     if (head.method === "HEAD" || NULL_BODY.has(status) || !response.body) {
@@ -247,6 +265,70 @@ export async function serveRequest(library, domain, head, body, clientAddress) {
                 total: span.total,
                 validator: span.validator,
             },
+    };
+}
+/**
+ * An answer that closes the stream, as an {@link UpgradeAnswer}.
+ *
+ * @param status - HTTP status.
+ * @param message - What happened.
+ * @param extra - More response fields.
+ * @returns The answer.
+ */
+function refuse(status, message, extra = []) {
+    return { kind: "answer", answer: { bytes: errorResponse(status, message, extra), more: null } };
+}
+/**
+ * Serves one upgrade: checks the client's WebSocket handshake, opens a
+ * socket to the library and builds the `101`, or passes on the library's
+ * refusal.
+ *
+ * @param library - The library.
+ * @param domain - The public domain the request arrived on.
+ * @param head - The parsed request head (`upgrade` set).
+ * @param clientAddress - The client's IP.
+ * @param stream - The stream that carries the client's side.
+ * @returns What to write.
+ */
+export async function serveUpgrade(library, domain, head, clientAddress, stream) {
+    const field = (name) => head.headers.filter(([n]) => n === name).map(([, value]) => value);
+    const protocols = field("upgrade").flatMap((value) => value.split(",").map((part) => part.trim().toLowerCase()));
+    if (!protocols.includes("websocket")) {
+        return refuse(501, "Only WebSocket upgrades are supported through ngrok.");
+    }
+    if (head.method !== "GET" || head.body.kind !== "none") {
+        return refuse(400, "A WebSocket upgrade is a GET without a body.");
+    }
+    const versions = field("sec-websocket-version");
+    if (versions.length !== 1 || versions[0] !== "13") {
+        return refuse(426, "Only WebSocket version 13 is supported.", [
+            ["sec-websocket-version", "13"],
+        ]);
+    }
+    const keys = field("sec-websocket-key");
+    if (keys.length !== 1 || !validKey(keys[0])) {
+        return refuse(400, "Malformed Sec-WebSocket-Key.");
+    }
+    // Worked out first, so nothing waits between the library's accept and the 101.
+    const accept = await acceptKey(keys[0]);
+    const fields = requestFields(head).filter(([name]) => !HANDSHAKE_FIELDS.has(name));
+    let result;
+    try {
+        result = await library.connect(libraryRequest(domain, "GET", head.target, fields, null), clientAddress, stream);
+    }
+    catch {
+        return refuse(502, "The library could not open the connection.");
+    }
+    if ("response" in result) {
+        return {
+            kind: "answer",
+            answer: await shapeResponse(head, fields, clientAddress, result.response),
+        };
+    }
+    return {
+        kind: "socket",
+        id: result.socket.id,
+        head: encodeSwitchingHead(accept, result.socket.protocol),
     };
 }
 /**

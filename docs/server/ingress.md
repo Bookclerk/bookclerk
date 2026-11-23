@@ -150,7 +150,9 @@ agent protocol itself over one TLS connection the host holds.
 The library answers at `https://<domain>`. Requests are served one at a
 time. A request body may be up to 32 MiB. A response over 4 MiB is sent
 in pieces, so it must allow byte ranges and give its length, as audio
-and downloads do. Live connections (WebSockets) are not carried yet. The
+and downloads do. Live connections (a branch's socket, a clerk's live
+link) pass through too: each one holds a WebSocket to the library while
+it lasts, up to 256 at once, and a message may be up to 256 KiB. The
 plugin's
 [README](../../crates/bookclerk-plugins/optional/ingress-ngrok/README.md)
 lists its limits.
@@ -193,8 +195,6 @@ Invite links name the public origin, from the daemon and from
 - The Cloudflare relay and ngrok are the first-party ingress plugins.
   Cloudflare Tunnel and dynamic DNS come next, and the relay can't use a
   custom domain yet.
-- The ngrok plugin doesn't carry live connections yet, so a branch's
-  socket and a clerk's live link need the Cloudflare relay for now.
 - There is no web app screen yet; use the CLI or the web API.
 
 ## Next steps
