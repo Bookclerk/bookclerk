@@ -47,18 +47,22 @@ pub fn check(data: &[u8]) -> bool {
     };
     let shown = String::from_utf8_lossy(body);
     if selector % 2 == 0 {
+        // The messages name the input and the verdict, never the parsed
+        // value, so a failure prints only what the fuzzer fed in.
         let got = parse_account_mail_settings(body);
         match expected_settings(body) {
             None => {
                 assert!(
                     matches!(got, Err(LibraryError::Invalid(_))),
-                    "{shown:?}: {got:?}"
+                    "{shown:?}: the parser took a body the oracle refuses"
                 );
                 false
             }
             Some(want) => {
-                let id = got.unwrap_or_else(|err| panic!("{shown:?} refused: {err:?}"));
-                assert_eq!(id, want, "{shown:?}");
+                assert!(
+                    got.is_ok_and(|id| id == want),
+                    "{shown:?}: the parser and the oracle disagree"
+                );
                 true
             }
         }
@@ -68,13 +72,15 @@ pub fn check(data: &[u8]) -> bool {
             None => {
                 assert!(
                     matches!(got, Err(LibraryError::Invalid(_))),
-                    "{shown:?}: {got:?}"
+                    "{shown:?}: the parser took a body the oracle refuses"
                 );
                 false
             }
             Some(want) => {
-                let token = got.unwrap_or_else(|err| panic!("{shown:?} refused: {err:?}"));
-                assert_eq!(token.expose(), want, "{shown:?}");
+                assert!(
+                    got.is_ok_and(|token| token.expose() == want),
+                    "{shown:?}: the parser and the oracle disagree"
+                );
                 true
             }
         }
