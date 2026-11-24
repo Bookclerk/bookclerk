@@ -12,8 +12,8 @@
  *   what is an address, the WHATWG URL serializer for the canonical IPv6
  *   form, and Node's `net.BlockList` over the special-purpose ranges for
  *   what is public;
- * - API answers: the envelope, zone and record rules restated over
- *   `JSON.parse`'s value;
+ * - API answers: the envelope, zone, record, account, permission group and
+ *   new token rules restated over `JSON.parse`'s value;
  * - host names: RFC 1035's label rules restated character by character.
  *
  * `FUZZ_SEED` and `FUZZ_ITERATIONS` pick another run; a failure prints the
@@ -34,6 +34,12 @@ import {
   type Family,
 } from "../src/address.ts";
 import { DnsError, parseEnvelope, parseRecords, parseZone } from "../src/dns.ts";
+import {
+  SetupError,
+  parseAccounts,
+  parseMintedToken,
+  parsePermissionGroup,
+} from "../src/tokens.ts";
 
 /**
  * A whole-number setting from the environment.
@@ -269,7 +275,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-test("API answers follow the envelope, zone and record rules", () => {
+test("API answers follow the envelope, zone, record and token rules", () => {
   fuzz(
     "api",
     [
@@ -287,6 +293,9 @@ test("API answers follow the envelope, zone and record rules", () => {
       '"A"',
       '"CNAME"',
       '"active"',
+      '"DNS Write"',
+      '"value"',
+      '"account"',
       "\\u0000",
     ],
     (input) => {
@@ -323,7 +332,11 @@ test("API answers follow the envelope, zone and record rules", () => {
         const zone = result.find(
           (z: unknown) => isObject(z) && hexId(z.id) && z.name === name && z.status === "active",
         ) as Record<string, unknown> | undefined;
-        assert.equal(parseZone(result, name), zone === undefined ? null : zone.id);
+        const owner = zone !== undefined && isObject(zone.account) ? zone.account.id : undefined;
+        assert.deepEqual(
+          parseZone(result, name),
+          zone === undefined ? null : { id: zone.id, account: hexId(owner) ? owner : null },
+        );
         const records = result
           .filter(
             (r: unknown): r is Record<string, unknown> =>
@@ -342,6 +355,37 @@ test("API answers follow the envelope, zone and record rules", () => {
             comment: typeof r.comment === "string" ? r.comment : "",
           }));
         assert.deepEqual(parseRecords(result, name), records);
+      }
+      // Account and token answers.
+      if (Array.isArray(result)) {
+        assert.deepEqual(
+          parseAccounts(result),
+          result
+            .filter((a: unknown) => isObject(a) && hexId(a.id))
+            .map((a) => (a as { id: string }).id),
+        );
+        for (const group of ["DNS Write", "Zone Read"]) {
+          const found = result.find(
+            (g: unknown) => isObject(g) && g.name === group && hexId(g.id),
+          ) as Record<string, unknown> | undefined;
+          assert.equal(parsePermissionGroup(result, group), found === undefined ? null : found.id);
+        }
+      } else {
+        assert.throws(() => parseAccounts(result), SetupError);
+        assert.throws(() => parsePermissionGroup(result, "DNS Write"), SetupError);
+      }
+      const token = isObject(result) ? result : null;
+      const usable =
+        token !== null &&
+        hexId(token.id) &&
+        typeof token.value === "string" &&
+        token.value.length >= 1 &&
+        token.value.length <= 1024 &&
+        [...token.value].every((c) => c >= "!" && c <= "~");
+      if (usable) {
+        assert.deepEqual(parseMintedToken(result), { id: token.id, value: token.value });
+      } else {
+        assert.throws(() => parseMintedToken(result), SetupError);
       }
     },
   );

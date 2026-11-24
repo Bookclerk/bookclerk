@@ -124,13 +124,15 @@ paths = [
     "fuzz/oracles/origin_request.rs",
 ]
 
-# The SMTP session oracle is shared by the fuzz target and the email
-# notifier's replay test through `#[path]`.
+# The SMTP session and checker answer oracles are shared by their fuzz
+# targets and the email notifier's replay tests through `#[path]`.
 [[test_input]]
 package = "bookclerk-plugin-notifier-email"
 paths = [
     "fuzz/corpus/smtp_session/**",
     "fuzz/oracles/smtp_session.rs",
+    "fuzz/corpus/checker_answers/**",
+    "fuzz/oracles/checker_answers.rs",
 ]
 
 # The guest SQL authorizer oracle is shared by the fuzz target and the

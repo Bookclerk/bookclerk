@@ -127,6 +127,17 @@ bytes.
 MAX_NOTIFIER_ADDRESS_BYTES: int = 4096
 """Longest destination address document (`addressJson`), in UTF-8 bytes."""
 
+MAX_DELIVERABILITY_CHECKS: int = 8
+"""Most `NotifyDeliverabilityCheck`s one deliverability report lists."""
+
+MAX_DELIVERABILITY_ADVICE: int = 32
+"""Most `NotifyDeliverabilityAdvice` entries one deliverability report lists."""
+
+DELIVERABILITY_CHECK_DEADLINE_MS: int = 120000
+"""Longest `Notifier.checkDeliverability` may run, in milliseconds: checkers
+that read a delivered message need time for it to arrive.
+"""
+
 MAX_AI_MODEL_NAME_BYTES: int = 192
 """Longest `AiModel.name`, in UTF-8 bytes (`@<plugin id>/<model id>`)."""
 
@@ -504,6 +515,12 @@ NOTIFY_DESTINATION_KINDS: tuple[str, ...] = ("channel", "personal")
 Ordinal-ordered ``NotifyDestinationKind`` wire names (index = Cap'n Proto ordinal).
 """
 
+NOTIFY_CHECK_OUTCOMES: tuple[str, ...] = ("passed", "warning", "failed", "skipped")
+"""How one deliverability check or piece of advice came out.
+
+Ordinal-ordered ``NotifyCheckOutcome`` wire names (index = Cap'n Proto ordinal).
+"""
+
 AI_TASKS: tuple[str, ...] = ("textEmbeddings")
 """What a model does. A model has exactly one task, and the task fixes the
 shape of `AiRunParams.input` and of the reply.
@@ -594,6 +611,9 @@ __all__ = [
     "MAX_NOTIFICATION_FIELDS",
     "MAX_NOTIFICATION_FIELD_BYTES",
     "MAX_NOTIFIER_ADDRESS_BYTES",
+    "MAX_DELIVERABILITY_CHECKS",
+    "MAX_DELIVERABILITY_ADVICE",
+    "DELIVERABILITY_CHECK_DEADLINE_MS",
     "MAX_AI_MODEL_NAME_BYTES",
     "MAX_AI_MODELS",
     "MAX_AI_EMBED_TEXTS",
@@ -676,6 +696,7 @@ __all__ = [
     "NOTIFICATION_AUDIENCES",
     "NOTIFICATION_ALERT_ACTIONS",
     "NOTIFY_DESTINATION_KINDS",
+    "NOTIFY_CHECK_OUTCOMES",
     "AI_TASKS",
     "AI_TEXT_ROLES",
     "PROVISION_GRANT_KINDS",

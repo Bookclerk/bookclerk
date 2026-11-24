@@ -33,9 +33,7 @@ left as it is and `health` says why it is not published.
 
 ## Set it up
 
-1. Have the domain on Cloudflare (its nameservers point there), and create
-   an API token (**My Profile → API Tokens → Create Token**) with the
-   **Zone: Zone: Read** and **Zone: DNS: Edit** permissions on that zone.
+1. Have the domain on Cloudflare (its nameservers point there).
 2. Make the daemon serve its own TLS: in `config.toml`, set
    `[daemon.node_api] mode = "acme"`, `acme_contact`, `tls_listen`, and
    `integrations.public_origin = "https://books.example.com"` (the same
@@ -48,7 +46,19 @@ left as it is and `health` says why it is not published.
    needs permission to bind a low port), and the router's firewall must
    let inbound TCP 443 reach this computer. The certificate is issued over
    TLS-ALPN-01, which needs port 443 on every published address.
-4. Install and approve the plugin, then set its settings:
+4. Install and approve the plugin, then run the guided setup
+   (`src/provision.ts`): create an API token with **Zone: Zone: Read** and
+   **Zone: DNS: Edit** on the zone and **Account: Account API Tokens:
+   Edit**, then in **Settings** open the plugin's instance, set
+   `hostname`, paste the token and select **Run guided setup**. The setup
+   finds the zone and mints a token named
+   `Bookclerk cloudflare_dns <hostname>` that can read that zone and edit
+   its DNS records, and nothing else. The plugin keeps that token and its
+   id (`api_token_id`); the pasted one is not stored. A second run mints a
+   new token and deletes the old one.
+
+   To set it up by hand, create a token with **Zone: Zone: Read** and
+   **Zone: DNS: Edit** on the zone and set the settings:
 
    ```sh
    bookclerk plugins config set cloudflare_dns hostname books.example.com
@@ -67,6 +77,11 @@ left as it is and `health` says why it is not published.
    ```
 
 The plugin's network grant is `api.cloudflare.com` and the two echo names.
+
+Before the instance is deleted, **Remove what setup created** deletes the
+records carrying the plugin's comment (with the stored token) and the
+minted token (which needs a pasted token with **Account API Tokens:
+Edit**).
 
 ## Limits
 

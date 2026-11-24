@@ -112,6 +112,13 @@ const maxNotificationFields :UInt32 = 25;
 const maxNotificationFieldBytes :UInt32 = 1024;
 # Longest destination address document (`addressJson`), in UTF-8 bytes.
 const maxNotifierAddressBytes :UInt32 = 4096;
+# Most `NotifyDeliverabilityCheck`s one deliverability report lists.
+const maxDeliverabilityChecks :UInt32 = 8;
+# Most `NotifyDeliverabilityAdvice` entries one deliverability report lists.
+const maxDeliverabilityAdvice :UInt32 = 32;
+# Longest `Notifier.checkDeliverability` may run, in milliseconds: checkers
+# that read a delivered message need time for it to arrive.
+const deliverabilityCheckDeadlineMs :UInt32 = 120000;
 # Longest `AiModel.name`, in UTF-8 bytes (`@<plugin id>/<model id>`).
 const maxAiModelNameBytes :UInt32 = 192;
 # Most models one `AiModels.models` reply lists.
@@ -1890,6 +1897,14 @@ interface Notifier {
   validateDestination @2 (
       params :NotifyValidateParams  # Address document to check.
   ) -> (result :NotifyValidateReply);
+  # Operator's deliverability check: send a sample the way real messages go,
+  # ask checker services how it scores, and merge their findings into
+  # advice. Only plugins that declare `[notifier].deliverability_check`
+  # implement it (others answer `unsupported`); it may run up to
+  # `deliverabilityCheckDeadlineMs`.
+  checkDeliverability @3 (
+      params :NotifyDeliverabilityParams  # Sample message to check.
+  ) -> (result :NotifyDeliverabilityReply);
 }
 
 # `NOTIFY` binding: raises a notification type the plugin declared in
@@ -4075,6 +4090,10 @@ struct NotificationMessage {
   # True when the body carries a secret (an account-mail link): the plugin
   # and SDKs must never log it.
   sensitive @12 :Bool;
+  # The library's home page (`https://library.example.com/`), built from its
+  # public origin like `link`; absent when no public origin is set. Email
+  # footers link to it.
+  libraryOrigin @13 :Text $optional;
 }
 
 # Where a `Notifier.send` goes.
@@ -4136,6 +4155,69 @@ struct NotifyValidateReply {
     # Accepted, normalised address.
     ok @0 :NotifyValidated;
     # Typed failure; `code` is a `PluginErrorCode` wire string.
+    err @1 :PluginError;
+  }
+}
+
+# Params of `Notifier.checkDeliverability`.
+struct NotifyDeliverabilityParams {
+  # The host's `test` notification, rendered as a real one is, so the
+  # checkers score the plugin's real output.
+  message @0 :NotificationMessage;
+}
+
+# How one deliverability check or piece of advice came out.
+enum NotifyCheckOutcome {
+  # Passed; nothing to change.
+  passed @0;
+  # Works, but could be better.
+  warning @1;
+  # Likely to land in spam or be refused; fix it first.
+  failed @2;
+  # Not run: not set up, not approved, or the service did not answer.
+  skipped @3;
+}
+
+# One checker's result.
+struct NotifyDeliverabilityCheck {
+  # Service name (`Postmark spam check`); at most `maxNotificationTitleBytes`.
+  service @0 :Text;
+  # How it came out.
+  outcome @1 :NotifyCheckOutcome;
+  # One-line result (`SpamAssassin score 0.8; under 5 passes`); at most
+  # `maxNotificationFieldBytes`.
+  summary @2 :Text;
+  # Absolute `https` link to the service's full report, when it has one.
+  reportUrl @3 :Text $optional;
+}
+
+# One thing the operator can do, merged from every check.
+struct NotifyDeliverabilityAdvice {
+  # `failed` is a fix, `warning` an improvement, `passed` what is already
+  # right; never `skipped`.
+  outcome @0 :NotifyCheckOutcome;
+  # Short heading; at most `maxNotificationTitleBytes`.
+  title @1 :Text;
+  # What to change and where; at most `maxNotificationFieldBytes`.
+  detail @2 :Text;
+  # The `service` names of the checks that raised it.
+  sources @3 :List(Text);
+}
+
+# Success payload of `Notifier.checkDeliverability`.
+struct NotifyDeliverabilityReport {
+  # One entry per checker, at most `maxDeliverabilityChecks`.
+  checks @0 :List(NotifyDeliverabilityCheck);
+  # Merged advice, most urgent first; at most `maxDeliverabilityAdvice`.
+  advice @1 :List(NotifyDeliverabilityAdvice);
+}
+
+# Result union of `Notifier.checkDeliverability`.
+struct NotifyDeliverabilityReply {
+  union {
+    # The report.
+    ok @0 :NotifyDeliverabilityReport;
+    # Typed failure; `unsupported` when the plugin has no check.
     err @1 :PluginError;
   }
 }

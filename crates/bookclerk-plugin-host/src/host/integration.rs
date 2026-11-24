@@ -28,6 +28,12 @@ const NOTIFY_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 /// on the answer, so it stays inside the daemon's default 8 s API deadline.
 const NOTIFY_VALIDATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
 
+/// Longest a notifier's `checkDeliverability` may run (the ABI's
+/// `deliverabilityCheckDeadlineMs`): checkers that read a delivered message
+/// wait for it to arrive. Sends on the same session wait behind it.
+const NOTIFY_DELIVERABILITY_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_millis(bookclerk_plugin_abi::DELIVERABILITY_CHECK_DEADLINE_MS as u64);
+
 /// External integration backed by a discovered plugin binary.
 pub struct ExternalIntegration {
     /// Cap'n Proto session (never given `library.db`); opened once with the
@@ -903,6 +909,33 @@ impl Integration for ExternalIntegration {
                     Err(bookclerk_plugin_abi::PluginError::unavailable(format!(
                         "validateDestination took longer than {} s",
                         NOTIFY_VALIDATE_TIMEOUT.as_secs()
+                    )))
+                }))
+            })
+            .await?)
+    }
+
+    async fn notify_check_deliverability(
+        &self,
+        params: bookclerk_plugin_abi::NotifyDeliverabilityParams,
+    ) -> bookclerk_integrations::Result<
+        std::result::Result<
+            bookclerk_plugin_abi::NotifyDeliverabilityReport,
+            bookclerk_plugin_abi::PluginError,
+        >,
+    > {
+        Ok(self
+            .session
+            .notifier(move |notifier| async move {
+                Ok(tokio::time::timeout(
+                    NOTIFY_DELIVERABILITY_TIMEOUT,
+                    notifier.check_deliverability(params),
+                )
+                .await
+                .unwrap_or_else(|_| {
+                    Err(bookclerk_plugin_abi::PluginError::unavailable(format!(
+                        "checkDeliverability took longer than {} s",
+                        NOTIFY_DELIVERABILITY_TIMEOUT.as_secs()
                     )))
                 }))
             })

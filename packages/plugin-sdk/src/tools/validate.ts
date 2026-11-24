@@ -1173,6 +1173,8 @@ export type NotifierToml = {
   account_mail?: boolean;
   /** Body formats rendered: `text` (required), `markdown`, `html`. */
   formats?: string[];
+  /** Whether the plugin answers `checkDeliverability` (a settings-page button). */
+  deliverability_check?: boolean;
   /** Fields of a personal destination's address. */
   address_fields?: NotifierAddressFieldToml[];
 };
@@ -1215,6 +1217,7 @@ const NOTIFIER_KEYS: ReadonlySet<string> = new Set([
   "destinations",
   "account_mail",
   "formats",
+  "deliverability_check",
   "address_fields",
 ]);
 
@@ -1261,6 +1264,9 @@ function validateNotifier(m: Manifest): void {
   }
   if (table.account_mail !== undefined && typeof table.account_mail !== "boolean") {
     throw new Error("plugin.toml: `[notifier].account_mail` must be a boolean");
+  }
+  if (table.deliverability_check !== undefined && typeof table.deliverability_check !== "boolean") {
+    throw new Error("plugin.toml: `[notifier].deliverability_check` must be a boolean");
   }
   const destinations = table.destinations ?? [];
   for (const kind of destinations) {

@@ -2347,6 +2347,8 @@ export interface PluginSettingsGroup {
   storage_sync?: StorageSyncView;
   /** The models a model plugin offers, as this node has them; absent for other plugins. */
   models?: PluginModelsView;
+  /** True when the plugin is a notifier that can check its own deliverability. */
+  deliverability_check?: boolean;
 }
 
 /**
@@ -3012,6 +3014,67 @@ export async function provisionPluginInstance(
         grant: { kind: "api_token", token: body.token },
         inputs: body.inputs,
       }),
+    },
+  );
+  return parseJson(res);
+}
+
+/**
+ * How one deliverability check or piece of advice came out: `failed` needs a
+ * fix, `warning` could be better, `skipped` did not run.
+ */
+export type DeliverabilityOutcome = "passed" | "warning" | "failed" | "skipped";
+
+/** One checker's result in a deliverability report. */
+export interface DeliverabilityCheck {
+  /** The checker's name. */
+  service: string;
+  /** How it came out. */
+  outcome: DeliverabilityOutcome;
+  /** One line on the result. */
+  summary: string;
+  /** The checker's full report, when it has one. */
+  report_url?: string;
+}
+
+/** One thing to do, merged from every check. */
+export interface DeliverabilityAdvice {
+  /** `failed` is a fix, `warning` an improvement, `passed` already right. */
+  outcome: DeliverabilityOutcome;
+  /** Short heading. */
+  title: string;
+  /** What to change and where. */
+  detail: string;
+  /** The checks that raised it. */
+  sources: string[];
+}
+
+/** What a notifier's deliverability check found. */
+export interface DeliverabilityReport {
+  /** One entry per checker. */
+  checks: DeliverabilityCheck[];
+  /** What to do, most urgent first. */
+  advice: DeliverabilityAdvice[];
+}
+
+/**
+ * Asks a notifier to check how well its messages would be delivered: it
+ * sends a sample through each checker it supports and merges the results.
+ * Takes up to two minutes.
+ *
+ * @param instanceId - The notifier's plugin instance id.
+ * @returns The checks and the merged advice.
+ */
+export async function checkNotifierDeliverability(
+  instanceId: string,
+): Promise<DeliverabilityReport> {
+  const res = await fetch(
+    `/api/notifications/notifiers/${encodeURIComponent(instanceId)}/deliverability`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
     },
   );
   return parseJson(res);

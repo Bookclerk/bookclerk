@@ -465,6 +465,30 @@ pub trait Integration: Send + Sync {
         Err(self.notifier_unsupported())
     }
 
+    /// Runs the operator's deliverability check through
+    /// `Notifier.checkDeliverability`.
+    ///
+    /// # Returns
+    ///
+    /// The guest's own answer: the checked report, or the error it raised
+    /// (`unsupported` when it has no check).
+    ///
+    /// # Errors
+    ///
+    /// An [`IntegrationError`] when the guest could not be reached, or by
+    /// default.
+    async fn notify_check_deliverability(
+        &self,
+        _params: bookclerk_plugin_abi::NotifyDeliverabilityParams,
+    ) -> Result<
+        std::result::Result<
+            bookclerk_plugin_abi::NotifyDeliverabilityReport,
+            bookclerk_plugin_abi::PluginError,
+        >,
+    > {
+        Err(self.notifier_unsupported())
+    }
+
     /// The error the default notifier methods return.
     fn notifier_unsupported(&self) -> IntegrationError {
         IntegrationError::message(format!(

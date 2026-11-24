@@ -29,6 +29,7 @@ fn destination(id: &str, root: &Path) -> OwnerDestination {
                 .expect("a local destination"),
         ),
         options: bookclerk_source::DownloadOptions::default(),
+        config_revision: 0,
     }
 }
 

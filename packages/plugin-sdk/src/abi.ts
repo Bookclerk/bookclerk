@@ -137,6 +137,18 @@ export const MAX_NOTIFICATION_FIELD_BYTES = 1024 as const;
 /** Longest destination address document (`addressJson`), in UTF-8 bytes. */
 export const MAX_NOTIFIER_ADDRESS_BYTES = 4096 as const;
 
+/** Most `NotifyDeliverabilityCheck`s one deliverability report lists. */
+export const MAX_DELIVERABILITY_CHECKS = 8 as const;
+
+/** Most `NotifyDeliverabilityAdvice` entries one deliverability report lists. */
+export const MAX_DELIVERABILITY_ADVICE = 32 as const;
+
+/**
+ * Longest `Notifier.checkDeliverability` may run, in milliseconds: checkers
+ * that read a delivered message need time for it to arrive.
+ */
+export const DELIVERABILITY_CHECK_DEADLINE_MS = 120000 as const;
+
 /** Longest `AiModel.name`, in UTF-8 bytes (`@<plugin id>/<model id>`). */
 export const MAX_AI_MODEL_NAME_BYTES = 192 as const;
 
@@ -641,6 +653,16 @@ export const NOTIFY_DESTINATION_KINDS = ["channel", "personal"] as const;
 
 /** Union of `NOTIFY_DESTINATION_KINDS` wire names. */
 export type NotifyDestinationKind = (typeof NOTIFY_DESTINATION_KINDS)[number];
+
+/**
+ * How one deliverability check or piece of advice came out.
+ *
+ * Ordinal-ordered `NotifyCheckOutcome` wire names (index = Cap'n Proto ordinal).
+ */
+export const NOTIFY_CHECK_OUTCOMES = ["passed", "warning", "failed", "skipped"] as const;
+
+/** Union of `NOTIFY_CHECK_OUTCOMES` wire names. */
+export type NotifyCheckOutcome = (typeof NOTIFY_CHECK_OUTCOMES)[number];
 
 /**
  * What a model does. A model has exactly one task, and the task fixes the

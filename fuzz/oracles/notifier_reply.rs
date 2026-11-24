@@ -2,7 +2,7 @@
 //! `bookclerk-plugin-abi` corpus replay test
 //! (`docs/adr/untrusted-input-fuzzing.md`).
 //!
-//! Byte 0 modulo 2 picks what the rest is:
+//! Byte 0 modulo 3 picks what the rest is:
 //!
 //! - **0**: an unpacked `NotifySendReply` message, a notifier's answer to
 //!   `Notifier.send`. [`classify_send_reply`] must deliver exactly the `ok`
@@ -18,20 +18,36 @@
 //!   re-serialise to text that parses back equal. [`check_address_against_fields`]
 //!   must accept it against a fixed `email` / `name` field list exactly when
 //!   it has a non-blank `email` and no other key than those two.
+//! - **2**: an unpacked `NotifyDeliverabilityReply` message, a notifier's
+//!   answer to `checkDeliverability`. [`check_deliverability_report`] must
+//!   refuse exactly a report over 8 checks or 32 pieces of advice, keep the
+//!   order and count of every list, cut each text to the longest prefix
+//!   within its cap with control and layout characters blanked, keep a
+//!   report link exactly when an independent restatement of the `https`
+//!   rules accepts it, show `skipped` advice as `warning`, and keep at most
+//!   8 sources. The reply round-trips through the codec.
 
 use std::time::Duration;
 
 use bookclerk_plugin_abi::notifications::{
-    check_address_against_fields, classify_send_reply, decode_notify_send_reply_bytes,
-    encode_notify_send_reply_bytes, parse_address_document, AddressFieldRule, SendOutcome,
+    check_address_against_fields, check_deliverability_report, classify_send_reply,
+    decode_notify_deliverability_reply_bytes, decode_notify_send_reply_bytes,
+    encode_notify_deliverability_reply_bytes, encode_notify_send_reply_bytes,
+    parse_address_document, AddressFieldRule, SendOutcome,
 };
-use bookclerk_plugin_abi::PluginErrorCode;
+use bookclerk_plugin_abi::{NotifyCheckOutcome, PluginErrorCode};
 
 /// Largest input worth decoding; the RPC caps a reply far below this.
 pub const MAX_INPUT_BYTES: usize = 128 * 1024;
 
 /// Field value cap in bytes (`maxNotificationFieldBytes`).
 const FIELD: usize = 1_024;
+/// Title cap in bytes (`maxNotificationTitleBytes`).
+const TITLE: usize = 256;
+/// Most checks in a deliverability report (`maxDeliverabilityChecks`).
+const CHECKS: usize = 8;
+/// Most pieces of advice in a report (`maxDeliverabilityAdvice`).
+const ADVICE: usize = 32;
 /// Address document cap in bytes (`maxNotifierAddressBytes`).
 const ADDRESS: usize = 4_096;
 /// Delivery-log reason cap in bytes.
@@ -63,9 +79,10 @@ pub fn check(data: &[u8]) {
     let Some((selector, rest)) = data.split_first() else {
         return;
     };
-    match selector % 2 {
+    match selector % 3 {
         0 => check_send_reply(rest),
-        _ => check_address(rest),
+        1 => check_address(rest),
+        _ => check_deliverability_reply(rest),
     }
 }
 
@@ -227,4 +244,83 @@ fn check_address(bytes: &[u8]) {
         fits,
         "address fields"
     );
+}
+
+/// `text` with control and layout characters blanked, cut to the longest
+/// prefix of at most `cap` bytes.
+fn cut(text: &str, cap: usize) -> String {
+    let blanked: String = text
+        .chars()
+        .map(|c| if c.is_control() || layout(c) { ' ' } else { c })
+        .collect();
+    let mut end = blanked.len().min(cap);
+    while !blanked.is_char_boundary(end) {
+        end -= 1;
+    }
+    blanked[..end].to_owned()
+}
+
+/// A report link the operator may follow: `https://`, a host without
+/// credentials, within the field cap, no space, control, layout character
+/// or backslash anywhere.
+fn report_url_ok(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    let host_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..host_end];
+    url.len() <= FIELD
+        && !authority.is_empty()
+        && !authority.contains('@')
+        && url
+            .chars()
+            .all(|c| !(c.is_whitespace() || c.is_control() || layout(c) || c == '\\'))
+}
+
+/// The deliverability-reply invariants.
+fn check_deliverability_reply(bytes: &[u8]) {
+    let Ok(reply) = decode_notify_deliverability_reply_bytes(bytes) else {
+        return;
+    };
+    let encoded = encode_notify_deliverability_reply_bytes(&reply)
+        .unwrap_or_else(|err| panic!("re-encode a decoded report: {err}"));
+    let again = decode_notify_deliverability_reply_bytes(&encoded)
+        .unwrap_or_else(|err| panic!("decode a re-encoded report: {err}"));
+    assert_eq!(again, reply, "deliverability reply does not round-trip");
+    let Ok(report) = reply else {
+        return;
+    };
+    let over = report.checks.len() > CHECKS || report.advice.len() > ADVICE;
+    let checked = check_deliverability_report(report.clone());
+    assert_eq!(checked.is_err(), over, "refused the wrong reports");
+    let Ok(shown) = checked else {
+        return;
+    };
+    assert_eq!(shown.checks.len(), report.checks.len(), "checks dropped");
+    for (out, inp) in shown.checks.iter().zip(&report.checks) {
+        assert_eq!(out.service, cut(&inp.service, TITLE), "service");
+        assert_eq!(out.summary, cut(&inp.summary, FIELD), "summary");
+        assert_eq!(out.outcome, inp.outcome, "check outcome");
+        let kept = inp.report_url.clone().filter(|url| report_url_ok(url));
+        assert_eq!(out.report_url, kept, "report link {:?}", inp.report_url);
+    }
+    assert_eq!(shown.advice.len(), report.advice.len(), "advice dropped");
+    for (out, inp) in shown.advice.iter().zip(&report.advice) {
+        let outcome = if inp.outcome == NotifyCheckOutcome::Skipped {
+            NotifyCheckOutcome::Warning
+        } else {
+            inp.outcome
+        };
+        assert_eq!(out.outcome, outcome, "advice outcome");
+        assert_ne!(out.outcome, NotifyCheckOutcome::Skipped, "skipped advice");
+        assert_eq!(out.title, cut(&inp.title, TITLE), "title");
+        assert_eq!(out.detail, cut(&inp.detail, FIELD), "detail");
+        let sources: Vec<String> = inp
+            .sources
+            .iter()
+            .take(CHECKS)
+            .map(|source| cut(source, TITLE))
+            .collect();
+        assert_eq!(out.sources, sources, "sources");
+    }
 }

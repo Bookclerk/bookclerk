@@ -71,13 +71,13 @@ use bookclerk_node_proto::{
     claimed_problem, decode_nonce, open_account_reconcile, open_instance_secrets, open_secrets,
     open_upload_token, questions_problem, seal_account_offer, seal_secret_update,
     sign_artifact_request, sign_auth, validate_box_public_key, window_page_problem, AccountBundle,
-    AcquireTarget, ArtifactRequest, AuthContext, Body, BranchRequest, CarriedAccount, CatalogRef,
-    CatalogTitle, ClaimFilter, ClaimScope, Frame, HeldFence, KeeperOutcome, LookupAnswer,
-    LookupWork, PlanDestination, RequestOutcome, SealError, SecretEntry, SecretRef, SecretValue,
-    SigningKey, UploadAnswer, UploadCommitRequest, UploadFile, WindowCursor, WindowWork,
-    ACCOUNT_BUNDLE_VERSION, ARTIFACTS_PATH, CATALOG_ITEM, CLOSE_PROTOCOL, CLOSE_REVOKED,
-    HANDSHAKE_TIMEOUT_SECS, IDLE_TIMEOUT_SECS, ITEM_JOB, PING_INTERVAL_SECS, SEND_QUEUE_FRAMES,
-    UPLOADS_PATH, UPLOAD_AUTH_SCHEME, UPLOAD_PART_BYTES,
+    ArtifactRequest, AuthContext, Body, BranchRequest, CarriedAccount, CatalogRef, CatalogTitle,
+    ClaimFilter, ClaimScope, Frame, HeldFence, KeeperOutcome, LookupAnswer, LookupWork,
+    RequestOutcome, SealError, SecretEntry, SecretRef, SecretValue, SigningKey, UploadAnswer,
+    UploadCommitRequest, UploadFile, WindowCursor, WindowWork, ACCOUNT_BUNDLE_VERSION,
+    ARTIFACTS_PATH, CATALOG_ITEM, CLOSE_PROTOCOL, CLOSE_REVOKED, HANDSHAKE_TIMEOUT_SECS,
+    IDLE_TIMEOUT_SECS, ITEM_JOB, PING_INTERVAL_SECS, SEND_QUEUE_FRAMES, UPLOADS_PATH,
+    UPLOAD_AUTH_SCHEME, UPLOAD_PART_BYTES,
 };
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt as _, StreamExt as _};
@@ -732,7 +732,7 @@ impl Shared {
         job_id: &str,
         fence: i64,
         after: Option<&str>,
-    ) -> Result<(Vec<AcquireTarget>, Vec<PlanDestination>), OwnerCallError> {
+    ) -> Result<crate::jobs::AcquirePlan, OwnerCallError> {
         let body = Body::AcquirePlan {
             job_id: job_id.to_string(),
             fence,
@@ -742,7 +742,12 @@ impl Shared {
             Body::AcquireTargets {
                 targets,
                 destinations,
-            } => Ok((targets, destinations)),
+                next,
+            } => Ok(crate::jobs::AcquirePlan {
+                targets,
+                destinations,
+                next,
+            }),
             _ => Err(OwnerCallError::Unavailable),
         }
     }

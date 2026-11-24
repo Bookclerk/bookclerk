@@ -8,6 +8,7 @@
  * name. Uploading again replaces the script and keeps the object's data.
  */
 import { RELAY_MODULES } from "./relay-source.js";
+import { SetupError } from "./tokens.js";
 /** Cloudflare API base URL. */
 export const API_BASE = "https://api.cloudflare.com/client/v4";
 /** Durable Object migration tag the relay is created under. */
@@ -244,4 +245,25 @@ function checkTarget(target) {
 export async function findRelayHost(fetch, target) {
     checkTarget(target);
     return relayHost(target.workerName, await accountSubdomain(fetch, target));
+}
+/**
+ * Finds the Worker named `name` in a Worker list.
+ *
+ * @param result - The list's `result`.
+ * @param name - The Worker's name.
+ * @returns `absent`, `relay` when it carries the relay's migration tag, or
+ *   `other`.
+ * @throws {SetupError} When the result is not a list.
+ */
+export function parseScriptState(result, name) {
+    if (!Array.isArray(result))
+        throw new SetupError("Cloudflare's Worker list is not a list");
+    for (const entry of result) {
+        if (typeof entry !== "object" || entry === null)
+            continue;
+        const script = entry;
+        if (script.id === name)
+            return script.migration_tag === MIGRATION_TAG ? "relay" : "other";
+    }
+    return "absent";
 }

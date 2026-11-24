@@ -3288,6 +3288,17 @@ impl notifier_capnp::Server for NotifierServer {
         let outcome = self.inner.validate_destination(params).await;
         crate::generated::write_notify_validate_reply(results.get().init_result(), &outcome)
     }
+
+    async fn check_deliverability(
+        self: Rc<Self>,
+        params: notifier_capnp::CheckDeliverabilityParams,
+        mut results: notifier_capnp::CheckDeliverabilityResults,
+    ) -> capnp::Result<()> {
+        let params =
+            crate::generated::read_notify_deliverability_params(params.get()?.get_params()?)?;
+        let outcome = self.inner.check_deliverability(params).await;
+        crate::generated::write_notify_deliverability_reply(results.get().init_result(), &outcome)
+    }
 }
 
 /// Host-side server for the [`NotificationRaiser`] handed to a guest on
@@ -5076,7 +5087,8 @@ impl MetadataFiles for MetadataFilesClient {
 /// ([`crate::notifications::check_send_params`]) and each
 /// `validateDestination` answer before the caller sees it
 /// ([`crate::notifications::check_validated`]): a malformed address is an
-/// `internal` error. A `send` reply comes back as the notifier said it;
+/// `internal` error. A deliverability report is bounded and cut
+/// ([`crate::notifications::check_deliverability_report`]) the same way. A `send` reply comes back as the notifier said it;
 /// the caller turns it into an outcome with
 /// [`crate::notifications::classify_send_reply`].
 #[derive(Clone)]
@@ -5137,6 +5149,21 @@ impl Notifier for NotifierClient {
             address_json: address.to_json(),
             label: validated.label,
         })
+    }
+
+    async fn check_deliverability(
+        &self,
+        params: crate::NotifyDeliverabilityParams,
+    ) -> Result<crate::NotifyDeliverabilityReport> {
+        crate::notifications::check_message(&params.message)?;
+        let mut req = self.client.check_deliverability_request();
+        crate::generated::write_notify_deliverability_params(req.get().init_params(), &params)
+            .map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let report = crate::generated::read_notify_deliverability_reply(reply_result!(reply))
+            .map_err(from_capnp)??;
+        crate::notifications::check_deliverability_report(report)
+            .map_err(|err| PluginError::internal(format!("checkDeliverability: {err}")))
     }
 }
 

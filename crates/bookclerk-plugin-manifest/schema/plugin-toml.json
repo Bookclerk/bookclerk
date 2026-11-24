@@ -91,6 +91,10 @@
           "type": "boolean",
           "description": "Whether the plugin can carry account mail (invites, password resets, recovery). Needs a required, non-secret email address field. Defaults to false."
         },
+        "deliverability_check": {
+          "type": "boolean",
+          "description": "Whether the plugin implements checkDeliverability, so the instance's settings offer the operator a deliverability check. Defaults to false."
+        },
         "formats": {
           "type": "array",
           "minItems": 1,

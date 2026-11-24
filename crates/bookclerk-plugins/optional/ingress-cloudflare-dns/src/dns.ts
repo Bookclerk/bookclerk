@@ -8,6 +8,8 @@
  * deletes only records that carry it.
  */
 
+import type { Answer } from "./tokens.ts";
+
 /** Cloudflare API base URL. */
 export const API_BASE = "https://api.cloudflare.com/client/v4";
 
@@ -70,6 +72,18 @@ export type Envelope =
       message: string;
     };
 
+/** A zone the host name is in. */
+export interface Zone {
+  /** The zone's id: 32 lowercase hex digits. */
+  id: string;
+  /** The id of the account that owns it, or `null` when the answer gave none. */
+  account: string | null;
+}
+
+/** What a 401 or 403 means while the plugin keeps the records. */
+export const RECORDS_HINT =
+  "The API token needs the Zone: Zone: Read and Zone: DNS: Edit permissions on the host name's zone.";
+
 /** Cloudflare's ids: 32 lowercase hex digits. */
 const ID = /^[0-9a-f]{32}$/;
 
@@ -108,22 +122,29 @@ export function parseEnvelope(status: number, text: string): Envelope {
  *
  * @param result - The list's `result`.
  * @param name - The zone name asked for.
- * @returns The zone's id, or `null` when the list holds no active zone of
- *   that name.
+ * @returns The zone, or `null` when the list holds no active zone of that
+ *   name with a valid id.
  * @throws {DnsError} When the result is not a list.
  */
-export function parseZone(result: unknown, name: string): string | null {
+export function parseZone(result: unknown, name: string): Zone | null {
   if (!Array.isArray(result)) throw new DnsError("Cloudflare's zone list is not a list");
   for (const entry of result as unknown[]) {
     if (typeof entry !== "object" || entry === null) continue;
-    const zone = entry as { id?: unknown; name?: unknown; status?: unknown };
+    const zone = entry as { id?: unknown; name?: unknown; status?: unknown; account?: unknown };
     if (
       typeof zone.id === "string" &&
       ID.test(zone.id) &&
       zone.name === name &&
       zone.status === "active"
     ) {
-      return zone.id;
+      const owner: unknown =
+        typeof zone.account === "object" && zone.account !== null
+          ? (zone.account as { id?: unknown }).id
+          : undefined;
+      return {
+        id: zone.id,
+        account: typeof owner === "string" && ID.test(owner) ? owner : null,
+      };
     }
   }
   return null;
@@ -210,27 +231,32 @@ export class CloudflareDns {
   readonly #fetch: Fetch;
   /** The API token, sent only to {@link API_BASE}. */
   readonly #token: string;
+  /** What a 401 or 403 tells the operator to change. */
+  readonly #hint: string;
 
   /**
    * Creates the client.
    *
    * @param fetch - The request function.
    * @param token - The API token.
+   * @param hint - What a 401 or 403 tells the operator to change.
    */
-  constructor(fetch: Fetch, token: string) {
+  constructor(fetch: Fetch, token: string, hint: string = RECORDS_HINT) {
     this.#fetch = fetch;
     this.#token = token;
+    this.#hint = hint;
   }
 
   /**
-   * Calls the API.
+   * Calls the API and reads its answer, whatever the status.
    *
    * @param path - Path and query under {@link API_BASE}.
    * @param init - Method and JSON body.
-   * @returns The `result` member.
-   * @throws {DnsError} When the call fails.
+   * @returns The answer.
+   * @throws {DnsError} When the API cannot be reached or the body is not an
+   *   API envelope.
    */
-  async #call(path: string, init: { method?: string; body?: unknown } = {}): Promise<unknown> {
+  async answer(path: string, init: { method?: string; body?: unknown } = {}): Promise<Answer> {
     const headers = new Headers({ authorization: `Bearer ${this.#token}` });
     const request: RequestInit = { method: init.method ?? "GET", headers, redirect: "manual" };
     if (init.body !== undefined) {
@@ -245,16 +271,25 @@ export class CloudflareDns {
     }
     const text = await readCapped(response, MAX_ANSWER_BYTES);
     if (text === null) throw new DnsError(`Cloudflare answered ${response.status} at length`);
-    const envelope = parseEnvelope(response.status, text);
-    if (envelope.ok) return envelope.result;
-    const said = envelope.message
-      ? `Cloudflare answered ${response.status}: ${envelope.message}`
-      : `Cloudflare answered ${response.status}`;
-    if (response.status === 401 || response.status === 403) {
-      throw new DnsError(
-        `${said}. The API token needs the Zone: Zone: Read and Zone: DNS: Edit permissions on the host name's zone.`,
-      );
-    }
+    return { status: response.status, ...parseEnvelope(response.status, text) };
+  }
+
+  /**
+   * Calls the API.
+   *
+   * @param path - Path and query under {@link API_BASE}.
+   * @param init - Method and JSON body.
+   * @returns The `result` member.
+   * @throws {DnsError} When the call fails.
+   */
+  async #call(path: string, init: { method?: string; body?: unknown } = {}): Promise<unknown> {
+    const answer = await this.answer(path, init);
+    if (answer.ok) return answer.result;
+    const said = answer.message
+      ? `Cloudflare answered ${answer.status}: ${answer.message}`
+      : `Cloudflare answered ${answer.status}`;
+    if (answer.status === 401 || answer.status === 403)
+      throw new DnsError(`${said}. ${this.#hint}`);
     throw new DnsError(said);
   }
 
@@ -262,14 +297,14 @@ export class CloudflareDns {
    * Finds the zone a host name is in.
    *
    * @param candidates - Zone names to try, longest first.
-   * @returns The zone's id.
+   * @returns The zone.
    * @throws {DnsError} When no candidate is an active zone the token reaches.
    */
-  async zone(candidates: readonly string[]): Promise<string> {
+  async zone(candidates: readonly string[]): Promise<Zone> {
     for (const name of candidates) {
       const result = await this.#call(`/zones?name=${encodeURIComponent(name)}&status=active`);
-      const id = parseZone(result, name);
-      if (id !== null) return id;
+      const zone = parseZone(result, name);
+      if (zone !== null) return zone;
     }
     throw new DnsError(
       `no active Cloudflare zone holds ${candidates[0] ?? "the host name"}: add its domain to Cloudflare, or give the API token access to its zone`,

@@ -687,6 +687,12 @@ struct PluginSettingsGroup {
     /// here.
     #[serde(skip_serializing_if = "Option::is_none")]
     models: Option<PluginModelsView>,
+    /// True when the plugin is a notifier with a deliverability check
+    /// (`[notifier].deliverability_check`), so the instance's settings offer
+    /// `POST /api/notifications/notifiers/{id}/deliverability`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[schema(example = true)]
+    deliverability_check: bool,
     /// Nodes whose deployment of the instance is `present`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[schema(example = json!(["6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"]))]
@@ -1539,6 +1545,9 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
         ))
         .routes(routes!(crate::notifications_api::post_channel_resume))
         .routes(routes!(crate::notifications_api::post_channel_test))
+        .routes(routes!(
+            crate::notifications_api::post_notifier_deliverability
+        ))
         .routes(routes!(crate::notifications_api::get_routes))
         .routes(routes!(crate::notifications_api::put_routes))
         .routes(routes!(crate::notifications_api::get_offers))
@@ -2296,6 +2305,11 @@ fn api_timeout_for_path(path: &str) -> Duration {
         // Cutting a sample the first time waits on a download and the
         // media worker (`crate::samples::ROUTE_BUDGET`).
         sample if crate::samples::is_sample_path(sample) => crate::samples::ROUTE_BUDGET,
+        // A notifier's deliverability check waits for checkers that read a
+        // delivered message (`deliverabilityCheckDeadlineMs`).
+        check if crate::notifications_api::is_deliverability_path(check) => {
+            crate::notifications_api::DELIVERABILITY_ROUTE_BUDGET
+        }
         _ => Duration::from_secs(8),
     }
 }
@@ -3425,6 +3439,7 @@ fn build_database_settings_group(
         placement: None,
         storage_sync: None,
         models: None,
+        deliverability_check: false,
         present_on: Vec::new(),
     }
 }
@@ -3635,6 +3650,13 @@ fn instance_settings_group(
         placement: view.placement.clone(),
         storage_sync: view.storage_sync.clone(),
         models: None,
+        deliverability_check: plugin.is_some_and(|plugin| {
+            plugin
+                .manifest
+                .notifier
+                .as_ref()
+                .is_some_and(|notifier| notifier.deliverability_check)
+        }),
         present_on: view
             .deployments
             .iter()
