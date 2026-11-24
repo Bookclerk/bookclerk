@@ -1294,7 +1294,7 @@ bookclerk config master-key status [OPTIONS]
 
 Wrap a BCK1 key with a passphrase (no-op unlock if already BCK2), in `master.key` or in its OS keychain item.
 
-Password from `BOOKCLERK_AUTH_PASSWORD` or `[auth].password` — never argv.
+Password from `BOOKCLERK_AUTH_PASSWORD`, the file `BOOKCLERK_AUTH_PASSWORD_FILE` names, the `bookclerk-auth-password` systemd credential, or `[auth].password` — never argv.
 
 ```text
 bookclerk config master-key wrap [OPTIONS]

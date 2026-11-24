@@ -10,7 +10,7 @@
 //!
 //! | Source | Behavior |
 //! | --- | --- |
-//! | `BOOKCLERK_AUTH_PASSWORD` or `[auth].password` | Wraps/unwraps the DEK in `{files_dir}/master.key` |
+//! | `BOOKCLERK_AUTH_PASSWORD`, `BOOKCLERK_AUTH_PASSWORD_FILE`, the `bookclerk-auth-password` systemd credential, or `[auth].password` | Wraps/unwraps the DEK in `{files_dir}/master.key` |
 //! | Auto-mint | If neither password nor file exists, generates a DEK and writes `master.key` (mode `0600`) |
 //! | OS keychain | `master.key` is a `BCK3` pointer naming a keychain item that holds the `BCK1`/`BCK2` envelope |
 //!
@@ -695,7 +695,8 @@ pub fn prepare_master_key_dir(files_dir: &Path) -> Result<()> {
 pub fn warn_unwrapped_master_key(path: &Path) {
     tracing::warn!(
         path = %path.display(),
-        "master.key is BCK1 (unwrapped). Set {AUTH_PASSWORD_ENV} or \
+        "master.key is BCK1 (unwrapped). Set {AUTH_PASSWORD_ENV}, \
+                     BOOKCLERK_AUTH_PASSWORD_FILE or \
          [auth].password, then run `bookclerk config master-key wrap` \
          (or reload bookclerkd) to wrap the DEK at rest."
     );
@@ -1055,7 +1056,8 @@ fn parse_envelope(
             if password.is_none() && matches!(location, Location::File) {
                 tracing::warn!(
                     path = %path.display(),
-                    "master.key is BCK1 (unwrapped). Set {AUTH_PASSWORD_ENV} or \
+                    "master.key is BCK1 (unwrapped). Set {AUTH_PASSWORD_ENV}, \
+                     BOOKCLERK_AUTH_PASSWORD_FILE or \
                      [auth].password, then run `bookclerk config master-key wrap` \
                      (or reload bookclerkd) to wrap the DEK at rest, or move it \
                      to the OS keychain with `bookclerk config master-key move keychain`."
@@ -1066,8 +1068,8 @@ fn parse_envelope(
         b"BCK2" => {
             let pw = password.ok_or_else(|| {
                 LibraryError::Other(anyhow::anyhow!(
-                    "{source} is password-wrapped — set {AUTH_PASSWORD_ENV} \
-                     or [auth].password"
+                    "{source} is password-wrapped — set {AUTH_PASSWORD_ENV}, \
+                     BOOKCLERK_AUTH_PASSWORD_FILE or [auth].password"
                 ))
             })?;
             decode_wrapped_master_key(&raw[4..], pw, path)

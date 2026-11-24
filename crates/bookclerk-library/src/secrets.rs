@@ -515,7 +515,8 @@ fn read_auth_password_for_legacy(name: &str) -> Result<String> {
         })?
         .ok_or_else(|| {
             LibraryError::Other(anyhow::anyhow!(
-                "legacy json-encrypted record {name} requires {env} — set it to migrate"
+                "legacy json-encrypted record {name} requires {env} or \
+                 BOOKCLERK_AUTH_PASSWORD_FILE — set one to migrate"
             ))
         })
 }

@@ -127,8 +127,8 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
         "auth.password_file" => {
             tracing::warn!(
                 key,
-                "auth.password_file is no longer supported; use BOOKCLERK_AUTH_PASSWORD_FILE, \
-                 BOOKCLERK_AUTH_PASSWORD or [auth].password (then `bookclerk config master-key wrap` / daemon reload)"
+                "auth.password_file is no longer supported; use one of BOOKCLERK_AUTH_PASSWORD_FILE \
+                 or BOOKCLERK_AUTH_PASSWORD (not both), or [auth].password (then `bookclerk config master-key wrap` / daemon reload)"
             );
         }
         "output.naming_profile" => {

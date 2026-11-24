@@ -57,7 +57,8 @@ mod uploads;
 
 pub use atomic_replace::replace_file;
 pub use auth_password::{
-    auth_password_from_env, AUTH_PASSWORD_CREDENTIAL, AUTH_PASSWORD_ENV, AUTH_PASSWORD_FILE_ENV,
+    auth_password_from_env, EnvAuthPassword, AUTH_PASSWORD_CREDENTIAL, AUTH_PASSWORD_ENV,
+    AUTH_PASSWORD_FILE_ENV,
 };
 pub use cache_settings::{
     parse_cache_setting, CacheSettingError, CacheSettingKey, DEFAULT_CACHE_BUDGET_BYTES,

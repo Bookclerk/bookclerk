@@ -1712,6 +1712,7 @@ dependencies = [
  "tracing-subscriber",
  "utoipa",
  "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]

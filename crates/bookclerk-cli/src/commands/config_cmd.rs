@@ -122,7 +122,9 @@ pub enum MasterKeyCommand {
     /// Wrap a BCK1 key with a passphrase (no-op unlock if already BCK2), in
     /// `master.key` or in its OS keychain item.
     ///
-    /// Password from `BOOKCLERK_AUTH_PASSWORD` or `[auth].password` — never argv.
+    /// Password from `BOOKCLERK_AUTH_PASSWORD`, the file
+    /// `BOOKCLERK_AUTH_PASSWORD_FILE` names, the `bookclerk-auth-password`
+    /// systemd credential, or `[auth].password` — never argv.
     Wrap,
     /// Move the key to the OS keychain, into a systemd-creds credential, or
     /// back into `master.key`, and record the choice as `[auth].key_store`
@@ -452,7 +454,8 @@ fn run_master_key(
         MasterKeyCommand::Wrap => {
             let password = config.auth_password().ok_or_else(|| {
                 anyhow::anyhow!(
-                    "set {MASTER_KEY_AUTH_PASSWORD_ENV} or [auth].password before wrapping \
+                    "set {MASTER_KEY_AUTH_PASSWORD_ENV}, BOOKCLERK_AUTH_PASSWORD_FILE or \
+                     [auth].password before wrapping \
                      (secrets are not accepted on argv)"
                 )
             })?;

@@ -81,6 +81,12 @@ refuse() {
 }
 
 boot first
+# The first boot must have wrapped the new key with the file's password.
+header=$(docker run --rm -v "$volume:/config" --entrypoint head "$image" -c 4 /config/master.key)
+if [ "$header" != BCK2 ]; then
+  echo "::error::first boot: master.key is ${header:-missing}, not password-wrapped (BCK2)" >&2
+  exit 1
+fi
 expect first 'installed bundled platform plugin.*sqlite|sqlite.*installed bundled platform plugin'
 expect first 'installed bundled platform plugin.*local|local.*installed bundled platform plugin'
 expect first 'installed bundled platform plugin.*embedder|embedder.*installed bundled platform plugin'

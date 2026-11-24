@@ -82,12 +82,17 @@ pub struct Config {
     /// Library id that produced [`Self::output_revision`]. Not serialized.
     #[serde(skip)]
     pub output_authority: Option<String>,
+    /// The environment's auth password, resolved once by [`Self::load`] so
+    /// a secret file changing mid-run can't change it. Not serialized.
+    #[serde(skip)]
+    pub env_auth_password: crate::EnvAuthPassword,
 }
 
 /// Auth encryption settings (`[auth]` section).
 ///
 /// Bookclerk always encrypts credentials via the process DEK (`master.key`).
-/// Set `BOOKCLERK_AUTH_PASSWORD` (preferred) or `[auth].password` to wrap the
+/// Set `BOOKCLERK_AUTH_PASSWORD` or `BOOKCLERK_AUTH_PASSWORD_FILE` (preferred)
+/// or `[auth].password` to wrap the
 /// DEK with a passphrase at rest (`BCK1` → `BCK2`). A later password can be
 /// applied via CLI (`config master-key wrap` / `config set auth.password`) or
 /// daemon config reload — no GUI in this surface.
@@ -793,8 +798,11 @@ impl Config {
         cfg.paths = Some(paths);
         cfg.resolve_relative_paths();
         // A named password source that gives no password stops the load
-        // here, before anything can mint an unwrapped key.
-        crate::auth_password_from_env()?;
+        // here, before anything can mint an unwrapped key. The value is kept
+        // so later key operations use the password this load saw.
+        cfg.env_auth_password = crate::EnvAuthPassword::Resolved(
+            crate::auth_password_from_env()?.map(zeroize::Zeroizing::new),
+        );
         cfg.register_known_secrets();
         // Callers should invoke [`Self::warn_unsupported_options`] *after*
         // `init_tracing_with` so startup guidance is not dropped.
@@ -1136,18 +1144,24 @@ impl Config {
     /// Prefers the environment (`BOOKCLERK_AUTH_PASSWORD`, the file named by
     /// `BOOKCLERK_AUTH_PASSWORD_FILE`, or the `bookclerk-auth-password`
     /// systemd credential; see [`crate::auth_password_from_env`]) over
-    /// `[auth].password`. [`Self::load`] already refused a named source that
-    /// gives no password; if one breaks after that, this logs the error and
-    /// returns `None` rather than falling back to `[auth].password`.
+    /// `[auth].password`. A loaded config uses the value [`Self::load`]
+    /// resolved (which already refused a named source that gives no
+    /// password), never re-reading the file. A config built without `load`
+    /// reads the environment now; if a named source fails there, this logs
+    /// the error and returns `None` rather than using `[auth].password`.
     #[must_use]
     pub fn auth_password(&self) -> Option<String> {
-        match crate::auth_password_from_env() {
-            Ok(Some(pw)) => return Some(pw),
-            Ok(None) => {}
-            Err(err) => {
-                tracing::error!("{err}");
-                return None;
-            }
+        match &self.env_auth_password {
+            crate::EnvAuthPassword::Resolved(Some(pw)) => return Some(pw.to_string()),
+            crate::EnvAuthPassword::Resolved(None) => {}
+            crate::EnvAuthPassword::Unresolved => match crate::auth_password_from_env() {
+                Ok(Some(pw)) => return Some(pw),
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::error!("{err}");
+                    return None;
+                }
+            },
         }
         self.auth
             .password

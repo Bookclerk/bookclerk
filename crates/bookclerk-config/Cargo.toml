@@ -23,6 +23,7 @@ tracing-log = "0.2"
 tracing-subscriber.workspace = true
 bookclerk-tls.workspace = true
 utoipa.workspace = true
+zeroize.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 oslog = "0.2"

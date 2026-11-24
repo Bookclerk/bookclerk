@@ -22,12 +22,20 @@
 //! from every source, as it always has been for the variable, so a trailing
 //! newline in a secret file doesn't change the password.
 //!
+//! [`crate::Config::load`] resolves the environment's password once and keeps
+//! it ([`EnvAuthPassword`]), so a secret file that changes while the process
+//! runs (a rotated Kubernetes secret) can't hand later key operations a
+//! different password than the one that opened `master.key`. A new value is
+//! picked up on the next load: a restart or a daemon config reload.
+//!
 //! The file is the operator's own, as trusted as `config.toml`, so it is not
 //! an untrusted-input boundary; it is still read with a size cap.
 
 use std::ffi::OsString;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
+
+use zeroize::Zeroizing;
 
 use crate::error::{ConfigError, Result};
 
@@ -49,6 +57,31 @@ const CREDENTIALS_DIRECTORY_ENV: &str = "CREDENTIALS_DIRECTORY";
 /// this only stops a mistaken path (a disk image, `/dev/zero`) from being
 /// read whole into memory.
 const MAX_PASSWORD_FILE_BYTES: u64 = 4096;
+
+/// The environment's auth password as [`crate::Config::load`] resolved it.
+///
+/// `Unresolved` for a [`crate::Config`] built without `load` (tests, embedded
+/// defaults), which then reads the environment on each use instead.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub enum EnvAuthPassword {
+    /// Not resolved yet: read the environment when asked.
+    #[default]
+    Unresolved,
+    /// Resolved at load: the password, or `None` when no environment source
+    /// was set.
+    Resolved(Option<Zeroizing<String>>),
+}
+
+impl std::fmt::Debug for EnvAuthPassword {
+    /// Never prints the password.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unresolved => f.write_str("Unresolved"),
+            Self::Resolved(Some(_)) => f.write_str("Resolved(<redacted>)"),
+            Self::Resolved(None) => f.write_str("Resolved(None)"),
+        }
+    }
+}
 
 /// Resolve the auth password from the process environment: the variable,
 /// the file it names, or the systemd credential, in that order.
@@ -85,9 +118,15 @@ pub fn auth_password_from_env() -> Result<Option<String>> {
 ///
 /// As [`auth_password_from_env`].
 fn resolve_auth_password(lookup: impl Fn(&str) -> Option<OsString>) -> Result<Option<String>> {
-    let direct = lookup(AUTH_PASSWORD_ENV)
-        .map(|v| v.to_string_lossy().trim().to_string())
-        .filter(|v| !v.is_empty());
+    let direct = match lookup(AUTH_PASSWORD_ENV) {
+        None => None,
+        Some(v) => {
+            let v = Zeroizing::new(v.into_string().map_err(|_| {
+                ConfigError::Invalid(format!("{AUTH_PASSWORD_ENV} is not valid UTF-8"))
+            })?);
+            Some(v.trim().to_string()).filter(|v| !v.is_empty())
+        }
+    };
     let file = lookup(AUTH_PASSWORD_FILE_ENV)
         .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty());
@@ -137,7 +176,7 @@ fn read_password_file(path: &Path, source: &str) -> Result<String> {
         ))
     };
     let file = std::fs::File::open(path).map_err(|e| invalid(format!("can't be read ({e})")))?;
-    let mut bytes = Vec::new();
+    let mut bytes = Zeroizing::new(Vec::new());
     file.take(MAX_PASSWORD_FILE_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| invalid(format!("can't be read ({e})")))?;
@@ -147,7 +186,7 @@ fn read_password_file(path: &Path, source: &str) -> Result<String> {
             "is larger than {MAX_PASSWORD_FILE_BYTES} bytes"
         )));
     }
-    let text = String::from_utf8(bytes).map_err(|_| invalid("is not UTF-8".into()))?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| invalid("is not UTF-8".into()))?;
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Err(invalid("is empty".into()));
@@ -193,6 +232,21 @@ mod tests {
             resolve_auth_password(env(&[(AUTH_PASSWORD_ENV, &blank)])).unwrap(),
             None
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_variable_is_an_error_not_a_lossy_password() {
+        use std::os::unix::ffi::OsStringExt as _;
+        let pw = OsString::from_vec(vec![0xff, 0xfe, b'a']);
+        let err = resolve_auth_password(env(&[(AUTH_PASSWORD_ENV, &pw)])).unwrap_err();
+        assert!(err.to_string().contains("not valid UTF-8"), "{err}");
+    }
+
+    #[test]
+    fn the_resolved_password_never_debug_prints() {
+        let resolved = EnvAuthPassword::Resolved(Some(Zeroizing::new("hunter2".into())));
+        assert!(!format!("{resolved:?}").contains("hunter2"));
     }
 
     #[test]
