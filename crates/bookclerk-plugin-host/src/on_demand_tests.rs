@@ -574,7 +574,11 @@ fn trigger_and_lookup_plugins_activate_on_demand() {
         "\"metadata\"",
         MEDIA
     )));
-    assert!(activates_on_demand(&manifest("native", "\"covers\"", "")));
+    assert!(activates_on_demand(&manifest(
+        "native",
+        "\"mediaDownload\"",
+        ""
+    )));
 }
 
 /// `[workerd]` and a module for a Python isolate.

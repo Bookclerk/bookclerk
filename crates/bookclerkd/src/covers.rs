@@ -2674,7 +2674,7 @@ mod tests {
     #[async_trait::async_trait]
     impl bookclerk_integrations::Integration for Plugin {
         fn id(&self) -> &str {
-            "covers"
+            "media_download"
         }
 
         async fn start(
@@ -2688,7 +2688,7 @@ mod tests {
             &self,
         ) -> bookclerk_integrations::Result<bookclerk_integrations::IntegrationHealth> {
             Ok(bookclerk_integrations::IntegrationHealth {
-                id: "covers".into(),
+                id: "media_download".into(),
                 enabled: true,
                 ok: true,
                 detail: None,
