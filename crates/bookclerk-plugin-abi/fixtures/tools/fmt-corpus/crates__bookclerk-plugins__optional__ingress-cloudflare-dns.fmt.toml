@@ -3,7 +3,10 @@ id = "cloudflare_dns"
 name = "Cloudflare DNS"
 version = "0.1.0"
 runtime = "workerd"
-entrypoints = ["ingress"]
+entrypoints = [
+    "ingress",
+    "provisioning",
+]
 
 [workerd]
 compatibility_date = "2026-08-01"
@@ -35,6 +38,16 @@ name = "lifecycle.js"
 path = "lifecycle.js"
 type = "js"
 
+[[modules]]
+name = "provision.js"
+path = "provision.js"
+type = "js"
+
+[[modules]]
+name = "tokens.js"
+path = "tokens.js"
+type = "js"
+
 [vars]
 
 [[settings]]
@@ -62,12 +75,39 @@ description = "Keep an AAAA record pointed at this computer's public IPv6 addres
 key = "api_token"
 label = "Cloudflare API token"
 type = "secret"
-description = "An API token with the Zone: DNS: Edit permission on the host name's zone."
+description = "An API token with the Zone: Zone: Read and Zone: DNS: Edit permissions on the host name's zone. The guided setup fills it in."
+
+[[settings]]
+key = "api_token_id"
+label = "Setup token id"
+type = "string"
+description = "Filled in by the guided setup: the id of the API token it created, so a later setup or removal deletes it. Leave it empty when you paste your own token."
 
 [secrets]
 
 [ingress]
 kind = "direct"
+
+[provisioning]
+provider = "cloudflare"
+grants = ["api_token"]
+token_url = "https://dash.cloudflare.com/profile/api-tokens"
+token_permissions = [
+    "Zone > Zone > Read",
+    "Zone > DNS > Edit",
+    "Account > Account API Tokens > Edit",
+]
+inputs = [
+    "hostname",
+    "ipv4",
+    "ipv6",
+]
+outputs = [
+    "hostname",
+    "api_token",
+    "api_token_id",
+]
+deprovision = true
 
 [capabilities.network]
 mode = "outbound"

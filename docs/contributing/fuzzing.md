@@ -2129,9 +2129,10 @@ the other end sends: the plugin parses the relay's frames, request heads
 and notices, and the relay parses the plugin's frames and response heads; each parses
 the other's live frames.
 Both run `crates/bookclerk-plugins/optional/ingress-cloudflare/src/protocol.ts`.
+The guest's guided setup also reads the Cloudflare API's answers.
 Its `test/fuzz.test.ts` replays `fuzz/frame/` (hex bytes), `fuzz/head/`,
-`fuzz/notice/` and `fuzz/live/` (hex bytes) and runs seeded byte and text
-mutations in `npm test`
+`fuzz/notice/`, `fuzz/live/` (hex bytes) and `fuzz/api/` (API answer
+JSON) and runs seeded byte and text mutations in `npm test`
 (the `workerd_guests` check); `FUZZ_SEED` and `FUZZ_ITERATIONS` pick
 another run.
 
@@ -2160,6 +2161,14 @@ another run.
   those RFC 6455 lets an endpoint send (1000 to 1003, 1007 to 1014, 3000
   to 4999) with at most 123 bytes of reason. An accepted frame encodes
   back to the same bytes.
+- **API answers** (`parseEnvelope` in `src/api.ts`, `parseAccounts`,
+  `parsePermissionGroup` and `parseMintedToken` in `src/tokens.ts`,
+  `parseScriptState` in `src/cloudflare.ts`). Oracle: the rules restated
+  over `JSON.parse`'s value (a success only with a 2xx status and
+  `success: true`, Cloudflare's first error message cut to 200
+  characters, ids of 32 lowercase hex digits checked by character, a new
+  token's value printable ASCII of 1 to 1,024 bytes, a Worker a relay
+  only when it carries the relay's migration tag).
 
 ### ngrok guest
 
@@ -2223,11 +2232,15 @@ and runs seeded text mutations in `npm test` (the `workerd_guests` check);
   canonical IPv6 text, and a `net.BlockList` of the special-purpose ranges
   decides what is public.
 - **API answers** (`parseEnvelope`, `parseZone`, `parseRecords` in
-  `src/dns.ts`). Oracle: the envelope, zone and record rules restated over
-  `JSON.parse`'s value (a success only with a 2xx status and
-  `success: true`, Cloudflare's first error message cut to 200
-  characters, ids of 32 lowercase hex digits checked by character, only
-  records named exactly the host name).
+  `src/dns.ts`; `parseAccounts`, `parsePermissionGroup` and
+  `parseMintedToken` in `src/tokens.ts`, for the guided setup). Oracle:
+  the envelope, zone, record, account, permission group and new token
+  rules restated over `JSON.parse`'s value (a success only with a 2xx
+  status and `success: true`, Cloudflare's first error message cut to 200
+  characters, ids of 32 lowercase hex digits checked by character, a
+  zone's account kept only when it is such an id, only records named
+  exactly the host name, a new token's value printable ASCII of 1 to
+  1,024 bytes).
 - **Host names** (`parseHostname`, `zoneCandidates`). Oracle: RFC 1035's
   label rules restated character by character (at most 253 bytes, at
   least two labels of 1 to 63 letters, digits and inner dashes, no `xn--`
@@ -2239,10 +2252,12 @@ and runs seeded text mutations in `npm test` (the `workerd_guests` check);
 The `cloudflare_tunnel` guest parses everything on its edge connection:
 HTTP/2 frames and HPACK header blocks, the Cap'n Proto RPC messages on
 the control stream, the request fields any internet client sends, and the
-WebSocket frames that client sends after an upgrade.
+WebSocket frames that client sends after an upgrade. Its guided setup
+reads the Cloudflare API's answers.
 `crates/bookclerk-plugins/optional/ingress-cloudflare-tunnel/test/fuzz.test.ts`
 replays `fuzz/h2/`, `fuzz/hpack/`, `fuzz/capnp/` and `fuzz/wsframe/` (hex
-bytes) and `fuzz/head/` (a JSON field list), and runs seeded byte and text
+bytes), `fuzz/head/` (a JSON field list) and `fuzz/api/` (API answer
+JSON), and runs seeded byte and text
 mutations in `npm test` (the `workerd_guests` check); `FUZZ_SEED` and
 `FUZZ_ITERATIONS` pick another run.
 
@@ -2270,6 +2285,13 @@ mutations in `npm test` (the `workerd_guests` check); `FUZZ_SEED` and
   in values).
 - **WebSocket frames** (`FrameDecoder` in `src/ws.ts`). As in the ngrok
   guest.
+- **API answers** (`parseEnvelope`, `parseAccounts`, `parseTunnel`,
+  `parseTunnels`, `parseZone`, `parseRecords` and `parseTunnelToken` in
+  `src/cfapi.ts`). Oracle: the rules restated over `JSON.parse`'s value
+  (the envelope as in the Cloudflare DNS guest, a tunnel live only with a
+  lowercase UUID id, a string name and no `deleted_at`, ids and records
+  as in the Cloudflare DNS guest, a tunnel token printable ASCII of 1 to
+  1,024 bytes).
 
 ### Webhook notifier guest
 

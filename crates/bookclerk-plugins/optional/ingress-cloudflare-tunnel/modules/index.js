@@ -10,8 +10,9 @@
  * socket to the library through `env.ORIGIN.connect`. `health` checks the
  * connection with a ping and reconnects one that ended.
  */
-import { BookclerkEntrypoint, IngressEntrypoint, } from "@bookclerk/plugin-sdk/workerd";
+import { BookclerkEntrypoint, IngressEntrypoint, ProvisioningEntrypoint, } from "@bookclerk/plugin-sdk/workerd";
 import { agentHealth, handleClose, handleMessage, liveContext, startAgent, stopAgent, } from "./lifecycle.js";
+import { deprovisionTunnel, provisionTunnel } from "./provision.js";
 // workerd treats every named export of this module as an entrypoint, so it
 // exports only the entrypoint classes; the logic lives in `lifecycle.ts`.
 /** `ingress` entrypoint: the connector's lifecycle. */
@@ -39,6 +40,27 @@ export class Ingress extends IngressEntrypoint {
      */
     stop() {
         return stopAgent(this.env.SOCKETS);
+    }
+}
+/** `provisioning` entrypoint: the guided setup (see `provision.ts`). */
+export class Provisioning extends ProvisioningEntrypoint {
+    /**
+     * Creates the tunnel, its route and its DNS record from the pasted token.
+     *
+     * @param request - The operator's grant.
+     * @returns The account, the host name and the tunnel token to keep.
+     */
+    provision(request) {
+        return provisionTunnel({ env: this.env, fetch: (input, init) => fetch(input, init) }, request);
+    }
+    /**
+     * Deletes the DNS record and the tunnel.
+     *
+     * @param request - The operator's grant, or kind `none`.
+     * @returns Resolves once they are gone.
+     */
+    deprovision(request) {
+        return deprovisionTunnel({ env: this.env, fetch: (input, init) => fetch(input, init) }, request);
     }
 }
 /** Default entrypoint: the connection's handlers. */

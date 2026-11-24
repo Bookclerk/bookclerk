@@ -40,9 +40,19 @@ next start.
 
 1. In the Cloudflare dashboard, open **Workers & Pages** once, so the
    account has a `workers.dev` subdomain.
-2. Create an API token with the **Workers Scripts: Edit** permission on
-   that account.
-3. Install and approve the plugin, then set its settings:
+2. Install and approve the plugin.
+3. Run the guided setup (`src/provision.ts`): create an API token with
+   **Account: Workers Scripts: Edit** and **Account: Account API Tokens:
+   Edit**, then in **Settings** open the plugin's instance, paste it and
+   select **Run guided setup**. The setup finds the account (set
+   `account_id` when the token reaches more than one), checks the Worker
+   name, and mints a token named `Bookclerk cloudflare_relay <worker>`
+   that can deploy Workers in that account and nothing else. The plugin
+   keeps that token and its id (`api_token_id`); the pasted one is not
+   stored. A second run mints a new token and deletes the old one.
+
+   To set it up by hand, create a token with **Workers Scripts: Edit** and
+   set `account_id` and `api_token`:
 
    ```sh
    bookclerk plugins config set cloudflare_relay account_id <32-hex account id>
@@ -51,10 +61,15 @@ next start.
 
    `worker_name` (default `bookclerk-relay`) is the first label of the
    address. A Worker of that name that Bookclerk did not create is left
-   alone and `start` fails with a message saying so.
+   alone: the setup refuses it, and `start` fails with a message saying
+   so.
 4. Deploy it on this computer: `bookclerk plugins deploy cloudflare_relay`.
 5. Make it the library's ingress: `bookclerk ingress activate
    cloudflare_relay`. See [Public address](../../../../docs/server/ingress.md).
+
+Before the instance is deleted, **Remove what setup created** deletes the
+relay Worker (with the stored token) and the minted token (which needs a
+pasted token with **Account API Tokens: Edit**).
 
 > [!WARNING]
 > Cloudflare ends TLS at its edge, so it can read the traffic it carries:

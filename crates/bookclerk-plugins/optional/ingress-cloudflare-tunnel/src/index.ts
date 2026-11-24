@@ -14,9 +14,13 @@
 import {
   BookclerkEntrypoint,
   IngressEntrypoint,
+  ProvisioningEntrypoint,
+  type DeprovisionRequest,
   type HostWebSocket,
   type IngressHealth,
   type IngressStarted,
+  type Provisioned,
+  type ProvisionRequest,
   type SocketMessageData,
   type SocketMessageOk,
 } from "@bookclerk/plugin-sdk/workerd";
@@ -29,6 +33,7 @@ import {
   startAgent,
   stopAgent,
 } from "./lifecycle.ts";
+import { deprovisionTunnel, provisionTunnel } from "./provision.ts";
 
 // workerd treats every named export of this module as an entrypoint, so it
 // exports only the entrypoint classes; the logic lives in `lifecycle.ts`.
@@ -60,6 +65,32 @@ export class Ingress extends IngressEntrypoint<Env> {
    */
   override stop(): Promise<void> {
     return stopAgent(this.env.SOCKETS);
+  }
+}
+
+/** `provisioning` entrypoint: the guided setup (see `provision.ts`). */
+export class Provisioning extends ProvisioningEntrypoint<Env> {
+  /**
+   * Creates the tunnel, its route and its DNS record from the pasted token.
+   *
+   * @param request - The operator's grant.
+   * @returns The account, the host name and the tunnel token to keep.
+   */
+  override provision(request: ProvisionRequest): Promise<Provisioned> {
+    return provisionTunnel({ env: this.env, fetch: (input, init) => fetch(input, init) }, request);
+  }
+
+  /**
+   * Deletes the DNS record and the tunnel.
+   *
+   * @param request - The operator's grant, or kind `none`.
+   * @returns Resolves once they are gone.
+   */
+  override deprovision(request: DeprovisionRequest): Promise<void> {
+    return deprovisionTunnel(
+      { env: this.env, fetch: (input, init) => fetch(input, init) },
+      request,
+    );
   }
 }
 
