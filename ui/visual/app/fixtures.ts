@@ -1368,6 +1368,16 @@ function signedIn(viewer: "owner" | "operator"): Routes {
       const titles = queries(body);
       return { json: { results: titles.map(metaFor), incomplete: titles.map(() => false) } };
     },
+    // Every title has a sample: a held book's own, else a store's, so the
+    // details show the sample control.
+    "POST /api/discover/title-sample": (body) => {
+      const edition = (body as { edition_id?: string | null } | null)?.edition_id;
+      return {
+        json: edition
+          ? { edition_sample_path: `/api/library/editions/${edition}/sample` }
+          : { sample_path: "/api/samples/c2FtcGxl.dmlzdWFs" },
+      };
+    },
     "GET /api/diagnostics/reports": () => ({ json: { reports: [] } }),
     "POST /api/playback/sessions": (body) => {
       const id = (body as { edition_id?: string } | null)?.edition_id ?? "";

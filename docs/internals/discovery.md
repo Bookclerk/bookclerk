@@ -726,7 +726,7 @@ title is **not** in the household library.
   title-meta gap-fills from storefront `catalog_detail` (narrator, runtime,
   description, publisher, genres, abridged): the request carries the title's
   `store_editions` (at most 16), and the host asks each listing store that
-  declares `catalog.detailByProductId` (Audible, Libro.fm, GraphicAudio) for its own
+  declares `catalog.detailByProductId` (Audible, Chirp, Libro.fm, GraphicAudio) for its own
   product (two at most), then the stores that declare `catalog.detailByIsbn`
   (Libro.fm) for the ISBN, three lookups and 3.5 s at most. No plugin id is
   named. The server caches each answer under the set of deployed metadata
@@ -748,15 +748,20 @@ title is **not** in the household library.
   `search_catalog`. See
   [Catalog search capabilities](../plugins/abi.md#catalog-search-capabilities).
 - **Samples.** The dialog's **Sample** control plays a short preview that
-  never counts as listening. For a held edition it is cut from the file
-  (`GET /api/library/editions/{id}/sample`). Otherwise
-  `POST /api/discover/title-sample` takes the title-meta body, asks the
-  same stores in the same order for a catalog record with a `sampleUrl`
-  (10 s at most), and answers a same-origin
-  `/api/samples/{token}` path the daemon serves. The first store's sample,
-  or every store answering that it has none, is cached six hours; after a
-  timeout, a store error or a URL the daemon cannot sign nothing is
-  cached, so the next press asks again. See
+  never counts as listening, and is shown only when there is one to play.
+  When the dialog opens it sends `POST /api/discover/title-sample` the
+  title-meta body plus the held `edition_id`, if any. When the caller may
+  hear that edition and this node reaches its audio, the answer is its
+  `edition_sample_path` (`GET /api/library/editions/{id}/sample`, cut from
+  the file) and no store is asked. Otherwise the route asks the same
+  stores in the same order for a catalog record with a `sampleUrl` (10 s
+  at most) and answers a same-origin `/api/samples/{token}` path as
+  `sample_path`. With no confined media worker, or no source, it answers
+  neither and the dialog shows no control. If an edition sample fails to
+  play, the control asks again without the edition for a store's. The
+  first store's sample, or every store answering that it has none, is
+  cached six hours; after a timeout, a store error or a URL the daemon
+  cannot sign nothing is cached, so the next dialog asks again. See
   [Book samples](../adr/book-samples.md).
 
 Multi-region storefronts are deferred (US default for now).

@@ -255,6 +255,23 @@ pub fn fill_identifiers(base: &mut Vec<Identifier>, fill: Vec<Identifier>) {
     base.extend(fill.into_iter().filter(|id| !known.contains(&id.scheme)));
 }
 
+/// A store's audio sample link as [`crate::CatalogHit::sample_url`] takes
+/// it: trimmed, an absolute `https` URL with a host and no whitespace or
+/// control characters, else `None`. The host parses it again before any
+/// plugin fetches it, so this only keeps obvious junk off the record.
+///
+/// # Arguments
+///
+/// * `raw` - The link as the store gave it.
+#[must_use]
+pub fn sample_url(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    let rest = raw.strip_prefix("https://")?;
+    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let clean = !raw.chars().any(|c| c.is_whitespace() || c.is_control());
+    (clean && !host.is_empty()).then(|| raw.to_owned())
+}
+
 /// Decodes HTML entities in credit and series names in place.
 pub(crate) fn decode_html_entities(credits: &mut [Credit], series: &mut [SeriesEntry]) {
     for credit in credits {
@@ -268,6 +285,25 @@ pub(crate) fn decode_html_entities(credits: &mut [Credit], series: &mut [SeriesE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sample_urls_are_absolute_https_links() {
+        assert_eq!(
+            sample_url(" https://samples.libro.fm/9788852153945_sample.m4a ").as_deref(),
+            Some("https://samples.libro.fm/9788852153945_sample.m4a")
+        );
+        for junk in [
+            "",
+            "http://samples.example/a.mp3",
+            "https://",
+            "https:///a.mp3",
+            "https://samples.example/a b.mp3",
+            "//samples.example/a.mp3",
+            "https://samples.example/a\u{7}.mp3",
+        ] {
+            assert_eq!(sample_url(junk), None, "{junk:?}");
+        }
+    }
 
     #[test]
     fn display_names_split_on_separators_and_keep_suffixes() {

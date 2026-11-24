@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { acquirableEditions, type Edition, type WorkDetail } from "@/lib/api";
-import { titleDetailFromWork } from "@/lib/titleDetail";
+import { storeEditionsOf, titleDetailFromWork } from "@/lib/titleDetail";
 
 /**
  * An edition with one held listing.
@@ -114,7 +114,34 @@ describe("titleDetailFromWork", () => {
       source: "audible",
       content_kind: "book",
       showCommerce: false,
+      // Every store listing it, by its own product id, for title-meta and
+      // the sample lookup.
+      store_editions: [
+        { source: "audible", product_id: "B002V1OF70" },
+        { source: "libro", product_id: "9780441013593" },
+      ],
     });
+  });
+
+  it("names each store edition once, and at most sixteen", () => {
+    const listing = (plugin_key: string, product_id: string) => ({
+      plugin_key,
+      product_id,
+    });
+    expect(
+      storeEditionsOf([
+        listing("audible", "B1"),
+        listing("audible", " B1 "),
+        listing("", "x"),
+        listing("libro", " "),
+        listing("chirp", "7"),
+      ]),
+    ).toEqual([
+      { source: "audible", product_id: "B1" },
+      { source: "chirp", product_id: "7" },
+    ]);
+    const many = Array.from({ length: 20 }, (_, i) => listing("chirp", String(i)));
+    expect(storeEditionsOf(many)).toHaveLength(16);
   });
 
   it("counts held editions left to acquire beside an acquired one", () => {

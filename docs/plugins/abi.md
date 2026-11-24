@@ -1413,9 +1413,9 @@ and enrichment by declaring it:
   search, expand and deals hits carry to a full record. The host then asks
   your store to fill the lean rows it listed (as above, but by your product
   id only), and a title dialog asks it for the editions it listed before
-  any ISBN store, for details and for a `sampleUrl` when someone presses
-  **Sample**. A store that leaves it off is never woken for a detail
-  lookup.
+  any ISBN store, for details and for a `sampleUrl` (asked when the
+  dialog opens, so it knows whether to offer **Sample**). A store that
+  leaves it off is never woken for a detail lookup.
 
 - **Price lookup by identifier.** Set `catalog.priceByIsbn` and
   `catalog.priceByAsin` in `describe()` when `purchaseHint` prices an exact

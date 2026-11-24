@@ -1,55 +1,89 @@
 import { describe, expect, it, vi } from "vitest";
-import { isStoreSamplePath, pauseBookFor, sampleSourceKey, sampleSources } from "@/lib/sample";
+import {
+  findSample,
+  isStoreSamplePath,
+  pauseBookFor,
+  readSample,
+  sampleSourceKey,
+  storeSampleFallback,
+} from "@/lib/sample";
 import type { TitleMetaQuery } from "@/lib/api";
 import type { PlayerState } from "@/lib/player";
 
 const query: TitleMetaQuery = { title: "Mistborn", isbn: "9780000000001" };
 
-async function all(gen: AsyncGenerator<string>): Promise<string[]> {
-  const out: string[] = [];
-  for await (const url of gen) out.push(url);
-  return out;
-}
-
-describe("sampleSources", () => {
-  it("tries the held edition before asking a store", async () => {
-    const lookup = vi.fn(async () => "/api/samples/abc");
-    const gen = sampleSources("ed 1", query, lookup);
-    expect((await gen.next()).value).toBe("/api/library/editions/ed%201/sample");
-    expect(lookup).not.toHaveBeenCalled();
-    expect((await gen.next()).value).toBe("/api/samples/abc");
-    expect(lookup).toHaveBeenCalledWith(query);
-    expect((await gen.next()).done).toBe(true);
-  });
-
-  it("asks the stores straight away for a title not held", async () => {
-    expect(await all(sampleSources(null, query, async () => "/api/samples/t"))).toEqual([
-      "/api/samples/t",
-    ]);
-  });
-
-  it("yields nothing when the store has none", async () => {
-    expect(await all(sampleSources(undefined, query, async () => null))).toEqual([]);
-  });
-
-  it("passes a failed lookup on, so it can be retried", async () => {
-    const gen = sampleSources("ed", query, async () => {
-      throw new Error("offline");
+describe("findSample", () => {
+  it("offers the held edition's sample without asking a store", async () => {
+    const lookup = vi.fn(async () => ({ edition_sample_path: "/anything/the/server/said" }));
+    expect(await findSample("ed 1", query, lookup)).toEqual({
+      url: "/api/library/editions/ed%201/sample",
+      kind: "edition",
     });
-    expect((await gen.next()).value).toBe("/api/library/editions/ed/sample");
-    await expect(gen.next()).rejects.toThrow("offline");
+    expect(lookup).toHaveBeenCalledWith({ ...query, edition_id: "ed 1" });
   });
 
-  it("never asks the stores without a title", async () => {
-    const lookup = vi.fn(async () => "/api/samples/t");
-    expect(await all(sampleSources(undefined, { title: "  " }, lookup))).toEqual([]);
-    expect(lookup).not.toHaveBeenCalled();
+  it("offers a store's sample when the edition gives none", async () => {
+    const lookup = vi.fn(async () => ({ sample_path: "/api/samples/abc" }));
+    expect(await findSample("ed", query, lookup)).toEqual({
+      url: "/api/samples/abc",
+      kind: "store",
+    });
+    expect(await findSample(null, query, lookup)).toEqual({
+      url: "/api/samples/abc",
+      kind: "store",
+    });
+    expect(lookup).toHaveBeenLastCalledWith({ ...query, edition_id: null });
+  });
+
+  it("offers nothing when no sample can be played here", async () => {
+    expect(await findSample("ed", query, async () => ({}))).toBeNull();
+    // An edition path for a title not held is not taken either.
+    expect(await findSample(null, query, async () => ({ edition_sample_path: "/x" }))).toBeNull();
   });
 
   it("drops a path that is not a same-origin store sample", async () => {
     expect(
-      await all(sampleSources(undefined, query, async () => "https://evil.example/a.mp3")),
-    ).toEqual([]);
+      await findSample(undefined, query, async () => ({
+        sample_path: "https://evil.example/a.mp3",
+      })),
+    ).toBeNull();
+  });
+
+  it("passes a failed lookup on", async () => {
+    await expect(
+      findSample("ed", query, async () => {
+        throw new Error("offline");
+      }),
+    ).rejects.toThrow("offline");
+  });
+
+  it("never asks without a title or identifier", async () => {
+    const lookup = vi.fn(async () => ({ sample_path: "/api/samples/t" }));
+    expect(await findSample(undefined, { title: "  " }, lookup)).toBeNull();
+    expect(lookup).not.toHaveBeenCalled();
+  });
+});
+
+describe("storeSampleFallback", () => {
+  it("asks the stores without the edition", async () => {
+    const lookup = vi.fn(async () => ({ sample_path: "/api/samples/s" }));
+    expect(await storeSampleFallback(query, lookup)).toEqual({
+      url: "/api/samples/s",
+      kind: "store",
+    });
+    expect(lookup).toHaveBeenCalledWith({ ...query, edition_id: null });
+    expect(await storeSampleFallback(query, async () => ({}))).toBeNull();
+  });
+});
+
+describe("readSample", () => {
+  it("prefers the edition's sample for the edition asked about", () => {
+    expect(readSample({ edition_sample_path: "/e", sample_path: "/api/samples/s" }, "ed")).toEqual({
+      url: "/api/library/editions/ed/sample",
+      kind: "edition",
+    });
+    expect(readSample({ sample_path: "/api/samples/s" }, "ed")?.kind).toBe("store");
+    expect(readSample({ sample_path: " " }, "ed")).toBeNull();
   });
 });
 

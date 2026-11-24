@@ -26,5 +26,5 @@ pub use guest::{
     guest_fetch_title, guest_fetch_title_rpc, guest_login, guest_login_rpc, guest_scan_page,
     resolve_graphql_url,
 };
-pub use source::{ChirpSource, ID as CHIRP_SOURCE_ID};
+pub use source::{audiobook_detail_record, ChirpSource, ID as CHIRP_SOURCE_ID};
 pub use sync::{audiobook_to_scan_book, collect_account_books, fetch_account_page};

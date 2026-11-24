@@ -479,6 +479,21 @@ async fn send(
     read(response).await
 }
 
+/// The title-sample answer for edition `id` of the title "First", asked
+/// as `cookie` (or the operator).
+async fn title_sample(world: &World, cookie: Option<&str>, id: &str) -> Value {
+    let (status, _, body) = send(
+        world,
+        Method::POST,
+        "/api/discover/title-sample",
+        cookie,
+        Some(json!({"title": "First", "edition_id": id})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    serde_json::from_slice(&body).unwrap()
+}
+
 /// A member hears a sample of an edition this node holds, re-encoded as
 /// MP3; it records no progress and opens no session. What is not theirs to
 /// hear, or not here, is refused.
@@ -505,6 +520,26 @@ async fn a_member_hears_a_sample_that_is_not_listening() {
     );
     let (status, _, _) = send(&world, Method::GET, &uri("nope"), riley, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Which sample the details may offer: the held edition's own, for a
+    // caller who may hear it, and nothing for an edition this node holds no
+    // audio of (no store here offers one either).
+    let isolated = bookclerk_media::pool().is_isolated();
+    assert_eq!(
+        title_sample(&world, riley, &held).await,
+        if isolated {
+            json!({"edition_sample_path": uri(&held)})
+        } else {
+            json!({})
+        },
+    );
+    assert_eq!(title_sample(&world, riley, &unheld).await, json!({}));
+    assert_eq!(title_sample(&world, riley, "nope").await, json!({}));
+    assert_eq!(
+        title_sample(&world, None, &held).await,
+        json!({}),
+        "the operator has no library user to hear it"
+    );
 
     if bookclerk_media::pool().is_isolated() {
         let (status, headers, body) = send(&world, Method::GET, &uri(&held), riley, None).await;
