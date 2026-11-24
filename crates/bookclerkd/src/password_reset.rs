@@ -606,13 +606,6 @@ pub(crate) async fn post_password_reset_finish(
     };
     auth.clear_login_failures(&password_throttle_key(user.id))
         .await;
-    let _ = library
-        .insert_security_audit_event(
-            &format!("user:{}", user.id),
-            "password_reset_self",
-            Some(&serde_json::json!({ "revoked_sessions": revoked }).to_string()),
-        )
-        .await;
     if let Some(address) = user.email.as_deref() {
         crate::account_mail::queue_password_changed(&state, user.id, address).await;
     }

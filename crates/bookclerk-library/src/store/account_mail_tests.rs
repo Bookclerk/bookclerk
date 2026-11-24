@@ -797,6 +797,26 @@ async fn a_reset_survives_a_lost_reply_and_a_factor_enrolled_after_the_check_und
             .insert_portal_session("kai-session", identity.id, now + Duration::hours(1))
             .await
             .unwrap();
+        store
+            .insert_oidc_refresh_token(
+                "kai-refresh",
+                "app",
+                user,
+                "openid",
+                now + Duration::days(1),
+            )
+            .await
+            .unwrap();
+        store
+            .insert_oidc_refresh_token(
+                "other-refresh",
+                "app",
+                user + 1,
+                "openid",
+                now + Duration::days(1),
+            )
+            .await
+            .unwrap();
         // A new attempt hashes afresh, so its operation id is its own.
         let first = crate::hash_password(&fresh_password()).expect("hash");
         kit.lose_next_replies(1);
@@ -818,6 +838,30 @@ async fn a_reset_survives_a_lost_reply_and_a_factor_enrolled_after_the_check_und
                 .is_none(),
             "{name}: a session outlived a reset whose reply was lost"
         );
+        assert!(
+            store
+                .get_oidc_refresh_token("kai-refresh")
+                .await
+                .unwrap()
+                .is_none(),
+            "{name}: a refresh token outlived the reset"
+        );
+        assert!(
+            store
+                .get_oidc_refresh_token("other-refresh")
+                .await
+                .unwrap()
+                .is_some(),
+            "{name}: another account's refresh token was revoked"
+        );
+        let audited = store
+            .list_security_audit_events(20)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.action == "password_reset_self")
+            .count();
+        assert_eq!(audited, 1, "{name}: the reset was audited {audited} times");
         assert_eq!(
             store.get_user_password_hash(user).await.unwrap().as_deref(),
             Some(first.as_str()),

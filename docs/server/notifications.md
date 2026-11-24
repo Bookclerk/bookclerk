@@ -369,9 +369,10 @@ a link.
    authenticator app also asks for its current code; one with passkeys
    and no authenticator asks for a passkey. A wrong code does not use
    the link up.
-5. Saving sets the password, signs every device out and mails a notice
-   that the password was changed. The change is recorded in the security
-   audit log as `password_reset_self`.
+5. Saving sets the password, signs every device out (browser and
+   elevated sessions, and revokes OpenID refresh tokens) and mails a
+   notice that the password was changed. The change is recorded in the
+   security audit log as `password_reset_self`, in the same atomic write.
 
 Links that do not work and wrong codes count toward a per-client limit,
 the same one failed sign-ins use, so repeated tries are answered `429`

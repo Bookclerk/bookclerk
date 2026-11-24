@@ -671,12 +671,13 @@ export function UserManagementPanel({
       login_name?: string;
       email?: string;
     },
-  ) {
+  ): Promise<boolean> {
     setBusy(true);
     setError(null);
     try {
       const res = await patchUser(id, patch);
       setUsers((current) => current.map((u) => (u.id === id ? { ...u, ...res.user } : u)));
+      return true;
     } catch (err) {
       if (isApiError(err) && err.status === 409) {
         setError("Cannot demote or disable the last active owner.");
@@ -684,6 +685,7 @@ export function UserManagementPanel({
         setError(err instanceof Error ? err.message : "Update failed");
       }
       await onUsersChanged();
+      return false;
     } finally {
       setBusy(false);
     }
@@ -1399,12 +1401,14 @@ export function UserManagementPanel({
                     const id = selected.id;
                     if (emailDrafts[id] === undefined) return;
                     if (!isOptionalEmailValid(e.target.value)) return;
-                    void onPatchUser(id, { email: e.target.value }).then(() =>
+                    void onPatchUser(id, { email: e.target.value }).then((saved) => {
+                      // A failed save keeps the draft, so the address typed is not lost.
+                      if (!saved) return;
                       setEmailDrafts((current) => {
                         const { [id]: _saved, ...rest } = current;
                         return rest;
-                      }),
-                    );
+                      });
+                    });
                   }}
                 />
               </div>

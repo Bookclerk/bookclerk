@@ -1007,7 +1007,9 @@ impl LibraryStore {
     }
 
     /// Redeems a reset link: sets the new password, signs the account out
-    /// everywhere and spends the link, all in one atomic batch.
+    /// everywhere (portal and elevated sessions, and OpenID refresh
+    /// tokens), records `password_reset_self` in the security audit log and
+    /// spends the link, all in one atomic batch.
     ///
     /// The first statement claims the link: it marks the row with
     /// a claim marker (`RESET_CLAIM`) only while the link is unexpired, is for `user_id`,
@@ -1116,6 +1118,28 @@ impl LibraryStore {
                  (SELECT id FROM portal_identities WHERE user_id = ?)",
                 vec![batch::int(user_id)],
             ),
+            // OpenID refresh tokens would otherwise mint new sessions.
+            guarded(
+                "UPDATE oidc_refresh_tokens SET revoked_at = ? \
+                 WHERE user_id = ? AND revoked_at IS NULL",
+                vec![batch::text(&now.to_rfc3339()), batch::int(user_id)],
+            ),
+            // The audit row commits with the reset or not at all.
+            batch::exec(
+                &format!(
+                    "INSERT INTO security_audit_events (at, actor, action, detail_json) \
+                     SELECT ?, ?, 'password_reset_self', NULL WHERE {}",
+                    claimed().0
+                ),
+                {
+                    let mut params = vec![
+                        batch::text(&now.to_rfc3339()),
+                        batch::text(&format!("user:{user_id}")),
+                    ];
+                    params.extend(claimed().1);
+                    params
+                },
+            ),
             batch::exec(
                 "DELETE FROM password_resets WHERE token_hash = ? AND expires_at = ?",
                 vec![batch::text(&token_hash), batch::text(RESET_CLAIM)],
@@ -1129,7 +1153,7 @@ impl LibraryStore {
         );
         let request = batch::request(&operation_id, statements);
         let redeemed = |reply: &bookclerk_plugin_abi::ExecuteReply| {
-            (batch::rows_affected(reply, 4) == 1).then(|| RedeemedReset {
+            (batch::rows_affected(reply, 6) == 1).then(|| RedeemedReset {
                 revoked_sessions: Some(batch::rows_affected(reply, 3)),
             })
         };
