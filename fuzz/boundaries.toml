@@ -755,3 +755,10 @@ input_from = "the operator's mail server; any signed-in patron (address)"
 # Only the email guest reads them.
 side = "guest"
 artifacts = ["bookclerk"]
+
+[targets.shared_branch_bootstrap]
+crate = "bookclerk-node-proto"
+boundary = "The opened shared-branch bootstrap a joining node reads from its library: the [database] section, the D1 API token and its id, and the data key"
+input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
