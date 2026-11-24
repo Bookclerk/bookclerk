@@ -315,7 +315,9 @@ function cut(text: string, limit: number): string {
     if (used > limit) break;
     out += char;
   }
-  const trimmed = out.replace(/[. ]+$/u, "");
+  let end = out.length;
+  while (end > 0 && (out[end - 1] === "." || out[end - 1] === " ")) end -= 1;
+  const trimmed = out.slice(0, end);
   if (trimmed.length > 0) return trimmed;
   for (const char of text) return char;
   return "";
