@@ -1,5 +1,5 @@
-//! Coverage-guided fuzzing of the Cloudflare API replies the `r2` guest's
-//! guided setup reads (`bookclerk-storage::cloudflare_api`). The oracle in
+//! Coverage-guided fuzzing of the Cloudflare API replies the `r2` and `d1`
+//! guests' guided setups read (`bookclerk-storage::cloudflare_api`). The oracle in
 //! `fuzz/oracles/cloudflare_api.rs` is shared with the crate's corpus
 //! replay test.
 

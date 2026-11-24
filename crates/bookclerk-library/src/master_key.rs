@@ -1196,6 +1196,27 @@ pub fn move_master_key(
     to: KeyStoreKind,
     password: Option<&str>,
 ) -> Result<MasterKeyFormat> {
+    let (format, key) = move_key_envelope(files_dir, to, password)?;
+    // A stored database credential follows the key into its new store.
+    if let Err(err) = crate::database_credential::rehome_database_credential(files_dir, &key) {
+        tracing::warn!(
+            "the master key moved, but the database credential could not follow it ({err}); \
+             run `bookclerk database setup d1` again"
+        );
+    }
+    Ok(format)
+}
+
+/// Moves the key's envelope for [`move_master_key`].
+///
+/// # Returns
+///
+/// The format `master.key` has afterwards, and the key.
+fn move_key_envelope(
+    files_dir: &Path,
+    to: KeyStoreKind,
+    password: Option<&str>,
+) -> Result<(MasterKeyFormat, MasterKey)> {
     let path = master_key_path(files_dir);
     // One read: the key and the envelope it came from always match.
     let (key, envelope, location) = load_existing(files_dir, password)?;
@@ -1213,9 +1234,9 @@ pub fn move_master_key(
         Location::File => None,
         Location::Keychain(pointer) => Some(ItemHome::of(&pointer, files_dir)),
     };
-    match (old, target) {
-        (None, None) => Ok(file_format),
-        (Some(old), Some(store)) if old.store == store => Ok(pointer_format(store)),
+    let format = match (old, target) {
+        (None, None) => file_format,
+        (Some(old), Some(store)) if old.store == store => pointer_format(store),
         (old, Some(store)) => {
             let pointer = put_in_store(store, files_dir, &key, &envelope)?;
             if let Err(err) = write_secret_file_atomic(&path, &pointer.encode()) {
@@ -1235,7 +1256,7 @@ pub fn move_master_key(
                 "moved the data-encryption key into {}; master.key now only names the item",
                 describe_item(store, pointer.item)
             );
-            Ok(pointer_format(store))
+            pointer_format(store)
         }
         (Some(old), None) => {
             // Stage and verify the file before it replaces the pointer, so a
@@ -1264,9 +1285,10 @@ pub fn move_master_key(
             if !envelope.starts_with(MAGIC_WRAPPED) {
                 warn_unwrapped_master_key(&path);
             }
-            Ok(file_format)
+            file_format
         }
-    }
+    };
+    Ok((format, key))
 }
 
 /// The `master.key` format of a pointer into `store`.
@@ -1528,7 +1550,7 @@ fn write_secret_file_create_new(path: &Path, bytes: &[u8]) -> std::io::Result<()
 /// BCK1→BCK2 re-wrap and a shared branch's installed DEK). That replace overwrites
 /// an existing `master.key` on Windows too, where a plain `rename` onto an
 /// existing file is not relied on; the `0600` temp file keeps its mode.
-fn write_secret_file_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_secret_file_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let file_name = path

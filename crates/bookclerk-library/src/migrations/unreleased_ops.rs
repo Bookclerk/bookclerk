@@ -81,7 +81,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         updated_at TEXT NOT NULL,
         last_seen_at TEXT,
         avatar_source TEXT,
-        totp_enabled INTEGER NOT NULL DEFAULT 0
+        totp_enabled INTEGER NOT NULL DEFAULT 0,
+        email_verified_at TEXT
     )",
     ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)"),
@@ -114,6 +115,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         redeemed_at TEXT,
         created_by TEXT NOT NULL,
         created_at TEXT NOT NULL,
+        emailed_to TEXT,
         FOREIGN KEY(identity_id) REFERENCES portal_identities(id) ON DELETE SET NULL
     )",
     ),
@@ -1138,7 +1140,9 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // (`control_plane::branch_catalog`): `share_ref` is `store:product_id` as
     // the branch named it, `share_title` the title as received (JSON
     // `CatalogTitle`), `share_digest` its manifest digest and
-    // `delivered_digest` the digest whose files reached this library; its
+    // `delivered_digest` the digest whose files reached this library,
+    // `refused_digest` / `refused_at` an upload of that digest refused for
+    // good (asked for again a day later or once the manifest changes); its
     // `seen_pass` is the branch's catalog pass. Account holdings leave them
     // empty.
     MigrationOp::Schema(
@@ -1159,6 +1163,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         share_digest TEXT,
         delivered_digest TEXT,
         delivered_at TEXT,
+        refused_digest TEXT,
+        refused_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE (listing_id, holder),
@@ -1170,7 +1176,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
             OR (holder_kind = 'patron' AND user_id IS NOT NULL AND plugin_key IS NULL
                 AND account_id IS NULL AND node_id IS NULL)),
         CHECK (holder_kind = 'node' OR (share_ref IS NULL AND share_title IS NULL
-            AND share_digest IS NULL AND delivered_digest IS NULL AND delivered_at IS NULL))
+            AND share_digest IS NULL AND delivered_digest IS NULL AND delivered_at IS NULL
+            AND refused_digest IS NULL AND refused_at IS NULL))
     )",
     ),
     MigrationOp::Schema(
@@ -2358,6 +2365,53 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // Deleting a notification finds its inbox rows by this column.
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_notify_inbox_notification ON notify_inbox(notification_id)",
+    ),
+    // Account mail (`store::account_mail`, ADR decisions 5 and 6): the
+    // notifier instance the administrators chose for it, and when a test
+    // message through it was last delivered.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS account_mail_settings (
+        id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1),
+        plugin_instance_id TEXT NOT NULL,
+        tested_at TEXT,
+        updated_at TEXT NOT NULL
+    )",
+    ),
+    // One row per account-mail message and its delivery. The link's token
+    // is minted by the send job when it sends and only its hash is kept
+    // (in `claim_tickets` or `email_verifications`), so no link is stored
+    // here or anywhere else.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS account_mail (
+        id TEXT PRIMARY KEY NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('test', 'invite', 'verify_email')),
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        address TEXT NOT NULL,
+        plugin_instance_id TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'delivered', 'failed', 'dropped')),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        reason TEXT,
+        job_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_account_mail_state ON account_mail(state, created_at)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_account_mail_user ON account_mail(user_id, created_at)",
+    ),
+    // The live verification link of each user's email address: hashed,
+    // single use, 24 hours, and voided by the next one.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS email_verifications (
+        token_hash TEXT PRIMARY KEY NOT NULL,
+        user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+        email TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )",
     ),
     // A chapter list, stored once and named by the SHA-256 of its
     // canonical encoding (`store::chapters`). The row is written in the

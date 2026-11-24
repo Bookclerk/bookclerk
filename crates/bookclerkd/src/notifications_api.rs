@@ -192,6 +192,10 @@ pub(crate) struct NotifierJson {
     personal: bool,
     /// What a patron enters for a personal destination.
     address_fields: Vec<AddressFieldJson>,
+    /// Whether it can send account mail (invites, email verification and
+    /// password resets).
+    #[schema(example = false)]
+    account_mail: bool,
 }
 
 /// Everything the routing screens pick from.
@@ -300,6 +304,7 @@ async fn catalog(
                         secret: f.secret,
                     })
                     .collect(),
+                account_mail: notifier.account_mail,
             });
         }
     }
@@ -339,6 +344,24 @@ pub(crate) async fn get_catalog(
     administrator(&state, &headers).await?;
     let library = state.library_snapshot().await;
     Ok(Json(catalog(&state, &library).await?))
+}
+
+/// Whether `plugin_instance_id` is an installed notifier whose plugin sends
+/// account mail.
+///
+/// # Errors
+///
+/// A 500 when the instances cannot be read.
+pub(crate) async fn is_account_mail_notifier(
+    state: &AppState,
+    library: &LibraryStore,
+    plugin_instance_id: &str,
+) -> Result<bool, ApiError> {
+    Ok(catalog(state, library)
+        .await?
+        .notifiers
+        .iter()
+        .any(|n| n.account_mail && n.plugin_instance_id == plugin_instance_id))
 }
 
 // --- Channels -------------------------------------------------------------

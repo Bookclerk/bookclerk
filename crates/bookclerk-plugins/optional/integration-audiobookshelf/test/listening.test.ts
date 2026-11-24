@@ -121,7 +121,7 @@ const T0 = 1_800_000_000_000;
 test("migrations belong to the LISTENING_STATE binding only", () => {
   assert.deepEqual(
     migrationsFor("LISTENING_STATE").map((m) => m.id),
-    ["abs-listening-v1", "abs-user-watch-v1"],
+    ["abs-listening-v1", "abs-user-watch-v1", "abs-user-watch-pending-v1"],
   );
   assert.deepEqual(migrationsFor("OTHER"), []);
 });

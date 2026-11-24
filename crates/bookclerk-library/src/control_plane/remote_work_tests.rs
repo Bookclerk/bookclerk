@@ -5012,6 +5012,7 @@ async fn a_job_upload_takes_over_a_branch_delivered_copy_of_its_edition() {
             key: key.clone(),
             size: files[0].size,
             content_type: None,
+            version: None,
         }],
     };
     assert!(matches!(

@@ -89,6 +89,28 @@ pub enum DatabaseCommand {
         #[arg(long)]
         apply: bool,
     },
+    /// Guided setup for a hosted database: reads a Cloudflare API token
+    /// from stdin (never argv), finds or creates the D1 database, mints a
+    /// token limited to D1, seals it with the library's key in the master
+    /// key's store (the file, the OS keychain or systemd-creds), and writes
+    /// `[database.d1]` to config.toml.
+    ///
+    /// The pasted token is not stored. `[database].plugin` is not changed:
+    /// move the library with `config database migrate --to d1 --apply`.
+    Setup {
+        /// The hosted database to set up.
+        #[arg(value_enum)]
+        backend: crate::commands::database_setup::SetupBackend,
+        /// Cloudflare account id; found from the token when it sees only one.
+        #[arg(long)]
+        account_id: Option<String>,
+        /// D1 database name (default `bookclerk`); created when missing.
+        #[arg(long)]
+        database_name: Option<String>,
+        /// Where a new database keeps its data: `default`, `eu` or `fedramp`.
+        #[arg(long)]
+        jurisdiction: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -706,6 +728,26 @@ async fn run_database(
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     match command {
+        DatabaseCommand::Setup {
+            backend,
+            account_id,
+            database_name,
+            jurisdiction,
+        } => {
+            let token = crate::secret_input::read_secret_stdin("Cloudflare API token: ")?;
+            crate::commands::database_setup::run(
+                config,
+                format,
+                backend,
+                &token,
+                crate::commands::database_setup::SetupChoices {
+                    account_id,
+                    database_name,
+                    jurisdiction,
+                },
+            )
+            .await
+        }
         DatabaseCommand::Migrate {
             from,
             to,

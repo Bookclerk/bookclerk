@@ -4,6 +4,7 @@ import type {
   CatalogSearchHit,
   CatalogSearchSort,
   GlobalQueueEntry,
+  LibraryCopy,
   PurchaseHint,
   QueueWisher,
   Recommendation,
@@ -51,6 +52,8 @@ export type CatalogTitle = {
   wish_count?: number;
   /** Branches of this library that currently list this title. */
   available_through?: BranchAvailability[];
+  /** Whether the library already holds this edition or another edition (search hits only). */
+  in_library?: LibraryCopy | null;
 };
 
 /**
@@ -603,6 +606,7 @@ export function catalogTitleFromHit(
     rating_overall: hit.rating_overall ?? null,
     wishlist_uuid: wishlistUuid ?? null,
     available_through: hit.available_through,
+    in_library: hit.in_library ?? null,
   });
 }
 

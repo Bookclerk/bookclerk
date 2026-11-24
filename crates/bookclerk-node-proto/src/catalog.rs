@@ -142,7 +142,17 @@ pub struct CatalogFile {
     /// MIME type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
+    /// An opaque marker that changes when the file's content changes (the
+    /// branch's storage change signature, entity tag or modification
+    /// time), at most [`MAX_CATALOG_FILE_VERSION_BYTES`]. It is part of the
+    /// manifest digest, so a file replaced in place under the same key and
+    /// size is sent again. Left out when the branch's storage reports none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
+
+/// Longest [`CatalogFile::version`] a title may carry, in bytes.
+pub const MAX_CATALOG_FILE_VERSION_BYTES: usize = 128;
 
 /// A title named by store, product id and marketplace: the identity of a
 /// [`CatalogTitle`] on both ends of a catalog sync.
@@ -280,9 +290,13 @@ impl CatalogTitle {
                 .content_type
                 .as_deref()
                 .is_none_or(|t| t.len() <= 128 && !t.chars().any(char::is_control));
+            let version_ok = file.version.as_deref().is_none_or(|v| {
+                v.len() <= MAX_CATALOG_FILE_VERSION_BYTES && !v.chars().any(char::is_control)
+            });
             if !is_storage_key(&file.key)
                 || file.size > MAX_UPLOAD_FILE_BYTES
                 || !type_ok
+                || !version_ok
                 || !keys.insert(file.key.as_str())
             {
                 return Some("invalid_manifest");
@@ -345,6 +359,7 @@ mod tests {
                 key: "An Author/A Title/A Title.m4b".into(),
                 size: 10,
                 content_type: Some("audio/mp4".into()),
+                version: None,
             }],
         }
     }

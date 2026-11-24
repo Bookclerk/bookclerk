@@ -16,6 +16,10 @@
 //! install. What the item's bytes mean (`BCK1` or `BCK2`, the fingerprint
 //! check) stays in `bookclerk-library`'s `master_key` module.
 //!
+//! The same stores also keep a hosted database's API token, already sealed
+//! with the DEK, as a second [`ItemKind`] with its own service and
+//! credential names.
+//!
 //! [`OsKeychain`] is the real store. [`MemoryVault`] keeps items in memory,
 //! for tests and for hosts that must never touch the keychain.
 //!
@@ -37,7 +41,7 @@ use zeroize::Zeroizing;
 mod secret_service;
 mod systemd_creds;
 
-pub use systemd_creds::{SystemdCredsVault, CREDENTIAL_NAME};
+pub use systemd_creds::{SystemdCredsVault, CREDENTIAL_NAME, DATABASE_CREDENTIAL_NAME};
 
 /// Keychain service name every Bookclerk master-key item is stored under.
 ///
@@ -45,6 +49,65 @@ pub use systemd_creds::{SystemdCredsVault, CREDENTIAL_NAME};
 /// for one OS user (a development checkout beside an installed app) keep
 /// separate items.
 pub const KEYCHAIN_SERVICE: &str = "app.bookclerk.master-key";
+
+/// Keychain service name a database credential item is stored under (the
+/// DEK-sealed API token of a hosted database such as Cloudflare D1).
+pub const DATABASE_CREDENTIAL_SERVICE: &str = "app.bookclerk.database-credential";
+
+/// What an item holds, which decides the names it is stored under.
+///
+/// Each kind has its own keychain service, `systemd-creds` credential name
+/// and sealed-file prefix, so an item of one kind can never be read as the
+/// other (a unit-provided master key is never returned for a database
+/// credential, and a sealed file can't be renamed into the other's place).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ItemKind {
+    /// The library's data-encryption key envelope (`BCK1`/`BCK2`).
+    #[default]
+    MasterKey,
+    /// A hosted database's API credential, already sealed with the DEK.
+    DatabaseCredential,
+}
+
+impl ItemKind {
+    /// The keychain service items of this kind are stored under.
+    #[must_use]
+    pub fn service(self) -> &'static str {
+        match self {
+            Self::MasterKey => KEYCHAIN_SERVICE,
+            Self::DatabaseCredential => DATABASE_CREDENTIAL_SERVICE,
+        }
+    }
+
+    /// The `systemd-creds` credential name items of this kind are sealed
+    /// under, and the name a service unit hands one in as.
+    #[must_use]
+    pub fn credential_name(self) -> &'static str {
+        match self {
+            Self::MasterKey => CREDENTIAL_NAME,
+            Self::DatabaseCredential => DATABASE_CREDENTIAL_NAME,
+        }
+    }
+
+    /// The file-name prefix of a sealed `systemd-creds` item:
+    /// `<prefix>-<item>.cred`.
+    #[must_use]
+    pub fn file_prefix(self) -> &'static str {
+        match self {
+            Self::MasterKey => "master-key",
+            Self::DatabaseCredential => "database-credential",
+        }
+    }
+
+    /// The human-readable label a keychain shows for an item of this kind.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::MasterKey => "Bookclerk library key",
+            Self::DatabaseCredential => "Bookclerk database credential",
+        }
+    }
+}
 
 /// Four-byte header of a `master.key` pointer record for an OS keychain
 /// item (`BCK3`).
@@ -337,30 +400,41 @@ fn check_len(bytes: &[u8]) -> Result<()> {
 /// none, and every call then fails with [`KeystoreErrorKind::Unavailable`].
 #[derive(Default)]
 pub struct OsKeychain {
-    /// Nothing to hold: the platform store is process-wide.
-    _private: (),
+    /// The kind of item this handle reads and writes; the platform store
+    /// itself is process-wide.
+    kind: ItemKind,
 }
 
 impl OsKeychain {
-    /// A handle to this machine's credential store.
+    /// A handle to this machine's credential store for master-key items.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A handle to this machine's credential store for items of `kind`.
+    ///
+    /// # Arguments
+    ///
+    /// * `kind` - decides the keychain service items are stored under.
+    #[must_use]
+    pub fn for_kind(kind: ItemKind) -> Self {
+        Self { kind }
     }
 }
 
 impl Vault for OsKeychain {
     fn get(&self, item: KeychainItemId) -> Result<Zeroizing<Vec<u8>>> {
-        platform::get(item)
+        platform::get(self.kind, item)
     }
 
     fn set(&self, item: KeychainItemId, bytes: &[u8]) -> Result<()> {
         check_len(bytes)?;
-        platform::set(item, bytes)
+        platform::set(self.kind, item, bytes)
     }
 
     fn delete(&self, item: KeychainItemId) -> Result<()> {
-        platform::delete(item)
+        platform::delete(self.kind, item)
     }
 }
 
@@ -378,7 +452,7 @@ mod platform {
 
     use zeroize::Zeroizing;
 
-    use crate::{KeychainItemId, KeystoreError, KeystoreErrorKind, Result, KEYCHAIN_SERVICE};
+    use crate::{ItemKind, KeychainItemId, KeystoreError, KeystoreErrorKind, Result};
 
     /// The opened platform store, once a call has needed it.
     static STORE: OnceLock<Mutex<Option<Arc<keyring_core::CredentialStore>>>> = OnceLock::new();
@@ -410,29 +484,29 @@ mod platform {
         Ok(store)
     }
 
-    /// The entry for `item` under [`KEYCHAIN_SERVICE`].
-    fn entry(item: KeychainItemId) -> Result<keyring_core::Entry> {
+    /// The entry for `item` under `kind`'s service.
+    fn entry(kind: ItemKind, item: KeychainItemId) -> Result<keyring_core::Entry> {
         store()?
-            .build(KEYCHAIN_SERVICE, &item.to_string(), None)
+            .build(kind.service(), &item.to_string(), None)
             .map_err(map_error)
     }
 
     /// Reads an item's bytes.
-    pub(crate) fn get(item: KeychainItemId) -> Result<Zeroizing<Vec<u8>>> {
-        entry(item)?
+    pub(crate) fn get(kind: ItemKind, item: KeychainItemId) -> Result<Zeroizing<Vec<u8>>> {
+        entry(kind, item)?
             .get_secret()
             .map(Zeroizing::new)
             .map_err(map_error)
     }
 
     /// Creates or replaces an item.
-    pub(crate) fn set(item: KeychainItemId, bytes: &[u8]) -> Result<()> {
-        entry(item)?.set_secret(bytes).map_err(map_error)
+    pub(crate) fn set(kind: ItemKind, item: KeychainItemId, bytes: &[u8]) -> Result<()> {
+        entry(kind, item)?.set_secret(bytes).map_err(map_error)
     }
 
     /// Deletes an item; a missing item is not an error.
-    pub(crate) fn delete(item: KeychainItemId) -> Result<()> {
-        match entry(item)?.delete_credential() {
+    pub(crate) fn delete(kind: ItemKind, item: KeychainItemId) -> Result<()> {
+        match entry(kind, item)?.delete_credential() {
             Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
             Err(err) => Err(map_error(err)),
         }
@@ -492,7 +566,7 @@ mod platform {
 mod platform {
     use zeroize::Zeroizing;
 
-    use crate::{KeychainItemId, KeystoreError, KeystoreErrorKind, Result};
+    use crate::{ItemKind, KeychainItemId, KeystoreError, KeystoreErrorKind, Result};
 
     /// The error every call returns here.
     fn unsupported() -> KeystoreError {
@@ -503,17 +577,17 @@ mod platform {
     }
 
     /// Always fails: no store.
-    pub(crate) fn get(_item: KeychainItemId) -> Result<Zeroizing<Vec<u8>>> {
+    pub(crate) fn get(_kind: ItemKind, _item: KeychainItemId) -> Result<Zeroizing<Vec<u8>>> {
         Err(unsupported())
     }
 
     /// Always fails: no store.
-    pub(crate) fn set(_item: KeychainItemId, _bytes: &[u8]) -> Result<()> {
+    pub(crate) fn set(_kind: ItemKind, _item: KeychainItemId, _bytes: &[u8]) -> Result<()> {
         Err(unsupported())
     }
 
     /// Always fails: no store.
-    pub(crate) fn delete(_item: KeychainItemId) -> Result<()> {
+    pub(crate) fn delete(_kind: ItemKind, _item: KeychainItemId) -> Result<()> {
         Err(unsupported())
     }
 }

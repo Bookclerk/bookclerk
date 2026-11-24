@@ -2194,6 +2194,7 @@ mod tests {
                             key: "T/T.m4b".into(),
                             size: 1,
                             content_type: None,
+                            version: None,
                         }],
                     }],
                 },
