@@ -82,12 +82,17 @@ pub struct Config {
     /// Library id that produced [`Self::output_revision`]. Not serialized.
     #[serde(skip)]
     pub output_authority: Option<String>,
+    /// The environment's auth password, resolved once by [`Self::load`] so
+    /// a secret file changing mid-run can't change it. Not serialized.
+    #[serde(skip)]
+    pub env_auth_password: crate::EnvAuthPassword,
 }
 
 /// Auth encryption settings (`[auth]` section).
 ///
 /// Bookclerk always encrypts credentials via the process DEK (`master.key`).
-/// Set `BOOKCLERK_AUTH_PASSWORD` (preferred) or `[auth].password` to wrap the
+/// Set `BOOKCLERK_AUTH_PASSWORD` or `BOOKCLERK_AUTH_PASSWORD_FILE` (preferred)
+/// or `[auth].password` to wrap the
 /// DEK with a passphrase at rest (`BCK1` → `BCK2`). A later password can be
 /// applied via CLI (`config master-key wrap` / `config set auth.password`) or
 /// daemon config reload — no GUI in this surface.
@@ -765,8 +770,11 @@ impl Config {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::ConfigError`] when the file cannot be read or parsed, or
-    /// when soft validation of destinations / database fails after merge.
+    /// Returns [`crate::ConfigError`] when the file cannot be read or parsed,
+    /// when `BOOKCLERK_AUTH_PASSWORD_FILE` or the `bookclerk-auth-password`
+    /// credential is named but gives no password (see
+    /// [`crate::auth_password_from_env`]), or when soft validation of
+    /// destinations / database fails after merge.
     pub fn load(cli_files_dir: Option<PathBuf>, config_path: Option<PathBuf>) -> Result<Self> {
         let files_dir = resolve_files_dir(cli_files_dir);
         let paths = Paths::from_files_dir(files_dir);
@@ -789,6 +797,12 @@ impl Config {
         paths.library_db = cfg.database.sqlite_path(&paths.files_dir);
         cfg.paths = Some(paths);
         cfg.resolve_relative_paths();
+        // A named password source that gives no password stops the load
+        // here, before anything can mint an unwrapped key. The value is kept
+        // so later key operations use the password this load saw.
+        cfg.env_auth_password = crate::EnvAuthPassword::Resolved(
+            crate::auth_password_from_env()?.map(zeroize::Zeroizing::new),
+        );
         cfg.register_known_secrets();
         // Callers should invoke [`Self::warn_unsupported_options`] *after*
         // `init_tracing_with` so startup guidance is not dropped.
@@ -1127,14 +1141,27 @@ impl Config {
 
     /// Resolve the passphrase that wraps `master.key`.
     ///
-    /// Prefers `BOOKCLERK_AUTH_PASSWORD` over `[auth].password`.
+    /// Prefers the environment (`BOOKCLERK_AUTH_PASSWORD`, the file named by
+    /// `BOOKCLERK_AUTH_PASSWORD_FILE`, or the `bookclerk-auth-password`
+    /// systemd credential; see [`crate::auth_password_from_env`]) over
+    /// `[auth].password`. A loaded config uses the value [`Self::load`]
+    /// resolved (which already refused a named source that gives no
+    /// password), never re-reading the file. A config built without `load`
+    /// reads the environment now; if a named source fails there, this logs
+    /// the error and returns `None` rather than using `[auth].password`.
     #[must_use]
     pub fn auth_password(&self) -> Option<String> {
-        if let Ok(v) = std::env::var("BOOKCLERK_AUTH_PASSWORD") {
-            let trimmed = v.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
-            }
+        match &self.env_auth_password {
+            crate::EnvAuthPassword::Resolved(Some(pw)) => return Some(pw.to_string()),
+            crate::EnvAuthPassword::Resolved(None) => {}
+            crate::EnvAuthPassword::Unresolved => match crate::auth_password_from_env() {
+                Ok(Some(pw)) => return Some(pw),
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::error!("{err}");
+                    return None;
+                }
+            },
         }
         self.auth
             .password
@@ -1261,7 +1288,8 @@ impl Config {
         if self.auth_password().is_none() {
             tracing::warn!(
                 "no auth password set — master.key may be BCK1 (unwrapped DEK). \
-                 Set BOOKCLERK_AUTH_PASSWORD or [auth].password, then \
+                 Set BOOKCLERK_AUTH_PASSWORD, BOOKCLERK_AUTH_PASSWORD_FILE or \
+                 [auth].password, then \
                  `bookclerk config master-key wrap` (or reload bookclerkd)."
             );
         }
