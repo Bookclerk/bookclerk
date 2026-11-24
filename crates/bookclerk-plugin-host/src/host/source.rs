@@ -82,6 +82,21 @@ impl FetchStop {
         }
     }
 
+    /// What `dir` holds before the guest's call starts: its paths, for the
+    /// cleanup of a stopped fetch, and its size, for the budget.
+    async fn baseline(&self) -> FetchBaseline {
+        FetchBaseline {
+            // A scratch that cannot be listed whole is left as it is:
+            // anything the listing missed would look like this fetch's and
+            // be removed.
+            earlier: dir_paths(&self.dir).await.ok(),
+            start: match self.max_bytes {
+                Some(_) => dir_bytes(&self.dir).await,
+                None => 0,
+            },
+        }
+    }
+
     /// Waits until the fetch must stop.
     ///
     /// Calls on one plugin session run one at a time, so what `dir`
@@ -100,14 +115,11 @@ impl FetchStop {
     /// earlier fetch left stays, since its acquire may still be reading it.
     /// When `dir` could not be listed whole as the call started, nothing is
     /// removed.
-    async fn wait(self) -> bookclerk_plugin_sdk::PluginError {
-        // A scratch that cannot be listed whole is left as it is: anything
-        // the listing missed would look like this fetch's and be removed.
-        let earlier = dir_paths(&self.dir).await.ok();
-        let start = match self.max_bytes {
-            Some(_) => dir_bytes(&self.dir).await,
-            None => 0,
-        };
+    ///
+    /// `baseline` is [`Self::baseline`], taken before the guest's call
+    /// starts, so nothing the fetch writes is mistaken for an earlier file.
+    async fn wait(self, baseline: FetchBaseline) -> bookclerk_plugin_sdk::PluginError {
+        let FetchBaseline { earlier, start } = baseline;
         let stopped = loop {
             tokio::time::sleep(FETCH_STOP_POLL).await;
             if self
@@ -145,6 +157,17 @@ impl FetchStop {
         }
         stopped
     }
+}
+
+/// What a fetch's scratch held before the guest's call started
+/// ([`FetchStop::baseline`]).
+#[derive(Debug)]
+struct FetchBaseline {
+    /// Every path under the scratch, or `None` when it could not be listed
+    /// whole (a stopped fetch then removes nothing).
+    earlier: Option<std::collections::BTreeSet<PathBuf>>,
+    /// The scratch's size in bytes, when the fetch is bounded; 0 otherwise.
+    start: u64,
 }
 
 /// Every path under `dir`, relative to it, folders included; symbolic
@@ -1110,9 +1133,12 @@ impl ContentSource for ExternalSource {
         let mut plain = match self
             .session
             .storefront(move |src| async move {
+                // Taken on the vat thread, once this call's turn has come
+                // and before the guest starts writing.
+                let baseline = stop.baseline().await;
                 tokio::select! {
                     biased;
-                    stopped = stop.wait() => Err(stopped),
+                    stopped = stop.wait(baseline) => Err(stopped),
                     out = src.fetch_title(params) => out,
                 }
             })
@@ -2387,7 +2413,13 @@ mod tests {
             cancel: Some(Arc::clone(&cancel)),
         };
 
-        let stop = tokio::spawn(FetchStop::new(&opts(Some(16)), dir.path().to_path_buf()).wait());
+        // The baseline is taken before the guest starts, as the call does.
+        let start = |stop: FetchStop| async move {
+            let baseline = stop.baseline().await;
+            tokio::spawn(stop.wait(baseline))
+        };
+
+        let stop = start(FetchStop::new(&opts(Some(16)), dir.path().to_path_buf())).await;
         tokio::time::sleep(FETCH_STOP_POLL * 3).await;
         assert!(!stop.is_finished(), "earlier files are not this fetch's");
         std::fs::create_dir(dir.path().join("title")).unwrap();
@@ -2403,7 +2435,10 @@ mod tests {
             "an earlier fetch's stay"
         );
 
-        let stop = tokio::spawn(FetchStop::new(&opts(None), dir.path().to_path_buf()).wait());
+        let stop = start(FetchStop::new(&opts(None), dir.path().to_path_buf())).await;
+        // What the guest writes the moment its call starts is still this
+        // fetch's.
+        std::fs::write(dir.path().join("immediate.bin"), [0u8; 4]).unwrap();
         tokio::time::sleep(FETCH_STOP_POLL * 3).await;
         assert!(!stop.is_finished(), "an unbounded fetch runs on");
         std::fs::write(dir.path().join("partial.bin"), [0u8; 4]).unwrap();
@@ -2412,6 +2447,7 @@ mod tests {
         let cancelled = stop.await.unwrap();
         assert_eq!(cancelled.code, PluginErrorCode::Cancelled, "{cancelled}");
         assert!(!dir.path().join("partial.bin").exists());
+        assert!(!dir.path().join("immediate.bin").exists());
         assert!(!dir.path().join("kept").join("partial.bin").exists());
         assert!(dir.path().join("kept").join("earlier.bin").exists());
         assert!(dir.path().join("earlier.bin").exists());
@@ -2419,7 +2455,7 @@ mod tests {
         // A scratch that could not be listed when the call started is left
         // as it is.
         let missing = dir.path().join("missing");
-        let stop = tokio::spawn(FetchStop::new(&opts(None), missing.clone()).wait());
+        let stop = start(FetchStop::new(&opts(None), missing.clone())).await;
         tokio::time::sleep(FETCH_STOP_POLL * 3).await;
         std::fs::create_dir(&missing).unwrap();
         std::fs::write(missing.join("unknown.bin"), [0u8; 4]).unwrap();
