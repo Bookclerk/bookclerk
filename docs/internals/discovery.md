@@ -614,7 +614,7 @@ read with the genres, series and description its wish holds.
 | Works that must carry a phrase | 2, and half of the axis's weight |
 | Least distinctiveness | 0.2 |
 | Phrase against genre or series | The phrase must be 0.15 more distinctive |
-| Works that count | Only works that carry a name of that kind at all: a work with no genre or series has no say in a genre, one with no description none in a phrase |
+| Works that count | Only works that carry a name of that kind at all: a work with no genre or series has no say in a genre, one with no description none in a phrase. They must make up half of the axis's weight for that kind of name to be used |
 | Names within 0.05 of the most distinctive | The one with more words, then the more distinctive, then by name |
 | Genre labels | The parts of a work's genre line, split on `;` or `>` when it has either (so "Mystery, Thriller & Suspense" stays one label), else on commas; broad labels such as "Fiction" are left out |
 | Nothing qualifies | "Like" and the title of the work nearest the axis's centroid |

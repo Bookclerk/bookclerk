@@ -70,6 +70,11 @@ const PHRASE_MIN_SHARE: (usize, usize) = (1, 2);
 /// series to name the axis instead. Phrases are noisier than labels.
 const PHRASE_HANDICAP: f64 = 0.15;
 
+/// Least share of an axis's weight that the works able to carry a kind of
+/// name (a genre or series, or a phrase) must make up for that kind to
+/// name the axis: half.
+const VOTERS_MIN_SHARE: (usize, usize) = (1, 2);
+
 /// How far below the most distinctive name another may score and still be
 /// as good: among such names the one with the most words wins.
 const NAME_NEAR: f64 = 0.05;
@@ -905,7 +910,8 @@ fn count(count: usize) -> f64 {
 /// group's works that carry it less the share of the other groups' works
 /// that do, each work counted by its weight, so the works that make the
 /// axis name it and not the light ones that sit with them, and only works
-/// that carry a name of that kind at all counted; the most distinctive names the group, a genre or series
+/// that carry a name of that kind at all counted, and those at least
+/// half of the group's weight; the most distinctive names the group, a genre or series
 /// winning over a phrase unless the phrase is clearly more distinctive
 /// (`PHRASE_HANDICAP`), and among names about as distinctive as the best
 /// the one with the most words, so a longer phrase wins over the shorter
@@ -1000,9 +1006,19 @@ pub fn name_axes(groups: &[Vec<usize>], books: &[AxisBook]) -> Vec<String> {
     for (group, members) in groups.iter().enumerate() {
         // (score, words, display) of every name that qualifies.
         let mut qualified: Vec<(f64, usize, &str)> = Vec::new();
+        let whole: f64 = members
+            .iter()
+            .filter_map(|member| books.get(*member))
+            .map(|book| book.weight.max(0.0))
+            .sum();
         for candidate in &candidates {
             let kind = usize::from(candidate.phrase);
             let own = voting[group][kind];
+            // A few known works do not speak for an axis made mostly of
+            // works nothing is known of.
+            if !at_least(own, whole, VOTERS_MIN_SHARE) {
+                continue;
+            }
             let others = everyone[kind] - own;
             let inside = candidate.weights[group];
             let share = if candidate.phrase {
@@ -1544,9 +1560,15 @@ mod tests {
             &[vec![0, 1, 2, 3, 4], vec![5, 6], vec![7, 8, 9, 10]],
             &books,
         );
+        // The third group is mostly works nothing is known of: its two
+        // light fantasies do not speak for it.
         assert_eq!(
             names,
-            ["World War II", "Mystery, Thriller & Suspense", "Fantasy"]
+            [
+                "World War II",
+                "Mystery, Thriller & Suspense",
+                "Like Iron Flame"
+            ]
         );
         // A line without `;` or `>` lists its labels with commas.
         let labels: Vec<String> = axis_labels("Fantasy, Epic, Fiction")
