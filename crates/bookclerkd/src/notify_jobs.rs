@@ -82,7 +82,8 @@ pub async fn notify_queue_limits(state: &AppState) -> NotifyQueueLimits {
 /// # Arguments
 ///
 /// * `state` - Daemon state (library, integrations, config).
-/// * `payload` - The job payload; `notify_delivery` names the delivery.
+/// * `payload` - The job payload; `notify_delivery` names the delivery, or
+///   `account_mail` an account mail ([`crate::account_mail`]).
 /// * `ctx` - Lease and cancel token; needed to park a retry.
 ///
 /// # Returns
@@ -101,6 +102,9 @@ pub async fn run_notify_send(
     payload: &JobPayload,
     ctx: Option<&JobExecCtx>,
 ) -> anyhow::Result<String> {
+    if payload.account_mail.is_some() {
+        return crate::account_mail::run_account_mail_send(state, payload, ctx).await;
+    }
     let delivery_id = payload
         .notify_delivery
         .as_deref()
@@ -281,7 +285,11 @@ async fn send_params(state: &AppState, work: &SendWork) -> NotifySendParams {
             address_json: d.address_json.clone(),
         });
     NotifySendParams {
-        message: stored.notification.message(&stored.id, link),
+        message: stored.notification.message(
+            &stored.id,
+            link,
+            link_for(origin.as_deref(), Some("/")),
+        ),
         destination,
     }
 }
@@ -355,7 +363,7 @@ pub async fn sweep_once(state: &AppState) -> anyhow::Result<()> {
             }
         }
     }
-    Ok(())
+    crate::account_mail::sweep_once(state, &library, NOTIFY_SWEEP_BATCH).await
 }
 
 /// Fails the deliveries whose send job has been ready to run for longer
@@ -451,6 +459,8 @@ mod tests {
         replies: Mutex<Vec<Result<NotifySent, PluginError>>>,
         /// Every send it received.
         sent: Mutex<Vec<NotifySendParams>>,
+        /// The plugin instance it runs as.
+        instance: String,
     }
 
     #[async_trait]
@@ -460,7 +470,7 @@ mod tests {
         }
 
         fn plugin_instance_id(&self) -> Option<&str> {
-            Some("fake-1")
+            Some(&self.instance)
         }
 
         fn supports_notifier(&self) -> bool {
@@ -507,6 +517,7 @@ mod tests {
         let fake = Arc::new(FakeNotifier {
             replies: Mutex::new(replies),
             sent: Mutex::new(Vec::new()),
+            instance: "fake-1".into(),
         });
         state.integrations.write().await.register(fake.clone());
         let channel = library
@@ -904,6 +915,307 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    /// A daemon with `replies` scripted on a running notifier whose
+    /// installed package opts into account mail; answers the state, the
+    /// notifier, its instance id and the files directory to keep alive.
+    async fn mail_daemon(
+        replies: Vec<Result<NotifySent, PluginError>>,
+    ) -> (Arc<AppState>, Arc<FakeNotifier>, String, tempfile::TempDir) {
+        let (state, _app, library) =
+            crate::auth::tests::phase2_harness_unseeded("op-token-account-mail").await;
+        let (instance, files) =
+            crate::account_mail::tests::install_mail_notifier(&state, &library).await;
+        let fake = Arc::new(FakeNotifier {
+            replies: Mutex::new(replies),
+            sent: Mutex::new(Vec::new()),
+            instance: instance.clone(),
+        });
+        state.integrations.write().await.register(fake.clone());
+        (state, fake, instance, files)
+    }
+
+    /// A user with `email`, and an account mail of `kind` queued for them
+    /// through `instance`; answers the user id and the send job's payload.
+    async fn queued_mail(
+        library: &LibraryStore,
+        instance: &str,
+        kind: bookclerk_library::notifications::AccountMailKind,
+        email: &str,
+    ) -> (i64, JobPayload) {
+        let user = library
+            .create_user_with_profile(
+                bookclerk_library::UserRole::Member,
+                Some("Sam"),
+                None,
+                Some(email),
+                None,
+            )
+            .await
+            .expect("user");
+        let limits = NotifyQueueLimits {
+            max_pending: 1_000,
+            max_attempts: 3,
+        };
+        let id = library
+            .queue_account_mail(kind, user.id, email, instance, limits)
+            .await
+            .expect("queued");
+        (
+            user.id,
+            JobPayload {
+                account_mail: Some(id),
+                ..JobPayload::default()
+            },
+        )
+    }
+
+    /// The value of `name` in the query of `link`.
+    fn query_value(link: &str, name: &str) -> String {
+        let query = link.split_once('?').expect("query").1;
+        query
+            .split('&')
+            .find_map(|pair| pair.strip_prefix(&format!("{name}=")))
+            .expect("value")
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn an_invite_mints_its_ticket_at_send_and_only_the_newest_works() {
+        use bookclerk_library::notifications::AccountMailKind;
+        let (state, fake, instance, _files) = mail_daemon(vec![
+            Err(PluginError::rate_limited("slow down", None)),
+            Ok(NotifySent { provider_id: None }),
+        ])
+        .await;
+        state.config.write().await.integrations.public_origin =
+            Some("https://library.example".into());
+        let library = state.library_snapshot().await;
+        let (user_id, payload) = queued_mail(
+            &library,
+            &instance,
+            AccountMailKind::Invite,
+            "sam@example.com",
+        )
+        .await;
+        let id = payload.account_mail.clone().unwrap();
+        // Without a lease the parked retry falls back to the job's own
+        // retry; the attempt is counted.
+        assert!(run_notify_send(&state, &payload, None).await.is_err());
+        run_notify_send(&state, &payload, None).await.expect("sent");
+        let mail = library.account_mail(&id).await.unwrap().unwrap();
+        assert_eq!(mail.state, DeliveryState::Delivered);
+        assert_eq!(mail.attempts, 2);
+        let sent = fake.sent.lock().unwrap().clone();
+        assert_eq!(sent.len(), 2);
+        for params in &sent {
+            assert!(params.message.sensitive);
+            assert_eq!(
+                params.destination.kind,
+                bookclerk_plugin_abi::NotifyDestinationKind::Personal
+            );
+            assert_eq!(
+                params.destination.address_json,
+                r#"{"email":"sam@example.com"}"#
+            );
+        }
+        let links: Vec<String> = sent
+            .iter()
+            .map(|p| p.message.link.clone().expect("link"))
+            .collect();
+        assert!(links[1].starts_with("https://library.example/invite?ticket="));
+        let first = query_value(&links[0], "ticket");
+        let newest = query_value(&links[1], "ticket");
+        assert_ne!(first, newest, "a retry mints a new ticket");
+        let hash = |raw: &str| bookclerk_library::hash_token(raw);
+        // The retry voided the first ticket.
+        assert!(library
+            .get_claim_ticket_by_hash(&hash(&first))
+            .await
+            .unwrap()
+            .is_none());
+        let ticket = library
+            .get_claim_ticket_by_hash(&hash(&newest))
+            .await
+            .unwrap()
+            .expect("ticket");
+        assert_eq!(ticket.emailed_to.as_deref(), Some("sam@example.com"));
+        // Using it proves the address.
+        assert!(library
+            .verify_user_email_if(user_id, "sam@example.com")
+            .await
+            .unwrap());
+        assert!(
+            library
+                .get_user(user_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .email_verified
+        );
+    }
+
+    #[tokio::test]
+    async fn a_verification_link_works_once_for_the_address_it_was_sent_to() {
+        use bookclerk_library::notifications::{parse_verify_email_request, AccountMailKind};
+        let (state, fake, instance, _files) = mail_daemon(vec![
+            Ok(NotifySent { provider_id: None }),
+            Ok(NotifySent { provider_id: None }),
+        ])
+        .await;
+        state.config.write().await.integrations.public_origin =
+            Some("https://library.example/".into());
+        let library = state.library_snapshot().await;
+        let (user_id, payload) = queued_mail(
+            &library,
+            &instance,
+            AccountMailKind::VerifyEmail,
+            "kim@example.com",
+        )
+        .await;
+        run_notify_send(&state, &payload, None).await.expect("sent");
+        let link = fake.sent.lock().unwrap()[0].message.link.clone().unwrap();
+        assert!(link.starts_with("https://library.example/verify-email?token="));
+        let body = format!(r#"{{"token":"{}"}}"#, query_value(&link, "token"));
+        let token = parse_verify_email_request(body.as_bytes()).expect("token");
+        let now = chrono::Utc::now();
+        assert_eq!(
+            library.use_email_verification(&token, now).await.unwrap(),
+            Some(user_id)
+        );
+        assert!(
+            library
+                .get_user(user_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .email_verified
+        );
+        assert_eq!(
+            library.use_email_verification(&token, now).await.unwrap(),
+            None
+        );
+
+        // A link for an address the patron has since changed verifies
+        // nothing, and changing it clears the mark.
+        let id = library
+            .queue_account_mail(
+                AccountMailKind::VerifyEmail,
+                user_id,
+                "kim@example.com",
+                &instance,
+                NotifyQueueLimits {
+                    max_pending: 1_000,
+                    max_attempts: 3,
+                },
+            )
+            .await
+            .unwrap();
+        library
+            .set_user_email(user_id, Some("kim@example.org"))
+            .await
+            .unwrap();
+        assert!(
+            !library
+                .get_user(user_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .email_verified
+        );
+        let payload = JobPayload {
+            account_mail: Some(id.clone()),
+            ..JobPayload::default()
+        };
+        run_notify_send(&state, &payload, None)
+            .await
+            .expect("dropped");
+        let mail = library.account_mail(&id).await.unwrap().unwrap();
+        assert_eq!(mail.state, DeliveryState::Dropped);
+        assert_eq!(fake.sent.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn mail_through_a_notifier_that_no_longer_opts_in_is_dropped() {
+        use bookclerk_library::notifications::AccountMailKind;
+        // `fake-1` runs, but no installed package opts it into account mail.
+        let (state, fake, _) = daemon(vec![Ok(NotifySent { provider_id: None })]).await;
+        state.config.write().await.integrations.public_origin =
+            Some("https://library.example".into());
+        let library = state.library_snapshot().await;
+        let (_, payload) =
+            queued_mail(&library, "fake-1", AccountMailKind::Invite, "d@example.com").await;
+        run_notify_send(&state, &payload, None)
+            .await
+            .expect("dropped");
+        let mail = library
+            .account_mail(payload.account_mail.as_deref().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(mail.state, DeliveryState::Dropped);
+        assert!(fake.sent.lock().unwrap().is_empty(), "no invite was sent");
+    }
+
+    #[tokio::test]
+    async fn a_test_needs_no_public_origin_but_an_invite_does() {
+        use bookclerk_library::notifications::AccountMailKind;
+        let (state, fake, instance, _files) =
+            mail_daemon(vec![Ok(NotifySent { provider_id: None })]).await;
+        let library = state.library_snapshot().await;
+        library
+            .set_account_mail_instance(Some(&instance))
+            .await
+            .unwrap();
+        let (_, invite) = queued_mail(
+            &library,
+            &instance,
+            AccountMailKind::Invite,
+            "a@example.com",
+        )
+        .await;
+        run_notify_send(&state, &invite, None)
+            .await
+            .expect("dropped");
+        let mail = library
+            .account_mail(invite.account_mail.as_deref().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(mail.state, DeliveryState::Dropped);
+        assert!(fake.sent.lock().unwrap().is_empty());
+
+        let (_, test) =
+            queued_mail(&library, &instance, AccountMailKind::Test, "b@example.com").await;
+        run_notify_send(&state, &test, None).await.expect("sent");
+        let sent = fake.sent.lock().unwrap()[0].clone();
+        assert!(sent.message.link.is_none());
+        assert!(sent.message.sensitive);
+        let settings = library.account_mail_settings().await.unwrap().unwrap();
+        assert!(
+            settings.tested_at.is_some(),
+            "a delivered test marks the notifier tested"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_account_mail_no_notifier_claims_fails_after_the_stall_wait() {
+        use bookclerk_library::notifications::AccountMailKind;
+        let (state, _fake, _) = daemon(Vec::new()).await;
+        let library = state.library_snapshot().await;
+        let (_, payload) =
+            queued_mail(&library, "fake-1", AccountMailKind::Test, "c@example.com").await;
+        let id = payload.account_mail.unwrap();
+        let later = chrono::Utc::now() + chrono::Duration::minutes(1);
+        let found = stalled(&library, later).await;
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].account_mail_id.as_deref(), Some(id.as_str()));
+        assert_eq!(found[0].notifier.as_deref(), Some("fake-1"));
+        sweep_stalls(&library, later).await;
+        let mail = library.account_mail(&id).await.unwrap().unwrap();
+        assert_eq!(mail.state, DeliveryState::Failed);
+        assert!(stalled(&library, later).await.is_empty());
     }
 
     #[test]

@@ -1,0 +1,1 @@
+{"success":true,"errors":[],"messages":[],"result":{"id":"f70ff985-a4ef-4643-bbbc-4a0ed4fc8415","account_tag":"3f4b7e3dcab231cbfdaa90a6a28bd548","created_at":"2026-11-24T00:00:00Z","deleted_at":null,"name":"bookclerk-books.example.com","status":"inactive","tun_type":"cfd_tunnel","remote_config":true,"connections":[]}}

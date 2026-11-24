@@ -71,6 +71,7 @@ Environment variables win over `config.toml`. Settings the database owns
 | `BOOKCLERK_DAEMON_LISTEN` | The daemon's listen addresses |
 | `BOOKCLERK_LOG`, `RUST_LOG` | Log filter |
 | `BOOKCLERK_AUTH_PASSWORD` | Wraps `master.key` at rest (preferred over `[auth].password`); needed for legacy `json-encrypted` rows |
+| `BOOKCLERK_AUTH_PASSWORD_FILE` | Path of a file holding that password, such as a Docker, Podman or Kubernetes secret under `/run/secrets/`; can't be combined with `BOOKCLERK_AUTH_PASSWORD`. Without either, a `bookclerk-auth-password` systemd credential in `$CREDENTIALS_DIRECTORY` is read (see [Keeping the auth password off disk](operations.md#keeping-the-auth-password-off-disk)) |
 | `BOOKCLERK_OIDC_<ID>_CLIENT_SECRET` | Client secret of sign-in provider `<ID>` (hyphens become underscores) |
 | `BOOKCLERK_DISCOVERY_RECOMMEND_LIMIT` | How many recommendations by default |
 | `BOOKCLERK_JOBS_MAX_PENDING` | Cap on pending and running jobs (default 32) |

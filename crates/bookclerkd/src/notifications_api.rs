@@ -28,6 +28,7 @@ use bookclerk_plugin_abi::notifications::{
 };
 use bookclerk_plugin_abi::{
     NotificationAlertAction, NotificationAudience, NotificationField, NotificationSeverity,
+    NotifyCheckOutcome, NotifyDeliverabilityParams, NotifyDeliverabilityReport,
     NotifyValidateParams, NotifyValidated,
 };
 use bookclerk_plugin_manifest::NotifierDestination;
@@ -192,6 +193,10 @@ pub(crate) struct NotifierJson {
     personal: bool,
     /// What a patron enters for a personal destination.
     address_fields: Vec<AddressFieldJson>,
+    /// Whether it can send account mail (invites, email verification and
+    /// password resets).
+    #[schema(example = false)]
+    account_mail: bool,
 }
 
 /// Everything the routing screens pick from.
@@ -300,6 +305,7 @@ async fn catalog(
                         secret: f.secret,
                     })
                     .collect(),
+                account_mail: notifier.account_mail,
             });
         }
     }
@@ -339,6 +345,24 @@ pub(crate) async fn get_catalog(
     administrator(&state, &headers).await?;
     let library = state.library_snapshot().await;
     Ok(Json(catalog(&state, &library).await?))
+}
+
+/// Whether `plugin_instance_id` is an installed notifier whose plugin sends
+/// account mail.
+///
+/// # Errors
+///
+/// A 500 when the instances cannot be read.
+pub(crate) async fn is_account_mail_notifier(
+    state: &AppState,
+    library: &LibraryStore,
+    plugin_instance_id: &str,
+) -> Result<bool, ApiError> {
+    Ok(catalog(state, library)
+        .await?
+        .notifiers
+        .iter()
+        .any(|n| n.account_mail && n.plugin_instance_id == plugin_instance_id))
 }
 
 // --- Channels -------------------------------------------------------------
@@ -705,6 +729,246 @@ pub(crate) async fn post_channel_test(
             delivery_id,
         }),
     ))
+}
+
+// --- Deliverability check ---------------------------------------------------
+
+/// Longest the deliverability route waits for the notifier, queueing
+/// included: the ABI's `deliverabilityCheckDeadlineMs` plus a margin, inside
+/// the route's own limit ([`DELIVERABILITY_ROUTE_BUDGET`]).
+const DELIVERABILITY_DEADLINE: std::time::Duration = std::time::Duration::from_millis(
+    bookclerk_plugin_abi::DELIVERABILITY_CHECK_DEADLINE_MS as u64 + 5_000,
+);
+
+/// The request limit of the deliverability route, for `api_timeout_for_path`.
+pub(crate) const DELIVERABILITY_ROUTE_BUDGET: std::time::Duration =
+    std::time::Duration::from_millis(
+        bookclerk_plugin_abi::DELIVERABILITY_CHECK_DEADLINE_MS as u64 + 10_000,
+    );
+
+/// Whether `path` is the deliverability route
+/// (`/api/notifications/notifiers/{id}/deliverability`).
+///
+/// # Arguments
+///
+/// * `path` - A request path.
+pub(crate) fn is_deliverability_path(path: &str) -> bool {
+    path.strip_prefix("/api/notifications/notifiers/")
+        .and_then(|rest| rest.strip_suffix("/deliverability"))
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
+/// How a deliverability check or piece of advice came out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CheckOutcomeJson {
+    /// Passed; nothing to change.
+    Passed,
+    /// Works, but could be better.
+    Warning,
+    /// Likely to land in spam or be refused; fix it first.
+    Failed,
+    /// Not run: not set up, not approved, or the service did not answer.
+    Skipped,
+}
+
+impl From<NotifyCheckOutcome> for CheckOutcomeJson {
+    fn from(outcome: NotifyCheckOutcome) -> Self {
+        match outcome {
+            NotifyCheckOutcome::Passed => Self::Passed,
+            NotifyCheckOutcome::Warning => Self::Warning,
+            NotifyCheckOutcome::Failed => Self::Failed,
+            NotifyCheckOutcome::Skipped => Self::Skipped,
+        }
+    }
+}
+
+/// One checker's result.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct DeliverabilityCheckJson {
+    /// The checker.
+    #[schema(example = "Postmark spam check")]
+    service: String,
+    /// How it came out.
+    outcome: CheckOutcomeJson,
+    /// One line on the result.
+    #[schema(example = "SpamAssassin score 0.8; under 5 passes")]
+    summary: String,
+    /// The checker's full report, an `https` link, when it has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "https://www.mail-tester.com/example-1a2b3c")]
+    report_url: Option<String>,
+}
+
+/// One thing to do, merged from every check.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct DeliverabilityAdviceJson {
+    /// `failed` is a fix, `warning` an improvement, `passed` what is
+    /// already right.
+    outcome: CheckOutcomeJson,
+    /// Short heading.
+    #[schema(example = "Publish a DMARC record")]
+    title: String,
+    /// What to change and where.
+    #[schema(example = "Add a TXT record at _dmarc.example.com, for example v=DMARC1; p=none.")]
+    detail: String,
+    /// The checks that raised it.
+    #[schema(example = json!(["DNS records"]))]
+    sources: Vec<String>,
+}
+
+/// The answer to a deliverability check.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct DeliverabilityReportJson {
+    /// One entry per checker.
+    checks: Vec<DeliverabilityCheckJson>,
+    /// What to do, most urgent first.
+    advice: Vec<DeliverabilityAdviceJson>,
+}
+
+impl From<NotifyDeliverabilityReport> for DeliverabilityReportJson {
+    fn from(report: NotifyDeliverabilityReport) -> Self {
+        Self {
+            checks: report
+                .checks
+                .into_iter()
+                .map(|check| DeliverabilityCheckJson {
+                    service: check.service,
+                    outcome: check.outcome.into(),
+                    summary: check.summary,
+                    report_url: check.report_url,
+                })
+                .collect(),
+            advice: report
+                .advice
+                .into_iter()
+                .map(|advice| DeliverabilityAdviceJson {
+                    outcome: advice.outcome.into(),
+                    title: advice.title,
+                    detail: advice.detail,
+                    sources: advice.sources,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Runs a notifier instance's deliverability check.
+///
+/// The notifier sends the host's test message the way real messages go
+/// and asks the checker services the operator approved how it scores,
+/// then merges their findings into advice. It can take up to two minutes;
+/// sends on that notifier wait behind it.
+///
+/// Access: the operator, an Owner or an Administrator.
+#[utoipa::path(
+    post,
+    path = "/api/notifications/notifiers/{id}/deliverability",
+    params(("id" = String, Path, description = "Plugin instance id of the notifier.")),
+    responses(
+        (status = 200, description = "The checks and the merged advice.", body = DeliverabilityReportJson),
+        (status = 400, description = "The instance is not a notifier with a deliverability check, or its settings are incomplete.", body = ErrorMessage, example = json!({"error": "the notifier refused the check: the server setting is not set"})),
+        (status = 401, description = "No one is signed in.", body = ErrorMessage, example = json!({"error": "sign in first"})),
+        (status = 403, description = "The caller is not an Administrator.", body = ErrorMessage, example = json!({"error": "only an Administrator can manage notifications"})),
+        (status = 409, description = "The notifier is not running on this server.", body = ErrorMessage, example = json!({"error": "the notifier is not running on this server"})),
+        (status = 502, description = "The notifier could not be reached, did not answer in time, or its report was refused.", body = ErrorMessage, example = json!({"error": "the notifier could not run the check"})),
+        (status = 500, description = "The library could not be read.", body = ErrorMessage, example = json!({"error": "the library could not be read or changed"})),
+    ),
+)]
+pub(crate) async fn post_notifier_deliverability(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<DeliverabilityReportJson>, ApiError> {
+    administrator(&state, &headers).await?;
+    let library = state.library_snapshot().await;
+    let catalog = catalog(&state, &library).await?;
+    if catalog.notifier(&id).is_none() {
+        return Err(bad(format!("plugin instance {id} is not a notifier")));
+    }
+    let notifier = {
+        let integrations = state.integrations.read().await;
+        integrations
+            .all()
+            .iter()
+            .find(|i| i.plugin_instance_id() == Some(id.as_str()))
+            .cloned()
+    }
+    .filter(|n| n.supports_notifier())
+    .ok_or_else(|| {
+        (
+            StatusCode::CONFLICT,
+            Json(ErrorMessage::new(
+                "the notifier is not running on this server",
+            )),
+        )
+    })?;
+    let host = host_notification_type(TEST_NOTIFICATION_TYPE).ok_or_else(|| {
+        store_error(
+            "post_notifier_deliverability",
+            LibraryError::Invalid("the host test type is missing".into()),
+        )
+    })?;
+    let sample = NewNotification {
+        notification_type: host.id.to_string(),
+        audience: host.audience,
+        severity: host.severity,
+        title: host.title.to_string(),
+        text: "A test from Bookclerk, sent to check how well this library's messages reach \
+               inboxes. No action is needed."
+            .to_string(),
+        link_path: Some("/".into()),
+        fields: Vec::new(),
+        group_key: None,
+        alert_action: NotificationAlertAction::None,
+        alert_key: None,
+        source: String::new(),
+        patron: None,
+    };
+    let origin = state.config.read().await.integrations.public_origin.clone();
+    let link = bookclerk_library::notifications::link_for(origin.as_deref(), Some("/"));
+    let message = sample.message(
+        &format!("deliverability-{}", uuid::Uuid::new_v4()),
+        link.clone(),
+        link,
+    );
+    // Only a host-chosen category is logged: a notifier's own message may
+    // repeat its settings.
+    let unreachable = |category: &str| {
+        tracing::warn!(notifier = %id, category, "checkDeliverability failed");
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorMessage::new("the notifier could not run the check")),
+        )
+    };
+    let answer = tokio::time::timeout(
+        DELIVERABILITY_DEADLINE,
+        notifier.notify_check_deliverability(NotifyDeliverabilityParams { message }),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        Err(bookclerk_integrations::IntegrationError::message(
+            "the notifier did not answer in time",
+        ))
+    });
+    match answer {
+        Ok(Ok(report)) => Ok(Json(report.into())),
+        Ok(Err(refused))
+            if matches!(
+                refused.code,
+                bookclerk_plugin_abi::PluginErrorCode::InvalidParams
+                    | bookclerk_plugin_abi::PluginErrorCode::Unsupported
+                    | bookclerk_plugin_abi::PluginErrorCode::NetworkNotGranted
+            ) =>
+        {
+            Err(bad(format!(
+                "the notifier refused the check: {}",
+                bookclerk_plugin_abi::notifications::sanitize_reason(&refused.message)
+            )))
+        }
+        Ok(Err(other)) => Err(unreachable(&format!("the notifier answered {}", other.code)).into()),
+        Err(_) => Err(unreachable("the notifier could not be reached").into()),
+    }
 }
 
 // --- Routes and patron offers ----------------------------------------------

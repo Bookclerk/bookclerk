@@ -716,7 +716,11 @@ when it commits the upload.
    It also carries the store listing the acquire needs (store, product id,
    marketplace, title, people, series and dates), read from the owner's
    holdings and editions, and a podcast episode carries its show's
-   listing the same way.
+   listing the same way. One answer carries at most 100 titles and looks
+   at most 500 of the job's titles. When the owner stopped before it
+   looked at them all, the answer's `next` says where to ask again from,
+   even if it lists no title (the titles it looked at were already in
+   the library).
 3. The host acquires each title into a per-title outbox, with one
    sub-directory per owner destination. So each destination's file names
    come out exactly as a local acquire on the owner would name them.
@@ -834,14 +838,29 @@ title, and the host fails it without fetching anything.
    says](media.md#what-a-stored-files-row-says)). The owner answers
    `upload.granted` with an upload id and a bearer token **sealed to the
    host's box key**. Only its hash is stored, and it lives one hour.
+
+   The grant pins each destination's configuration revision as well as
+   its id. A title another account's holding of the same edition has
+   already acquired is answered `edition_acquired`: the library holds
+   it, so the host counts it as acquired and sends nothing. The
+   exception is a **better copy**: when the host's probe of the primary
+   audio is better than the probe the library recorded for that key
+   (lossless over lossy, then the higher bitrate), the upload replaces
+   the edition's files.
 2. **Send.** The host sends
    `PUT /api/node/v1/uploads/{upload_id}/files/{n}` per file, with
    `Authorization: Bookclerk-Upload <token>`. The owner tees the body,
    chunk by chunk, into each of those destinations under that
    destination's key. If the title's destinations change before the
-   commit (one is deployed or undeployed, or a filter is edited), the
-   upload is refused with `destinations_changed` and the title fails on
-   the host.
+   commit (one is deployed or undeployed, a filter is edited, or a
+   destination's configuration changes, such as a moved root or bucket),
+   the upload is refused with `destinations_changed` and the title fails
+   on the host.
+
+   A better copy is written under a temporary name beside each key
+   (ending `.bookclerk-staged-<upload id>`), and moved onto the key only
+   at the commit. Until then the library's copy, and what its rows say about
+   it, stay as they were.
    It checks the size and SHA-256 as it streams, and re-checks the job's
    fence about once a second.
 
@@ -864,7 +883,10 @@ title, and the host fails it without fetching anything.
    again from byte 0. A file small enough to send whole starts again
    too.
 3. **Commit.** The host sends `POST /api/node/v1/uploads/{upload_id}/commit`.
-   One canonical batch, gated on the live fence, marks the title
+   A better copy's files move onto their keys first. The commit is
+   refused with `edition_changed` when the title's listing now sells
+   another edition than the one the upload's keys belong to. One
+   canonical batch, gated on the live fence, marks the title
    acquired, records a stored copy of the edition on each destination
    the primary audio was written to (`edition_copies`), publishes
    `book_acquired`, and (for the job's last title) completes the job.
@@ -876,12 +898,21 @@ while a file is sent whole. A part whose connection breaks keeps the
 bytes that arrived: the file stays open at that offset until its last
 part, an abort, or 10 minutes without a part.
 
+An aborted upload's files are deleted by the shared node that received
+them. Each shared node sweeps its uploads every 5 minutes. It aborts an
+open upload whose host is gone (its job's lease ran out), and deletes
+the files of one aborted on another node. An upload stays `discarding`
+until every file is deleted, so a delete that fails is tried again on
+the next sweep. If the receiving node is removed from the library first,
+retention drops the upload.
+
 | Refusal | Meaning |
 | --- | --- |
 | `401 unauthorized` | Unknown upload, or a wrong or expired token |
 | `421 misdirected` | Another shared node granted it |
 | `409 lost` | The fence is gone |
-| `422 refused`, `422 destinations_changed` | The shared node's destinations aren't the ones the manifest was written for. The upload is aborted and the title fails on the host, to be retried |
+| `422 refused`, `422 destinations_changed` | The shared node's destinations, or their configuration, aren't the ones the manifest was written for. The upload is aborted and the title fails on the host, to be retried |
+| `422 refused`, reason `edition_changed` | At the commit, the title's listing sells another edition than the one the upload's keys belong to. The title fails on the host, to be retried |
 | `422 invalid_range` | A part's `Content-Range` isn't exactly a part of the declared file |
 | `503 unavailable`, reason `resume` | A part didn't start where the open file stands; send from `offset` |
 
@@ -1081,16 +1112,31 @@ C is B's.
 - **Files** stream to A's outputs through the same upload endpoint a
   branch's acquire uses (nothing staged on A), under the keys they have on
   B. A title whose files would land on a key another book in A already
-  uses is recorded, but its files aren't sent. Neither are the files of an
-  edition A already has (acquired there, or delivered by another branch),
-  so each edition arrives once. If A has no output deployed, it records
+  uses is recorded, but its files aren't sent. A asks for them again only
+  after a day or once B's file list for that title changes, not on every
+  sync. While B still has an upload of that title open, the refusal isn't
+  recorded. The files of an edition A already has aren't sent either (acquired there, or delivered by another branch),
+  so each edition arrives once. If the branch that delivered an edition
+  stops sharing it, its files stay on A, and another branch's title of the
+  same edition counts as delivered by them when they are exactly that
+  title's files: every key the title lists is on record for the edition,
+  every audio key on record is in the title's list, and their media types
+  agree. That title can still be passed on to A's own library. Only
+  files a branch left behind when it stopped sharing count this way: not
+  files A acquired itself, not a job's upload, not files of a branch that
+  was removed, and not files whose branch still holds the title. A title that was delivered before under another file list
+  doesn't take them over either. If A has no output deployed, it records
   the titles without files. If a title A already has the files of later
   moves to another edition (an Administrator pins its listing there, or
   the listing is linked again to another edition), those files belong to
   the edition it matched before: A counts the title as not delivered
   again and asks B for its files.
 - **Sync** runs when the branch connects, every 5 minutes, and at once
-  when a setting changes. It is incremental and resumes after a
+  when a setting changes. Each file a title lists carries a content
+  version from B's storage (its change signature, entity tag or
+  modification time), so a file B replaces under the same name and size
+  is sent to A again once B lists the title again (at the latest on the
+  next full pass). It is incremental and resumes after a
   reconnect. A full pass (after a setting changes, and once a day) also
   withdraws titles B no longer has. If B can't list a title's files (its
   destination is briefly unreachable), the pass keeps the title and tries
@@ -1217,9 +1263,13 @@ libraries:
   missing.
 - A keeps an answered edition only when it lands on an edition A already
   has of the asked work. An answer can't add works or editions to A.
-  An edition B names by ISBN only is dropped for now: the resolver places a
-  weak identifier only on an expression with a known language and
-  abridgement, which most store-scanned editions lack.
+  An edition B names by ISBN only (and no ASIN) is kept on the one edition
+  of the asked work that carries that ISBN here, which is an edition A
+  named in its question. If no edition of the work carries it, or several
+  do, the answer is dropped. An ISBN-only answer never goes through the
+  resolver's matching, so it can't create a work or edition, and it adds
+  no identifier to A's edition. If A already stores that listing on
+  another edition, the answer is dropped rather than moving it.
 
 An answer names no store account, user, or other library. A asks only
 branches it still trusts, and records answers only for questions it sent
@@ -1366,17 +1416,34 @@ For each library A it joined, B:
   in, it drops the books A no longer named. A read cut short keeps the
   list from the last complete read. Leaving A clears that library's list.
 
-B's **Library** page then shows **Books in other libraries** to B's
-operator and Owners: every library B is a branch of, merged into one list
-by work, the person's own books marked **Yours**, with an **Only yours**
-filter. Two books are the same work when their identifiers reach the
-same work in B's own library, when they share a strong identifier (an
-ASIN with its marketplace, or an OpenLibrary edition or work id), or when
-one library groups them under one work. An ISBN alone doesn't join two
-libraries' books, since one ISBN can sit on several editions. Titles are
-never compared,
-because work ids differ between libraries. Each entry shows which
-libraries hold it, from which stores, and in which formats.
+For B's operator and Owners, B's **Library** page lists these books in
+the same list as B's own, merged by work. Two books are the same work
+when their identifiers reach the same work in B's own library, when they
+share a strong identifier (an ASIN with its marketplace, or an
+OpenLibrary edition or work id), or when one library groups them under
+one work. An ISBN alone doesn't join two libraries' books, since one ISBN
+can sit on several editions. Titles are never compared, because work ids
+differ between libraries.
+
+- A book B has too stays on B's row, with an **Also in** line naming the
+  other libraries, and **Yours there** when it is on the person's own
+  store accounts in one of them.
+- A book only other libraries hold gets a row of its own in the list's
+  order, saying which libraries hold it (or "On a branch of" one), from
+  which stores and in which formats, marked **Yours** when it is the
+  person's own there.
+- Title, author and series orders place these rows among B's own. They
+  have no added or purchase time on B, so those orders put them last; the
+  duration order uses their runtime. Under a search they follow B's own
+  matches. While more of B's pages are to come, only the rows that sort
+  before the last one loaded show, so nothing jumps as the list grows.
+- The search narrows them too (`author:`, `narrator:`, `series:`,
+  `title:` and `asin:` included), and so does the format filter (an
+  ebook there is a PDF). The status and other filters leave them out,
+  since B holds no state or filter values for them.
+- When B reads any other library, a **Library** filter shows **Every
+  library** (the default), **This library**, **Other libraries**, **Yours
+  in other libraries**, or one library when there are several.
 
 The list also has the books of every library B holds a library card for
 (see [Signing in with a library card](sign-in.md#signing-in-with-a-library-card)).

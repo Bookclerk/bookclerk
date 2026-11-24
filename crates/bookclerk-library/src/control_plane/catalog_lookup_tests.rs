@@ -5,7 +5,7 @@
 //! work, as `branch:<node>` listings that later answers can expire.
 
 use bookclerk_node_proto::{Availability, CatalogMetadata, LookupAnswer, LookupEdition};
-use sea_orm::{ActiveModelTrait, ActiveValue::Set};
+use sea_orm::{ActiveModelTrait, ActiveValue::Set, PaginatorTrait};
 
 use super::*;
 use crate::entities::{node_credentials, nodes};
@@ -290,6 +290,174 @@ async fn answers_off_the_asked_work_are_dropped_and_missing_expires() {
             .unwrap()
             .is_empty()
     );
+}
+
+/// An edition a branch names by ISBN only (a Libro.fm title) is kept on
+/// the one edition of the asked work that carries that ISBN here, without
+/// the resolver and without creating anything (#926). An ISBN no edition
+/// of the work carries is still dropped.
+#[tokio::test]
+async fn an_isbn_only_answer_lands_on_the_edition_with_that_isbn() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, member) = library(dir.path()).await;
+    store
+        .upsert_account(PLUGIN, "riley-acct", "us", None, true, "audible")
+        .await
+        .unwrap();
+    let identity = store
+        .ensure_local_portal_identity(member, None)
+        .await
+        .unwrap();
+    store
+        .link_account(identity.id, PLUGIN, "riley-acct", "test")
+        .await
+        .unwrap();
+    let record = store
+        .upsert_book(&NewBook {
+            isbn: Some("978-0-306-40615-7".into()),
+            ..book("riley-acct", "B0ASIN0001", "Title B0ASIN0001")
+        })
+        .await
+        .unwrap();
+    let work = store
+        .work_of_holding(&record.holding_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let editions_before = crate::entities::editions::Entity::find()
+        .count(store.db())
+        .await
+        .unwrap();
+
+    ask_branches(&store, std::slice::from_ref(&work))
+        .await
+        .unwrap();
+    pending_questions(&store, BRANCH).await.unwrap().unwrap();
+    let by_isbn = |isbn: &str| LookupEdition {
+        store: "libro".into(),
+        marketplace: String::new(),
+        product_id: isbn.into(),
+        availability: Availability::Owned,
+        formats: Vec::new(),
+        metadata: CatalogMetadata {
+            title: "Title B0ASIN0001".into(),
+            authors: Some("Ann Author".into()),
+            isbn: Some(isbn.into()),
+            ..CatalogMetadata::default()
+        },
+    };
+    let report = recorded(
+        &store,
+        &[LookupAnswer {
+            work: work.clone(),
+            editions: vec![by_isbn("9780306406157"), by_isbn("9781861972712")],
+        }],
+        &[],
+    )
+    .await;
+    assert_eq!((report.listings, report.dropped), (1, 1));
+    let listings = branch_listings_for_works(&store, std::slice::from_ref(&work))
+        .await
+        .unwrap();
+    assert_eq!(listings.len(), 1);
+    assert_eq!(listings[0].store, "libro");
+    assert_eq!(listings[0].product_id, "9780306406157");
+    assert_eq!(
+        crate::entities::editions::Entity::find()
+            .count(store.db())
+            .await
+            .unwrap(),
+        editions_before,
+        "no edition was created"
+    );
+}
+
+/// An ISBN two editions of the asked work carry places no answer, read in
+/// pages of one row under a plugin that returns one row per reply.
+#[tokio::test]
+async fn an_isbn_on_two_editions_of_the_work_is_dropped() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, member) = library(dir.path()).await;
+    let mut caps = store.db_capabilities().clone();
+    caps.max_result_rows = 1;
+    let store = store.with_db_capabilities(caps);
+    store
+        .upsert_account(PLUGIN, "riley-acct", "us", None, true, "audible")
+        .await
+        .unwrap();
+    let identity = store
+        .ensure_local_portal_identity(member, None)
+        .await
+        .unwrap();
+    store
+        .link_account(identity.id, PLUGIN, "riley-acct", "test")
+        .await
+        .unwrap();
+    let record = store
+        .upsert_book(&NewBook {
+            isbn: Some("978-0-306-40615-7".into()),
+            ..book("riley-acct", "B0ASIN0001", "Title B0ASIN0001")
+        })
+        .await
+        .unwrap();
+    let work = store
+        .work_of_holding(&record.holding_id)
+        .await
+        .unwrap()
+        .unwrap();
+    // A second edition of the same work carrying the same ISBN.
+    let isbn_row = crate::entities::edition_identifiers::Entity::find()
+        .filter(crate::entities::edition_identifiers::Column::Scheme.eq("isbn"))
+        .one(store.db())
+        .await
+        .unwrap()
+        .unwrap();
+    let mut twin = crate::entities::editions::Entity::find_by_id(isbn_row.edition_id.clone())
+        .one(store.db())
+        .await
+        .unwrap()
+        .unwrap();
+    twin.id = "twin-edition".into();
+    crate::entities::editions::ActiveModel::from(twin)
+        .reset_all()
+        .insert(store.db())
+        .await
+        .unwrap();
+    let mut twin_isbn = isbn_row.clone();
+    twin_isbn.edition_id = "twin-edition".into();
+    crate::entities::edition_identifiers::ActiveModel::from(twin_isbn)
+        .reset_all()
+        .insert(store.db())
+        .await
+        .unwrap();
+
+    ask_branches(&store, std::slice::from_ref(&work))
+        .await
+        .unwrap();
+    pending_questions(&store, BRANCH).await.unwrap().unwrap();
+    let report = recorded(
+        &store,
+        &[LookupAnswer {
+            work: work.clone(),
+            editions: vec![LookupEdition {
+                store: "libro".into(),
+                marketplace: String::new(),
+                product_id: "9780306406157".into(),
+                availability: Availability::Owned,
+                formats: Vec::new(),
+                metadata: CatalogMetadata {
+                    title: "Title B0ASIN0001".into(),
+                    isbn: Some("9780306406157".into()),
+                    ..CatalogMetadata::default()
+                },
+            }],
+        }],
+        &[],
+    )
+    .await;
+    assert_eq!((report.listings, report.dropped), (0, 1));
 }
 
 #[tokio::test]

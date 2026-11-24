@@ -115,6 +115,39 @@ query BookclerkCatalogSearch($query: String!, $page: Int!, $pageSize: Int!) {
 }
 "#;
 
+/// One title's catalog record by Chirp id (`catalogDetail`): the search
+/// fields plus its public audio sample (`sampleUrl`, a signed M4A link
+/// that Chirp renews about daily).
+const AUDIOBOOK_DETAIL: &str = r#"
+query BookclerkAudiobookDetail($id: ID!) {
+  audiobook(id: $id) {
+    id
+    displayTitle
+    subTitle
+    displayAuthors
+    displayNarrators
+    url
+    coverUrl: optimizedCoverUrl(format: "f_jpg", quality: "q_auto:eco", sizePixels: 200)
+    durationMs
+    description
+    publisher
+    releasedOn
+    language
+    abridged
+    sampleUrl
+    promotedTags { displayName }
+    seriesAudiobook {
+      number
+      displayNumber
+      series { id name slug }
+    }
+  }
+}
+"#;
+
+/// The GraphQL error Chirp answers for an id it does not list.
+const AUDIOBOOK_NOT_FOUND: &str = "Audiobook not found";
+
 /// Related-titles query plus the seed title's series membership.
 const RELATED_AUDIOBOOKS: &str = r#"
 query BookclerkRelatedAudiobooks($id: ID!) {
@@ -642,6 +675,33 @@ impl ChirpClient {
         ))
     }
 
+    /// One title's catalog record, with its audio sample, by Chirp id —
+    /// no auth required. Read the answer with
+    /// [`crate::audiobook_detail_record`].
+    ///
+    /// # Returns
+    ///
+    /// The GraphQL answer, or `None` when Chirp does not list the id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the request fails.
+    pub async fn audiobook_detail(&self, id: &str) -> Result<Option<Value>> {
+        match self
+            .graphql(
+                "BookclerkAudiobookDetail",
+                AUDIOBOOK_DETAIL,
+                json!({ "id": id }),
+                false,
+            )
+            .await
+        {
+            Ok(parsed) => Ok(Some(parsed)),
+            Err(ChirpError::Api(msg)) if msg == AUDIOBOOK_NOT_FOUND => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+
     /// Related titles for a Chirp audiobook id — no auth required.
     ///
     /// # Errors
@@ -1065,6 +1125,10 @@ pub struct CatalogAudiobook {
     /// Storefront genre chips (`Thrillers`, `Crime Fiction & Mysteries`, …).
     #[serde(default, rename = "promotedTags")]
     pub promoted_tags: Vec<CatalogTag>,
+    /// The title's public audio sample, a signed `https` M4A link valid
+    /// for about a day; only the detail query asks for it.
+    #[serde(default, rename = "sampleUrl")]
+    pub sample_url: Option<String>,
 }
 
 /// Chirp `Tag` used as a promoted genre chip on catalog audiobooks.

@@ -490,12 +490,18 @@ struct LibroDetailsData {
     /// Purchase facts; `price` is the list price as a decimal string in USD.
     #[serde(default)]
     purchase_info: Option<Value>,
+    /// The title's public audio sample (an `https://samples.libro.fm/…`
+    /// M4A), beside the audiobook object rather than in it; `null` when
+    /// Libro.fm has none.
+    #[serde(default)]
+    sample_url: Option<Value>,
 }
 
 /// Parses one `explore/audiobook_details` body.
 ///
 /// Sans-IO so the unit tests drive the same code as the network path. The
-/// list price (`purchase_info.price`) is copied onto the audiobook hit.
+/// list price (`purchase_info.price`) and the audio sample (`sample_url`)
+/// are copied onto the audiobook hit.
 ///
 /// # Errors
 ///
@@ -514,6 +520,11 @@ pub fn parse_details(body: &[u8]) -> bookclerk_storefront::Result<LibroDetails> 
         .and_then(|p| p.get("for_sale"))
         .and_then(Value::as_bool)
         .unwrap_or(true);
+    let sample = data
+        .sample_url
+        .as_ref()
+        .and_then(Value::as_str)
+        .and_then(records::sample_url);
     let audiobook = data
         .audiobook
         .as_ref()
@@ -526,6 +537,7 @@ pub fn parse_details(body: &[u8]) -> bookclerk_storefront::Result<LibroDetails> 
                 h.currency = Some(String::from("USD"));
                 h.price_label = Some(format_money_label(cents, "USD"));
             }
+            h.sample_url = sample;
             h
         });
     let related = data
@@ -1373,7 +1385,8 @@ mod tests {
                     {"title": "The Song of Achilles", "isbn": 9780062115577u64, "authors": ["Madeline Miller"]},
                     {"title": "No ISBN"}
                 ],
-                "purchase_info": {"owned": false, "price": "33.59", "for_sale": true}
+                "purchase_info": {"owned": false, "price": "33.59", "for_sale": true},
+                "sample_url": "https://samples.libro.fm/9781478975311_sample.m4a"
             }
         })
     }
@@ -1395,6 +1408,10 @@ mod tests {
         assert_eq!(c.price_label.as_deref(), Some("$33.59"));
         assert_eq!(c.currency.as_deref(), Some("USD"));
         assert_eq!(c.origin, "libro details");
+        assert_eq!(
+            c.sample_url.as_deref(),
+            Some("https://samples.libro.fm/9781478975311_sample.m4a")
+        );
         assert_eq!(d.related.len(), 1);
         assert_eq!(d.related[0].title, "The Song of Achilles");
     }
@@ -1410,5 +1427,19 @@ mod tests {
                 .for_sale
         );
         assert!(parse_details(b"").is_err());
+    }
+
+    #[test]
+    fn a_missing_or_unusable_sample_leaves_none() {
+        for sample in [
+            json!(null),
+            json!("http://samples.libro.fm/a.m4a"),
+            json!(7),
+        ] {
+            let mut body = circe_details();
+            body["data"]["sample_url"] = sample;
+            let d = parse_details(body.to_string().as_bytes()).unwrap();
+            assert_eq!(d.audiobook.unwrap().sample_url, None);
+        }
     }
 }

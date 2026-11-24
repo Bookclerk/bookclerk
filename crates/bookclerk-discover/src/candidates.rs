@@ -559,8 +559,8 @@ pub(crate) const RUNTIME_TOLERANCE_MINUTES: i64 = 1;
 ///
 /// Two listings are one recording when the shared listing pool resolved
 /// both into the same expression, when they share an ISBN or ASIN, or when
-/// they are the same store product. Failing all of those, listings from two
-/// different stores are one recording when [`same_recording_by_runtime`]
+/// they are the same store product. Failing all of those, two listings are
+/// one recording when [`same_recording_by_runtime`]
 /// holds: same book, same narrators, matching runtime and nothing that
 /// tells them apart. A shared identifier always wins over a runtime match.
 ///
@@ -624,6 +624,14 @@ fn known_and_different<T: PartialEq>(a: Option<T>, b: Option<T>) -> bool {
     matches!((a, b), (Some(a), Some(b)) if a != b)
 }
 
+/// The candidate's subtitle, cleaned for comparison, when it has one.
+fn subtitle_key(c: &StorefrontCandidate) -> Option<String> {
+    c.subtitle
+        .as_deref()
+        .map(|s| bookclerk_resolve::normalize::clean_title(s, true))
+        .filter(|s| !s.is_empty())
+}
+
 /// Sorted, cleaned names from a display string of names, joined; empty
 /// when it names nobody.
 fn name_set_key(display: Option<&str>) -> String {
@@ -636,23 +644,26 @@ fn name_set_key(display: Option<&str>) -> String {
     set.into_iter().collect::<Vec<_>>().join("\u{1e}")
 }
 
-/// Whether two listings from different stores are one recording though
-/// they share no identifier.
+/// Whether two listings are one recording though they share no
+/// identifier.
 ///
 /// Stores rarely share a record number: Chirp lists no ISBN and Audible
-/// gives one only for some titles. Listings are one recording when all of
+/// gives one only for some titles. One store can also sell one recording
+/// as two products, when two distributors deliver it (Chirp lists Cyril
+/// Taylor-Carr's *Aleister Crowley* from both Icon Audio Arts and Author's
+/// Republic, 2 seconds apart). Listings are one recording when all of
 /// these hold:
 ///
-/// * no store lists both (one store's own products stay apart, each with
-///   its own price, and a row already merged from several stores counts as
-///   each of them);
 /// * both report a runtime, within [`RUNTIME_TOLERANCE_MINUTES`];
 /// * they name the same work: the resolver's work key (cleaned title
 ///   without edition markers such as ` - Abridged`, and authors) matches;
 /// * they credit the same, non-empty set of narrators;
 /// * nothing tells them apart: no two different ISBNs or ASINs, no
 ///   abridged against unabridged, no two different languages, and no two
-///   different expressions in the shared listing pool.
+///   different expressions in the shared listing pool;
+/// * when one store lists both (a row already merged from several stores
+///   counts as each of them), no two different subtitles either. Stores
+///   word a subtitle differently, so this is checked only within a store.
 ///
 /// # Arguments
 ///
@@ -671,9 +682,7 @@ pub(crate) fn same_recording_by_runtime(a: &StorefrontCandidate, b: &StorefrontC
             .chain(std::iter::once(c.source.to_ascii_lowercase()))
             .collect()
     };
-    if !stores(a).is_disjoint(&stores(b)) {
-        return false;
-    }
+    let one_store = !stores(a).is_disjoint(&stores(b));
     let (Some(len_a), Some(len_b)) = (a.length_minutes, b.length_minutes) else {
         return false;
     };
@@ -697,6 +706,7 @@ pub(crate) fn same_recording_by_runtime(a: &StorefrontCandidate, b: &StorefrontC
         || known_and_different(a.is_abridged, b.is_abridged)
         || known_and_different(language(a), language(b))
         || known_and_different(expression(a), expression(b))
+        || (one_store && known_and_different(subtitle_key(a), subtitle_key(b)))
     {
         return false;
     }

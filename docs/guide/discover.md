@@ -16,7 +16,8 @@ Discover shows rows of suggestions, each with its reason, for example:
   narrator you like.
 - **Because you like** a genre you finish books in.
 - **Similar to books you finish** and **Top picks for you**.
-- **Popular in** a genre, while Discover is still learning your taste.
+- **Popular in** a genre your books and wishes lean to (or a few common
+  genres while Discover is still learning your taste), ranked for you.
 - **Picked for you on** a store: the rest of your matches, each under the
   store where it costs you least, and **Chirp deals**.
 
@@ -51,11 +52,22 @@ To hide rows you do not want, open **Preferences** in the top bar.
 
 ## Search every store
 
-The search box at the top searches every store's catalog at once. Each book
-shows up once, with where to buy it and the best current price.
+The search box at the top searches every store's catalog at once. Each
+recording shows up once, with where to buy it and the best current price,
+even when several stores, or one store under two publishers, sell it.
+
+Search also shows books your library already has. Those say **In your
+library**, or **Another edition in your library** when you have the book in
+another recording or from another store.
 
 Prices take the stores you have connected into account, so a member price
 counts where you are a member.
+
+When your library has an embedding model, results sorted by relevance are
+ordered by what you asked for as well as by the stores' own ranking, so a
+description such as "a slow mystery in a small town" brings the closest
+titles of each page forward. The suggestions under the search box keep the
+stores' order.
 
 ## Available through a branch
 

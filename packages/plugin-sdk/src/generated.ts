@@ -43,6 +43,7 @@ import type {
   NotificationAudience,
   NotificationAlertAction,
   NotifyDestinationKind,
+  NotifyCheckOutcome,
   AiTask,
   AiTextRole,
   ProvisionGrantKind,
@@ -84,6 +85,7 @@ export type {
   NotificationAudience,
   NotificationAlertAction,
   NotifyDestinationKind,
+  NotifyCheckOutcome,
   AiTask,
   AiTextRole,
   ProvisionGrantKind,
@@ -2132,6 +2134,17 @@ export interface Notifier {
    * @returns {@link NotifyValidateReply}
    */
   validateDestination(params: NotifyValidateParams): Promise<NotifyValidateReply>;
+  /**
+   * Operator's deliverability check: send a sample the way real messages go,
+   * ask checker services how it scores, and merge their findings into
+   * advice. Only plugins that declare `[notifier].deliverability_check`
+   * implement it (others answer `unsupported`); it may run up to
+   * `deliverabilityCheckDeadlineMs`.
+   *
+   * @param params - Sample message to check.
+   * @returns {@link NotifyDeliverabilityReply}
+   */
+  checkDeliverability(params: NotifyDeliverabilityParams): Promise<NotifyDeliverabilityReply>;
 }
 
 /**
@@ -4363,6 +4376,13 @@ export interface NotificationMessage {
    * and SDKs must never log it.
    */
   sensitive: boolean;
+  /**
+   * The library's home page (`https://library.example.com/`), built from its
+   * public origin like `link`; absent when no public origin is set. Email
+   * footers link to it.
+   * Omitted when absent (wire zero value).
+   */
+  libraryOrigin?: string;
 }
 
 /** Where a `Notifier.send` goes. */
@@ -4431,6 +4451,61 @@ export interface NotifyValidated {
 export type NotifyValidateReply =
   | { kind: "ok"; value: NotifyValidated } // Accepted, normalised address.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Params of `Notifier.checkDeliverability`. */
+export interface NotifyDeliverabilityParams {
+  /**
+   * The host's `test` notification, rendered as a real one is, so the
+   * checkers score the plugin's real output.
+   */
+  message: NotificationMessage;
+}
+
+/** One checker's result. */
+export interface NotifyDeliverabilityCheck {
+  /** Service name (`Postmark spam check`); at most `maxNotificationTitleBytes`. */
+  service: string;
+  /** How it came out. */
+  outcome: NotifyCheckOutcome;
+  /**
+   * One-line result (`SpamAssassin score 0.8; under 5 passes`); at most
+   * `maxNotificationFieldBytes`.
+   */
+  summary: string;
+  /**
+   * Absolute `https` link to the service's full report, when it has one.
+   * Omitted when absent (wire zero value).
+   */
+  reportUrl?: string;
+}
+
+/** One thing the operator can do, merged from every check. */
+export interface NotifyDeliverabilityAdvice {
+  /**
+   * `failed` is a fix, `warning` an improvement, `passed` what is already
+   * right; never `skipped`.
+   */
+  outcome: NotifyCheckOutcome;
+  /** Short heading; at most `maxNotificationTitleBytes`. */
+  title: string;
+  /** What to change and where; at most `maxNotificationFieldBytes`. */
+  detail: string;
+  /** The `service` names of the checks that raised it. */
+  sources: string[];
+}
+
+/** Success payload of `Notifier.checkDeliverability`. */
+export interface NotifyDeliverabilityReport {
+  /** One entry per checker, at most `maxDeliverabilityChecks`. */
+  checks: NotifyDeliverabilityCheck[];
+  /** Merged advice, most urgent first; at most `maxDeliverabilityAdvice`. */
+  advice: NotifyDeliverabilityAdvice[];
+}
+
+/** Result union of `Notifier.checkDeliverability`. */
+export type NotifyDeliverabilityReply =
+  | { kind: "ok"; value: NotifyDeliverabilityReport } // The report.
+  | { kind: "err"; value: PluginError }; // Typed failure; `unsupported` when the plugin has no check.
 
 /** Params of `NotificationRaiser.raise`. */
 export interface NotifyRaiseParams {

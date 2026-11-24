@@ -12,10 +12,12 @@ import { LibraryConsentsPanel } from "@/components/LibraryConsentsPanel";
 import { NodesPanel } from "@/components/NodesPanel";
 import { OidcSettingsPanel } from "@/components/OidcSettingsPanel";
 import { OutputSettingsPanel } from "@/components/OutputSettingsPanel";
+import { DeliverabilityPanel } from "@/components/DeliverabilityPanel";
 import { GuidedSetupPanel } from "@/components/GuidedSetupPanel";
 import { PlacementBadge, PlacementPanel } from "@/components/PlacementPanel";
 import { RecoveryCopyReminder } from "@/components/RecoveryCopy";
 import { StorageSyncBadge } from "@/components/StorageSyncBadge";
+import { AccountMailPanel } from "@/components/AccountMailPanel";
 import { UserManagementPanel } from "@/components/UserManagementPanel";
 import {
   PluginConsentDialog,
@@ -1609,6 +1611,8 @@ export function SettingsPage({
             />
           ) : null}
 
+          {activeTab === "users" && showUserAdmin ? <AccountMailPanel /> : null}
+
           {activeTab === "users" && showUserAdmin ? (
             <UserManagementPanel
               users={users}
@@ -2257,6 +2261,12 @@ export function SettingsPage({
                                         <GuidedSetupPanel
                                           plugin={plugin}
                                           onChanged={reloadSettings}
+                                          onSessionExpired={onSessionExpired}
+                                        />
+                                      ) : null}
+                                      {instanceGroup ? (
+                                        <DeliverabilityPanel
+                                          plugin={plugin}
                                           onSessionExpired={onSessionExpired}
                                         />
                                       ) : null}

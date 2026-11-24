@@ -3,8 +3,8 @@
 //! Everything the notifier reads from outside is parsed here: the server's
 //! replies (RFC 5321 section 4.2), its EHLO capabilities, a patron's address
 //! document and the operator's addresses. The message is built here too
-//! (RFC 5322 headers, MIME `multipart/alternative` with base64 bodies,
-//! RFC 2047 encoded words), and [`Session`] is the client's state machine:
+//! (RFC 5322 headers, MIME `multipart/alternative` with quoted-printable
+//! text, `multipart/related` for inline images, RFC 2047 encoded words), and [`Session`] is the client's state machine:
 //! it is fed one reply at a time and answers with the next thing to write, a
 //! TLS upgrade, or the end. [`crate::client`] only moves bytes, so the unit
 //! tests and the fuzzer drive the same code the guest runs.
@@ -461,6 +461,8 @@ pub struct MailContent<'a> {
     pub text: &'a str,
     /// HTML body, when there is one.
     pub html: Option<&'a str>,
+    /// Images the HTML shows by `cid:` reference; ignored without HTML.
+    pub images: &'a [InlineImage<'a>],
     /// Stable id across retries, so receivers can drop a repeat; without
     /// angle brackets.
     pub message_id: &'a str,
@@ -468,6 +470,22 @@ pub struct MailContent<'a> {
     pub date: &'a str,
     /// MIME boundary; random in the guest, fixed in tests.
     pub boundary: &'a str,
+}
+
+/// An image sent inside the message and shown by the HTML as
+/// `cid:<content_id>`, so it appears even when the library is not reachable
+/// from the recipient's network and no remote image is fetched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InlineImage<'a> {
+    /// The `Content-ID`, without angle brackets; ASCII letters, digits, `.`,
+    /// `-`, `_` and one `@`.
+    pub content_id: &'a str,
+    /// Media type, such as `image/png`.
+    pub content_type: &'a str,
+    /// File name offered when the recipient saves it; ASCII.
+    pub filename: &'a str,
+    /// The image file's bytes.
+    pub bytes: &'a [u8],
 }
 
 /// Drops control characters (line breaks included) and trims, so text from
@@ -605,33 +623,126 @@ pub fn rfc5322_date(unix_seconds: i64) -> String {
     )
 }
 
-/// One MIME part: its headers and its body in base64, wrapped at 76.
+/// Longest encoded line [`encode_quoted_printable`] writes before a soft
+/// break's `=` (RFC 2045 section 6.7 allows 76 with it).
+const QP_LINE_CHARS: usize = 75;
+
+/// Encodes text as quoted-printable (RFC 2045 section 6.7): printable ASCII
+/// stays readable, so filters that dock base64-encoded text don't, and
+/// every other byte becomes `=XX`. Lines end in CRLF and run at most 76
+/// characters, breaking with a soft `=` where they would run longer; a
+/// space or tab at a line's end is encoded, and so is the `F` of a line
+/// that starts `From `, so no relay rewrites it.
+///
+/// # Arguments
+///
+/// * `body` - The text; any line ending becomes CRLF.
+///
+/// # Returns
+///
+/// The encoded body, ASCII only.
+#[must_use]
+pub fn encode_quoted_printable(body: &str) -> String {
+    let normalized = body.replace("\r\n", "\n").replace('\r', "\n");
+    let mut out = String::with_capacity(normalized.len() + normalized.len() / 8);
+    for (index, line) in normalized.split('\n').enumerate() {
+        if index > 0 {
+            out.push_str("\r\n");
+        }
+        let bytes = line.as_bytes();
+        let mut width = 0;
+        for (at, &byte) in bytes.iter().enumerate() {
+            let last = at + 1 == bytes.len();
+            let literal = match byte {
+                b' ' | b'\t' => !last,
+                b'=' => false,
+                b'F' if at == 0 && line.starts_with("From ") => false,
+                33..=126 => true,
+                _ => false,
+            };
+            let token_width = if literal { 1 } else { 3 };
+            if width + token_width > QP_LINE_CHARS {
+                out.push_str("=\r\n");
+                width = 0;
+            }
+            if literal {
+                out.push(char::from(byte));
+            } else {
+                out.push_str(&format!("={byte:02X}"));
+            }
+            width += token_width;
+        }
+    }
+    out
+}
+
+/// Encodes bytes as base64 lines of 76 characters joined by CRLF.
+///
+/// # Arguments
+///
+/// * `bytes` - Any bytes.
+fn base64_lines(bytes: &[u8]) -> String {
+    let encoded = BASE64.encode(bytes);
+    encoded
+        .as_bytes()
+        .chunks(76)
+        .map(|chunk| std::str::from_utf8(chunk).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\r\n")
+}
+
+/// One text MIME part: its headers and its body in quoted-printable.
 ///
 /// # Arguments
 ///
 /// * `content_type` - `text/plain` or `text/html`.
-/// * `body` - The body; line endings become CRLF before encoding.
+/// * `body` - The body; line endings become CRLF.
 fn part(content_type: &str, body: &str) -> String {
-    let crlf = body
-        .replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .replace('\n', "\r\n");
-    let encoded = BASE64.encode(crlf);
-    let lines: Vec<&str> = encoded
-        .as_bytes()
-        .chunks(76)
-        .map(|chunk| std::str::from_utf8(chunk).unwrap_or_default())
-        .collect();
     format!(
-        "Content-Type: {content_type}; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n{}",
-        lines.join("\r\n")
+        "Content-Type: {content_type}; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n{}",
+        encode_quoted_printable(body)
+    )
+}
+
+/// Keeps only the characters a `Content-ID` or file name may carry here, so
+/// neither can break out of its header.
+///
+/// # Arguments
+///
+/// * `value` - The id or name.
+fn header_token(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '@'))
+        .take(128)
+        .collect()
+}
+
+/// One inline image part, in base64, named by its `Content-ID`.
+///
+/// # Arguments
+///
+/// * `image` - The image.
+fn image_part(image: &InlineImage<'_>) -> String {
+    let content_type: String = image
+        .content_type
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '-' | '+'))
+        .take(64)
+        .collect();
+    let filename = header_token(image.filename);
+    format!(
+        "Content-Type: {content_type}\r\nContent-Transfer-Encoding: base64\r\n\
+         Content-ID: <{}>\r\nContent-Disposition: inline; filename=\"{filename}\"\r\n\r\n{}",
+        header_token(image.content_id),
+        base64_lines(image.bytes)
     )
 }
 
 /// Builds the message: RFC 5322 headers, then the text alone or a
-/// `multipart/alternative` of the text and the HTML. Every line is ASCII
-/// and ends in CRLF; bodies are base64, so no line runs past 998
-/// characters.
+/// `multipart/alternative` of the text and the HTML; with inline images,
+/// the HTML and the images form a `multipart/related` inside it. Every
+/// line is ASCII, ends in CRLF and runs at most 76 characters in a body.
 ///
 /// # Arguments
 ///
@@ -653,18 +764,30 @@ pub fn build_message(mail: &MailContent<'_>) -> String {
         "Auto-Submitted: auto-generated".to_owned(),
     ]
     .join("\r\n");
-    match mail.html {
-        None => format!("{headers}\r\n{}\r\n", part("text/plain", mail.text)),
-        Some(html) => {
-            let b = mail.boundary;
-            format!(
-                "{headers}\r\nContent-Type: multipart/alternative; boundary=\"{b}\"\r\n\r\n\
-                 --{b}\r\n{}\r\n--{b}\r\n{}\r\n--{b}--\r\n",
-                part("text/plain", mail.text),
-                part("text/html", html),
-            )
+    let Some(html) = mail.html else {
+        return format!("{headers}\r\n{}\r\n", part("text/plain", mail.text));
+    };
+    let b = mail.boundary;
+    let html_part = if mail.images.is_empty() {
+        part("text/html", html)
+    } else {
+        let r = format!("{b}_r");
+        let mut related = format!(
+            "Content-Type: multipart/related; boundary=\"{r}\"; type=\"text/html\"\r\n\r\n\
+             --{r}\r\n{}",
+            part("text/html", html)
+        );
+        for image in mail.images {
+            related.push_str(&format!("\r\n--{r}\r\n{}", image_part(image)));
         }
-    }
+        related.push_str(&format!("\r\n--{r}--"));
+        related
+    };
+    format!(
+        "{headers}\r\nContent-Type: multipart/alternative; boundary=\"{b}\"\r\n\r\n\
+         --{b}\r\n{}\r\n--{b}\r\n{html_part}\r\n--{b}--\r\n",
+        part("text/plain", mail.text),
+    )
 }
 
 /// Makes a stable `Message-ID`: the notification and destination ids (only
@@ -1142,4 +1265,4 @@ impl Session {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -177,6 +177,24 @@ impl ModelEmbedder {
         Ok(embedding_vectors(&output))
     }
 
+    /// The vectors of `texts`, each embedded as a document, a batch at a
+    /// time.
+    ///
+    /// # Errors
+    ///
+    /// Fails as [`Self::run`] does; `deadline` bounds each batch.
+    pub(crate) async fn embed_documents(
+        &self,
+        texts: &[String],
+        deadline: Duration,
+    ) -> Result<Vec<Vec<f32>>, DiscoverError> {
+        let mut vectors = Vec::with_capacity(texts.len());
+        for batch in texts.chunks(MODEL_BATCH_TEXTS) {
+            vectors.extend(self.run(batch, AiTextRole::Document, deadline).await?);
+        }
+        Ok(vectors)
+    }
+
     /// The space of this model's vectors.
     pub(crate) fn vector_space(&self) -> &VectorSpace {
         &self.space

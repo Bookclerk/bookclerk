@@ -163,6 +163,16 @@ async fn admit_into(
         )
         .await
         .map_err(requirements_error)?;
+        if spec.kind == JobKind::Acquire {
+            // Preferred only: a provider that fits nowhere is left out.
+            let providers = metadata_provider_keys(state).await;
+            spec.payload.requires = bookclerk_library::control_plane::prefer_metadata_providers(
+                library,
+                std::mem::take(&mut spec.payload.requires),
+                &providers,
+            )
+            .await?;
+        }
     }
     let outcome = library.enqueue_job(spec).await?;
     if matches!(outcome, EnqueueOutcome::Created { .. }) {
@@ -201,6 +211,84 @@ pub(crate) async fn node_bound_output_keys(
         .map(|instance| instance.plugin_key)
         .filter(|key| is_node_bound_key(key))
         .collect())
+}
+
+/// Plugin keys of the installed metadata providers (plugins that export
+/// the `metadata` entrypoint), which an acquire prefers to run beside
+/// (`bookclerk_library::control_plane::prefer_metadata_providers`).
+///
+/// Unlike [`node_bound_output_keys`], this reads this node's installed
+/// plugins: the instance list does not say which plugins export the
+/// entrypoint, and every node materializes the library's installs. A
+/// preference can safely differ between nodes, so a config without plugin
+/// directories or a failed discovery prefers none.
+async fn metadata_provider_keys(state: &AppState) -> std::collections::BTreeSet<String> {
+    // A bulk acquire admits one job per title: reuse a recent discovery
+    // rather than walking and hashing every plugin for each.
+    if let Some(keys) = cached_provider_keys(std::time::Instant::now()) {
+        return keys;
+    }
+    let keys = discover_metadata_provider_keys(state).await;
+    if let Ok(mut cached) = PROVIDER_KEYS.lock() {
+        *cached = Some((std::time::Instant::now(), keys.clone()));
+    }
+    keys
+}
+
+/// How long a discovery of the metadata providers is reused.
+const PROVIDER_KEYS_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The last discovery of the metadata providers and when it ran.
+static PROVIDER_KEYS: std::sync::Mutex<
+    Option<(std::time::Instant, std::collections::BTreeSet<String>)>,
+> = std::sync::Mutex::new(None);
+
+/// The cached metadata provider keys, when a discovery ran within
+/// [`PROVIDER_KEYS_TTL`] of `now`.
+fn cached_provider_keys(now: std::time::Instant) -> Option<std::collections::BTreeSet<String>> {
+    let cached = PROVIDER_KEYS.lock().ok()?;
+    let (at, keys) = cached.as_ref()?;
+    (now.saturating_duration_since(*at) < PROVIDER_KEYS_TTL).then(|| keys.clone())
+}
+
+/// Discovers the installed metadata providers now (see
+/// [`metadata_provider_keys`]).
+async fn discover_metadata_provider_keys(state: &AppState) -> std::collections::BTreeSet<String> {
+    let config = state.config.read().await.clone();
+    if config.paths.is_none() {
+        return std::collections::BTreeSet::new();
+    }
+    // Discovery walks and hashes every installed plugin: keep it off the
+    // async workers.
+    let discovered =
+        tokio::task::spawn_blocking(move || bookclerk_plugin_host::discover_plugins(&config)).await;
+    match discovered {
+        Ok(Ok(plugins)) => metadata_provider_keys_from(&plugins),
+        Ok(Err(err)) => {
+            warn!(error = %err, "plugin discovery failed; acquire prefers no metadata provider");
+            std::collections::BTreeSet::new()
+        }
+        Err(err) => {
+            warn!(error = %err, "plugin discovery task failed; acquire prefers no metadata provider");
+            std::collections::BTreeSet::new()
+        }
+    }
+}
+
+/// The keys of `plugins` that export the `metadata` entrypoint.
+fn metadata_provider_keys_from(
+    plugins: &[bookclerk_plugin_host::DiscoveredPlugin],
+) -> std::collections::BTreeSet<String> {
+    plugins
+        .iter()
+        .filter(|plugin| {
+            plugin
+                .manifest
+                .entrypoints
+                .contains(&bookclerk_plugin_host::Entrypoint::Metadata)
+        })
+        .map(|plugin| plugin.plugin_key().to_string())
+        .collect()
 }
 
 /// True when the stored plugin key `key` names a node-bound output (the
@@ -2230,6 +2318,20 @@ mod tests {
         statuses.sort_by_key(|(_, status)| paced_rank(*status));
         let order: Vec<&str> = statuses.iter().map(|(id, _)| *id).collect();
         assert_eq!(order, ["c", "e", "f", "b", "d", "a"]);
+    }
+
+    /// With no installed plugin exporting `metadata`, an acquire prefers no
+    /// provider.
+    #[tokio::test]
+    async fn no_installed_provider_is_preferred() {
+        let files = tempfile::tempdir().unwrap();
+        let (state, _library) = crate::node_api::tests::test_state(&files).await;
+        assert!(metadata_provider_keys(&state).await.is_empty());
+        // A second admission within the window reuses that discovery.
+        assert!(cached_provider_keys(std::time::Instant::now()).is_some());
+        assert!(metadata_provider_keys(&state).await.is_empty());
+        assert!(discover_metadata_provider_keys(&state).await.is_empty());
+        assert!(metadata_provider_keys_from(&[]).is_empty());
     }
 
     async fn test_store() -> LibraryStore {

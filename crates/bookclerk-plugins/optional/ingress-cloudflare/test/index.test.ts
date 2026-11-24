@@ -60,7 +60,13 @@ class Entrypoint {
 }
 
 mock.module("@bookclerk/plugin-sdk/workerd", {
-  namedExports: { BookclerkEntrypoint: Entrypoint, IngressEntrypoint: Entrypoint, PluginError },
+  namedExports: {
+    BookclerkEntrypoint: Entrypoint,
+    IngressEntrypoint: Entrypoint,
+    ProvisioningEntrypoint: Entrypoint,
+    PluginError,
+    provisioned: () => ({}),
+  },
 });
 const { Ingress, default: Plugin } = await import("../src/index.ts");
 const {
@@ -495,7 +501,7 @@ test("the main module exports only entrypoint classes", async () => {
   // workerd treats each named export of the main module as an entrypoint and
   // refuses one that is not a class or handler.
   const main = await import("../src/index.ts");
-  assert.deepEqual(Object.keys(main).sort(), ["Ingress", "default"]);
+  assert.deepEqual(Object.keys(main).sort(), ["Ingress", "Provisioning", "default"]);
 });
 
 test("the version matches plugin.toml", () => {

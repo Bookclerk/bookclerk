@@ -138,7 +138,11 @@ fn parse_state(s: &str) -> Result<DeliveryState> {
 /// that lost its lease (whose delivery a replacement job may have
 /// reclaimed) cannot record an outcome. `None`, for a caller outside a job,
 /// adds nothing. `sql` must end with its `WHERE` clause.
-fn fenced(sql: &str, mut parameters: Vec<DbValue>, fence: Option<&JobFence>) -> TypedDbStatement {
+pub(super) fn fenced(
+    sql: &str,
+    mut parameters: Vec<DbValue>,
+    fence: Option<&JobFence>,
+) -> TypedDbStatement {
     match fence {
         Some(fence) => {
             parameters.push(batch::text(&fence.job_id));
@@ -945,6 +949,32 @@ impl LibraryStore {
             .into_iter()
             .map(|row| (row.id.clone(), row))
             .collect();
+        let mail_prefix = crate::models::account_mail_dedup_key("");
+        let mail_ids: Vec<String> = stalled
+            .iter()
+            .filter_map(|job| job.dedup_key.as_deref()?.strip_prefix(mail_prefix.as_str()))
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let mails: BTreeMap<String, crate::entities::account_mail::Model> =
+            super::library_model::find_chunked::<crate::entities::account_mail::Entity, _>(
+                self,
+                &mail_ids,
+                |chunk| {
+                    crate::entities::account_mail::Entity::find()
+                        .filter(crate::entities::account_mail::Column::Id.is_in(chunk.to_vec()))
+                        .filter(
+                            crate::entities::account_mail::Column::State
+                                .eq(DeliveryState::Pending.as_str()),
+                        )
+                },
+            )
+            .await?
+            .into_iter()
+            .map(|row| (row.id.clone(), row))
+            .collect();
         Ok((
             stalled
                 .into_iter()
@@ -956,9 +986,19 @@ impl LibraryStore {
                         .and_then(|key| key.strip_prefix(prefix.as_str()))
                         .and_then(|id| deliveries.get(id))
                         .filter(|d| d.job_id.as_deref().is_none_or(|linked| linked == job.id));
+                    // Nor is an account mail linked to another job.
+                    let mail = job
+                        .dedup_key
+                        .as_deref()
+                        .and_then(|key| key.strip_prefix(mail_prefix.as_str()))
+                        .and_then(|id| mails.get(id))
+                        .filter(|m| m.job_id.as_deref().is_none_or(|linked| linked == job.id));
                     StalledSend {
                         delivery_id: delivery.map(|d| d.id.clone()),
-                        notifier: delivery.map(|d| d.plugin_instance_id.clone()),
+                        account_mail_id: mail.map(|m| m.id.clone()),
+                        notifier: delivery
+                            .map(|d| d.plugin_instance_id.clone())
+                            .or_else(|| mail.map(|m| m.plugin_instance_id.clone())),
                         job_id: job.id,
                         run_after: job.run_after,
                         lease_generation: job.lease_generation,
@@ -976,7 +1016,8 @@ impl LibraryStore {
     /// A delivery whose destination is already paused is dropped instead,
     /// with no attempt or failure counted, as a send would drop it. Only
     /// call this for a job whose notifier runs nowhere; a job that is only
-    /// waiting for a worker is not a notifier failure.
+    /// waiting for a worker is not a notifier failure. A stalled account
+    /// mail fails the same way; it has no destination to pause.
     ///
     /// # Returns
     ///
@@ -1079,6 +1120,21 @@ impl LibraryStore {
                     batch::text(&now),
                 ],
             ));
+        } else if let Some(mail_id) = &stalled.account_mail_id {
+            statements.push(batch::exec(
+                &format!(
+                    "UPDATE account_mail SET state = 'failed', attempts = attempts + 1, \
+                     reason = ?, updated_at = ? WHERE id = ? AND {ours} AND {gate}"
+                ),
+                vec![
+                    batch::text(&reason),
+                    batch::text(&now),
+                    batch::text(mail_id),
+                    batch::text(&stalled.job_id),
+                    batch::text(&stalled.job_id),
+                    batch::text(&now),
+                ],
+            ));
         }
         statements.push(crate::control_plane::bump_if_stamped(
             crate::control_plane::LiveTopic::Jobs,
@@ -1104,6 +1160,10 @@ impl LibraryStore {
                     FailureEffect::Counted
                 },
             ));
+        }
+        if stalled.account_mail_id.is_some() && batch::rows_affected(&reply, 1) == 1 {
+            // Account mail has no destination to pause.
+            return Ok(StallOutcome::Failed(FailureEffect::Counted));
         }
         Ok(StallOutcome::Cancelled)
     }

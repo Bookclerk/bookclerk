@@ -73,12 +73,33 @@ operator, a household user, or a portal identity) has a **subject key**
    (Science Fiction, Fantasy, Mystery & Thriller, Romance, History &
    Biography, Self-help) through its catalog search, as far as its call
    budget reaches, so a new library still gets shelves.
+   Every taste is also browsed by **its own genres**: the genre labels its
+   seeds carry are counted (labels that differ only in case are one, a
+   label counts once per seed, and labels every store files most of its
+   catalog under, such as Fiction, are left out), and each store is asked
+   for the popular titles of the three most common through the same catalog
+   search. Without this a store's titles come only from what it relates to
+   single books. A store is asked one of these genres after every second
+   seed, so with the default budget of 32 calls and four stores each store
+   answers for its deals, five seeds and two genres. The titles join the
+   ranking like any other candidate and fill the same
+   "Popular in {Genre}" shelves as the starter genres.
    Every title a store returns goes into the **shared listing pool**
    (see [Shared listing pool](#shared-listing-pool)), and the person's
    `discover_candidates` rows are references to those listings plus what
    is personal to them: the seed that found the title, how the store found
    it and the starter genre.
-   `storefront_max_remote_calls` is split across the stores, so all stores
+   A storefront deployed only on other nodes is asked there: the subject's
+   job asks the stores this node runs, then queues one `discover_candidates`
+   job pinned to each other store's plugin instance, which routing sends to
+   a node that runs it (when the job queue is full, the subject's job fails
+   after its other work so a retry queues the rest). Each pinned job saves that store's rows and queues
+   the subject's ranking 5 s later, so several stores finishing together
+   fold into one ranking. Rows of a store no node deploys any more are
+   dropped when the subject's job runs, so a retired store's titles leave
+   the shelves.
+   `storefront_max_remote_calls` is split across all deployed stores, on
+   this node and the others, so all stores
    together never make more calls than it allows (deals count as one call,
    and a store whose share is zero is not asked). Only calls the store
    actually answers count: an answer read from the 24-hour store-call cache
@@ -241,7 +262,8 @@ announces it with `holding_added`. A catalog answer that fills or relinks a
 stored edition announces that change as a scan would.
 
 The `discover_candidates` and `discover_feed` jobs are deduplicated per
-subject, so a burst of triggers folds into
+subject (a pinned `discover_candidates` job per subject and plugin
+instance), so a burst of triggers folds into
 the job already waiting.
 
 `GET /api/discover/recommendations` reads the stored feed and returns at once,
@@ -726,7 +748,7 @@ title is **not** in the household library.
   title-meta gap-fills from storefront `catalog_detail` (narrator, runtime,
   description, publisher, genres, abridged): the request carries the title's
   `store_editions` (at most 16), and the host asks each listing store that
-  declares `catalog.detailByProductId` (Audible, Libro.fm, GraphicAudio) for its own
+  declares `catalog.detailByProductId` (Audible, Chirp, Libro.fm, GraphicAudio) for its own
   product (two at most), then the stores that declare `catalog.detailByIsbn`
   (Libro.fm) for the ISBN, three lookups and 3.5 s at most. No plugin id is
   named. The server caches each answer under the set of deployed metadata
@@ -748,15 +770,20 @@ title is **not** in the household library.
   `search_catalog`. See
   [Catalog search capabilities](../plugins/abi.md#catalog-search-capabilities).
 - **Samples.** The dialog's **Sample** control plays a short preview that
-  never counts as listening. For a held edition it is cut from the file
-  (`GET /api/library/editions/{id}/sample`). Otherwise
-  `POST /api/discover/title-sample` takes the title-meta body, asks the
-  same stores in the same order for a catalog record with a `sampleUrl`
-  (10 s at most), and answers a same-origin
-  `/api/samples/{token}` path the daemon serves. The first store's sample,
-  or every store answering that it has none, is cached six hours; after a
-  timeout, a store error or a URL the daemon cannot sign nothing is
-  cached, so the next press asks again. See
+  never counts as listening, and is shown only when there is one to play.
+  When the dialog opens it sends `POST /api/discover/title-sample` the
+  title-meta body plus the held `edition_id`, if any. When the caller may
+  hear that edition and this node reaches its audio, the answer is its
+  `edition_sample_path` (`GET /api/library/editions/{id}/sample`, cut from
+  the file) and no store is asked. Otherwise the route asks the same
+  stores in the same order for a catalog record with a `sampleUrl` (10 s
+  at most) and answers a same-origin `/api/samples/{token}` path as
+  `sample_path`. With no confined media worker, or no source, it answers
+  neither and the dialog shows no control. If an edition sample fails to
+  play, the control asks again without the edition for a store's. The
+  first store's sample, or every store answering that it has none, is
+  cached six hours; after a timeout, a store error or a URL the daemon
+  cannot sign nothing is cached, so the next dialog asks again. See
   [Book samples](../adr/book-samples.md).
 
 Multi-region storefronts are deferred (US default for now).
@@ -831,9 +858,12 @@ A row is one recording, never one title. Two stores' hits share a row when
 they share an ISBN or ASIN, or when the shared listing pool resolved both
 store products into the same expression (`LibraryStore::listing_expressions`).
 
-Stores rarely share a record number, so hits from two different stores that
-share none of those still share a row when all of these hold
-(`same_recording_by_runtime` in `bookclerk-discover`):
+Stores rarely share a record number, so hits that share none of those still
+share a row when all of these hold (`same_recording_by_runtime` in
+`bookclerk-discover`). This also joins one store's two products of one
+recording, which happens when two distributors deliver it: Chirp lists Cyril
+Taylor-Carr's *Aleister Crowley* from both Icon Audio Arts and Author's
+Republic, 2 seconds apart, and search shows one row.
 
 1. Both report a runtime, and the runtimes differ by at most 1 minute
    (stores round a recording's length differently, by less than a minute).
@@ -843,10 +873,11 @@ share none of those still share a row when all of these hold
 3. They credit the same, non-empty set of narrators.
 4. Nothing tells them apart: no two different ISBNs or ASINs, no abridged
    against unabridged, no two different languages, and no two different
-   expressions in the pool.
+   expressions in the pool. For two products of one store, no two different
+   subtitles either (stores word subtitles differently, so this is not
+   checked across stores).
 
-Two products of one store never merge this way, and title and authors alone
-never merge hits. A narration and a dramatisation of one book, or an
+Title and authors alone never merge hits. A narration and a dramatisation of one book, or an
 unabridged and an abridged recording, stay separate rows with their own
 cover, narrators and price. Each merged row keeps every store's edition, so
 every store's price is still offered, and a field one store left out (a
@@ -860,6 +891,18 @@ a tie the first one stays.
 > David Baldacci's *First Family*, read by Ron McLarty, is the reference
 > case: Audible, Chirp and Libro.fm each list an unabridged (871 minutes)
 > and an abridged (370 minutes) recording, and search shows two rows.
+
+Search is a store browser, so unlike the shelves it keeps books the library
+already holds and marks them instead (`in_library` on each hit, filled by
+`join_search_library_copies` when a page is read, never stored):
+
+- `this_edition` ("In your library"): one of the hit's ASIN, ISBN or store
+  products belongs to an edition an account or a branch holds.
+- `other_edition` ("Another edition in your library"): none of those is
+  held, but the hit's work is. The work is that of a store listing the
+  shared listing pool holds for the hit, or else the work the library's
+  resolver would place the hit in, as it places a scanned listing. That is
+  another recording of the book, or the same recording from another store.
 
 Stores give ISBNs where they can: Audible's catalog `isbn` attribute and
 Libro.fm's product ids are ISBNs, and Chirp, which lists none, names a
@@ -883,6 +926,7 @@ it.
 | `sort` | `relevance` (default) / `popularity` / `rating` / `title` / `author` / `price` / `length` — storefront rank (`rankHint`, declared by Audible today) for relevance/popularity; host re-ranks price/length/rating/title/author. Rating sort uses a Bayesian average of `rating_overall` with `rating_count` (prior mean 4.0, strength 100) so tiny sample 5.0s do not outrank high-volume 4.8s |
 | `sort_dir` | `asc` / `desc` (defaults: desc for relevance/popularity/rating/price; asc for title/author/length). Relevance ignores direction for ranking |
 | `field` | Optional scoped search: `author` / `narrator` / `series` / `genre` |
+| `rank` | `meaning` (default) / `store` — how a `relevance` page is ordered; see [Ordering a page with its meaning](#ordering-a-page-with-its-meaning) |
 | `lang` | Default language (BCP-47); hard-include when `language` omitted |
 | `language` | Comma-separated language codes to include |
 | `all_languages` | `1` / `true` — no hard language filter |
@@ -898,6 +942,57 @@ purchase-hints round-trip). The UI infinite-scrolls with `next_cursor` and
 dedupes rare cross-page `work_key`s. Facet option lists grow from loaded pages
 (not full upstream facet counts). Typeahead still uses a small first page
 (`page_size=10`).
+
+### Ordering a page with its meaning
+
+A store orders its results by its own relevance, which matches words. When
+the answering node has the library's embedding model, a page sorted by
+`relevance` is also ordered by how close each result is to the query in
+meaning (`crates/bookclerkd/src/search_rerank.rs`):
+
+1. The query is embedded as a query. Its vector is shared with the
+   Library's search by meaning, which keeps the last 32.
+2. Each result on the page is embedded as a document from its title with
+   its subtitle, its authors and its series, and nothing else. A search page
+   carries little more, and short texts keep a page of 24 results never
+   seen before at about 0.7 s on one core with the default model
+   ([Embedding benchmarks](embedding-benchmarks.md)).
+3. Each result has two places: its place in the stores' order and its place
+   by closeness to the query. The page is ordered by the sum of the two,
+   and the stores' order decides between equals. A result must do well in
+   both to lead, so an exact title match the stores put first stays near
+   the top. The equal weights are a first setting, not yet measured on real
+   searches.
+4. A model plugin runs its calls one after another, and a call a search
+   stopped waiting for still runs. The model therefore works for a search
+   in a task of its own that holds one of two slots until the model has
+   answered (up to the model call's own timeout). What it made is kept for
+   the next search of that page. A search that finds both slots taken, and
+   whose vectors are not all in the cache, asks the model for nothing and
+   keeps the stores' order.
+
+The page is ordered before it is returned, so nothing moves after a client
+shows it. Only the results of one page are ordered among themselves: pages
+still follow each other in the stores' order.
+
+Result vectors are never stored. A store's catalog is not the library's, so
+they stay out of the `embeddings` table and live in a cache in memory (the
+last 4,096 texts of the current model). A result seen again, on a later
+search or a repeated page, costs nothing.
+
+The model gets at most 3 seconds, inside what is left of the search's
+15 second budget. The page keeps the stores' order, and the search answers
+as before, when:
+
+- the node has no embedding model (the hash stand-in carries no meaning and
+  is never used here);
+- the model misses the deadline, for example a sleeping model plugin that
+  must first load its model, or fails;
+- the page has one result, or less than 250 ms of the budget is left;
+- the search is scoped with `field`, which asks for a name, or sorted by
+  anything but `relevance`;
+- the client sent `rank=store`. The web app does for the suggestions under
+  the search box, which are asked for while the person types.
 
 Per-user Discover defaults live on `GET`/`PATCH /api/preferences`:
 `discover_sort`, `discover_sort_dir`, `discover_language` (`null` = browser
@@ -949,7 +1044,7 @@ queue order; Discover personalizes the feed (including wishlist items).
 | Narrated by {Narrator} | `narrator` | Liked-narrator overlap |
 | Because you like {Genre} | `genre` | Category/subject overlap from finished titles |
 | Similar to books you finish | `similar_taste` | Embedding similarity |
-| Popular in {Genre} | `starter_genre` (`starter_genre:fantasy`, …) | Starter-genre browse while the taste is thin |
+| Popular in {Genre} | `starter_genre` (`starter_genre:fantasy`, …; a label in a non-Latin script also carries eight hex digits of its hash, so two such genres never share an id) | Genre browse: the genres the taste leans to, and the starter genres while it is thin |
 | Chirp deals right now | `chirp_deals` | Chirp top + free deals |
 | Picked for you on {Store} | `from_store` (`from_audible`, …) | Titles no personal shelf took, ranked by taste, under the store where they cost the person least |
 | Top picks for you | `top_picks` | Fallback when every other shelf is empty |

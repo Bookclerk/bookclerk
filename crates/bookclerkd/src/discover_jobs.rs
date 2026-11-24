@@ -7,6 +7,12 @@
 //! shelves ([`bookclerk_discover::rank_subject_feed`]) with no network.
 //! Both are deduplicated per subject, so a burst of triggers folds into the
 //! job already waiting. See `docs/internals/discovery.md`, *Precomputed shelves*.
+//!
+//! A fetch asks the storefronts deployed on the node that claims it. Each
+//! storefront instance deployed only on other nodes gets a fetch of its own,
+//! pinned to the instance so it is claimed where that instance runs; it
+//! stores that store's rows and queues the ranking a moment later, so the
+//! fetches finishing together rank once.
 
 use std::time::Duration;
 
@@ -100,6 +106,127 @@ pub async fn enqueue_discover_candidates(
     enqueue(state, JobKind::DiscoverCandidates, subject, trigger, delay).await
 }
 
+/// How long a pinned store fetch waits before queueing the subject's
+/// ranking, so the other stores' fetches finishing around it fold into the
+/// same ranking.
+const PINNED_RANK_DELAY: Duration = Duration::from_secs(5);
+
+/// One storefront instance some node is deployed to run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeployedStorefront {
+    /// The instance id (`plugin_instances.plugin_instance_id`).
+    instance_id: String,
+    /// Its plugin key, which names its listings in the pool.
+    plugin_key: String,
+}
+
+/// The storefront instances the library deploys, on any node.
+///
+/// A storefront is an installed plugin whose manifest exports the
+/// `storefront` entrypoint (every node materializes the library's
+/// installs, so this does not depend on which node asks). An instance
+/// counts when some node has a deployment of it that should run.
+///
+/// # Returns
+///
+/// `None` when the plugins could not be discovered (or no plugin
+/// directory is configured), so the caller asks only the local stores and
+/// drops nothing.
+async fn deployed_storefronts(
+    state: &AppState,
+    library: &bookclerk_library::LibraryStore,
+) -> Option<Vec<DeployedStorefront>> {
+    let config = state.config.read().await.clone();
+    config.paths.as_ref()?;
+    // Discovery walks and hashes every installed plugin: keep it off the
+    // async workers.
+    let discovered =
+        tokio::task::spawn_blocking(move || bookclerk_plugin_host::discover_plugins(&config))
+            .await
+            .ok()?;
+    let plugins = match discovered {
+        Ok(plugins) => plugins,
+        Err(err) => {
+            tracing::warn!(error = %err, "plugin discovery failed; discover asks local stores only");
+            return None;
+        }
+    };
+    let keys: std::collections::BTreeSet<String> = plugins
+        .iter()
+        .filter(|plugin| {
+            plugin
+                .manifest
+                .entrypoints
+                .contains(&bookclerk_plugin_host::Entrypoint::Storefront)
+        })
+        .map(|plugin| plugin.plugin_key().to_string())
+        .collect();
+    deployed_instances_of(library, &keys).await.ok()
+}
+
+/// The library's instances of `keys` that some node is deployed to run.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+async fn deployed_instances_of(
+    library: &bookclerk_library::LibraryStore,
+    keys: &std::collections::BTreeSet<String>,
+) -> anyhow::Result<Vec<DeployedStorefront>> {
+    let instances = bookclerk_library::control_plane::list_all_plugin_instances(library).await?;
+    let mut out = Vec::new();
+    for instance in instances {
+        if !keys.contains(&instance.plugin_key) {
+            continue;
+        }
+        let id = instance.id.as_str().to_string();
+        let deployed = bookclerk_library::control_plane::common_deployment_nodes(
+            library,
+            std::slice::from_ref(&id),
+        )
+        .await?;
+        if !deployed.is_empty() {
+            out.push(DeployedStorefront {
+                instance_id: id,
+                plugin_key: instance.plugin_key,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Admits a candidate fetch of one storefront instance for `subject`,
+/// claimable only where that instance runs.
+///
+/// # Errors
+///
+/// Returns the admission error.
+async fn enqueue_pinned_candidates(
+    state: &AppState,
+    subject: &DiscoverSubject,
+    instance_id: &str,
+    trigger: JobTrigger,
+) -> anyhow::Result<AdmitJob> {
+    let (max_pending, max_attempts) = queue_limits(state).await;
+    admit(
+        state,
+        EnqueueJobSpec {
+            kind: JobKind::DiscoverCandidates,
+            payload: JobPayload {
+                trigger,
+                subject: Some(subject.key()),
+                plugin_instance_id: Some(instance_id.to_string()),
+                ..JobPayload::default()
+            },
+            priority: 0,
+            max_attempts,
+            max_pending,
+            run_after: None,
+        },
+    )
+    .await
+}
+
 /// Admits a feed ranking for `subject`.
 ///
 /// # Errors
@@ -168,23 +295,98 @@ pub async fn run_discover_candidates(
         return Ok(format!("subject={} removed", subject.key()));
     }
     let opts = discover_options(&cfg, None);
+    if let Some(instance) = payload
+        .plugin_instance_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+    {
+        return run_pinned_candidates(state, &library, &subject, instance, payload, opts).await;
+    }
+    let deployed = if opts.fetch_storefront_candidates {
+        deployed_storefronts(state, &library).await
+    } else {
+        None
+    };
+    run_subject_candidates(state, &library, &subject, payload, opts, deployed).await
+}
+
+/// The subject's own `discover_candidates` fetch: asks this node's stores,
+/// queues a pinned fetch for each storefront in `deployed` that no local
+/// source serves, drops the rows of stores no node deploys, then queues the
+/// ranking.
+///
+/// # Arguments
+///
+/// * `deployed` - The storefront instances deployed on any node, or `None`
+///   when they could not be listed (only local stores are asked and nothing
+///   is dropped).
+///
+/// # Errors
+///
+/// Fails on a library error.
+async fn run_subject_candidates(
+    state: &AppState,
+    library: &bookclerk_library::LibraryStore,
+    subject: &DiscoverSubject,
+    payload: &JobPayload,
+    mut opts: bookclerk_discover::RecommendOptions,
+    deployed: Option<Vec<DeployedStorefront>>,
+) -> anyhow::Result<String> {
+    let local = state.sources.read().await.clone();
+    // Storefront instances no local source serves get fetches of their own.
+    let local_instances: std::collections::BTreeSet<String> = local
+        .all()
+        .iter()
+        .filter_map(|source| source.plugin_instance_id().map(str::to_string))
+        .collect();
+    let remote: Vec<&DeployedStorefront> = deployed
+        .iter()
+        .flatten()
+        .filter(|store| !local_instances.contains(&store.instance_id))
+        .collect();
+    // This node's stores get their share of the call budget; each remote
+    // store gets its own in its pinned fetch.
+    let local_stores = local.all().len();
+    opts.storefront_max_remote_calls = budget_share(
+        opts.storefront_max_remote_calls,
+        local_stores,
+        local_stores + remote.len(),
+    );
     let report = if opts.fetch_storefront_candidates {
-        let sources = state.sources.read().await.clone();
-        bookclerk_discover::fetch_subject_candidates(&library, &sources, &subject, &opts).await?
+        bookclerk_discover::fetch_subject_candidates(library, &local, subject, &opts).await?
     } else {
         // Nothing to fetch, but the fetch counts as done for the day, and
         // the event that queued it still refreshes the stored taste.
-        bookclerk_discover::refresh_subject_taste(&library, &subject, &opts).await?;
-        library.mark_discover_fetch(&subject, Utc::now()).await?;
+        bookclerk_discover::refresh_subject_taste(library, subject, &opts).await?;
+        library.mark_discover_fetch(subject, Utc::now()).await?;
         bookclerk_discover::FetchReport::default()
     };
-    if forget_if_removed(&library, &subject).await? {
+    if forget_if_removed(library, subject).await? {
         return Ok(format!("subject={} removed", subject.key()));
     }
+    // Pinned fetches the full job queue turned away. The job fails after
+    // its other work so a retry admits them; the ones already admitted
+    // fold into their pending rows.
+    let mut unqueued = 0usize;
+    for store in &remote {
+        match enqueue_pinned_candidates(state, subject, &store.instance_id, payload.trigger).await {
+            Ok(AdmitJob::Created(_) | AdmitJob::Duplicate(_)) => {}
+            Ok(AdmitJob::QueueFull) => unqueued = unqueued.saturating_add(1),
+            Err(err) => tracing::warn!(
+                subject = %subject.key(),
+                instance = %store.instance_id,
+                error = %err,
+                "could not queue a discover fetch for a storefront on another node"
+            ),
+        }
+    }
+    let dropped = match &deployed {
+        Some(deployed) => drop_undeployed_stores(library, subject, &local, deployed).await?,
+        None => 0,
+    };
     // The ranking reads what was just stored; a failure to admit it leaves
     // the next read to queue it.
-    if let Err(err) = enqueue_discover_feed(state, &subject, payload.trigger, Duration::ZERO).await
-    {
+    if let Err(err) = enqueue_discover_feed(state, subject, payload.trigger, Duration::ZERO).await {
         tracing::warn!(subject = %subject.key(), error = %err, "could not queue the discover ranking");
     }
     let pruned = library
@@ -204,16 +406,140 @@ pub async fn run_discover_candidates(
         0
     };
     // Ask the branches what they can supply of what people here look at.
-    crate::catalog_lookup::ask_branches_if_due(&library).await;
+    crate::catalog_lookup::ask_branches_if_due(library).await;
+    if unqueued > 0 {
+        anyhow::bail!(
+            "subject={}: the job queue is full; {unqueued} storefront fetch(es) on other nodes not queued",
+            subject.key()
+        );
+    }
     Ok(format!(
-        "subject={} seeds={} stores={} candidates={} failed={} pruned_calls={pruned} \
-         pruned_listings={pruned_listings}",
+        "subject={} seeds={} stores={} candidates={} failed={} remote_stores={} \
+         dropped_stores={dropped} pruned_calls={pruned} pruned_listings={pruned_listings}",
         subject.key(),
         report.seeds,
         report.stores_saved,
         report.candidates,
         report.stores_failed.join(","),
+        remote.len(),
     ))
+}
+
+/// `share` of `of` stores' part of a `total` call budget, rounded down but
+/// at least one call for a non-empty share (the whole budget when `of` is
+/// zero).
+fn budget_share(total: usize, share: usize, of: usize) -> usize {
+    if of == 0 || share >= of {
+        return total;
+    }
+    if share == 0 {
+        return 0;
+    }
+    total
+        .saturating_mul(share)
+        .checked_div(of)
+        .unwrap_or(total)
+        .max(1)
+}
+
+/// Runs a `discover_candidates` job pinned to one storefront instance:
+/// fetches that store's candidates on this node, then queues the subject's
+/// ranking a moment later.
+///
+/// # Errors
+///
+/// Fails on cancellation or a library error.
+async fn run_pinned_candidates(
+    state: &AppState,
+    library: &bookclerk_library::LibraryStore,
+    subject: &DiscoverSubject,
+    instance: &str,
+    payload: &JobPayload,
+    mut opts: bookclerk_discover::RecommendOptions,
+) -> anyhow::Result<String> {
+    if !opts.fetch_storefront_candidates {
+        return Ok(format!(
+            "subject={} instance={instance} storefront candidates off",
+            subject.key()
+        ));
+    }
+    let Some(source) = state
+        .sources
+        .read()
+        .await
+        .all()
+        .into_iter()
+        .find(|source| source.plugin_instance_id() == Some(instance))
+    else {
+        // Routing sends the job where the instance runs; an instance no
+        // longer deployed anywhere has nothing to fetch.
+        return Ok(format!(
+            "subject={} instance={instance} not served on this node",
+            subject.key()
+        ));
+    };
+    let stores = deployed_storefronts(state, library)
+        .await
+        .map_or(1, |deployed| deployed.len().max(1));
+    opts.storefront_max_remote_calls = budget_share(opts.storefront_max_remote_calls, 1, stores);
+    let mut one = bookclerk_source::SourceRegistry::new();
+    one.register(source);
+    let report =
+        bookclerk_discover::fetch_subject_candidates(library, &one, subject, &opts).await?;
+    if forget_if_removed(library, subject).await? {
+        return Ok(format!("subject={} removed", subject.key()));
+    }
+    if let Err(err) =
+        enqueue_discover_feed(state, subject, payload.trigger, PINNED_RANK_DELAY).await
+    {
+        tracing::warn!(subject = %subject.key(), error = %err, "could not queue the discover ranking");
+    }
+    Ok(format!(
+        "subject={} instance={instance} candidates={} failed={}",
+        subject.key(),
+        report.candidates,
+        report.stores_failed.join(","),
+    ))
+}
+
+/// Drops `subject`'s stored candidates of storefronts no node deploys any
+/// more, so a retired store's titles leave the shelves.
+///
+/// A row stays when its listing's plugin is a deployed storefront or one of
+/// this node's sources.
+///
+/// # Returns
+///
+/// How many stores' rows were dropped.
+///
+/// # Errors
+///
+/// Returns the library error.
+async fn drop_undeployed_stores(
+    library: &bookclerk_library::LibraryStore,
+    subject: &DiscoverSubject,
+    local: &bookclerk_source::SourceRegistry,
+    deployed: &[DeployedStorefront],
+) -> anyhow::Result<usize> {
+    let mut live: std::collections::BTreeSet<&str> = deployed
+        .iter()
+        .map(|store| store.plugin_key.as_str())
+        .collect();
+    let local_sources = local.all();
+    live.extend(local_sources.iter().map(|source| source.plugin_key()));
+    let mut stale: std::collections::BTreeMap<String, bookclerk_library::SeedScope> =
+        std::collections::BTreeMap::new();
+    for row in library.list_discover_candidates(subject).await? {
+        if !live.contains(row.listing.plugin_key.as_str()) {
+            stale.entry(row.source).or_insert(row.seed_scope);
+        }
+    }
+    for (source, scope) in &stale {
+        library
+            .replace_discover_candidates(subject, source, *scope, &[])
+            .await?;
+    }
+    Ok(stale.len())
 }
 
 /// How long an unreferenced catalog listing is kept after a store last
@@ -548,6 +874,97 @@ mod tests {
     }
 
     #[test]
+    fn the_call_budget_is_split_by_store_count() {
+        // No remote stores: the whole budget stays here.
+        assert_eq!(budget_share(40, 3, 3), 40);
+        assert_eq!(budget_share(40, 0, 0), 40);
+        // Two local stores of four get half.
+        assert_eq!(budget_share(40, 2, 4), 20);
+        // One store of three rounds down.
+        assert_eq!(budget_share(40, 1, 3), 13);
+        // A share never starves a store it covers.
+        assert_eq!(budget_share(2, 1, 5), 1);
+        // No stores here, no calls here.
+        assert_eq!(budget_share(40, 0, 4), 0);
+    }
+
+    /// Stores `product` as `plugin_key`'s one candidate for `subject`.
+    async fn store_candidate(
+        store: &bookclerk_library::LibraryStore,
+        subject: &DiscoverSubject,
+        plugin_key: &str,
+        product: &str,
+    ) {
+        let listing = bookclerk_library::CatalogListing {
+            draft: bookclerk_resolve::ListingDraft {
+                plugin_key: plugin_key.to_string(),
+                marketplace: Some(String::from("us")),
+                product_id: product.to_string(),
+                title: product.to_string(),
+                work_kind: Some(bookclerk_resolve::WorkKind::Book),
+                expression_kind: Some(bookclerk_resolve::ExpressionKind::Narration),
+                media_kind: Some(bookclerk_resolve::MediaKind::Audio),
+                ..bookclerk_resolve::ListingDraft::default()
+            },
+            detail: bookclerk_library::ListingDetail::default(),
+            offers: Vec::new(),
+        };
+        let ids = store
+            .record_catalog_listings(std::slice::from_ref(&listing))
+            .await
+            .unwrap()
+            .ids;
+        let rows: Vec<bookclerk_library::CandidateRef> = ids
+            .into_iter()
+            .map(|id| bookclerk_library::CandidateRef {
+                listing_id: id.unwrap(),
+                origin: String::from("deals"),
+                seed_title: None,
+                seed_categories: None,
+                starter_genre: None,
+            })
+            .collect();
+        store
+            .replace_discover_candidates(subject, plugin_key, SeedScope::Own, &rows)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_store_no_node_deploys_leaves_the_shelves() {
+        let store = bookclerk_library::LibraryStore::from_connection(
+            bookclerk_plugin_database_sqlite::open_memory()
+                .await
+                .unwrap(),
+        );
+        let subject = DiscoverSubject::User(3);
+        store_candidate(&store, &subject, "audible", "kept").await;
+        store_candidate(&store, &subject, "libro", "retired").await;
+        let deployed = [DeployedStorefront {
+            instance_id: String::from("i-audible"),
+            plugin_key: String::from("audible"),
+        }];
+        let local = bookclerk_source::SourceRegistry::new();
+        let dropped = drop_undeployed_stores(&store, &subject, &local, &deployed)
+            .await
+            .unwrap();
+        assert_eq!(dropped, 1);
+        let left: Vec<String> = store
+            .list_discover_candidates(&subject)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.listing.product_id)
+            .collect();
+        assert_eq!(left, ["kept"]);
+        // Nothing more to drop on the next run.
+        let again = drop_undeployed_stores(&store, &subject, &local, &deployed)
+            .await
+            .unwrap();
+        assert_eq!(again, 0);
+    }
+
+    #[test]
     fn a_read_queues_only_what_is_stale() {
         let now = Utc::now();
         let fresh = now - chrono::Duration::hours(1);
@@ -669,6 +1086,217 @@ mod tests {
             .collect();
         jobs.sort_by_key(|(kind, subject)| (kind.as_str().to_string(), subject.clone()));
         jobs
+    }
+
+    /// A subject's fetch queues a pinned fetch for a storefront deployed only
+    /// on another node, drops the rows of a store no node deploys, and the
+    /// pinned fetch skips a store this node does not serve.
+    #[tokio::test]
+    async fn a_subject_fetch_fans_out_to_stores_on_other_nodes() {
+        use bookclerk_library::control_plane as cp;
+        const STORE_KEY: &str = "path:file:///tmp/far-store#farstore";
+        let files = tempfile::tempdir().unwrap();
+        let (state, library) = crate::node_api::tests::test_state_with(
+            &files,
+            "[discovery]\nembeddings_enabled = false\n",
+        )
+        .await;
+        let instance =
+            cp::create_plugin_instance(&library, &cp::ConfigActor::Bootstrap, STORE_KEY, "")
+                .await
+                .unwrap();
+        cp::ensure_plugin_deployment(
+            &library,
+            &cp::ConfigActor::Bootstrap,
+            &instance.id,
+            "node-b",
+            cp::DesiredState::Present,
+        )
+        .await
+        .unwrap();
+        let subject = DiscoverSubject::Operator;
+        store_candidate(&library, &subject, "retired", "gone").await;
+
+        let keys: std::collections::BTreeSet<String> = [STORE_KEY.to_string()].into();
+        let deployed = deployed_instances_of(&library, &keys).await.unwrap();
+        assert_eq!(
+            deployed,
+            vec![DeployedStorefront {
+                instance_id: instance.id.to_string(),
+                plugin_key: STORE_KEY.to_string(),
+            }]
+        );
+        let mut opts = discover_options(&state.config.read().await.clone(), None);
+        opts.fetch_storefront_candidates = true;
+        let payload = JobPayload {
+            subject: Some(subject.key()),
+            ..JobPayload::default()
+        };
+        let summary =
+            run_subject_candidates(&state, &library, &subject, &payload, opts, Some(deployed))
+                .await
+                .unwrap();
+        assert!(summary.contains("remote_stores=1"), "{summary}");
+        assert!(summary.contains("dropped_stores=1"), "{summary}");
+        assert!(library
+            .list_discover_candidates(&subject)
+            .await
+            .unwrap()
+            .is_empty());
+        let pinned: Vec<Option<String>> = library
+            .list_jobs(100)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|job| job.kind == JobKind::DiscoverCandidates)
+            .map(|job| job.payload.plugin_instance_id)
+            .collect();
+        assert_eq!(pinned, vec![Some(instance.id.to_string())]);
+        assert!(queued(&library)
+            .await
+            .contains(&(JobKind::DiscoverFeed, subject.key())));
+
+        // A full job queue fails the fetch so a retry queues the pinned one.
+        {
+            use sea_orm::ConnectionTrait;
+            library
+                .db()
+                .execute_unprepared("UPDATE jobs SET state = 'succeeded'")
+                .await
+                .unwrap();
+        }
+        let max_pending = std::mem::replace(&mut state.config.write().await.jobs.max_pending, 0);
+        let mut full = discover_options(&state.config.read().await.clone(), None);
+        full.fetch_storefront_candidates = true;
+        let again = deployed_instances_of(&library, &keys).await.unwrap();
+        let err = run_subject_candidates(&state, &library, &subject, &payload, full, Some(again))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("job queue is full"), "{err}");
+        state.config.write().await.jobs.max_pending = max_pending;
+
+        // The pinned fetch, run on a node without that store, asks nothing.
+        let pinned_payload = JobPayload {
+            subject: Some(subject.key()),
+            plugin_instance_id: Some(instance.id.to_string()),
+            ..JobPayload::default()
+        };
+        let mut on = discover_options(&state.config.read().await.clone(), None);
+        on.fetch_storefront_candidates = true;
+        let summary = run_pinned_candidates(
+            &state,
+            &library,
+            &subject,
+            instance.id.as_str(),
+            &pinned_payload,
+            on.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(summary.ends_with("not served on this node"), "{summary}");
+        let mut off = on.clone();
+        off.fetch_storefront_candidates = false;
+        let summary = run_pinned_candidates(
+            &state,
+            &library,
+            &subject,
+            instance.id.as_str(),
+            &pinned_payload,
+            off,
+        )
+        .await
+        .unwrap();
+        assert!(summary.ends_with("storefront candidates off"), "{summary}");
+
+        // On the node that serves it, the store is asked and the ranking
+        // queued.
+        state
+            .sources
+            .write()
+            .await
+            .register(std::sync::Arc::new(PinnedStore {
+                instance: instance.id.to_string(),
+            }));
+        let summary = run_pinned_candidates(
+            &state,
+            &library,
+            &subject,
+            instance.id.as_str(),
+            &pinned_payload,
+            on,
+        )
+        .await
+        .unwrap();
+        assert!(
+            summary.starts_with(&format!("subject=operator instance={}", instance.id)),
+            "{summary}"
+        );
+        assert!(summary.contains("candidates="), "{summary}");
+    }
+
+    /// A storefront double owned by one plugin instance that answers nothing.
+    struct PinnedStore {
+        /// The instance id it reports.
+        instance: String,
+    }
+
+    #[async_trait::async_trait]
+    impl bookclerk_source::ContentSource for PinnedStore {
+        fn id(&self) -> &str {
+            "farstore"
+        }
+
+        fn plugin_instance_id(&self) -> Option<&str> {
+            Some(&self.instance)
+        }
+
+        fn portal_auth_mode(&self) -> bookclerk_source::PortalAuthMode {
+            bookclerk_source::PortalAuthMode::Oauth
+        }
+
+        fn portal_brand(&self) -> bookclerk_source::SourceBrand {
+            bookclerk_source::SourceBrand {
+                id: "farstore",
+                name: "Far store",
+                bg: "#000000",
+                fg: "#ffffff",
+                accent: "#111111",
+                icon_url: "https://example.invalid/icon",
+            }
+        }
+
+        async fn login(
+            &self,
+            _scope: &bookclerk_library::SourceScope,
+            _opts: bookclerk_source::LoginOptions,
+        ) -> bookclerk_source::Result<bookclerk_source::SourceAccount> {
+            Err(bookclerk_source::SourceError::api("not in this test"))
+        }
+
+        async fn list_accounts(
+            &self,
+            _scope: &bookclerk_library::SourceScope,
+        ) -> bookclerk_source::Result<Vec<bookclerk_source::SourceAccount>> {
+            Ok(Vec::new())
+        }
+
+        async fn scan(
+            &self,
+            _scope: &bookclerk_library::SourceScope,
+            _opts: bookclerk_source::ScanOptions,
+        ) -> bookclerk_source::Result<bookclerk_source::ScanSummary> {
+            Err(bookclerk_source::SourceError::api("not in this test"))
+        }
+
+        async fn fetch_title(
+            &self,
+            _scope: &bookclerk_library::SourceScope,
+            _account_id: &str,
+            _title_id: &str,
+            _opts: &bookclerk_source::FetchOptions,
+        ) -> bookclerk_source::Result<bookclerk_source::SourceFetch> {
+            Err(bookclerk_source::SourceError::api("not in this test"))
+        }
     }
 
     /// With no model on the node, a ranking makes the stand-in's work

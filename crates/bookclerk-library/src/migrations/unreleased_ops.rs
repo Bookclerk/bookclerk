@@ -81,7 +81,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         updated_at TEXT NOT NULL,
         last_seen_at TEXT,
         avatar_source TEXT,
-        totp_enabled INTEGER NOT NULL DEFAULT 0
+        totp_enabled INTEGER NOT NULL DEFAULT 0,
+        email_verified_at TEXT
     )",
     ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)"),
@@ -114,6 +115,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         redeemed_at TEXT,
         created_by TEXT NOT NULL,
         created_at TEXT NOT NULL,
+        emailed_to TEXT,
         FOREIGN KEY(identity_id) REFERENCES portal_identities(id) ON DELETE SET NULL
     )",
     ),
@@ -262,8 +264,27 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         subjects TEXT,
         categories TEXT,
         cover_url TEXT,
+        text_version TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
+    )",
+    ),
+    // A work's description, subjects or categories too wide for one cell,
+    // or for the work's row to fit one reply, on the database plugin, cut
+    // into pieces joined again in `seq` order. Every piece carries its
+    // text's piece count (`parts`). The pieces go in first under a new
+    // `version`; the work's row then names that version (`text_version`,
+    // the text's own column empty), and the batch that renames it drops
+    // the pieces it no longer names.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS work_text_parts (
+        work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+        version TEXT NOT NULL,
+        field TEXT NOT NULL CHECK (field IN ('description', 'subjects', 'categories')),
+        seq INTEGER NOT NULL,
+        parts INTEGER NOT NULL,
+        body TEXT NOT NULL,
+        PRIMARY KEY (work_id, version, field, seq)
     )",
     ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_works_match ON works(match_key)"),
@@ -1138,7 +1159,9 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // (`control_plane::branch_catalog`): `share_ref` is `store:product_id` as
     // the branch named it, `share_title` the title as received (JSON
     // `CatalogTitle`), `share_digest` its manifest digest and
-    // `delivered_digest` the digest whose files reached this library; its
+    // `delivered_digest` the digest whose files reached this library,
+    // `refused_digest` / `refused_at` an upload of that digest refused for
+    // good (asked for again a day later or once the manifest changes); its
     // `seen_pass` is the branch's catalog pass. Account holdings leave them
     // empty.
     MigrationOp::Schema(
@@ -1159,6 +1182,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         share_digest TEXT,
         delivered_digest TEXT,
         delivered_at TEXT,
+        refused_digest TEXT,
+        refused_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE (listing_id, holder),
@@ -1170,7 +1195,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
             OR (holder_kind = 'patron' AND user_id IS NOT NULL AND plugin_key IS NULL
                 AND account_id IS NULL AND node_id IS NULL)),
         CHECK (holder_kind = 'node' OR (share_ref IS NULL AND share_title IS NULL
-            AND share_digest IS NULL AND delivered_digest IS NULL AND delivered_at IS NULL))
+            AND share_digest IS NULL AND delivered_digest IS NULL AND delivered_at IS NULL
+            AND refused_digest IS NULL AND refused_at IS NULL))
     )",
     ),
     MigrationOp::Schema(
@@ -1191,10 +1217,28 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         schema_version INTEGER NOT NULL,
         revision INTEGER NOT NULL,
         document_json TEXT NOT NULL,
+        document_parts INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL,
         updated_by TEXT NOT NULL,
         write_operation_id TEXT NOT NULL,
         PRIMARY KEY (scope_type, scope_id, namespace)
+    )",
+    ),
+    // A configuration document too wide for one cell or statement of the
+    // database plugin, cut into pieces joined again in `seq` order. The
+    // pieces go in under the write's operation id, in the batch that
+    // replaces the document or before it; the document row then names that
+    // operation and its piece count (its `document_json` empty), and the
+    // same batch drops every piece the row does not name.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS configuration_document_parts (
+        scope_type TEXT NOT NULL,
+        scope_id TEXT NOT NULL,
+        namespace TEXT NOT NULL,
+        parts_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        body TEXT NOT NULL,
+        PRIMARY KEY (scope_type, scope_id, namespace, parts_id, seq)
     )",
     ),
     MigrationOp::Schema(
@@ -1511,7 +1555,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         primary_key TEXT NOT NULL,
         manifest_json TEXT NOT NULL,
         received_json TEXT NOT NULL DEFAULT '[]',
-        state TEXT NOT NULL CHECK (state IN ('open', 'committed', 'aborted')),
+        state TEXT NOT NULL CHECK (state IN ('open', 'committed', 'aborted', 'discarding')),
         created_at TEXT NOT NULL,
         expires_at TEXT NOT NULL,
         committed_at TEXT
@@ -2005,6 +2049,30 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         FOREIGN KEY (plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
     )",
     ),
+    // On a branch: the files a host job copied to this install's own
+    // destinations for a library it joined (`control_plane::link_copies`),
+    // one row per destination and key. A copy refuses a key another title
+    // holds instead of overwriting it, and a copy whose attempt never
+    // finished (`copying`, the daemon stopped mid-title) is removed on the
+    // next start. `title_ref` is the title's call number on that library
+    // (its edition), else its holding id there; `replaced` is 1 when the
+    // attempt took over a kept copy of the same title.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS link_copy_files (
+        destination TEXT NOT NULL,
+        storage_key TEXT NOT NULL,
+        library_id TEXT NOT NULL,
+        title_ref TEXT NOT NULL,
+        writer TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('copying', 'kept')),
+        replaced INTEGER NOT NULL DEFAULT 0,
+        written_at TEXT NOT NULL,
+        PRIMARY KEY (destination, storage_key)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_link_copy_files_writer ON link_copy_files(writer)",
+    ),
     // On a branch: books a library it joined asked for through an
     // interlibrary request (`control_plane::branch_requests`), one row per
     // library and store identity, so the catalog sync sends that library
@@ -2334,6 +2402,53 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // Deleting a notification finds its inbox rows by this column.
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_notify_inbox_notification ON notify_inbox(notification_id)",
+    ),
+    // Account mail (`store::account_mail`, ADR decisions 5 and 6): the
+    // notifier instance the administrators chose for it, and when a test
+    // message through it was last delivered.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS account_mail_settings (
+        id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1),
+        plugin_instance_id TEXT NOT NULL,
+        tested_at TEXT,
+        updated_at TEXT NOT NULL
+    )",
+    ),
+    // One row per account-mail message and its delivery. The link's token
+    // is minted by the send job when it sends and only its hash is kept
+    // (in `claim_tickets` or `email_verifications`), so no link is stored
+    // here or anywhere else.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS account_mail (
+        id TEXT PRIMARY KEY NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('test', 'invite', 'verify_email')),
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        address TEXT NOT NULL,
+        plugin_instance_id TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'delivered', 'failed', 'dropped')),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        reason TEXT,
+        job_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_account_mail_state ON account_mail(state, created_at)",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_account_mail_user ON account_mail(user_id, created_at)",
+    ),
+    // The live verification link of each user's email address: hashed,
+    // single use, 24 hours, and voided by the next one.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS email_verifications (
+        token_hash TEXT PRIMARY KEY NOT NULL,
+        user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+        email TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )",
     ),
     // A chapter list, stored once and named by the SHA-256 of its
     // canonical encoding (`store::chapters`). The row is written in the

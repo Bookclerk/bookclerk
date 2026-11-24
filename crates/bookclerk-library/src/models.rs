@@ -315,6 +315,10 @@ pub struct UserRecord {
     /// True when a TOTP authenticator has been confirmed for local password login.
     #[serde(default)]
     pub totp_enabled: bool,
+    /// True when `email` was proven by a link sent to it (an emailed
+    /// invite or a verification link) and has not changed since.
+    #[serde(default)]
+    pub email_verified: bool,
 }
 
 /// Registered OIDC authorization-server client (Bookclerk as IdP).
@@ -559,6 +563,8 @@ pub struct ClaimTicketRecord {
     pub created_by: String,
     /// RFC 3339 timestamp when the row was inserted.
     pub created_at: DateTime<Utc>,
+    /// The address account mail sent this ticket to, when it was emailed.
+    pub emailed_to: Option<String>,
 }
 
 /// Link between a portal identity and a bookstore account.
@@ -1473,7 +1479,8 @@ pub enum JobKind {
     /// bytes, and run only by a node that holds the library database.
     IngestBatch,
     /// Send one notification to one destination (`notify_send`): the
-    /// delivery-log row [`JobPayload::notify_delivery`] names, through its
+    /// delivery-log row [`JobPayload::notify_delivery`] names, or the
+    /// account-mail row [`JobPayload::account_mail`] names, through its
     /// notifier instance ([`JobPayload::plugin_instance_id`], also in
     /// [`JobPayload::requires`]), so only a node running that instance
     /// claims it.
@@ -1640,11 +1647,22 @@ impl JobKind {
                 payload.cron.as_deref().unwrap_or("-"),
             ),
             // One active fetch or ranking per subject: a burst of events
-            // folds into the job already queued.
-            Self::DiscoverCandidates => format!(
-                "discover_candidates:subject={}",
-                payload.subject.as_deref().unwrap_or("-")
-            ),
+            // folds into the job already queued. A fetch pinned to one
+            // storefront instance (deployed on another node than the one
+            // that ran the subject's fetch) is its own work.
+            Self::DiscoverCandidates => {
+                let subject = payload.subject.as_deref().unwrap_or("-");
+                match payload
+                    .plugin_instance_id
+                    .as_deref()
+                    .filter(|id| !id.is_empty())
+                {
+                    Some(instance) => {
+                        format!("discover_candidates:subject={subject}:instance={instance}")
+                    }
+                    None => format!("discover_candidates:subject={subject}"),
+                }
+            }
             Self::DiscoverFeed => format!(
                 "discover_feed:subject={}",
                 payload.subject.as_deref().unwrap_or("-")
@@ -1685,10 +1703,12 @@ impl JobKind {
                 "ingest_batch:batch={}",
                 payload.ingest_batch.as_deref().unwrap_or("-")
             ),
-            // One queued or running send per delivery-log row.
-            Self::NotifySend => {
-                notify_send_dedup_key(payload.notify_delivery.as_deref().unwrap_or("-"))
-            }
+            // One queued or running send per delivery-log row or account
+            // mail.
+            Self::NotifySend => match payload.account_mail.as_deref() {
+                Some(mail_id) => account_mail_dedup_key(mail_id),
+                None => notify_send_dedup_key(payload.notify_delivery.as_deref().unwrap_or("-")),
+            },
             // One queued or running alignment per edition: asking again
             // while one waits folds into it.
             Self::ChapterAlign => format!(
@@ -1968,6 +1988,10 @@ pub struct JobPayload {
     /// For [`JobKind::NotifySend`]: the `notify_deliveries.id` to send.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notify_delivery: Option<String>,
+    /// For [`JobKind::NotifySend`]: the `account_mail.id` to send instead of
+    /// a delivery-log row. The job mints the message's link when it sends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_mail: Option<String>,
 }
 
 /// What a [`JobKind::BranchRequest`] asks its branch for: a work of this
@@ -2000,6 +2024,13 @@ pub fn branch_request_dedup_key(node_id: &str, work_id: &str) -> String {
 #[must_use]
 pub fn notify_send_dedup_key(delivery_id: &str) -> String {
     format!("notify_send:delivery={delivery_id}")
+}
+
+/// Dedup key of a [`JobKind::NotifySend`] that sends account mail: one
+/// active send per `account_mail` row.
+#[must_use]
+pub fn account_mail_dedup_key(mail_id: &str) -> String {
+    format!("notify_send:account_mail={mail_id}")
 }
 
 /// Dedup key of a [`JobKind::PluginScheduled`] fire: one active fire per
@@ -2044,6 +2075,7 @@ impl Default for JobPayload {
             ingest_batch: None,
             convert: None,
             notify_delivery: None,
+            account_mail: None,
         }
     }
 }
@@ -3034,6 +3066,37 @@ mod wake_grant_tests {
             2,
             r#"{"source":"audible"}"#
         ));
+    }
+}
+
+#[cfg(test)]
+mod discover_dedup_tests {
+    use super::*;
+
+    #[test]
+    fn a_pinned_discover_fetch_dedups_per_instance() {
+        let payload = |instance: Option<&str>| JobPayload {
+            subject: Some(String::from("user:3")),
+            plugin_instance_id: instance.map(str::to_string),
+            ..JobPayload::default()
+        };
+        assert_eq!(
+            JobKind::DiscoverCandidates.dedup_key(&payload(None)),
+            "discover_candidates:subject=user:3"
+        );
+        // An empty pin is the subject's own fetch.
+        assert_eq!(
+            JobKind::DiscoverCandidates.dedup_key(&payload(Some(""))),
+            "discover_candidates:subject=user:3"
+        );
+        assert_eq!(
+            JobKind::DiscoverCandidates.dedup_key(&payload(Some("i1"))),
+            "discover_candidates:subject=user:3:instance=i1"
+        );
+        assert_ne!(
+            JobKind::DiscoverCandidates.dedup_key(&payload(Some("i1"))),
+            JobKind::DiscoverCandidates.dedup_key(&payload(Some("i2")))
+        );
     }
 }
 

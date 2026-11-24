@@ -24,7 +24,8 @@
 //!   rows and `purchase_info.for_sale` (missing means for sale), and a price
 //!   appears only when `purchase_info.price` does, always in USD and, for
 //!   the API's `digits.dd` form, exactly that many cents (row-level price
-//!   fields are ignored);
+//!   fields are ignored), and the audiobook's sample is `data.sample_url`
+//!   trimmed, an `https` link with no whitespace, or nothing;
 //! - parsing the same body twice gives the same records.
 
 use bookclerk_plugin_source_libro::{parse_catalog_details, parse_catalog_search_page};
@@ -150,6 +151,9 @@ struct DetailsFacts {
     /// Cents of a `purchase_info.price` written as `digits.dd`, the form the
     /// app API sends, read here digit by digit.
     plain_cents: Option<i64>,
+    /// `data.sample_url` when it is a string: the audiobook's sample must be
+    /// it, trimmed, or nothing.
+    sample: Option<String>,
 }
 
 /// The facts a details body must yield.
@@ -165,6 +169,7 @@ fn details_shape(value: &Value) -> Shape<DetailsFacts> {
                 for_sale: true,
                 has_price: false,
                 plain_cents: None,
+                sample: None,
             })
         }
         Some(Value::Object(data)) => data,
@@ -187,6 +192,10 @@ fn details_shape(value: &Value) -> Shape<DetailsFacts> {
             .and_then(|p| p.get("price"))
             .and_then(Value::as_str)
             .and_then(plain_cents),
+        sample: data
+            .get("sample_url")
+            .and_then(Value::as_str)
+            .map(|s| s.trim().to_owned()),
     })
 }
 
@@ -280,6 +289,14 @@ fn details_case(body: &[u8], canonical: bool) {
                 }
                 if let Some(cents) = facts.plain_cents.filter(|c| *c > 0) {
                     assert_eq!(hit.price_cents, Some(cents), "list price differs");
+                }
+                if let Some(sample) = &hit.sample_url {
+                    assert_eq!(Some(sample), facts.sample.as_ref(), "sample differs");
+                    assert!(
+                        sample.starts_with("https://")
+                            && !sample.chars().any(|c| c.is_whitespace() || c.is_control()),
+                        "sample {sample:?}"
+                    );
                 }
             }
             check_hits(&details.related, &facts.related);

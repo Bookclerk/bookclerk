@@ -289,10 +289,12 @@ impl LibraryStore {
         if ids.is_empty() {
             return Ok(HashMap::new());
         }
-        let found = find_chunked::<works::Entity, _>(self, &ids, |part| {
+        let mut found = find_chunked::<works::Entity, _>(self, &ids, |part| {
             works::Entity::find().filter(works::Column::Id.is_in(part.iter().cloned()))
         })
         .await?;
+        // The row derives genres from the work's categories.
+        self.complete_work_texts(&mut found).await?;
         let top_ids: Vec<String> = found.iter().map(|w| w.id.clone()).collect();
         let episodes =
             find_chunked_paged::<works::Entity, _>(self, &top_ids, &[works::Column::Id], |part| {

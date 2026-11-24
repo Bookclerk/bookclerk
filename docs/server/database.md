@@ -454,8 +454,10 @@ password goes in the body) and `PUT
 These are needed to open the database or unwrap the master key, so they
 can't be stored in it:
 
-- `BOOKCLERK_AUTH_PASSWORD` or `[auth].password`, which wraps the key at
-  rest (the environment is preferred), and `[auth].key_store`, which says
+- `BOOKCLERK_AUTH_PASSWORD` (or the file `BOOKCLERK_AUTH_PASSWORD_FILE`
+  names, or a `bookclerk-auth-password` systemd credential) or
+  `[auth].password`, which wraps the key at rest (the environment is
+  preferred), and `[auth].key_store`, which says
   where new keys go;
 - `BOOKCLERK_DATABASE_POSTGRES_URL` and the D1 API token (from the
   environment, or `database.credential` and the key store it points into),
@@ -854,6 +856,18 @@ Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `plugin_databases` and `bookclerk_schema_migrations`, plus the library
 model tables below.
 
+A configuration document (`configuration_documents`) wider than one piece
+the database plugin carries (the smallest of its cell, statement and
+result limits) is stored in `configuration_document_parts` pieces under a
+set id unique to the write that staged them. The document row's
+`document_json` then holds that set id, and `document_parts` its piece
+count. A write commits only while every piece it staged is still stored.
+It drops only the set it replaced and, when it did not commit, its own
+set, and only while no row names it, so it never removes pieces another
+write is still staging. Each write and each clean-up first locks the
+pieces of the sets it decides on, so two that overlap see each other's
+outcome. Work texts in `work_text_parts` follow the same rules.
+
 `patron_controls` holds the member controls an Administrator set for one
 Member, as JSON naming only the controls that differ from the library's
 default (the `core.member_controls` configuration document); a Member
@@ -882,7 +896,10 @@ go too, so the library picks its next keeper afresh. Writes that link a
 signed-in store account, take back a refused sign-in, or revoke a link
 are serialized per account by the `bookclerk_slots` row
 `store-account:<plugin key length>:<plugin key>:<account id>`, which is
-kept once created.
+kept once created. A patron's request for a new verification
+link is serialized the same way, by the row
+`account-mail:<kind>:<user id>`, so overlapping requests record one
+message.
 
 The library model ([ADR](../adr/library-data-model.md)) stores what the
 library holds as works, expressions and editions:
@@ -893,7 +910,10 @@ library holds as works, expressions and editions:
   its gaps (`enrich_source`, `enrich_confidence`, `enrich_updated_at`), and
   `edition_enrich_attempts` records an ask that left gaps open
   (`partial` or `unmatched`), so gap-filling waits before asking again
-  ([Metadata gap-fill](../internals/discovery.md#metadata-gap-fill-open-library-compliance));
+  ([Metadata gap-fill](../internals/discovery.md#metadata-gap-fill-open-library-compliance)),
+  and a work's description, subjects or categories too wide for one cell
+  of the database plugin, or for the work's row to fit one reply, are
+  stored in `work_text_parts` pieces that the work's `text_version` names;
 - `store_listings` (one per plugin, marketplace and product, with the
   store's own text for it: synopsis, cover, credits as printed, series and
   the store's own series or show product id, ratings, and `is_explicit`

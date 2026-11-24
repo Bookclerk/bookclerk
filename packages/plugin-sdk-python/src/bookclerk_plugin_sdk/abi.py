@@ -215,6 +215,9 @@ close incidents.
 NotifyDestinationKind = Literal["channel", "personal"]
 """Kind of destination a `Notifier` sends to."""
 
+NotifyCheckOutcome = Literal["passed", "warning", "failed", "skipped"]
+"""How one deliverability check or piece of advice came out."""
+
 AiTask = Literal["textEmbeddings"]
 """What a model does. A model has exactly one task, and the task fixes the
 shape of `AiRunParams.input` and of the reply.
@@ -3509,6 +3512,21 @@ class Notifier(Protocol):
         """
         ...
 
+    async def check_deliverability(self, params: NotifyDeliverabilityParams) -> NotifyDeliverabilityReply:
+        """Operator's deliverability check: send a sample the way real messages go,
+        ask checker services how it scores, and merge their findings into
+        advice. Only plugins that declare `[notifier].deliverability_check`
+        implement it (others answer `unsupported`); it may run up to
+        `deliverabilityCheckDeadlineMs`.
+
+        Args:
+            params: Sample message to check.
+
+        Returns:
+            ``NotifyDeliverabilityReply``
+        """
+        ...
+
 
 class NotificationRaiser(Protocol):
     """`NOTIFY` binding: raises a notification type the plugin declared in
@@ -6483,6 +6501,9 @@ class NotificationMessage(TypedDict):
             `none`. Omitted when absent (wire zero value).
         sensitive: True when the body carries a secret (an account-mail link): the
             plugin and SDKs must never log it.
+        libraryOrigin: The library's home page (`https://library.example.com/`), built
+            from its public origin like `link`; absent when no public origin is set.
+            Email footers link to it. Omitted when absent (wire zero value).
     """
 
     notificationId: str
@@ -6498,6 +6519,7 @@ class NotificationMessage(TypedDict):
     alertAction: NotificationAlertAction
     alertKey: NotRequired[str]
     sensitive: bool
+    libraryOrigin: NotRequired[str]
 
 
 class NotifyDestination(TypedDict):
@@ -6635,6 +6657,100 @@ NotifyValidateReply = Union[
 """Result union of `Notifier.validateDestination`. An address the plugin
 refuses is `invalid_params`.
 """
+
+
+class NotifyDeliverabilityParams(TypedDict):
+    """Params of `Notifier.checkDeliverability`.
+
+    Attributes:
+        message: The host's `test` notification, rendered as a real one is, so the
+            checkers score the plugin's real output.
+    """
+
+    message: NotificationMessage
+
+
+class NotifyDeliverabilityCheck(TypedDict):
+    """One checker's result.
+
+    Attributes:
+        service: Service name (`Postmark spam check`); at most
+            `maxNotificationTitleBytes`.
+        outcome: How it came out.
+        summary: One-line result (`SpamAssassin score 0.8; under 5 passes`); at most
+            `maxNotificationFieldBytes`.
+        reportUrl: Absolute `https` link to the service's full report, when it has one.
+            Omitted when absent (wire zero value).
+    """
+
+    service: str
+    outcome: NotifyCheckOutcome
+    summary: str
+    reportUrl: NotRequired[str]
+
+
+class NotifyDeliverabilityAdvice(TypedDict):
+    """One thing the operator can do, merged from every check.
+
+    Attributes:
+        outcome: `failed` is a fix, `warning` an improvement, `passed` what is already
+            right; never `skipped`.
+        title: Short heading; at most `maxNotificationTitleBytes`.
+        detail: What to change and where; at most `maxNotificationFieldBytes`.
+        sources: The `service` names of the checks that raised it.
+    """
+
+    outcome: NotifyCheckOutcome
+    title: str
+    detail: str
+    sources: list[str]
+
+
+class NotifyDeliverabilityReport(TypedDict):
+    """Success payload of `Notifier.checkDeliverability`.
+
+    Attributes:
+        checks: One entry per checker, at most `maxDeliverabilityChecks`.
+        advice: Merged advice, most urgent first; at most `maxDeliverabilityAdvice`.
+    """
+
+    checks: list[NotifyDeliverabilityCheck]
+    advice: list[NotifyDeliverabilityAdvice]
+
+
+class NotifyDeliverabilityReplyOk(TypedDict):
+    """``NotifyDeliverabilityReply`` member ``ok``.
+
+    The report.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: The report.
+    """
+
+    kind: Literal["ok"]
+    value: NotifyDeliverabilityReport
+
+
+class NotifyDeliverabilityReplyErr(TypedDict):
+    """``NotifyDeliverabilityReply`` member ``err``.
+
+    Typed failure; `unsupported` when the plugin has no check.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `unsupported` when the plugin has no check.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+NotifyDeliverabilityReply = Union[
+    NotifyDeliverabilityReplyOk,
+    NotifyDeliverabilityReplyErr,
+]
+"""Result union of `Notifier.checkDeliverability`."""
 
 
 class NotifyRaiseParams(TypedDict):
@@ -9081,6 +9197,7 @@ __all__ = [
     "NotificationAudience",
     "NotificationAlertAction",
     "NotifyDestinationKind",
+    "NotifyCheckOutcome",
     "AiTask",
     "AiTextRole",
     "ProvisionGrantKind",
@@ -9454,6 +9571,13 @@ __all__ = [
     "NotifyValidateReplyOk",
     "NotifyValidateReplyErr",
     "NotifyValidateReply",
+    "NotifyDeliverabilityParams",
+    "NotifyDeliverabilityCheck",
+    "NotifyDeliverabilityAdvice",
+    "NotifyDeliverabilityReport",
+    "NotifyDeliverabilityReplyOk",
+    "NotifyDeliverabilityReplyErr",
+    "NotifyDeliverabilityReply",
     "NotifyRaiseParams",
     "NotifyRaised",
     "NotifyRaiseReplyOk",

@@ -45,14 +45,23 @@ registration.
 
 ## Set it up
 
-1. In the Cloudflare dashboard, create a tunnel (**Networks → Tunnels →
-   Create a tunnel**, type Cloudflared) and copy its token: the long value
-   after `cloudflared service install`.
-2. Add a public hostname to the tunnel (such as `books.example.com`). Its
-   service can be anything, such as `http://localhost:8787`: the plugin
-   sends every request to the library and ignores the tunnel's routing
-   rules.
-3. Install and approve the plugin, then set its settings:
+1. Install and approve the plugin.
+2. Run the guided setup (`src/provision.ts`): create an API token with
+   **Account: Cloudflare Tunnel: Edit**, **Zone: Zone: Read** and **Zone:
+   DNS: Edit**, then in **Settings** open the plugin's instance, set
+   `hostname` (such as `books.example.com`), paste the token and select
+   **Run guided setup**. The setup creates a remotely managed tunnel named
+   `bookclerk-<hostname>` (or finds the one the stored token runs, or one
+   of that name), routes the hostname to it, points the hostname at
+   `<tunnel id>.cfargotunnel.com` with a proxied `CNAME` carrying the
+   comment `Kept by Bookclerk (cloudflare_tunnel)`, and keeps only the
+   tunnel's token. It refuses a hostname that holds other records or a
+   `CNAME` to something other than a tunnel.
+3. Or set it up by hand: create a tunnel in the dashboard (**Networks →
+   Tunnels → Create a tunnel**, type Cloudflared), add the hostname to it
+   with any service, such as `http://localhost:8787` (the plugin sends
+   every request to the library and ignores the tunnel's routing rules),
+   and set the settings:
 
    ```sh
    bookclerk plugins config set cloudflare_tunnel hostname books.example.com
@@ -66,9 +75,14 @@ registration.
    bookclerk ingress activate cloudflare_tunnel
    ```
 
-The plugin's only network grant is TCP to the two edge regions on port
-7844. `h2.cftunnel.com` is on the grant too, because the host checks that a
-stream's server name is granted.
+The plugin's network grant is TCP to the two edge regions on port 7844,
+and `api.cloudflare.com` for the guided setup. `h2.cftunnel.com` is on
+the grant too, because the host checks that a stream's server name is
+granted.
+
+Before the instance is deleted, **Remove what setup created** deletes the
+`CNAME` and the tunnel. The tunnel's token can't call the API, so it needs
+a pasted token like the setup's.
 
 ## Limits
 

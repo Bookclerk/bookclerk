@@ -1,0 +1,1 @@
+{"success":true,"errors":[],"messages":[],"result":[{"id":"f70ff985-a4ef-4643-bbbc-4a0ed4fc8415","name":"bookclerk-books.example.com","deleted_at":"2026-11-01T00:00:00Z"},{"id":"0a8c5cfe-27a6-4b4f-9e3b-1e1a0a8f3d22","name":"bookclerk-books.example.com","deleted_at":null}]}

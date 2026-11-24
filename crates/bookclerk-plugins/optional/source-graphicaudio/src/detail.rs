@@ -86,6 +86,11 @@ pub fn parse_product_detail(html: &str) -> Option<CatalogHit> {
         price_label,
         rating_overall,
         rating_count,
+        // The page's own sample player; other players on the page (store
+        // promotions) are for other titles.
+        sample_url: attr(&doc, ".product-media-player audio", "src")
+            .as_deref()
+            .and_then(records::sample_url),
         expression_kind: ExpressionKind::Dramatisation,
         identifiers,
         credits,
@@ -407,6 +412,17 @@ mod tests {
         assert!(description.contains("\n\nFor a thousand years the ash fell"));
         assert!(!description.contains('<'), "{description}");
         assert_eq!(hit.expression_kind, ExpressionKind::Dramatisation);
+        assert_eq!(
+            hit.sample_url.as_deref(),
+            Some("https://s3.amazonaws.com/graphicaudiosamples/MISTBORN0101.mp3")
+        );
+    }
+
+    #[test]
+    fn a_page_without_its_own_sample_player_has_no_sample() {
+        let without = PAGE.replace("product-media-player", "elsewhere");
+        let hit = parse_product_detail(&without).expect("record");
+        assert_eq!(hit.sample_url, None);
     }
 
     #[test]

@@ -124,13 +124,15 @@ paths = [
     "fuzz/oracles/origin_request.rs",
 ]
 
-# The SMTP session oracle is shared by the fuzz target and the email
-# notifier's replay test through `#[path]`.
+# The SMTP session and checker answer oracles are shared by their fuzz
+# targets and the email notifier's replay tests through `#[path]`.
 [[test_input]]
 package = "bookclerk-plugin-notifier-email"
 paths = [
     "fuzz/corpus/smtp_session/**",
     "fuzz/oracles/smtp_session.rs",
+    "fuzz/corpus/checker_answers/**",
+    "fuzz/oracles/checker_answers.rs",
 ]
 
 # The guest SQL authorizer oracle is shared by the fuzz target and the
@@ -174,6 +176,8 @@ paths = [
     "fuzz/oracles/connections_request.rs",
     "fuzz/corpus/pace_request/**",
     "fuzz/oracles/pace_request.rs",
+    "fuzz/corpus/account_mail_request/**",
+    "fuzz/oracles/account_mail_request.rs",
 ]
 
 # The desktop window's custom-scheme oracle, shared the same way.
@@ -415,6 +419,11 @@ paths = ["fuzz/corpus/throttle_reason/**", "fuzz/oracles/throttle_reason.rs"]
 package = "bookclerk-plugin-source-graphicaudio"
 # The product page oracle is shared with the replay test through `#[path]`.
 paths = ["fuzz/corpus/graphicaudio_catalog/**", "fuzz/oracles/graphicaudio_catalog.rs"]
+
+[[test_input]]
+package = "bookclerk-plugin-source-chirp"
+# The title detail oracle is shared with the replay test through `#[path]`.
+paths = ["fuzz/corpus/chirp_catalog_detail/**", "fuzz/oracles/chirp_catalog_detail.rs"]
 
 [[test_input]]
 package = "bookclerk-node-proto"

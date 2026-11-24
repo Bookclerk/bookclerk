@@ -193,6 +193,11 @@ pub async fn redeem_ticket_to_session_with_client(
     let session = bookclerk_library::derive_claim_session_token(&dek, raw_ticket, nonce);
     let session_hash = hash_token(&session);
     let expires = Utc::now() + Duration::hours(integrations.portal_session_ttl_hours as i64);
+    // An invite mailed to an address proves the address once it is used.
+    let emailed_to = library
+        .get_claim_ticket_by_hash(&hash)
+        .await?
+        .and_then(|ticket| ticket.emailed_to);
     let identity = library
         .redeem_claim_ticket_to_session(
             &hash,
@@ -203,6 +208,13 @@ pub async fn redeem_ticket_to_session_with_client(
             password_fingerprint,
         )
         .await?;
+    if let (Some(email), Some(user_id)) = (emailed_to.as_deref(), identity.user_id) {
+        // The sign-in already succeeded; a failed mark leaves the address
+        // unverified, and the patron can verify it from their profile.
+        if let Err(err) = library.verify_user_email_if(user_id, email).await {
+            tracing::warn!(error = %err, user_id, "could not mark an invited address verified");
+        }
+    }
     Ok((session, identity))
 }
 
@@ -350,6 +362,50 @@ mod tests {
                 || err.to_string().contains("invalid")
                 || err.to_string().contains("claim"),
             "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn redeeming_a_mailed_invite_verifies_the_address_it_went_to() {
+        let (store, _dir, _dek, _raw_ticket) = claim_library().await;
+        let user = store
+            .create_user_with_profile(
+                UserRole::Member,
+                Some("Mailed"),
+                None,
+                Some("mailed@example.com"),
+                None,
+            )
+            .await
+            .unwrap();
+        let password = bookclerk_library::hash_password(&invite_password()).unwrap();
+        store
+            .set_user_password_hash(user.id, Some(password.as_str()))
+            .await
+            .unwrap();
+        let identity = store
+            .ensure_local_portal_identity(user.id, Some("Mailed"))
+            .await
+            .unwrap();
+        let ticket = store
+            .mint_invite_ticket(user.id, identity.id, "mailed@example.com", "test", None)
+            .await
+            .unwrap()
+            .expect("minted");
+        let integrations = IntegrationsConfig::default();
+        let nonce = hash_token(&["mailed", "-", "nonce"].concat());
+        let (_session, redeemed) =
+            redeem_ticket_to_session(&store, &integrations, ticket.expose(), &nonce)
+                .await
+                .unwrap();
+        assert_eq!(redeemed.user_id, Some(user.id));
+        assert!(
+            store
+                .get_user(user.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .email_verified
         );
     }
 }

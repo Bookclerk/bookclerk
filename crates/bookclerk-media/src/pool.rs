@@ -1352,6 +1352,8 @@ mod tests {
 
         for name in [
             "BOOKCLERK_AUTH_PASSWORD",
+            "BOOKCLERK_AUTH_PASSWORD_FILE",
+            "CREDENTIALS_DIRECTORY",
             "BOOKCLERK_OPERATOR_TOKEN",
             "BOOKCLERK_FILES_DIR",
             "AWS_SECRET_ACCESS_KEY",

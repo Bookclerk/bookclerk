@@ -27,6 +27,7 @@ import {
   dropTicketUnlessInvitePath,
   isAppPath,
   isInvitePath,
+  isVerifyEmailPath,
   joinPage,
   isConsentPage,
   normalizeAppView,
@@ -67,6 +68,9 @@ const JoinApprovePage = lazy(() =>
 );
 const PlayerApprovePage = lazy(() =>
   import("@/components/PlayerApprovePage").then((m) => ({ default: m.PlayerApprovePage })),
+);
+const VerifyEmailPage = lazy(() =>
+  import("@/components/VerifyEmailPage").then((m) => ({ default: m.VerifyEmailPage })),
 );
 const ClerkApprovePage = lazy(() =>
   import("@/components/ClerkApprovePage").then((m) => ({ default: m.ClerkApprovePage })),
@@ -154,9 +158,12 @@ export default function App() {
     () => viewFromPath(window.location.pathname) ?? "discover",
   );
   const knownPath = isAppPath(window.location.pathname);
+  // A mailed verification link owns its page whether or not anyone is
+  // signed in; it leaves through a full load of the app.
+  const [verifyEmailPage] = useState(() => isVerifyEmailPath());
 
   useEffect(() => {
-    if (!knownPath) return;
+    if (!knownPath || verifyEmailPage) return;
     dropTicketUnlessInvitePath();
     let cancelled = false;
     void (async () => {
@@ -188,7 +195,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [knownPath]);
+  }, [knownPath, verifyEmailPage]);
 
   useEffect(() => {
     if (auth !== "authed") return;
@@ -336,6 +343,14 @@ export default function App() {
   // Unknown paths stay a branded 404 (API/static assets are not SPA routes).
   if (!knownPath) {
     return <NotFoundPage />;
+  }
+
+  if (verifyEmailPage) {
+    return (
+      <PageSuspense>
+        <VerifyEmailPage />
+      </PageSuspense>
+    );
   }
 
   if (auth === "loading") {

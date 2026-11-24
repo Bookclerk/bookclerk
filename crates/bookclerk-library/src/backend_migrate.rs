@@ -27,28 +27,29 @@ use bookclerk_db_exec::canonical_statement;
 use crate::column_read::only_column;
 use crate::control_plane::{load_artifact_blob, put_artifact_blob};
 use crate::entities::{
-    account_credential_revisions, account_downloads, account_links, account_pace,
-    account_scan_state, account_shares, accounts, admin_controls, bookclerk_receipts, bookmarks,
-    catalog_listing_optouts, catalog_lookups, chapter_list_entries, chapter_lists, claim_tickets,
-    clerk_links, configuration_audit, configuration_changes, configuration_documents, contributors,
-    copy_grants, credits, domain_events, edition_acquisitions, edition_chapters, edition_copies,
-    edition_enrich_attempts, edition_files, edition_identifiers, editions, embeddings,
-    encrypted_secrets, event_deliveries, event_outbox_stats, expressions, holdings, ignored_titles,
-    ingest_batches, ingest_members, intake_items, job_secret_handoffs, job_temp_paths, jobs,
-    library_identity, library_links, link_imports, link_requests, listening_progress,
-    listing_offers, metadata_claims, node_credentials, node_enrollment_links, node_upload_sessions,
-    nodes, notifications, notify_deliveries, notify_destinations, notify_inbox,
-    notify_inbox_routes, notify_patron_offers, notify_patron_prefs, notify_patron_targets,
-    notify_route_revisions, notify_routes, oidc_auth_codes, oidc_clients, oidc_refresh_tokens,
-    oidc_rp_states, operator_sessions, patron_controls, patron_scope_keys, patron_scopes,
-    pending_joins, playback_progress, playback_sessions, player_card_tokens, player_cards,
-    player_passwords, plugin_artifacts, plugin_cron_cursors, plugin_deployments, plugin_installs,
-    plugin_instances, plugin_kv, plugin_placements, plugin_schemas, plugin_versions,
-    plugin_webhooks, portal_identities, portal_sessions, remote_plugin_consents,
-    resolution_conflicts, resolution_overrides, saved_filters, security_audit_events, series,
-    series_entries, store_listings, title_request_sources, title_requests, user_invites,
-    user_preferences, user_title_state, user_work_tags, users, webauthn_challenges,
-    webauthn_credentials, window_book_parts, window_books, work_identifiers, work_tags, works,
+    account_credential_revisions, account_downloads, account_links, account_mail_settings,
+    account_pace, account_scan_state, account_shares, accounts, admin_controls, bookclerk_receipts,
+    bookmarks, catalog_listing_optouts, catalog_lookups, chapter_list_entries, chapter_lists,
+    claim_tickets, clerk_links, configuration_audit, configuration_changes,
+    configuration_document_parts, configuration_documents, contributors, copy_grants, credits,
+    domain_events, edition_acquisitions, edition_chapters, edition_copies, edition_enrich_attempts,
+    edition_files, edition_identifiers, editions, embeddings, encrypted_secrets, event_deliveries,
+    event_outbox_stats, expressions, holdings, ignored_titles, ingest_batches, ingest_members,
+    intake_items, job_secret_handoffs, job_temp_paths, jobs, library_identity, library_links,
+    link_copy_files, link_imports, link_requests, listening_progress, listing_offers,
+    metadata_claims, node_credentials, node_enrollment_links, node_upload_sessions, nodes,
+    notifications, notify_deliveries, notify_destinations, notify_inbox, notify_inbox_routes,
+    notify_patron_offers, notify_patron_prefs, notify_patron_targets, notify_route_revisions,
+    notify_routes, oidc_auth_codes, oidc_clients, oidc_refresh_tokens, oidc_rp_states,
+    operator_sessions, patron_controls, patron_scope_keys, patron_scopes, pending_joins,
+    playback_progress, playback_sessions, player_card_tokens, player_cards, player_passwords,
+    plugin_artifacts, plugin_cron_cursors, plugin_deployments, plugin_installs, plugin_instances,
+    plugin_kv, plugin_placements, plugin_schemas, plugin_versions, plugin_webhooks,
+    portal_identities, portal_sessions, remote_plugin_consents, resolution_conflicts,
+    resolution_overrides, saved_filters, security_audit_events, series, series_entries,
+    store_listings, title_request_sources, title_requests, user_invites, user_preferences,
+    user_title_state, user_work_tags, users, webauthn_challenges, webauthn_credentials,
+    window_book_parts, window_books, work_identifiers, work_tags, work_text_parts, works,
 };
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
@@ -59,6 +60,14 @@ use crate::store::LibraryStore;
 /// the two lists together cover the schema.
 pub const LEFT_BEHIND_TABLES: &[(&str, &str)] = &[
     ("discover_candidates", "derived: Discover jobs refetch it"),
+    (
+        "account_mail",
+        "transient: account-mail deliveries, which can be sent again",
+    ),
+    (
+        "email_verifications",
+        "transient: verification links, which patrons can ask for again",
+    ),
     (
         "plugin_webhook_chunks",
         "transient: bodies of stored webhook requests, which the plugins' listing fallback covers",
@@ -188,6 +197,7 @@ macro_rules! copied_entities {
     ($each:ident) => {
         $each!(library_identity);
         $each!(configuration_documents);
+        $each!(configuration_document_parts);
         $each!(configuration_changes);
         $each!(configuration_audit);
         $each!(users);
@@ -203,6 +213,7 @@ macro_rules! copied_entities {
         $each!(portal_identities);
         // Shows before their episodes (`works.parent_work_id`).
         $each!(works);
+        $each!(work_text_parts);
         $each!(work_identifiers);
         $each!(work_tags);
         $each!(expressions);
@@ -258,6 +269,7 @@ macro_rules! copied_entities {
         $each!(notifications);
         $each!(notify_deliveries);
         $each!(notify_inbox);
+        $each!(account_mail_settings);
         $each!(embeddings);
         $each!(user_preferences);
         $each!(patron_controls);
@@ -287,6 +299,7 @@ macro_rules! copied_entities {
         $each!(library_links);
         $each!(clerk_links);
         $each!(pending_joins);
+        $each!(link_copy_files);
         $each!(link_imports);
         $each!(link_requests);
         $each!(catalog_listing_optouts);
@@ -550,6 +563,7 @@ async fn clear_replaced_rows(dest: &impl ConnectionTrait) -> Result<()> {
     clear!(nodes);
     clear!(configuration_audit);
     clear!(configuration_changes);
+    clear!(configuration_document_parts);
     clear!(configuration_documents);
     clear!(library_identity);
     Ok(())
@@ -557,11 +571,12 @@ async fn clear_replaced_rows(dest: &impl ConnectionTrait) -> Result<()> {
 
 /// Tables whose destination rows [`clear_replaced_rows`] replaces, so they
 /// do not make a destination count as non-empty.
-const REPLACED_TABLES: [&str; 6] = [
+const REPLACED_TABLES: [&str; 7] = [
     "event_outbox_stats",
     "nodes",
     "configuration_audit",
     "configuration_changes",
+    "configuration_document_parts",
     "configuration_documents",
     "library_identity",
 ];
@@ -673,6 +688,7 @@ mod tests {
             subjects: Set(None),
             categories: Set(None),
             cover_url: Set(None),
+            text_version: Set(None),
             created_at: Set("2026-01-01T00:00:00Z".into()),
             updated_at: Set("2026-01-01T00:00:00Z".into()),
         }

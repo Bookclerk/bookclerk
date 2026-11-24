@@ -224,14 +224,14 @@ impl LibraryStore {
         let mut work_ids: Vec<String> = expressions.values().map(|e| e.work_id.clone()).collect();
         work_ids.sort();
         work_ids.dedup();
-        let works: HashMap<String, works::Model> =
+        let mut work_rows =
             find_chunked_paged::<works::Entity, _>(self, &work_ids, &[works::Column::Id], |part| {
                 works::Entity::find().filter(works::Column::Id.is_in(part.iter().cloned()))
             })
-            .await?
-            .into_iter()
-            .map(|w| (w.id.clone(), w))
-            .collect();
+            .await?;
+        self.complete_work_texts(&mut work_rows).await?;
+        let works: HashMap<String, works::Model> =
+            work_rows.into_iter().map(|w| (w.id.clone(), w)).collect();
         // An episode's facets sit on its show's row.
         let top_of = |work_id: &str| -> String {
             works

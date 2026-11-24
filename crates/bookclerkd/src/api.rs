@@ -687,6 +687,12 @@ struct PluginSettingsGroup {
     /// here.
     #[serde(skip_serializing_if = "Option::is_none")]
     models: Option<PluginModelsView>,
+    /// True when the plugin is a notifier with a deliverability check
+    /// (`[notifier].deliverability_check`), so the instance's settings offer
+    /// `POST /api/notifications/notifiers/{id}/deliverability`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[schema(example = true)]
+    deliverability_check: bool,
     /// Nodes whose deployment of the instance is `present`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[schema(example = json!(["6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"]))]
@@ -1539,11 +1545,20 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
         ))
         .routes(routes!(crate::notifications_api::post_channel_resume))
         .routes(routes!(crate::notifications_api::post_channel_test))
+        .routes(routes!(
+            crate::notifications_api::post_notifier_deliverability
+        ))
         .routes(routes!(crate::notifications_api::get_routes))
         .routes(routes!(crate::notifications_api::put_routes))
         .routes(routes!(crate::notifications_api::get_offers))
         .routes(routes!(crate::notifications_api::put_offers))
         .routes(routes!(crate::notifications_api::list_deliveries))
+        .routes(routes!(
+            crate::account_mail::get_account_mail,
+            crate::account_mail::put_account_mail
+        ))
+        .routes(routes!(crate::account_mail::post_account_mail_test))
+        .routes(routes!(crate::account_mail::post_my_email_verification))
         // A user's own notification settings and inbox.
         .routes(routes!(crate::notifications_api::get_my_settings))
         .routes(routes!(
@@ -1767,6 +1782,8 @@ fn public_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(auth::elevate))
         .routes(routes!(auth::bootstrap))
         .routes(routes!(auth::password_login, auth::set_password))
+        // The link's token is the proof; no sign-in is needed.
+        .routes(routes!(crate::account_mail::post_verify_email))
         .routes(routes!(auth::list_users, auth::create_user))
         .routes(routes!(auth::patch_user, auth::delete_user))
         .routes(routes!(
@@ -1794,6 +1811,7 @@ fn public_routes() -> OpenApiRouter<Arc<AppState>> {
             crate::admin_controls::patch_user_admin_controls
         ))
         .routes(routes!(auth::create_user_claim_ticket))
+        .routes(routes!(auth::post_user_invite_email))
         .routes(routes!(auth::reset_user_password))
 }
 
@@ -1982,6 +2000,8 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
                 "/clerk/callback",
                 // A player app's browser sign-in: the consent page.
                 "/apps/approve",
+                // A mailed link that verifies an email address.
+                "/verify-email",
             ];
             let spa_index = axum::routing::get_service(ServeFile::new(index.clone()))
                 .layer(middleware::from_fn(spa_document_csp));
@@ -2285,6 +2305,11 @@ fn api_timeout_for_path(path: &str) -> Duration {
         // Cutting a sample the first time waits on a download and the
         // media worker (`crate::samples::ROUTE_BUDGET`).
         sample if crate::samples::is_sample_path(sample) => crate::samples::ROUTE_BUDGET,
+        // A notifier's deliverability check waits for checkers that read a
+        // delivered message (`deliverabilityCheckDeadlineMs`).
+        check if crate::notifications_api::is_deliverability_path(check) => {
+            crate::notifications_api::DELIVERABILITY_ROUTE_BUDGET
+        }
         _ => Duration::from_secs(8),
     }
 }
@@ -3414,6 +3439,7 @@ fn build_database_settings_group(
         placement: None,
         storage_sync: None,
         models: None,
+        deliverability_check: false,
         present_on: Vec::new(),
     }
 }
@@ -3624,6 +3650,13 @@ fn instance_settings_group(
         placement: view.placement.clone(),
         storage_sync: view.storage_sync.clone(),
         models: None,
+        deliverability_check: plugin.is_some_and(|plugin| {
+            plugin
+                .manifest
+                .notifier
+                .as_ref()
+                .is_some_and(|notifier| notifier.deliverability_check)
+        }),
         present_on: view
             .deployments
             .iter()
@@ -6462,6 +6495,24 @@ struct CatalogSearchQuery {
     min_length_minutes: Option<i64>,
     /// Maximum runtime in minutes; values ≤ 0 are ignored.
     max_length_minutes: Option<i64>,
+    /// How a page sorted by relevance is ordered: `meaning` (default) or
+    /// `store`.
+    #[param(inline)]
+    rank: Option<CatalogRank>,
+}
+
+/// How a page of store results sorted by relevance is ordered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+enum CatalogRank {
+    /// The stores' order blended with how close each result is to the
+    /// query in meaning, when this node has the library's embedding model
+    /// and it answers in time; else the stores' order.
+    #[default]
+    Meaning,
+    /// The stores' order, without asking the model. For lists a person
+    /// is still typing into, where a fast answer matters more.
+    Store,
 }
 
 /// Returns the caller's stored Discover shelves; never builds them on the request.
@@ -7026,6 +7077,7 @@ async fn discover_catalog_search(
             sort_dir: String::from("desc"),
         }));
     }
+    let started = Instant::now();
     let region = q.region.unwrap_or_else(|| String::from("us"));
     let page_size = q.page_size.or(q.limit).unwrap_or(24).clamp(1, 48);
     let sort = q
@@ -7119,6 +7171,27 @@ async fn discover_catalog_search(
     })
     .await
     .map_err(internal_err)?;
+    bookclerk_discover::join_search_library_copies(&library, &mut page.items, |id| {
+        plugin_keys.get(id).cloned()
+    })
+    .await
+    .map_err(internal_err)?;
+    // A page in the stores' own relevance order is ordered with its
+    // meaning before it is returned, inside what is left of the budget. A
+    // scoped search asks for a name, and every other sort is the caller's
+    // choice of order: both stay as they are.
+    if sort == bookclerk_discover::CatalogSearchSort::Relevance
+        && field.is_none()
+        && q.rank.unwrap_or_default() == CatalogRank::Meaning
+    {
+        crate::search_rerank::by_meaning(
+            &state,
+            &query,
+            &mut page.items,
+            CATALOG_SEARCH_TIMEOUT.saturating_sub(started.elapsed()),
+        )
+        .await;
+    }
     for hit in &mut page.items {
         state
             .covers
@@ -8133,6 +8206,7 @@ mod tests {
             redeemed_at: None,
             created_by: "test".into(),
             created_at: now,
+            emailed_to: None,
         };
         assert_eq!(
             invite_link_error(None, None, now),

@@ -11401,7 +11401,7 @@
       "name": "NotificationMessage",
       "file": "plugin.capnp",
       "dataWords": 1,
-      "pointerCount": 10,
+      "pointerCount": 11,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -11527,6 +11527,15 @@
             "kind": "bool"
           },
           "offset": 32
+        },
+        {
+          "name": "libraryOrigin",
+          "codeOrder": 13,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 10
         }
       ]
     },
@@ -11565,6 +11574,46 @@
           "type": {
             "kind": "struct",
             "name": "NotifyRaiseReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Notifier.checkDeliverability$Params": {
+      "name": "Notifier.checkDeliverability$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "params",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "NotifyDeliverabilityParams"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "Notifier.checkDeliverability$Results": {
+      "name": "Notifier.checkDeliverability$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "NotifyDeliverabilityReply"
           },
           "offset": 0
         }
@@ -11676,6 +11725,189 @@
             "name": "NotifyValidateReply"
           },
           "offset": 0
+        }
+      ]
+    },
+    "NotifyDeliverabilityAdvice": {
+      "name": "NotifyDeliverabilityAdvice",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "outcome",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "NotifyCheckOutcome"
+          },
+          "offset": 0
+        },
+        {
+          "name": "title",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "detail",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "sources",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 2
+        }
+      ]
+    },
+    "NotifyDeliverabilityCheck": {
+      "name": "NotifyDeliverabilityCheck",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 3,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "service",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "outcome",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "NotifyCheckOutcome"
+          },
+          "offset": 0
+        },
+        {
+          "name": "summary",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "reportUrl",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 2
+        }
+      ]
+    },
+    "NotifyDeliverabilityParams": {
+      "name": "NotifyDeliverabilityParams",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "message",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "NotificationMessage"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "NotifyDeliverabilityReply": {
+      "name": "NotifyDeliverabilityReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "NotifyDeliverabilityReport"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "NotifyDeliverabilityReport": {
+      "name": "NotifyDeliverabilityReport",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "checks",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "NotifyDeliverabilityCheck"
+            }
+          },
+          "offset": 0
+        },
+        {
+          "name": "advice",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "NotifyDeliverabilityAdvice"
+            }
+          },
+          "offset": 1
         }
       ]
     },
@@ -18517,6 +18749,16 @@
         "critical"
       ]
     },
+    "NotifyCheckOutcome": {
+      "name": "NotifyCheckOutcome",
+      "file": "plugin.capnp",
+      "enumerants": [
+        "passed",
+        "warning",
+        "failed",
+        "skipped"
+      ]
+    },
     "NotifyDestinationKind": {
       "name": "NotifyDestinationKind",
       "file": "plugin.capnp",
@@ -19310,6 +19552,12 @@
           "ordinal": 2,
           "params": "Notifier.validateDestination$Params",
           "results": "Notifier.validateDestination$Results"
+        },
+        {
+          "name": "checkDeliverability",
+          "ordinal": 3,
+          "params": "Notifier.checkDeliverability$Params",
+          "results": "Notifier.checkDeliverability$Results"
         }
       ]
     },
@@ -19632,6 +19880,11 @@
       "file": "plugin.capnp",
       "value": 3
     },
+    "deliverabilityCheckDeadlineMs": {
+      "name": "deliverabilityCheckDeadlineMs",
+      "file": "plugin.capnp",
+      "value": 120000
+    },
     "featureScalarLimits": {
       "name": "featureScalarLimits",
       "file": "plugin.capnp",
@@ -19761,6 +20014,16 @@
       "name": "maxCronBytes",
       "file": "plugin.capnp",
       "value": 128
+    },
+    "maxDeliverabilityAdvice": {
+      "name": "maxDeliverabilityAdvice",
+      "file": "plugin.capnp",
+      "value": 32
+    },
+    "maxDeliverabilityChecks": {
+      "name": "maxDeliverabilityChecks",
+      "file": "plugin.capnp",
+      "value": 8
     },
     "maxEventCursorBytes": {
       "name": "maxEventCursorBytes",
@@ -19910,7 +20173,7 @@
     "maxProvisionSecretBytes": {
       "name": "maxProvisionSecretBytes",
       "file": "plugin.capnp",
-      "value": 4096
+      "value": 1024
     },
     "maxProvisionSecrets": {
       "name": "maxProvisionSecrets",

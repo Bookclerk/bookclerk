@@ -923,6 +923,7 @@ impl LibraryStore {
             last_seen_at: Set(None),
             avatar_source: Set(None),
             totp_enabled: Set(0),
+            email_verified_at: Set(None),
         };
         let id = self
             .insert_bumped(users::Entity::insert(am), LiveTopic::Users)
@@ -1563,19 +1564,54 @@ impl LibraryStore {
 
     /// Set contact email (unique when set); does not bump security_version.
     ///
+    /// A different address is no longer verified, and the old address's
+    /// pending verification link stops working. The same address writes
+    /// nothing, so it keeps its verification.
+    ///
+    /// The write applies only while the stored address is still the one
+    /// read here, so a stale request cannot pair an address with a
+    /// verification issued for another.
+    ///
     /// # Errors
     ///
-    /// Returns an error when the operation fails.
+    /// [`LibraryError::Conflict`] when the address changed since it was
+    /// read (the caller reloads and retries); another error when the
+    /// address is invalid, already used, or the write fails.
     pub async fn set_user_email(&self, id: i64, email: Option<&str>) -> Result<UserRecord> {
+        use sea_orm::sea_query::Expr;
         let model = users::Entity::find_by_id(id)
             .one(&self.db)
             .await
             .map_err(LibraryError::Orm)?
             .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))?;
-        let mut am: users::ActiveModel = model.into();
-        am.email = Set(crate::email::normalize_user_email(email)?);
-        am.updated_at = Set(now_str());
-        self.update_user_bumped(am, id).await
+        let email = crate::email::normalize_user_email(email)?;
+        if model.email == email {
+            return Ok(map_user(model));
+        }
+        let update = users::Entity::update_many()
+            .col_expr(users::Column::Email, Expr::value(email))
+            .col_expr(
+                users::Column::EmailVerifiedAt,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(users::Column::UpdatedAt, Expr::value(now_str()))
+            .filter(users::Column::Id.eq(id));
+        let update = match model.email {
+            Some(read) => update.filter(users::Column::Email.eq(read)),
+            None => update.filter(users::Column::Email.is_null()),
+        };
+        if self
+            .exec_bumped(update, LiveTopic::Users, Bump::Always)
+            .await?
+            == 0
+        {
+            return Err(LibraryError::Conflict(
+                "the email address changed meanwhile; reload and try again".into(),
+            ));
+        }
+        self.get_user(id)
+            .await?
+            .ok_or_else(|| LibraryError::not_found(EntityKind::User, id))
     }
 
     /// Set the user's picture source (`monogram` / `gravatar` / `upload` / `sso:{id}` / auto).
@@ -2107,6 +2143,7 @@ impl LibraryStore {
             redeemed_at: Set(None),
             created_by: Set(created_by.to_string()),
             created_at: Set(now_str()),
+            emailed_to: Set(None),
         };
         let model = am.insert(&self.db).await.map_err(LibraryError::Orm)?;
         Ok(map_claim_ticket(model))
@@ -6788,6 +6825,7 @@ fn map_user(m: users::Model) -> UserRecord {
         last_seen_at: parse_dt_opt(m.last_seen_at.as_deref()),
         avatar_source: m.avatar_source,
         totp_enabled: m.totp_enabled != 0,
+        email_verified: m.email_verified_at.is_some(),
     }
 }
 
@@ -6816,6 +6854,7 @@ fn map_claim_ticket(m: claim_tickets::Model) -> crate::models::ClaimTicketRecord
         redeemed_at: parse_dt_opt(m.redeemed_at.as_deref()),
         created_by: m.created_by,
         created_at: parse_dt(&m.created_at),
+        emailed_to: m.emailed_to,
     }
 }
 
@@ -7155,6 +7194,7 @@ impl LibraryStore {
     }
 }
 
+pub(crate) mod account_mail;
 pub(crate) mod acquire_title;
 pub(crate) mod acquired_keys;
 pub(crate) mod catalog_listings;
@@ -7193,6 +7233,7 @@ pub(crate) mod work_detail;
 pub(crate) mod work_search;
 pub(crate) mod work_split;
 pub(crate) mod work_tags;
+pub(crate) mod work_texts;
 pub(crate) mod write_batches;
 pub use acquire_title::{AcquireTitle, AcquireTitlePage};
 pub use destination_objects::{
@@ -7210,8 +7251,8 @@ pub use edition_enrichment::{
     EditionAsin, EditionEnrichment, EnrichAttemptOutcome, EnrichCandidate, EnrichCandidatePage,
 };
 pub use edition_files::{
-    AcquireWriter, AudioStream, EditionAcquisition, EditionFile, FileOwner, FileProbe, FileRole,
-    ProbedAudioFile, RecordedFile, TitleHolding, ACQUIRE_WRITER,
+    AcquireWriter, AudioStream, CopyHolder, EditionAcquisition, EditionFile, FileOwner, FileProbe,
+    FileRole, ProbedAudioFile, RecordedFile, TitleHolding, UnlabelledAudio, ACQUIRE_WRITER,
 };
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
 pub use holdings::{HoldingSelection, NodeHoldingSelection, HOLDING_REMOVED};
@@ -7225,6 +7266,8 @@ mod lock_retry;
 mod result_cap;
 pub use acquired_keys::{AcquiredTitleKey, AcquiredTitleKeyPage, ACQUIRED_KEYS_MAX_PAGE};
 
+#[cfg(test)]
+mod account_mail_tests;
 #[cfg(test)]
 mod notifications_tests;
 #[cfg(test)]

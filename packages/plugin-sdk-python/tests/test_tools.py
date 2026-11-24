@@ -376,6 +376,32 @@ def test_validate_rejects_reserved_and_duplicate_queues():
         )
 
 
+def test_notifier_deliverability_check_is_a_boolean_formatted_only_when_true():
+    from bookclerk_plugin_sdk.tools import validate_manifest
+
+    base = {
+        "api_version": 3,
+        "id": "mailer",
+        "runtime": "native",
+        "command": "./mailer",
+        "entrypoints": ["notifier"],
+        "capabilities": {"network": {"mode": "deny"}},
+        "notifier": {"destinations": ["channel"]},
+    }
+    validate_manifest(
+        {**base, "notifier": {"destinations": ["channel"], "deliverability_check": True}}
+    )
+    with pytest.raises(ValueError, match="deliverability_check` must be a boolean"):
+        validate_manifest(
+            {**base, "notifier": {"destinations": ["channel"], "deliverability_check": "yes"}}
+        )
+    on = format_manifest(
+        {**base, "notifier": {"destinations": ["channel"], "deliverability_check": True}}
+    )
+    assert "deliverability_check = true" in on
+    assert "deliverability_check" not in format_manifest(base)
+
+
 def test_validate_metadata_files_rejects_unknown_keys_and_non_bool_writes():
     from bookclerk_plugin_sdk.tools import validate_manifest
 

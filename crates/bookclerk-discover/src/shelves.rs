@@ -330,14 +330,15 @@ pub fn build_discover_feed(
         SeriesRule::Cap,
     );
 
-    // Starter genres, browsed while the taste was thin: one shelf per genre,
-    // in the order the stores were asked.
+    // Genres the stores were browsed by (the genres the taste leans to,
+    // and the starter genres while it is thin): one shelf per genre, best
+    // title first.
     for genre in starter_genres(recs) {
-        let id = format!("starter_genre:{}", slugish(&genre.to_lowercase()));
+        let id = format!("starter_genre:{}", genre_slug(&genre));
         builder.push(
             &id,
             &format!("Popular in {genre}"),
-            Some("Popular titles while Discover learns your taste"),
+            Some("Popular in the stores, ranked for you"),
             |r| {
                 r.starter_genre
                     .as_deref()
@@ -755,6 +756,27 @@ fn split_people(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// The slug of a genre in a shelf id. A label written only in ASCII keeps
+/// its [`slugish`] slug. [`slugish`] drops every other letter, so two
+/// labels in another script would share one id (and hiding one shelf
+/// would hide both): such a label also carries the first eight hex digits
+/// of the hash of its lowercase form.
+fn genre_slug(genre: &str) -> String {
+    let lower = genre.to_lowercase();
+    let slug = slugish(&lower);
+    if lower.chars().any(|c| c.is_alphanumeric() && !c.is_ascii()) {
+        let hash = crate::embed::text_hash(&lower);
+        let short = hash.get(..8).unwrap_or(&hash);
+        if slug.is_empty() {
+            short.to_string()
+        } else {
+            format!("{slug}-{short}")
+        }
+    } else {
+        slug
+    }
+}
+
 /// Lowercase ASCII slug used in shelf ids (`More from Jane Doe` → `jane-doe`).
 fn slugish(s: &str) -> String {
     let mut out = String::new();
@@ -957,6 +979,19 @@ mod tests {
             .authors
             .insert("ada author".into(), ("Ada Author".into(), 5.0));
         taste
+    }
+
+    #[test]
+    fn genres_in_another_script_get_shelf_ids_of_their_own() {
+        assert_eq!(genre_slug("Science Fiction"), "science-fiction");
+        assert_eq!(genre_slug("Mystery & Thriller"), "mystery-thriller");
+        let (scifi, history) = (genre_slug("科幻"), genre_slug("历史"));
+        assert_ne!(scifi, history);
+        assert_eq!(scifi.len(), 8);
+        assert_eq!(scifi, genre_slug("科幻"), "the same label, the same id");
+        let mixed = genre_slug("Krimi & Thriller für Kinder");
+        assert!(mixed.starts_with("krimi-thriller-f-r-kinder-"), "{mixed}");
+        assert_ne!(mixed, genre_slug("Krimi & Thriller for Kinder"));
     }
 
     #[test]

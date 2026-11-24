@@ -2108,6 +2108,7 @@ mod tests {
             subjects: None,
             categories: None,
             cover_url: None,
+            text_version: None,
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
         }
@@ -2149,6 +2150,8 @@ mod tests {
             share_digest: None,
             delivered_digest: None,
             delivered_at: None,
+            refused_digest: None,
+            refused_at: None,
             created_at: at.into(),
             updated_at: at.into(),
         }

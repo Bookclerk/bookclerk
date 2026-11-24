@@ -93,23 +93,35 @@ The first-party `cloudflare_relay` plugin deploys a small relay Worker into
 your own Cloudflare account and serves the library at
 `https://<worker_name>.<account subdomain>.workers.dev`. It needs a
 Cloudflare account with a `workers.dev` subdomain (open **Workers & Pages**
-in the dashboard once) and an API token with the **Workers Scripts: Edit**
-permission.
+in the dashboard once).
 
-1. Install and approve `cloudflare_relay`, then set its account and token:
+1. Install and approve `cloudflare_relay`.
+2. Run its guided setup. In the Cloudflare dashboard, create an API token
+   with **Account: Workers Scripts: Edit** and **Account: Account API
+   Tokens: Edit**. In **Settings**, open the `cloudflare_relay` instance,
+   paste the token and select **Run guided setup**. Leave the account ID
+   empty when the token reaches only one account.
 
-   ```sh
-   bookclerk plugins config set cloudflare_relay account_id <account id>
-   bookclerk plugins config set cloudflare_relay api_token --secret
-   ```
-
-   `--secret` reads the token from standard input and seals it.
-2. Deploy it on this computer and activate it:
+   The setup checks that the Worker name is free (or already a Bookclerk
+   relay) and creates an API token that can deploy Workers in that
+   account and do nothing else. The plugin keeps that token; the one you
+   pasted is used once and not stored, so you can delete it afterwards.
+3. Deploy it on this computer and activate it:
 
    ```sh
    bookclerk plugins deploy cloudflare_relay
    bookclerk ingress activate cloudflare_relay
    ```
+
+To set it up by hand instead, create a token with **Workers Scripts:
+Edit** and set `account_id` and the `api_token` secret with
+`bookclerk plugins config set` (`--secret` reads the token from standard
+input and seals it).
+
+Running the setup again creates a fresh token and deletes the old one.
+Before you delete the instance, **Remove what setup created** deletes the
+relay Worker and the setup's token; deleting the token needs a token like
+the one in step 2.
 
 The relay serves six requests at once; more wait up to 30 seconds. Live
 connections (a branch's socket, a clerk's live link) pass through it too,
@@ -164,29 +176,39 @@ lists its limits.
 ## Cloudflare Tunnel
 
 The first-party `cloudflare_tunnel` plugin serves the library on a
-hostname routed to a Cloudflare Tunnel in your Cloudflare account. It
-needs the hostname and the tunnel's token from the Cloudflare dashboard.
+hostname routed to a Cloudflare Tunnel in your Cloudflare account.
 No `cloudflared` program runs on your computer: the plugin connects to
 Cloudflare's edge as a tunnel connector itself, over one TLS connection
 the host holds. It is experimental.
 
-1. In the Cloudflare dashboard, create a tunnel and add a public hostname
-   to it (such as `books.example.com`). Copy the tunnel's token, the long
-   value after `cloudflared service install`.
-2. Install and approve `cloudflare_tunnel`, then set its hostname and
-   token:
+1. Install and approve `cloudflare_tunnel`.
+2. Run its guided setup. In the Cloudflare dashboard, create an API token
+   with **Account: Cloudflare Tunnel: Edit**, **Zone: Zone: Read** and
+   **Zone: DNS: Edit** on the hostname's zone. In **Settings**, open the
+   `cloudflare_tunnel` instance, set the hostname (such as
+   `books.example.com`), paste the token and select **Run guided setup**.
 
-   ```sh
-   bookclerk plugins config set cloudflare_tunnel hostname books.example.com
-   bookclerk plugins config set cloudflare_tunnel token --secret
-   ```
-
+   The setup creates a tunnel named `bookclerk-<hostname>` (or finds the
+   one it made before), routes the hostname to it, and points the
+   hostname at it with a proxied `CNAME` record. It keeps only the
+   tunnel's own token, which can run that tunnel and do nothing else; the
+   one you pasted is used once and not stored.
 3. Deploy it on this computer and activate it:
 
    ```sh
    bookclerk plugins deploy cloudflare_tunnel
    bookclerk ingress activate cloudflare_tunnel
    ```
+
+To set it up by hand instead, create a tunnel in the dashboard, add the
+hostname to it, and set `hostname` and the `token` secret (the long value
+after `cloudflared service install`) with `bookclerk plugins config set`.
+
+The setup refuses a hostname that already has other records, or a `CNAME`
+to something other than a tunnel. Before you delete the instance,
+**Remove what setup created** deletes the `CNAME` record and the tunnel;
+it needs a token like the one in step 2, because the tunnel's token can't
+call the API.
 
 The library answers at `https://<hostname>`. Every request on the
 hostname goes to the library; the tunnel's own routing rules are ignored.
@@ -206,30 +228,39 @@ lists its limits.
 The first-party `cloudflare_dns` plugin is the direct kind: dynamic DNS.
 It keeps a host name on Cloudflare DNS pointed at this computer's public
 address, and traffic comes straight to the daemon's own TLS listener, so
-TLS ends at home. It needs a domain on Cloudflare, an API token, and a
-port open at home.
+TLS ends at home. It needs a domain on Cloudflare and a port open at
+home.
 
-1. Create a Cloudflare API token with the **Zone: Zone: Read** and
-   **Zone: DNS: Edit** permissions on the domain's zone.
-2. Set up the TLS listener in `config.toml`: `[daemon.node_api]
+1. Set up the TLS listener in `config.toml`: `[daemon.node_api]
    mode = "acme"`, with `acme_contact` and `tls_listen`, and set
    `integrations.public_origin` to `https://` and the host name. See
    [Node API transport](configuration.md#node-api-transport).
-3. Forward TCP port 443 on the router to `tls_listen`.
-4. Install and approve `cloudflare_dns`, then set its host name and
-   token:
+2. Forward TCP port 443 on the router to `tls_listen`.
+3. Install and approve `cloudflare_dns`.
+4. Run its guided setup. In the Cloudflare dashboard, create an API token
+   with **Zone: Zone: Read** and **Zone: DNS: Edit** on the domain's zone,
+   and **Account: Account API Tokens: Edit**. In **Settings**, open the
+   `cloudflare_dns` instance, set the host name, paste the token and
+   select **Run guided setup**.
 
-   ```sh
-   bookclerk plugins config set cloudflare_dns hostname books.example.com
-   bookclerk plugins config set cloudflare_dns api_token --secret
-   ```
-
+   The setup creates an API token that can read that one zone and edit
+   its DNS records, and nothing else. The plugin keeps that token; the
+   one you pasted is used once and not stored.
 5. Deploy it on this computer and activate it:
 
    ```sh
    bookclerk plugins deploy cloudflare_dns
    bookclerk ingress activate cloudflare_dns
    ```
+
+To set it up by hand instead, create a token with **Zone: Zone: Read**
+and **Zone: DNS: Edit** on the zone and set `hostname` and the
+`api_token` secret with `bookclerk plugins config set`.
+
+Running the setup again creates a fresh token and deletes the old one.
+Before you delete the instance, **Remove what setup created** deletes the
+records the plugin kept and the setup's token; deleting the token needs a
+token like the one in step 4.
 
 The plugin keeps the name's `A` record current, checking this computer's
 address every minute, and the daemon gets its certificate for the name

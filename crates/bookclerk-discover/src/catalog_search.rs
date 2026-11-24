@@ -160,6 +160,12 @@ pub struct CatalogSearchHit {
     /// daemon after the search.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub available_through: Vec<crate::availability::BranchAvailability>,
+    /// Whether the library already holds this edition or another edition
+    /// of the book; absent when it holds neither. Filled by the daemon
+    /// after the search.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "this_edition")]
+    pub in_library: Option<crate::library_copy::LibraryCopy>,
 }
 
 /// Paged catalog-search response.
@@ -937,6 +943,7 @@ fn candidate_to_hit(work_key: String, c: StorefrontCandidate, region: &str) -> C
         price_cents: c.price_cents,
         purchase_hints,
         available_through: Vec::new(),
+        in_library: None,
     }
 }
 
@@ -2256,16 +2263,60 @@ pub(crate) mod tests {
         a.expression_id = Some("e1".into());
         b.expression_id = Some("e2".into());
         assert_eq!(rows(a, b), 2);
-        // Two products of one store stay apart.
-        let mut same_store = other();
-        same_store.source = "chirp".into();
-        same_store.product_id = "999".into();
-        same_store.store_editions = vec![StoreEdition::new("chirp", "999")];
-        assert_eq!(rows(base(), same_store), 2);
+        // Two products of one store with two different subtitles.
+        let (mut a, mut b) = (base(), other());
+        b.source = "chirp".into();
+        b.product_id = "999".into();
+        b.store_editions = vec![StoreEdition::new("chirp", "999")];
+        a.subtitle = Some("A Novel".into());
+        b.subtitle = Some("King and Maxwell, Book 1".into());
+        assert_eq!(rows(a, b), 2);
         // Another book of the same length by the same narrator.
         let mut other_book = other();
         other_book.title = "Last Family".into();
         assert_eq!(rows(base(), other_book), 2);
+    }
+
+    /// One store selling one recording as two products (two distributors
+    /// delivered it) is one row: Chirp lists Cyril Taylor-Carr's *Aleister
+    /// Crowley* from Icon Audio Arts and from Author's Republic, 2 seconds
+    /// apart, and only one of them carries the subtitle and an ISBN; the
+    /// row takes both. His other book of that title, 7 minutes shorter,
+    /// stays a row of its own.
+    #[test]
+    fn one_stores_two_products_of_one_recording_are_one_row() {
+        let crowley = |product: &str, ms: i64, publisher: &str| {
+            let mut c = first_family("chirp", product, "Aleister Crowley", 0, false);
+            c.authors = Some("Cyril Taylor-Carr".into());
+            c.narrators = Some("Cyril Taylor-Carr".into());
+            c.length_minutes = Some(ms / 60_000);
+            c.publisher = Some(publisher.into());
+            c.series = None;
+            c.series_index = None;
+            c
+        };
+        let mut icon = crowley("586281", 11_696_095, "Icon Audio Arts");
+        icon.subtitle = Some("Audience With Evil".into());
+        let mut republic = crowley("616932", 11_698_446, "Author's Republic");
+        republic.isbn = Some("9798823417617".into());
+        let incarnate = crowley("624334", 11_229_416, "Author's Republic");
+        for order in [
+            [icon.clone(), republic.clone(), incarnate.clone()],
+            [incarnate.clone(), republic.clone(), icon.clone()],
+            [republic.clone(), incarnate.clone(), icon.clone()],
+        ] {
+            let mut map = HashMap::new();
+            for hit in order {
+                upsert_hit(&mut map, hit);
+            }
+            // A row keeps one edition per store, the first to arrive.
+            let rows = row_listings(&map);
+            assert_eq!(rows.len(), 2, "{rows:?}");
+            assert!(rows.contains(&vec!["chirp:624334".to_string()]), "{rows:?}");
+            let merged = map.values().find(|row| row.product_id != "624334").unwrap();
+            assert_eq!(merged.isbn.as_deref(), Some("9798823417617"));
+            assert_eq!(merged.subtitle.as_deref(), Some("Audience With Evil"));
+        }
     }
 
     /// The series filter keeps every store's spelling of the series.

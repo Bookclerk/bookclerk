@@ -39,6 +39,8 @@ export interface AuthMeUser {
   status?: string;
   email?: string | null;
   has_password?: boolean;
+  /** True when the email address was proven by a link mailed to it. */
+  email_verified?: boolean;
   /** True when a profile picture file is stored for this user. */
   has_avatar?: boolean;
   /** `auto`, `monogram`, `gravatar`, `upload`, or `sso:{id}`. */
@@ -1409,6 +1411,8 @@ export interface ListedUser {
   login_name: string | null;
   email?: string | null;
   has_password: boolean;
+  /** True when the email address was proven by a link mailed to it. */
+  email_verified?: boolean;
   /** Non-expired portal session present (`true` even when idle). */
   online?: boolean;
   /** Most recent unexpired portal session activity (RFC 3339). Active vs idle is ~5 minutes. */
@@ -1516,6 +1520,8 @@ export interface UserMutationResponse {
   claim_ticket?: string | null;
   /** Magic-link URL for `/invite?ticket=…` when an invite was minted. */
   invite_url?: string | null;
+  /** True when the invite was mailed to the user instead of returned. */
+  invite_emailed?: boolean;
 }
 
 /**
@@ -2341,6 +2347,8 @@ export interface PluginSettingsGroup {
   storage_sync?: StorageSyncView;
   /** The models a model plugin offers, as this node has them; absent for other plugins. */
   models?: PluginModelsView;
+  /** True when the plugin is a notifier that can check its own deliverability. */
+  deliverability_check?: boolean;
 }
 
 /**
@@ -3006,6 +3014,67 @@ export async function provisionPluginInstance(
         grant: { kind: "api_token", token: body.token },
         inputs: body.inputs,
       }),
+    },
+  );
+  return parseJson(res);
+}
+
+/**
+ * How one deliverability check or piece of advice came out: `failed` needs a
+ * fix, `warning` could be better, `skipped` did not run.
+ */
+export type DeliverabilityOutcome = "passed" | "warning" | "failed" | "skipped";
+
+/** One checker's result in a deliverability report. */
+export interface DeliverabilityCheck {
+  /** The checker's name. */
+  service: string;
+  /** How it came out. */
+  outcome: DeliverabilityOutcome;
+  /** One line on the result. */
+  summary: string;
+  /** The checker's full report, when it has one. */
+  report_url?: string;
+}
+
+/** One thing to do, merged from every check. */
+export interface DeliverabilityAdvice {
+  /** `failed` is a fix, `warning` an improvement, `passed` already right. */
+  outcome: DeliverabilityOutcome;
+  /** Short heading. */
+  title: string;
+  /** What to change and where. */
+  detail: string;
+  /** The checks that raised it. */
+  sources: string[];
+}
+
+/** What a notifier's deliverability check found. */
+export interface DeliverabilityReport {
+  /** One entry per checker. */
+  checks: DeliverabilityCheck[];
+  /** What to do, most urgent first. */
+  advice: DeliverabilityAdvice[];
+}
+
+/**
+ * Asks a notifier to check how well its messages would be delivered: it
+ * sends a sample through each checker it supports and merges the results.
+ * Takes up to two minutes.
+ *
+ * @param instanceId - The notifier's plugin instance id.
+ * @returns The checks and the merged advice.
+ */
+export async function checkNotifierDeliverability(
+  instanceId: string,
+): Promise<DeliverabilityReport> {
+  const res = await fetch(
+    `/api/notifications/notifiers/${encodeURIComponent(instanceId)}/deliverability`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
     },
   );
   return parseJson(res);
@@ -4889,6 +4958,35 @@ export interface CatalogSearchHit {
   purchase_hints?: PurchaseHint[];
   /** Branches of this library that currently list this title. */
   available_through?: BranchAvailability[];
+  /** Whether the library already holds this edition or another edition of the book. */
+  in_library?: LibraryCopy | null;
+}
+
+/**
+ * How the library holds a catalog search hit: `this_edition` when one of
+ * the hit's ASIN, ISBN or store products belongs to a held edition,
+ * `other_edition` when it holds another edition of the book (another
+ * recording, or this one from another store).
+ */
+export type LibraryCopy = "this_edition" | "other_edition";
+
+/**
+ * The line a search row shows for a title the library already holds.
+ *
+ * @param copy - The hit's `in_library` mark.
+ * @returns "In your library", "Another edition in your library", or `null`
+ *   when the library holds neither.
+ */
+export function inLibraryLabel(copy: LibraryCopy | null | undefined): string | null {
+  switch (copy) {
+    case "this_edition":
+      return "In your library";
+    case "other_edition":
+      return "Another edition in your library";
+    case null:
+    case undefined:
+      return null;
+  }
 }
 
 /**
@@ -5360,22 +5458,40 @@ export async function fetchTitleReviews(body: TitleReviewsQuery): Promise<TitleR
   return (await parseJson(res)) as TitleReviewsPage;
 }
 
-/** The answer of `POST /api/discover/title-sample`. */
+/** The body of `POST /api/discover/title-sample`. */
+export type TitleSampleQuery = TitleMetaQuery & {
+  /**
+   * The library edition the details show, when the library holds one; the
+   * stores are asked only when this node cannot cut a sample from it.
+   */
+  edition_id?: string | null;
+};
+
+/**
+ * The answer of `POST /api/discover/title-sample`: at most one path; none
+ * means no sample can be played here.
+ */
 export type TitleSample = {
   /**
+   * Same-origin path of a sample cut from the held edition, when the
+   * caller may hear it and this node reaches its audio.
+   */
+  edition_sample_path?: string | null;
+  /**
    * Same-origin path of a storefront's public sample, served through this
-   * daemon; absent when no store offers one.
+   * daemon; absent when an edition sample is offered or no store offers one.
    */
   sample_path?: string | null;
 };
 
 /**
- * Asks the storefronts that listed a title for their public audio sample.
+ * Asks the daemon which sample a title's details can play: one cut from
+ * the held edition, else a storefront's public sample, else none.
  *
- * @param body - The title, as sent to title-meta.
- * @returns The sample's same-origin path, or `null` when no store offers one.
+ * @param body - The title, as sent to title-meta, and the held edition.
+ * @returns The daemon's answer.
  */
-export async function fetchTitleSample(body: TitleMetaQuery): Promise<string | null> {
+export async function fetchTitleSample(body: TitleSampleQuery): Promise<TitleSample> {
   const res = await fetchWithTimeout(
     "/api/discover/title-sample",
     {
@@ -5387,8 +5503,7 @@ export async function fetchTitleSample(body: TitleMetaQuery): Promise<string | n
     20_000,
     "Title sample",
   );
-  const answer = (await parseJson(res)) as TitleSample;
-  return answer.sample_path?.trim() || null;
+  return (await parseJson(res)) as TitleSample;
 }
 
 /**
@@ -5457,6 +5572,12 @@ export async function searchCatalog(
     /** When true, do not hard-filter by language. */
     allLanguages?: boolean;
     filters?: CatalogSearchFilters;
+    /**
+     * `"store"` keeps the stores' order without asking the embedding
+     * model, for suggestions shown while the person types. Default: the
+     * server orders a relevance page with its meaning when it can.
+     */
+    rank?: "meaning" | "store";
   },
 ): Promise<CatalogSearchPage> {
   const trimmed = q.trim();
@@ -5481,6 +5602,7 @@ export async function searchCatalog(
   if (opts?.field) sp.set("field", opts.field);
   sp.set("lang", opts?.lang?.trim() || browserCatalogLanguage());
   if (opts?.allLanguages) sp.set("all_languages", "true");
+  if (opts?.rank) sp.set("rank", opts.rank);
   const f = opts?.filters;
   if (f?.authors?.length) sp.set("author", f.authors.join(","));
   if (f?.narrators?.length) sp.set("narrator", f.narrators.join(","));
@@ -5618,4 +5740,128 @@ export async function markInboxRead(notificationId: string | null): Promise<numb
   });
   const body = await parseJson<{ marked?: unknown }>(res);
   return typeof body.marked === "number" ? body.marked : 0;
+}
+
+/** Why account mail cannot be sent yet. */
+export type AccountMailNotReady = "not_configured" | "notifier_missing" | "no_public_origin";
+
+/** Account mail's settings and whether it can be sent. */
+export interface AccountMailStatus {
+  /** The notifier instance that sends account mail, or `null`. */
+  plugin_instance_id: string | null;
+  /** Whether invites and verification messages are sent. */
+  ready: boolean;
+  /** Why not, when not ready. */
+  not_ready: AccountMailNotReady | null;
+  /** When a test message last arrived (RFC 3339), or `null`. */
+  tested_at: string | null;
+}
+
+/** A notifier instance from the notifications catalog. */
+export interface NotifierOption {
+  /** Plugin instance id. */
+  plugin_instance_id: string;
+  /** Name shown in pickers. */
+  name: string;
+  /** Whether it can send account mail. */
+  account_mail: boolean;
+}
+
+/**
+ * Lists the installed notifier instances (`GET /api/notifications/catalog`).
+ *
+ * @returns The notifiers, in the server's order.
+ */
+export async function listNotifiers(): Promise<NotifierOption[]> {
+  const res = await fetch("/api/notifications/catalog", { credentials: "include" });
+  const body = await parseJson<{ notifiers?: NotifierOption[] }>(res);
+  return body.notifiers ?? [];
+}
+
+/**
+ * Reads account mail's settings and status.
+ *
+ * @returns The status.
+ */
+export async function getAccountMail(): Promise<AccountMailStatus> {
+  const res = await fetch("/api/notifications/account-mail", { credentials: "include" });
+  return parseJson(res);
+}
+
+/**
+ * Chooses the notifier instance that sends account mail.
+ *
+ * @param pluginInstanceId - The instance, or `null` to turn account mail off.
+ * @returns The status after the change.
+ */
+export async function putAccountMail(pluginInstanceId: string | null): Promise<AccountMailStatus> {
+  const res = await fetch("/api/notifications/account-mail", {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ plugin_instance_id: pluginInstanceId }),
+  });
+  return parseJson(res);
+}
+
+/**
+ * Mails a test message to the caller's own address.
+ *
+ * @returns The queued message's id.
+ */
+export async function sendAccountMailTest(): Promise<{ mail_id: string }> {
+  const res = await fetch("/api/notifications/account-mail/test", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  return parseJson(res);
+}
+
+/**
+ * Mails a user a new invite.
+ *
+ * @param id - User id.
+ * @returns The queued message's id.
+ */
+export async function emailUserInvite(id: number): Promise<{ mail_id: string }> {
+  const res = await fetch(`/api/users/${encodeURIComponent(String(id))}/invite-email`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  return parseJson(res);
+}
+
+/**
+ * Asks for a new link that verifies the caller's email address.
+ *
+ * @returns The queued message's id.
+ */
+export async function requestEmailVerification(): Promise<{ mail_id: string }> {
+  const res = await fetch("/api/auth/profile/email/verification", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  return parseJson(res);
+}
+
+/**
+ * Uses a mailed verification link. Needs no sign-in.
+ *
+ * @param token - The token from the link.
+ * @returns Whether the address was verified.
+ */
+export async function verifyEmail(token: string): Promise<{ verified: boolean }> {
+  const res = await fetch("/api/auth/verify-email", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  return parseJson(res);
 }

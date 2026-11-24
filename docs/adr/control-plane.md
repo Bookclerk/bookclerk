@@ -143,7 +143,8 @@ Physical table `configuration_documents`, one row per
 | `namespace` | Domain name. Not a plugin capability and not a `PluginKey` |
 | `schema_version` | Domain schema, starting at 1. Independent of library `SCHEMA_VERSION` |
 | `revision` | Monotonic compare-and-swap counter, starting at 1 |
-| `document_json` | JSON body of one typed document, at most 16 KiB |
+| `document_json` | JSON body of one typed document, at most 16 KiB; the id of its set of pieces when the body is stored in pieces |
+| `document_parts` | Pieces in `configuration_document_parts` that hold a body wider than one database cell or statement, under a set id unique to the write that staged them; `0` when `document_json` holds the body |
 | `updated_at` / `updated_by` | Audit time and actor |
 | `write_operation_id` | Idempotency token of the commit that produced this revision |
 
@@ -1563,14 +1564,18 @@ the handed credentials only. There is no in-process fallback.
   once as a full pass; tokens that name only store state (Audible's)
   carry over.
 - **Acquire plan.** `acquire.plan` answers `acquire.targets {targets,
-  destinations}`: the titles the job covers whose edition is not acquired
+  destinations, next?}`: the titles the job covers whose edition is not acquired
   yet (read from the account holdings, as a local acquire reads them) and every
   output destination deployed on the answering shared node, each with an
   id and its own naming options. The Host acquires each title into an
   outbox with one sub-directory per destination, so each destination's
   keys come out as a local acquire on the owner would name them (a fix
   after review: the first cut sent only the first destination's options,
-  so every destination got that one's keys).
+  so every destination got that one's keys). A plan looks at no more
+  than 500 titles and hands out no more than 100; one that stopped
+  before looking at every title names in `next` where to ask again from,
+  so a run whose next 500 titles are all already in the library still
+  goes on rather than reading the empty answer as the end.
 - **Uploads** (decision 4). `upload.grant` carries a manifest: each
   distinct content once (`size`, `sha256`, `content_type`) with one
   `FileCopy {destination, key}` per destination; it is refused unless
@@ -1624,7 +1629,23 @@ the handed credentials only. There is no in-process fallback.
   flat layout) never lets one title overwrite another's files. A key its
   own edition holds is claimed only when an earlier upload of the same
   title wrote it, so one account's node never replaces files another
-  account's row of the edition acquired. An upload names its title by
+  account's row of the edition acquired, unless the upload is a better
+  copy of the edition: its primary audio key is already a recorded file
+  of the edition, the library has that copy's probe, and the probe the
+  manifest states is better (lossless over lossy, then the higher
+  bitrate). A better copy replaces the edition's files in place, whoever
+  wrote them; an equal or worse one, or one the library cannot compare,
+  is refused. The replacement lands only at the commit: the receiving
+  node writes each file under a temporary key beside its own
+  (`<key>.bookclerk-staged-<upload id>`) and moves it onto the key just
+  before the commit, and the claim changes only the key's writer, so its
+  record keeps describing the file still there until the commit
+  describes the new one. An abort deletes only the temporary keys, and
+  the library's copy and what it knows of it are untouched. Another edition's keys are never replaced: naming
+  templates write `<call number>`, so two editions never plan one path. A
+  title whose edition another account's title acquired since the plan
+  (two hosts, or two plans, raced for one edition) is answered
+  `edition_acquired`, and the Host counts it as shared, not failed. An upload names its title by
   the account holding (`holdings.id`) the plan sent; a holding that is
   gone or resolves to no edition is refused (`unknown_title`). The claim is one conditional write per key, so of two uploads of
   different titles racing for one key only one is granted.
@@ -1637,7 +1658,22 @@ the handed credentials only. There is no in-process fallback.
   copy fails the title (copies already written for it are removed), so
   the job fails rather than succeeding with a destination short a title.
   A title whose upload then fails (the grant, a file, the commit, or a
-  cancel) has its copies removed from the Host's destinations too.
+  cancel) has its copies removed from the Host's destinations too. Each
+  copy is recorded in the Host's own library (`link_copy_files`) before
+  it is written, under the title's call number on the library: a key
+  another title's copy holds, or one the Host's library recorded for
+  another edition (and no copy of this title holds), fails the title
+  instead of being overwritten. A call number names one edition, so two
+  libraries the Host joined that send the same edition share its copy; a
+  title sent without one is named by its holding there and shared by no
+  other library. A committed title's copies are kept; a failed one's
+  records are given back. Each record notes whether a file was already at
+  the key: only a copy written to an empty key is removed when its title
+  fails. A copy whose daemon stopped mid-title stays `copying` under the
+  old process's writer, and the next job that keeps copies removes it
+  (after an hour, so an overlapping restart's older process can finish),
+  by the same rule and one key at a time, so a delete that fails leaves
+  its record for the next job.
 - **Owner-decided success.** A title's commit marks it acquired and never
   completes the job. Only the closing upload (no title, no files) may ask
   to finish, and the owner completes the job only when no title in the
@@ -1663,16 +1699,36 @@ the handed credentials only. There is no in-process fallback.
   names that upload as the key's latest writer, so a cleanup that runs
   late (after a lost fence) leaves alone a file a later upload or acquire
   wrote. A file that finished streaming just as its upload was aborted is
-  deleted at once. An upload received by another shared node is left to
-  that node and logged.
+  deleted at once. An aborted upload that had received files is
+  `discarding` until the shared node that received them deletes them, and
+  only then `aborted`, so an abort run on another shared node leaves the
+  deletion to the receiving one. Every shared node sweeps the uploads it
+  receives every five minutes: an open upload whose fence is no longer
+  live (its Host vanished mid-title, so no further file, commit, renewal
+  or finish arrives) is aborted and its files deleted, and a `discarding`
+  upload's files are deleted. An upload stays `discarding` until every
+  delete succeeded, so a failed one is tried again on the next sweep; if
+  its receiving node is removed from the library first, retention drops
+  it.
+- **Pinned destinations.** A grant records each destination's id and the
+  instance document revision its guest runs. A file or the commit that
+  arrives once the receiving node's destinations differ (one added,
+  removed or reordered, a filter edited, or a destination reopened with a
+  changed configuration such as a moved `root`) is refused
+  `destinations_changed` and the upload is aborted, so a title is never
+  split across two backends.
+- **Edition at commit.** A grant claims a title's keys under the edition
+  its listing resolves to then. A rescan that moves the listing to
+  another edition, or leaves it unresolved, before the commit refuses the
+  commit (`edition_changed`), so a title is never marked acquired over
+  files filed under an edition it no longer has.
 - **Token lifetime.** The upload token is accepted for an hour past its
   latest extension. The grant, each accepted file, and each renewal of the
   job's lease extend it. Nothing extends it after the fence is lost, and a
   lost fence refuses every file and the commit regardless.
-- **Not done.** If a Host vanishes mid-title, so that no further file,
-  commit, renewal or finish arrives, its open upload is not swept: the
-  files it had received stay until a later attempt of the job re-sends
-  that title through the same shared node.
+- **Not done.** A destination deployed after an edition was acquired does
+  not receive that edition's copy: the plan leaves acquired titles out,
+  and nothing copies an edition to a destination that lacks it.
 - **Tests.** Library: an acquire completes only through its upload; a
   stale fence cannot write scan rows or open uploads; a commit acquires
   the title and completes the job; manifests that skip or invent a
@@ -1683,7 +1739,19 @@ the handed credentials only. There is no in-process fallback.
   own; a streamed acquire reaches the owner's destination without
   staging; a fence lost mid-upload aborts it; two destinations with
   different templates each get their own key; an upload is refused after
-  the destinations change; the manifest sends each content once.
+  the destinations change; the manifest sends each content once; a file
+  is refused once a destination's configuration revision changed; the
+  sweep aborts an upload whose Host vanished and deletes the files of one
+  aborted elsewhere; a Host's own copy never overwrites another title's
+  file; a better copy lands only when it commits, and an aborted one
+  leaves the library's copy and its record as they were. Library: a
+  commit is refused once the title moved to another edition; a better
+  copy of an edition replaces its files and a worse one is refused; a
+  title whose edition another title acquired is answered
+  `edition_acquired`; two libraries that send one edition share a Host's
+  copy, and a copy imported into the Host's library stays its title's; a
+  stale copy is settled one key at a time; retention drops a
+  `discarding` upload whose receiving node was removed.
 
 ### Live socket and the host consent screen
 

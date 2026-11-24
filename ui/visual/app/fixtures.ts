@@ -292,6 +292,7 @@ const OWNER = {
   display_name: "Robin Reader",
   email: "robin@example.com",
   has_password: true,
+  email_verified: true,
   has_avatar: false,
   avatar_source: "initials",
   gravatar_hash: null,
@@ -309,6 +310,7 @@ const USERS = [
     login_name: "sam",
     email: "sam@example.com",
     has_password: true,
+    email_verified: false,
     has_avatar: false,
     avatar_source: "initials",
     sso_pictures: [],
@@ -323,6 +325,7 @@ const USERS = [
     login_name: "kit",
     email: null,
     has_password: true,
+    email_verified: false,
     has_avatar: false,
     avatar_source: "initials",
     sso_pictures: [],
@@ -1266,6 +1269,32 @@ function signedIn(viewer: "owner" | "operator"): Routes {
       },
     }),
     "GET /api/users": () => ({ json: { users: USERS } }),
+    "GET /api/notifications/account-mail": () => ({
+      json: {
+        plugin_instance_id: "email-1",
+        ready: true,
+        not_ready: null,
+        tested_at: ago(2 * DAY),
+      },
+    }),
+    "GET /api/notifications/catalog": () => ({
+      json: {
+        types: [],
+        notifiers: [
+          {
+            plugin_instance_id: "email-1",
+            plugin_key: "plugin:email",
+            name: "Email",
+            channel: true,
+            personal: true,
+            address_fields: [
+              { key: "email", label: "Email address", required: true, secret: false },
+            ],
+            account_mail: true,
+          },
+        ],
+      },
+    }),
     "GET /api/auth/sessions": () => ({ json: { sessions: SESSIONS } }),
     "GET /api/users/default-controls": () => ({
       json: {
@@ -1367,6 +1396,16 @@ function signedIn(viewer: "owner" | "operator"): Routes {
     "POST /api/discover/title-meta/batch": (body) => {
       const titles = queries(body);
       return { json: { results: titles.map(metaFor), incomplete: titles.map(() => false) } };
+    },
+    // Every title has a sample: a held book's own, else a store's, so the
+    // details show the sample control.
+    "POST /api/discover/title-sample": (body) => {
+      const edition = (body as { edition_id?: string | null } | null)?.edition_id;
+      return {
+        json: edition
+          ? { edition_sample_path: `/api/library/editions/${edition}/sample` }
+          : { sample_path: "/api/samples/c2FtcGxl.dmlzdWFs" },
+      };
     },
     "GET /api/diagnostics/reports": () => ({ json: { reports: [] } }),
     "POST /api/playback/sessions": (body) => {
@@ -1543,6 +1582,7 @@ const SIGNED_OUT: Routes = {
       see_prices: false,
     },
   }),
+  "POST /api/auth/verify-email": () => ({ json: { verified: true } }),
   "GET /api/auth/signin": () => ({
     json: {
       operator_token: true,
@@ -1711,8 +1751,28 @@ export const SCENARIOS = {
         cards: [],
         books: [
           {
+            // Also in this library: shown on its own row.
+            key: "work:w-pride",
+            work_id: "w-pride",
+            editions: [
+              {
+                library_id: "lib-ana",
+                owner_origin: "https://ana.example.net",
+                store: "libro",
+                marketplace: "us",
+                product_id: "p-pride",
+                formats: ["audio"],
+                title: "Pride and Prejudice",
+                authors: "Jane Austen",
+                narrators: "Iris Vale",
+                length_minutes: 707,
+                yours: true,
+              },
+            ],
+          },
+          {
             key: "ana/emma",
-            work_id: "w-ana-emma",
+            work_id: null,
             editions: [
               {
                 library_id: "lib-ana",
@@ -1731,7 +1791,7 @@ export const SCENARIOS = {
           },
           {
             key: "ana/kim",
-            work_id: "w-ana-kim",
+            work_id: null,
             editions: [
               {
                 library_id: "lib-ana",

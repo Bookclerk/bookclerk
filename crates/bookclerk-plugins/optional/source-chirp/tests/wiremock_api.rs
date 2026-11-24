@@ -537,3 +537,41 @@ async fn a_title_lookup_returns_priced_records_for_every_match() {
         Some("https://www.chirpbooks.com/audiobooks/narrated")
     );
 }
+
+#[tokio::test]
+async fn a_title_detail_carries_its_sample_and_an_unknown_id_is_none() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(|req: &Request| {
+            assert_eq!(op_name(req).as_deref(), Some("BookclerkAudiobookDetail"));
+            let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+            if body.pointer("/variables/id").and_then(|v| v.as_str()) == Some("287595") {
+                graphql_response(serde_json::json!({ "data": { "audiobook": {
+                    "id": "287595",
+                    "displayTitle": "Dune",
+                    "displayAuthors": "Frank Herbert",
+                    "sampleUrl": "https://audio.chirpbooks.com/audio/1/2.m4a?Expires=1&Signature=x"
+                }}}))
+            } else {
+                graphql_response(serde_json::json!({
+                    "errors": [{ "message": "Audiobook not found", "path": ["audiobook"] }],
+                    "data": { "audiobook": null }
+                }))
+            }
+        })
+        .expect(2)
+        .mount(&server)
+        .await;
+    let source = ChirpSource::with_graphql_url(server.uri());
+    let hit = source.catalog_detail("287595").await.unwrap().unwrap();
+    assert_eq!(hit.product_id, "287595");
+    assert_eq!(hit.title, "Dune");
+    assert_eq!(
+        hit.sample_url.as_deref(),
+        Some("https://audio.chirpbooks.com/audio/1/2.m4a?Expires=1&Signature=x")
+    );
+    assert!(source.catalog_detail("999999999").await.unwrap().is_none());
+    // Not a Chirp id: nothing is asked.
+    assert!(source.catalog_detail("B08G9PRS1K").await.unwrap().is_none());
+}
