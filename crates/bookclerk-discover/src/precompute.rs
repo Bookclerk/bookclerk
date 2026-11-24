@@ -110,7 +110,7 @@ const SEEDS_PER_TASTE_GENRE: usize = 2;
 
 /// Genre labels too broad to browse a store by: every store files most of
 /// its catalog under them.
-const BROAD_GENRES: [&str; 8] = [
+pub(crate) const BROAD_GENRES: [&str; 8] = [
     "fiction",
     "nonfiction",
     "non-fiction",

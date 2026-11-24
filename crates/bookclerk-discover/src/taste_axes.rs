@@ -24,7 +24,7 @@ use chrono::{DateTime, Utc};
 
 use crate::embed::bytes_to_vector;
 use crate::error::Result;
-use crate::precompute::genre_labels;
+use crate::precompute::BROAD_GENRES;
 use crate::stored_taste::StoredTaste;
 
 /// Most axes a taste has. More wedges than this are too thin to read on a
@@ -69,6 +69,10 @@ const PHRASE_MIN_SHARE: (usize, usize) = (1, 2);
 /// How much more distinctive a description phrase must be than a genre or
 /// series to name the axis instead. Phrases are noisier than labels.
 const PHRASE_HANDICAP: f64 = 0.15;
+
+/// How far below the most distinctive name another may score and still be
+/// as good: among such names the one with the most words wins.
+const NAME_NEAR: f64 = 0.05;
 
 /// The least a name's distinctiveness may be: its share among the axis's
 /// works less its share among the person's other works.
@@ -840,6 +844,33 @@ fn description_phrases(description: &str) -> Vec<(String, String)> {
     phrases
 }
 
+/// The genre labels of one work as an axis may be named, each once, as
+/// (label as written, lowercase key), without the empty ones and those in
+/// [`BROAD_GENRES`].
+///
+/// A line that lists its labels with `;` or `>` is split on those alone,
+/// so a store category with a comma in it ("Mystery, Thriller &
+/// Suspense") stays one label; any other line is split on commas.
+fn axis_labels(genres: &str) -> Vec<(String, String)> {
+    let parts: Vec<&str> = if genres.contains([';', '>']) {
+        genres.split([';', '>']).collect()
+    } else {
+        genres.split(',').collect()
+    };
+    let mut labels: Vec<(String, String)> = Vec::new();
+    for label in parts.into_iter().map(str::trim) {
+        let key = label.to_lowercase();
+        if key.is_empty()
+            || BROAD_GENRES.contains(&key.as_str())
+            || labels.iter().any(|(_, seen)| *seen == key)
+        {
+            continue;
+        }
+        labels.push((label.to_string(), key));
+    }
+    labels
+}
+
 /// A name an axis could take.
 struct Candidate {
     /// The name as first written.
@@ -873,10 +904,12 @@ fn count(count: usize) -> f64 {
 /// from the works' descriptions. Its distinctiveness is the share of the
 /// group's works that carry it less the share of the other groups' works
 /// that do, each work counted by its weight, so the works that make the
-/// axis name it and not the light ones that sit with them; the most distinctive names the group, a genre or series
+/// axis name it and not the light ones that sit with them, and only works
+/// that carry a name of that kind at all counted; the most distinctive names the group, a genre or series
 /// winning over a phrase unless the phrase is clearly more distinctive
-/// (`PHRASE_HANDICAP`), and a longer phrase over the shorter one inside
-/// it. A group with nothing distinctive enough is named after its first
+/// (`PHRASE_HANDICAP`), and among names about as distinctive as the best
+/// the one with the most words, so a longer phrase wins over the shorter
+/// one inside it. A group with nothing distinctive enough is named after its first
 /// work, "Like *title*". No two groups share a name.
 ///
 /// # Arguments
@@ -898,7 +931,7 @@ pub fn name_axes(groups: &[Vec<usize>], books: &[AxisBook]) -> Vec<String> {
                 continue;
             };
             let mut found: Vec<(bool, String, String)> = Vec::new();
-            for (label, key) in book.genres.as_deref().map(genre_labels).unwrap_or_default() {
+            for (label, key) in book.genres.as_deref().map(axis_labels).unwrap_or_default() {
                 found.push((false, label, key));
             }
             for series in &book.series {
@@ -932,22 +965,45 @@ pub fn name_axes(groups: &[Vec<usize>], books: &[AxisBook]) -> Vec<String> {
             }
         }
     }
-    let weight_of = |members: &Vec<usize>| -> f64 {
-        members
-            .iter()
-            .filter_map(|member| books.get(*member))
-            .map(|book| book.weight.max(0.0))
-            .sum()
-    };
-    let everyone: f64 = groups.iter().map(weight_of).sum();
+    // The weight in each group of the works that can carry a name of a
+    // kind at all: [works with a genre or a series, works with a
+    // description]. A work the library knows nothing of has no say in
+    // what the works beside it share.
+    let voting: Vec<[f64; 2]> = groups
+        .iter()
+        .map(|members| {
+            let mut weights = [0.0_f64; 2];
+            for book in members.iter().filter_map(|member| books.get(*member)) {
+                let weight = book.weight.max(0.0);
+                let labelled = !book.series.iter().all(|series| series.trim().is_empty())
+                    || book
+                        .genres
+                        .as_deref()
+                        .is_some_and(|genres| !axis_labels(genres).is_empty());
+                if labelled {
+                    weights[0] += weight;
+                }
+                if book
+                    .description
+                    .as_deref()
+                    .is_some_and(|text| !text.trim().is_empty())
+                {
+                    weights[1] += weight;
+                }
+            }
+            weights
+        })
+        .collect();
+    let everyone: [f64; 2] = [0, 1].map(|kind| voting.iter().map(|weights| weights[kind]).sum());
     let mut taken: Vec<String> = Vec::new();
     let mut names = Vec::with_capacity(groups.len());
     for (group, members) in groups.iter().enumerate() {
-        let own = weight_of(members);
-        let others = everyone - own;
-        // (score, words, display): the best so far.
-        let mut best: Option<(f64, usize, &str)> = None;
+        // (score, words, display) of every name that qualifies.
+        let mut qualified: Vec<(f64, usize, &str)> = Vec::new();
         for candidate in &candidates {
+            let kind = usize::from(candidate.phrase);
+            let own = voting[group][kind];
+            let others = everyone[kind] - own;
             let inside = candidate.weights[group];
             let share = if candidate.phrase {
                 PHRASE_MIN_SHARE
@@ -972,17 +1028,28 @@ pub fn name_axes(groups: &[Vec<usize>], books: &[AxisBook]) -> Vec<String> {
                 } else {
                     0.0
                 };
-            let words = candidate.display.split_whitespace().count();
-            let better = best.is_none_or(|(top, top_words, top_display)| {
-                score > top + 1e-9
-                    || ((score - top).abs() <= 1e-9
-                        && (words > top_words
-                            || (words == top_words && candidate.display.as_str() < top_display)))
-            });
-            if better {
-                best = Some((score, words, candidate.display.as_str()));
-            }
+            let words = candidate
+                .display
+                .split_whitespace()
+                .filter(|word| word.chars().any(char::is_alphanumeric))
+                .count();
+            qualified.push((score, words, candidate.display.as_str()));
         }
+        // Names about as distinctive as the best are as good as it: among
+        // them the one that says most wins, so a light work beside the
+        // axis's own does not decide between labels all of those share.
+        let top = qualified
+            .iter()
+            .map(|(score, _, _)| *score)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let best = qualified
+            .into_iter()
+            .filter(|(score, _, _)| *score >= top - NAME_NEAR)
+            .max_by(|a, b| {
+                a.1.cmp(&b.1)
+                    .then(a.0.total_cmp(&b.0))
+                    .then_with(|| b.2.cmp(a.2))
+            });
         let name = match best {
             Some((_, _, display)) => display.to_string(),
             None => {
@@ -1445,6 +1512,51 @@ mod tests {
     }
 
     #[test]
+    fn among_names_as_good_the_one_that_says_most_wins() {
+        let weighed = |title: &str, genres: &str, weight: f64| AxisBook {
+            weight,
+            ..book(title, genres, &[], "")
+        };
+        let books = vec![
+            weighed("D-Day", "History; Military; World War II", 1.5),
+            weighed("Citizen Soldiers", "History; Military; World War II", 1.5),
+            weighed("Unbroken", "History; Military; World War II", 1.5),
+            weighed("Band of Brothers", "History; Military; World War II", 1.5),
+            // A light book beside them carries one of their labels.
+            weighed("The Way of Kings", "Epic; Military", 0.25),
+            weighed(
+                "Orient Express",
+                "Mystery, Thriller & Suspense; Classics",
+                1.5,
+            ),
+            weighed(
+                "Thursday Murder Club",
+                "Mystery, Thriller & Suspense; Cozy",
+                1.5,
+            ),
+            // Nothing is known of these two: they have no say.
+            weighed("Iron Flame", "", 1.5),
+            weighed("The Women", "", 1.5),
+            weighed("Mistborn", "Fantasy", 0.5),
+            weighed("Mistborn (2)", "Fantasy", 0.5),
+        ];
+        let names = name_axes(
+            &[vec![0, 1, 2, 3, 4], vec![5, 6], vec![7, 8, 9, 10]],
+            &books,
+        );
+        assert_eq!(
+            names,
+            ["World War II", "Mystery, Thriller & Suspense", "Fantasy"]
+        );
+        // A line without `;` or `>` lists its labels with commas.
+        let labels: Vec<String> = axis_labels("Fantasy, Epic, Fiction")
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect();
+        assert_eq!(labels, ["Fantasy", "Epic"]);
+    }
+
+    #[test]
     fn a_wished_work_is_named_from_what_its_wish_knows() {
         let now = Utc::now();
         let work = WorkRecord {
@@ -1611,9 +1723,18 @@ mod tests {
             book("A", "Noir", &[], ""),
             book("B", "Noir", &[], ""),
             book("C", "Noir", &[], ""),
-            book("D", "", &[], ""),
+            book("D", "Cozy", &[], ""),
         ];
         assert_eq!(name_axes(&groups, &books), ["Noir", "Like C"]);
+        // A work nothing is known of has no say: every work that could
+        // carry the label does, so it sets no group apart.
+        let books = [
+            book("A", "Noir", &[], ""),
+            book("B", "Noir", &[], ""),
+            book("C", "Noir", &[], ""),
+            book("D", "", &[], ""),
+        ];
+        assert_eq!(name_axes(&groups, &books), ["Like A", "Like C"]);
     }
 
     #[test]
