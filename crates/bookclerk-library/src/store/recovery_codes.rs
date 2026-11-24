@@ -206,4 +206,26 @@ impl LibraryStore {
             .await?;
         Ok(batch::rows_affected(&reply, 0))
     }
+
+    /// Deletes the recovery codes of a user whose row is gone, after
+    /// [`LibraryStore::delete_user`]; the user-delete plan has no room
+    /// left under the smallest adapter's `maxStatements`. Codes of a user
+    /// who still exists are left alone.
+    ///
+    /// # Errors
+    ///
+    /// An error when the write fails.
+    pub(crate) async fn drop_recovery_codes_of_deleted_user(&self, user_id: i64) -> Result<()> {
+        let operation_id = format!("recovery-codes-orphans-{user_id}-{}", uuid::Uuid::new_v4());
+        self.execute_host_batch(batch::request(
+            &operation_id,
+            vec![batch::exec(
+                "DELETE FROM recovery_codes WHERE user_id = ? \
+                 AND NOT EXISTS (SELECT 1 FROM users WHERE users.id = ?)",
+                vec![batch::int(user_id), batch::int(user_id)],
+            )],
+        ))
+        .await?;
+        Ok(())
+    }
 }

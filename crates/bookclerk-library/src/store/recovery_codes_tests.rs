@@ -153,6 +153,27 @@ async fn a_set_is_issued_only_with_a_second_factor_and_replaced_whole_under_ever
             "{name}"
         );
         assert_eq!(store.count_recovery_codes(user).await.unwrap(), 0);
+
+        // Deleting the user takes a set they still hold.
+        store
+            .insert_webauthn_credential(user, "cred-ash-2", "{}", None)
+            .await
+            .unwrap();
+        assert!(store
+            .issue_recovery_codes(
+                user,
+                &RecoveryCode::generate_set(),
+                RecoveryCodeIssue::First,
+                now
+            )
+            .await
+            .unwrap());
+        store.delete_user(user).await.unwrap();
+        assert_eq!(
+            store.count_recovery_codes(user).await.unwrap(),
+            0,
+            "{name}: codes outlived their user"
+        );
     }
 }
 

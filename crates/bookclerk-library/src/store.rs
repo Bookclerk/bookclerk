@@ -1251,6 +1251,9 @@ impl LibraryStore {
         // Until then they cannot sign in: a card is read through its
         // session row and a password through its user, both deleted.
         self.sweep_ended_player_rows().await?;
+        // And the user's recovery codes: a code is checked only alongside
+        // its user's row, which is gone, and user ids are never reused.
+        self.drop_recovery_codes_of_deleted_user(id).await?;
         // So are the pieces of a Discover feed stored in pieces: the plan
         // deleted the feed row that named them.
         self.drop_unnamed_feed_parts(&DiscoverSubject::User(id).key())
