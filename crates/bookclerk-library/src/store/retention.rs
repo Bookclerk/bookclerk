@@ -275,7 +275,8 @@ mod tests {
         let t = at(-1000);
         let statements = [
             format!(
-                "INSERT INTO users (id, role, created_at, updated_at) VALUES (1, 'member', '{t}', '{t}')"
+                "INSERT INTO users (id, role, created_at, updated_at) VALUES \
+                 (1, 'member', '{t}', '{t}'), (2, 'member', '{t}', '{t}')"
             ),
             format!(
                 "INSERT INTO portal_identities (id, provider, external_user_id, user_id, created_at) \
@@ -407,7 +408,7 @@ mod tests {
                 at(-29)
             ),
             // Account mail: an old finished record goes; a recent one and an
-            // old pending one stay. An expired verification link goes.
+            // old pending one stay. Expired verification and reset links go.
             format!(
                 "INSERT INTO account_mail (id, kind, user_id, address, plugin_instance_id, \
                  state, created_at, updated_at) VALUES \
@@ -421,6 +422,13 @@ mod tests {
                 "INSERT INTO email_verifications (token_hash, user_id, email, expires_at, \
                  created_at) VALUES ('v-old', 1, 'a@example.com', '{}', '{t}')",
                 at(0)
+            ),
+            format!(
+                "INSERT INTO password_resets (token_hash, user_id, email, expires_at, \
+                 created_at) VALUES ('pr-old', 1, 'a@example.com', '{0}', '{0}'), \
+                 ('pr-live', 2, 'b@example.com', '{1}', '{0}')",
+                at(0),
+                (now() + Duration::minutes(10)).to_rfc3339()
             ),
         ];
         for sql in statements {
@@ -515,6 +523,15 @@ mod tests {
                     .map(|row| row.link_id)
                     .collect();
             assert_eq!(links, ["l-recent"], "{name}");
+            let resets: Vec<String> = crate::test_support::uncapped(
+                crate::entities::password_resets::Entity::find().all(db),
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.token_hash)
+            .collect();
+            assert_eq!(resets, ["pr-live"], "{name}");
             let mut uploads: Vec<String> =
                 crate::test_support::uncapped(node_upload_sessions::Entity::find().all(db))
                     .await

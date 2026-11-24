@@ -117,7 +117,7 @@ Every response says how long a browser or a caching proxy may keep it:
 
 | Response | `Cache-Control` |
 | --- | --- |
-| Web app pages | `no-cache`; `/invite` is `no-store` |
+| Web app pages | `no-cache`; `/invite`, `/verify-email` and `/reset-password`, whose addresses carry a token, are `no-store` |
 | Web app files under `/assets/` (their names carry a content hash) | `public, max-age=31536000, immutable` |
 | Other web app files (icons, manifest, fonts) | `no-cache` |
 | Covers (`/api/covers/…`) | `private, max-age=31536000, immutable` |

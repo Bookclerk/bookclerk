@@ -11,7 +11,7 @@ import {
   type SetStateAction,
 } from "react";
 import { createPortal } from "react-dom";
-import { Check, Copy, Headphones, MoreHorizontal, Search, UserPlus, X } from "lucide-react";
+import { Check, Copy, Headphones, Mail, MoreHorizontal, Search, UserPlus, X } from "lucide-react";
 import { AddBranchDialog } from "@/components/AddBranchDialog";
 import { AvatarPickerDialog } from "@/components/AvatarPickerDialog";
 import { AdminControlsEditor } from "@/components/AdminControlsEditor";
@@ -405,6 +405,8 @@ export function UserManagementPanel({
     ticket: string;
     label: string;
     inviteUrl?: string | null;
+    /** The user a link can be mailed to instead, when they have an address. */
+    mailTo?: ListedUser;
   } | null>(null);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "disabled">("all");
@@ -692,6 +694,7 @@ export function UserManagementPanel({
         ticket: res.claim_ticket,
         inviteUrl: res.invite_url,
         label: `Password reset for ${u.display_name || u.login_name || `user #${u.id}`}`,
+        mailTo: u.email && u.status !== "disabled" ? u : undefined,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Password reset failed");
@@ -806,9 +809,25 @@ export function UserManagementPanel({
               >
                 {inviteCopied
                   ? "Copied to clipboard."
-                  : "Copy and send this magic link manually. Email notifications can be added later."}
+                  : claimTicket.mailTo
+                    ? `Copy and send this magic link yourself, or email a new one to ${claimTicket.mailTo.email ?? "the user"}.`
+                    : "Copy and send this magic link yourself."}
               </p>
             </div>
+            {claimTicket.mailTo ? (
+              <Button
+                type="button"
+                variant="secondary"
+                className="h-8 shrink-0"
+                disabled={busy}
+                onClick={() => {
+                  if (claimTicket.mailTo) void onEmailInvite(claimTicket.mailTo);
+                }}
+              >
+                <Mail className="h-4 w-4" aria-hidden />
+                Email the link
+              </Button>
+            ) : null}
             <Button
               type="button"
               variant="secondary"

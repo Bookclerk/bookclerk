@@ -120,6 +120,7 @@ boundary extends it.
 | `collections_request` | An Administrator's collections for the library, the body of `PUT /api/library/collections` and the stored `core.collections` document | `bookclerk-library::control_plane::parse_collections_request` |
 | `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
 | `account_mail_request` | Account mail's notifier, the body of `PUT /api/notifications/account-mail`, and the token of a verification link, the body of `POST /api/auth/verify-email` | `bookclerk-library::notifications::parse_account_mail_settings`, `parse_verify_email_request` (the routes read the same request types with the JSON extractor) |
+| `password_reset_request` | Self-service password reset: the address from `POST /api/auth/password-reset`, a link's token from `/check` and `/passkey`, and the finish body from `/finish` | `bookclerk-library::notifications::parse_password_reset_ask`, `parse_password_reset_link`, `parse_password_reset_finish` (the routes read the same request types with the JSON extractor) |
 | `pace_request` | A person's pace for one of their store accounts, the body of `POST /api/portal/sources/{source}/connections/{account_id}/pace` | `bookclerk-library::pacing::parse_pace_request` |
 | `title_meta_fill` | A signed-in user's title-meta query (the body of `POST /api/discover/title-meta`, each entry of its batch route, and the body of `POST /api/discover/title-sample`) and the storefront catalog-detail lookups its store editions and ISBN plan | `bookclerk-discover::check_title_meta_query`, `plan_title_meta_fill` |
 | `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the window's own credential (the operator token or its patron's session cookies) unless refused, the URLs the window is asked to open, and which pages may start the window's live updates | `bookclerk-window-policy` |
@@ -1193,6 +1194,19 @@ only that. The others check:
   `VerifyEmailRequest` types with axum's JSON extractor and call the same
   `validate`, so the target covers their reading and validation. The
   shared oracle is `fuzz/oracles/account_mail_request.rs`, replayed from
+  `bookclerk-library`.
+- **`password_reset_request`**: the first byte picks the body (modulo 3:
+  ask, link, finish) and the rest is read as an untyped JSON value. Each
+  body must be one object with no repeated keys and no keys but its own.
+  An accepted ask address equals the `email` string trimmed and
+  lowercased, is at most 254 bytes and has a dotted domain, and a plain
+  address is never refused. A link is `token`, exactly 64 lowercase hex
+  characters. A finish body carries `token` and `password` (1 to 1024
+  bytes once trimmed), and at most one of `totp_code` (six digits) and
+  `passkey` (exactly `challenge_id`, 1 to 64 printable ASCII bytes, and an
+  object `credential`), `null` counting as absent; the parsed values equal
+  the ones written. Anything else is refused as `Invalid`. The shared
+  oracle is `fuzz/oracles/password_reset_request.rs`, replayed from
   `bookclerk-library`.
 - **`download_resume`**: the input is a flags byte (the length is already
   known; the answer sent `Content-Length`; it sent `Content-Range`), the

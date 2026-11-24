@@ -1693,10 +1693,16 @@ impl JobKind {
                 payload.ingest_batch.as_deref().unwrap_or("-")
             ),
             // One queued or running send per delivery-log row or account
-            // mail.
-            Self::NotifySend => match payload.account_mail.as_deref() {
-                Some(mail_id) => account_mail_dedup_key(mail_id),
-                None => notify_send_dedup_key(payload.notify_delivery.as_deref().unwrap_or("-")),
+            // mail, and one reset-request answer per address.
+            Self::NotifySend => match (
+                payload.account_mail.as_deref(),
+                payload.password_reset_request.as_deref(),
+            ) {
+                (Some(mail_id), _) => account_mail_dedup_key(mail_id),
+                (None, Some(address)) => password_reset_request_dedup_key(address),
+                (None, None) => {
+                    notify_send_dedup_key(payload.notify_delivery.as_deref().unwrap_or("-"))
+                }
             },
             // One queued or running alignment per edition: asking again
             // while one waits folds into it.
@@ -1981,6 +1987,12 @@ pub struct JobPayload {
     /// a delivery-log row. The job mints the message's link when it sends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_mail: Option<String>,
+    /// For [`JobKind::NotifySend`]: the address a self-service password
+    /// reset was asked for. The job looks the account up and queues the
+    /// reset mail, so neither the request's answer nor its timing says
+    /// whether an account has the address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_reset_request: Option<String>,
 }
 
 /// What a [`JobKind::BranchRequest`] asks its branch for: a work of this
@@ -2020,6 +2032,13 @@ pub fn notify_send_dedup_key(delivery_id: &str) -> String {
 #[must_use]
 pub fn account_mail_dedup_key(mail_id: &str) -> String {
     format!("notify_send:account_mail={mail_id}")
+}
+
+/// Dedup key of a [`JobKind::NotifySend`] that answers a password-reset
+/// request: one active job per address, so repeated requests collapse.
+#[must_use]
+pub fn password_reset_request_dedup_key(address: &str) -> String {
+    format!("notify_send:password_reset={address}")
 }
 
 /// Dedup key of a [`JobKind::PluginScheduled`] fire: one active fire per
@@ -2065,6 +2084,7 @@ impl Default for JobPayload {
             convert: None,
             notify_delivery: None,
             account_mail: None,
+            password_reset_request: None,
         }
     }
 }

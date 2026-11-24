@@ -27,6 +27,7 @@ import {
   dropTicketUnlessInvitePath,
   isAppPath,
   isInvitePath,
+  isResetPasswordPath,
   isVerifyEmailPath,
   joinPage,
   isConsentPage,
@@ -71,6 +72,9 @@ const PlayerApprovePage = lazy(() =>
 );
 const VerifyEmailPage = lazy(() =>
   import("@/components/VerifyEmailPage").then((m) => ({ default: m.VerifyEmailPage })),
+);
+const ResetPasswordPage = lazy(() =>
+  import("@/components/ResetPasswordPage").then((m) => ({ default: m.ResetPasswordPage })),
 );
 const ClerkApprovePage = lazy(() =>
   import("@/components/ClerkApprovePage").then((m) => ({ default: m.ClerkApprovePage })),
@@ -158,12 +162,13 @@ export default function App() {
     () => viewFromPath(window.location.pathname) ?? "discover",
   );
   const knownPath = isAppPath(window.location.pathname);
-  // A mailed verification link owns its page whether or not anyone is
-  // signed in; it leaves through a full load of the app.
+  // A mailed verification or password-reset link owns its page whether or
+  // not anyone is signed in; it leaves through a full load of the app.
   const [verifyEmailPage] = useState(() => isVerifyEmailPath());
+  const [resetPasswordPage] = useState(() => isResetPasswordPath());
 
   useEffect(() => {
-    if (!knownPath || verifyEmailPage) return;
+    if (!knownPath || verifyEmailPage || resetPasswordPage) return;
     dropTicketUnlessInvitePath();
     let cancelled = false;
     void (async () => {
@@ -195,7 +200,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [knownPath, verifyEmailPage]);
+  }, [knownPath, verifyEmailPage, resetPasswordPage]);
 
   useEffect(() => {
     if (auth !== "authed") return;
@@ -349,6 +354,14 @@ export default function App() {
     return (
       <PageSuspense>
         <VerifyEmailPage />
+      </PageSuspense>
+    );
+  }
+
+  if (resetPasswordPage) {
+    return (
+      <PageSuspense>
+        <ResetPasswordPage />
       </PageSuspense>
     );
   }

@@ -665,6 +665,13 @@ input_from = "Administrator, Owner or operator (settings); anyone who can reach 
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.password_reset_request]
+crate = "bookclerk-library"
+boundary = "Self-service password reset: the address from POST /api/auth/password-reset, a link's token from /check and /passkey, and the finish body (token, new password, authenticator code or passkey assertion) from /finish"
+input_from = "anyone who can reach the library"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.window_policy]
 crate = "bookclerk-window-policy"
 boundary = "Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, the URLs the window is asked to open, and which pages may start the window's live updates"

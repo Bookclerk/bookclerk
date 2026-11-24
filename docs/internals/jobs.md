@@ -214,7 +214,7 @@ stateDiagram-v2
 | `search_index_rebuild` | `search_index_rebuild:node={id}` | `network` | `run_search_index_rebuild` (no network; rebuilds one node's search index) |
 | `library_index_rebuild` | `library_index_rebuild` | `network` | `run_library_index_rebuild` (no network; rewrites every row of the library's page index) |
 | `branch_request` | `branch_request:node={id}:work={id}` | `network` | none: the branch it is pinned to takes it over the node socket (`requests.claim` / `requests.finish`) |
-| `notify_send` | `notify_send:delivery={id}` | `network` | `run_notify_send` on a node running the notifier instance (requires it); parks itself between retries with `defer_job` |
+| `notify_send` | `notify_send:delivery={id}`, `notify_send:account_mail={id}`, or `notify_send:password_reset={address}` for the job that answers a reset request | `network` | `run_notify_send` on a node running the notifier instance (requires it); parks itself between retries with `defer_job`; a reset request only looks the address up and queues the reset mail |
 | `ingest_batch` | `ingest_batch:batch={id}` | `network` | `run_ingest_batch` on the node that holds the upload's bytes (pinned by `payload.node_id`; never handed to a branch) |
 | `chapter_align` | `chapter_align:edition={id}` | `network` | `run_chapter_align` on a node that holds the library database; the edition is `payload.title` (see [Aligning chapters to a copy](../server/playback.md#aligning-chapters-to-a-copy)) |
 
@@ -902,6 +902,8 @@ visible:
 | `security_audit_events`, `configuration_audit` | 365 days old |
 | `configuration_changes` | 30 days old (the document and its audit row keep the content) |
 | `notifications` with their delivery log and inbox rows | 30 days old |
+| Records of sent account mail | 30 days old, once no longer pending |
+| Email-verification and password-reset links | Past `expires_at` |
 
 The prunes are idempotent, so the fence bounds wasted work rather than
 guarding correctness: the window between a fence check and its delete is

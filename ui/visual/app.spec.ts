@@ -294,6 +294,22 @@ const PAGES: AppPage[] = [
     viewer: "signed-out",
     path: `/verify-email?token=${"0123456789abcdef".repeat(4)}`,
   },
+  {
+    name: "forgot-password",
+    viewer: "signed-out",
+    path: "/",
+    prepare: async (page) => {
+      await page.getByRole("button", { name: "Forgot your password?" }).click();
+      await page.getByLabel("Email address").fill("dana@example.com");
+      await page.getByRole("button", { name: "Email me a link" }).click();
+      await expect(page.getByRole("status")).toContainText("a reset link is on its way");
+    },
+  },
+  {
+    name: "reset-password",
+    viewer: "signed-out",
+    path: `/reset-password?token=${"0123456789abcdef".repeat(4)}`,
+  },
 ];
 
 /**

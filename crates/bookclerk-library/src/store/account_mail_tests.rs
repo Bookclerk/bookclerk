@@ -607,3 +607,227 @@ async fn a_send_for_an_old_address_mints_nothing_and_voids_no_link_under_every_p
         assert!(row.is_some_and(|t| t.redeemed_at.is_none()), "{name}");
     }
 }
+
+/// The validated token of a raw reset link `raw`.
+fn reset_token(raw: &str) -> crate::notifications::PasswordResetToken {
+    crate::notifications::parse_password_reset_link(format!(r#"{{"token":"{raw}"}}"#).as_bytes())
+        .expect("token")
+}
+
+#[tokio::test]
+async fn a_reset_link_works_once_for_a_verified_address_under_every_profile() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = memory(profile).await.into_store();
+        let user = member(&store, "rae@example.com").await;
+        // An unverified address gets no link.
+        assert!(
+            store
+                .mint_password_reset(user, "rae@example.com", None)
+                .await
+                .unwrap()
+                .is_none(),
+            "{name}: a link went to an unverified address"
+        );
+        assert!(store
+            .verify_user_email_if(user, "rae@example.com")
+            .await
+            .unwrap());
+        let old = store
+            .mint_password_reset(user, "rae@example.com", None)
+            .await
+            .unwrap()
+            .expect("minted");
+        let new = store
+            .mint_password_reset(user, "rae@example.com", None)
+            .await
+            .unwrap()
+            .expect("minted");
+        let now = Utc::now();
+        let old = reset_token(old.expose());
+        let new = reset_token(new.expose());
+        assert_eq!(
+            store.password_reset_user(&old, now).await.unwrap(),
+            None,
+            "{name}: a newer link voids the older one"
+        );
+        // Checking a link does not use it.
+        for _ in 0..2 {
+            assert_eq!(
+                store.password_reset_user(&new, now).await.unwrap(),
+                Some(user),
+                "{name}"
+            );
+        }
+        // Past its 30 minutes it does nothing.
+        let later = now + Duration::minutes(31);
+        assert_eq!(store.password_reset_user(&new, later).await.unwrap(), None);
+        assert!(!store.take_password_reset(&new, user, later).await.unwrap());
+        // Another user cannot take it.
+        assert!(!store
+            .take_password_reset(&new, user + 1, now)
+            .await
+            .unwrap());
+        assert!(store.take_password_reset(&new, user, now).await.unwrap());
+        assert!(
+            !store.take_password_reset(&new, user, now).await.unwrap(),
+            "{name}: a link worked twice"
+        );
+        assert_eq!(store.password_reset_user(&new, now).await.unwrap(), None);
+    }
+}
+
+#[tokio::test]
+async fn a_reset_link_stops_when_the_address_changes_under_every_profile() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = memory(profile).await.into_store();
+        let user = member(&store, "lou@example.com").await;
+        assert!(store
+            .verify_user_email_if(user, "lou@example.com")
+            .await
+            .unwrap());
+        let raw = store
+            .mint_password_reset(user, "lou@example.com", None)
+            .await
+            .unwrap()
+            .expect("minted");
+        // A claim on a job that is not running mints and voids nothing.
+        let lost = crate::models::JobFence {
+            job_id: "gone".into(),
+            owner: "worker".into(),
+            generation: 1,
+        };
+        assert!(store
+            .mint_password_reset(user, "lou@example.com", Some(&lost))
+            .await
+            .unwrap()
+            .is_none());
+        let token = reset_token(raw.expose());
+        let now = Utc::now();
+        assert_eq!(
+            store.password_reset_user(&token, now).await.unwrap(),
+            Some(user),
+            "{name}: a stale send voided the link"
+        );
+        store
+            .set_user_email(user, Some("lou2@example.com"))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.password_reset_user(&token, now).await.unwrap(),
+            None,
+            "{name}: a link for an old address still works"
+        );
+        assert!(!store.take_password_reset(&token, user, now).await.unwrap());
+        // Pruning removes expired links.
+        let hash = hash_token(raw.expose());
+        store
+            .prune_account_mail(now + Duration::hours(1))
+            .await
+            .unwrap();
+        let row = crate::entities::password_resets::Entity::find_by_id(hash.as_str())
+            .one(&store.db)
+            .await
+            .unwrap();
+        assert!(row.is_none(), "{name}: an expired reset link survived");
+    }
+}
+
+#[tokio::test]
+async fn a_reset_request_enqueues_one_send_job_under_every_profile() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = memory(profile).await.into_store();
+        assert!(
+            store
+                .enqueue_password_reset_request("ann@example.com", "email-1", LIMITS)
+                .await
+                .unwrap(),
+            "{name}"
+        );
+        assert!(
+            store
+                .enqueue_password_reset_request("ann@example.com", "email-1", LIMITS)
+                .await
+                .unwrap(),
+            "{name}: a request already waiting counts as queued"
+        );
+        let full = NotifyQueueLimits {
+            max_pending: 1,
+            max_attempts: 3,
+        };
+        assert!(
+            !store
+                .enqueue_password_reset_request("bob@example.com", "email-1", full)
+                .await
+                .unwrap(),
+            "{name}: a full queue took another request"
+        );
+    }
+}
+
+#[test]
+fn the_reset_bodies_follow_their_rules() {
+    use crate::notifications::{
+        parse_password_reset_ask, parse_password_reset_finish, ResetSecondFactor,
+    };
+    assert_eq!(
+        parse_password_reset_ask(br#"{"email":" Ann@Example.com "}"#).unwrap(),
+        "ann@example.com"
+    );
+    for bad in [
+        &b"{}"[..],
+        br#"{"email":""}"#,
+        br#"{"email":"nope"}"#,
+        br#"{"email":"a@example.com","other":1}"#,
+        br#"["a@example.com"]"#,
+    ] {
+        assert!(parse_password_reset_ask(bad).is_err());
+    }
+    let hex = "0123456789abcdef".repeat(4);
+    let finish =
+        parse_password_reset_finish(format!(r#"{{"token":"{hex}","password":" pw "}}"#).as_bytes())
+            .unwrap();
+    assert_eq!(finish.password.as_str(), "pw");
+    assert!(matches!(finish.second_factor, ResetSecondFactor::None));
+    let finish = parse_password_reset_finish(
+        format!(r#"{{"token":"{hex}","password":"pw","totp_code":"123456"}}"#).as_bytes(),
+    )
+    .unwrap();
+    assert!(matches!(finish.second_factor, ResetSecondFactor::Totp(ref c) if c == "123456"));
+    let finish = parse_password_reset_finish(
+        format!(
+            r#"{{"token":"{hex}","password":"pw","passkey":{{"challenge_id":"c-1","credential":{{}}}}}}"#
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    assert!(matches!(
+        finish.second_factor,
+        ResetSecondFactor::Passkey { ref challenge_id, .. } if challenge_id == "c-1"
+    ));
+    let long = "x".repeat(1025);
+    for bad in [
+        format!(r#"{{"token":"{hex}","password":"  "}}"#),
+        format!(r#"{{"token":"{hex}","password":"{long}"}}"#),
+        r#"{"token":"abc","password":"pw"}"#.to_string(),
+        format!(r#"{{"token":"{hex}","password":"pw","totp_code":"12345"}}"#),
+        format!(r#"{{"token":"{hex}","password":"pw","totp_code":"12a456"}}"#),
+        format!(
+            r#"{{"token":"{hex}","password":"pw","passkey":{{"challenge_id":"","credential":{{}}}}}}"#
+        ),
+        format!(
+            r#"{{"token":"{hex}","password":"pw","passkey":{{"challenge_id":"c","credential":[]}}}}"#
+        ),
+        format!(
+            r#"{{"token":"{hex}","password":"pw","totp_code":"123456","passkey":{{"challenge_id":"c","credential":{{}}}}}}"#
+        ),
+        format!(r#"{{"token":"{hex}","password":"pw","other":1}}"#),
+    ] {
+        assert!(
+            parse_password_reset_finish(bad.as_bytes()).is_err(),
+            "{bad}"
+        );
+    }
+}

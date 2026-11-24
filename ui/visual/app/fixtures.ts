@@ -1573,6 +1573,10 @@ const SIGNED_OUT: Routes = {
     },
   }),
   "POST /api/auth/verify-email": () => ({ json: { verified: true } }),
+  // Self-service reset is on; a sample link asks for an authenticator code.
+  "GET /api/auth/password-reset": () => ({ json: { available: true } }),
+  "POST /api/auth/password-reset": () => ({ status: 202, json: { accepted: true } }),
+  "POST /api/auth/password-reset/check": () => ({ json: { second_factor: "totp" } }),
   "GET /api/auth/signin": () => ({
     json: {
       operator_token: true,
