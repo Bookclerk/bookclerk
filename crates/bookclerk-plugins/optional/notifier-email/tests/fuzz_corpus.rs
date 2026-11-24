@@ -41,3 +41,28 @@ fn smtp_session_corpus_keeps_every_invariant() {
         oracle::check(&data);
     }
 }
+
+/// The `checker_answers` oracle, shared with the fuzz target.
+#[path = "../../../../../fuzz/oracles/checker_answers.rs"]
+mod checker_answers;
+
+#[test]
+#[allow(clippy::expect_used)]
+fn checker_answers_corpus_keeps_every_invariant() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../../fuzz/corpus/checker_answers")
+        .canonicalize()
+        .expect("canonicalize fuzz corpus");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).expect("fuzz corpus") {
+        let path = entry.expect("entry").path();
+        let Ok(path) = path.canonicalize() else {
+            continue;
+        };
+        if path.starts_with(&dir) && path.is_file() {
+            checker_answers::check(&std::fs::read(&path).expect("read corpus file"));
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "empty checker_answers corpus");
+}

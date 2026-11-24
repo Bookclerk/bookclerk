@@ -547,13 +547,18 @@ impl NewNotification {
         if let Some(path) = self.link_path.as_deref().filter(|p| !p.is_empty()) {
             check_link_path(path)?;
         }
-        check_message(&self.message(notification_id, None))
+        check_message(&self.message(notification_id, None, None))
     }
 
-    /// The message a notifier is sent, with `link` already built from the
-    /// public origin.
+    /// The message a notifier is sent, with `link` and `library_origin`
+    /// already built from the public origin ([`link_for`]).
     #[must_use]
-    pub fn message(&self, notification_id: &str, link: Option<String>) -> NotificationMessage {
+    pub fn message(
+        &self,
+        notification_id: &str,
+        link: Option<String>,
+        library_origin: Option<String>,
+    ) -> NotificationMessage {
         NotificationMessage {
             notification_id: notification_id.to_string(),
             notification_type: self.notification_type.clone(),
@@ -568,6 +573,7 @@ impl NewNotification {
             alert_action: self.alert_action,
             alert_key: self.alert_key.clone(),
             sensitive: false,
+            library_origin,
         }
     }
 }

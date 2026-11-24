@@ -53,7 +53,7 @@ boundary extends it.
 | `quality_offers` | A storefront's `qualityOffers` reply: how many titles it answers, the stream bounds of each offer and the refreshed credentials it carries | `bookclerk-plugin-abi::validate_quality_offers` |
 | `plain_fetch` | A storefront's `fetchTitle` reply: the carrier it fetched and the files it lists by role | `bookclerk-plugin-abi::validate_plain_fetch` |
 | `metadata_file_record` | A metadata-file dialect's `parse` answer about a sidecar file: the fields it says the file states, their values and size caps, credit roles, dates and chapter order, and the dialect's declared fields | `bookclerk-plugin-abi::validate_metadata_file_record` |
-| `notifier_reply` | A notifier's `send` reply (delivered, retried after a capped wait, or failed, with a cut reason) and the address documents a `validateDestination` answer or a patron's form carries | `bookclerk-plugin-abi::notifications` |
+| `notifier_reply` | A notifier's `send` reply (delivered, retried after a capped wait, or failed, with a cut reason), its `checkDeliverability` report, and the address documents a `validateDestination` answer or a patron's form carries | `bookclerk-plugin-abi::notifications` |
 | `notify_raise` | A plugin's `NOTIFY.raise`: the `/notify/raise` JSON body and the Cap'n Proto raise, their type id, fields, patron id, link path, group key and alert | `bookclerk-plugin-abi::notifications::check_raise_params` |
 | `ai_run_reply` | A model plugin's reply to a run (vector count, length, finite values, revision and fallback indexes, against the run it answers) and its model listing | `bookclerk-plugin-abi::ai::check_run_output`, `check_models` |
 | `ai_run` | A plugin's `AI.run`: the `/ai/run` JSON body and the Cap'n Proto run, their model name and the input for one task | `bookclerk-plugin-abi::ai::check_binding_run_params` |
@@ -94,6 +94,7 @@ boundary extends it.
 | `graphicaudio_catalog` | GraphicAudio product pages, which the `graphicaudio` guest turns into catalog records (credits, synopsis, ISBN, running time, price, audio sample) for title dialogs, the listing pool and the demo seed | `bookclerk-plugin-source-graphicaudio::parse_product_detail` |
 | `chirp_catalog_detail` | Chirp's answers to a title detail query, which the `chirp` guest turns into a catalog record whose audio sample the host downloads for title dialogs | `bookclerk-plugin-source-chirp::audiobook_detail_record` |
 | `smtp_session` | What the `email` guest reads from the operator's mail server (replies, multiline replies, EHLO capabilities, the STARTTLS answer) and the address documents and `to` setting it sends to | `bookclerk-plugin-notifier-email::smtp` (`read_reply`, `Session`, `parse_address`, `parse_recipients`) |
+| `checker_answers` | What the `email` guest's deliverability check reads from Postmark's spam check, Cloudflare's DNS-over-HTTPS resolver and mail-tester.com | `bookclerk-plugin-notifier-email::deliverability` (`parse_spamcheck`, `parse_doh_txt`, `parse_mail_tester`) |
 | `plan_authz` | Scan and acquire requests a Member sends (over HTTP or through their branch), authorized against the store accounts linked to them | `bookclerk-library::control_plane::plan_scan` / `plan_acquire` |
 | `clerk_authorization` | A clerk's library card, the `Authorization: Bookclerk-Clerk <token>` header value that signs a request in as a person | `bookclerk-node-proto::parse_clerk_authorization` |
 | `clerk_authorize` | A clerk's authorization request, the `/oidc/authorize` query that decides whether the library shows its library card consent page and where it sends the code | `bookclerk-node-proto::parse_clerk_query`, `clerk_request_problem` |
@@ -496,8 +497,9 @@ only that. The others check:
   An accepted record round-trips through the codec and is accepted again.
   The shared oracle is `fuzz/oracles/metadata_file_record.rs`, replayed
   from `bookclerk-plugin-abi`.
-- **`notifier_reply`**: byte 0 modulo 2 picks a `NotifySendReply` message
-  (0) or an address document as text (1). A reply is delivered exactly when
+- **`notifier_reply`**: byte 0 modulo 3 picks a `NotifySendReply` message
+  (0), an address document as text (1) or a `NotifyDeliverabilityReply`
+  message (2). A reply is delivered exactly when
   it is the `ok` arm, keeping a provider id only when it is a non-empty line
   within the field cap; it is retried exactly for `rate_limited`,
   `unavailable`, `deadline_exceeded` and `cancelled`, waiting only on
@@ -508,7 +510,13 @@ only that. The others check:
   object of at most 16 distinct identifier keys with one-line string values
   within the field cap, re-serialises to text that parses back equal, and
   fits a fixed `email` (required) and `name` field list exactly when it has
-  a non-blank `email` and no other key. The shared oracle is
+  a non-blank `email` and no other key. A deliverability report is refused
+  exactly when it has more than 8 checks or 32 pieces of advice; otherwise
+  every list keeps its order and count, every text is cut to the longest
+  prefix within its cap with control and layout characters blanked, a
+  report link survives exactly when it is a credential-free `https` URL
+  within the field cap, `skipped` advice is shown as `warning`, and at most
+  8 sources are kept. The shared oracle is
   `fuzz/oracles/notifier_reply.rs`, replayed from `bookclerk-plugin-abi`.
 - **`notify_raise`**: byte 0 modulo 2 picks the bridge's JSON body (0) or a
   Cap'n Proto `NotifyRaiseParams` (1). The raise is accepted exactly when
@@ -1210,6 +1218,20 @@ only that. The others check:
   Seeds named after a step (`append-*`, `replace-*`, `complete-*`,
   `startover-*`, `retry-*`, `fail-*`) must take it. The shared oracle is
   `fuzz/oracles/download_resume.rs`, replayed from `bookclerk-plugin-sdk`.
+- **`checker_answers`**: byte 0 modulo 3 picks Postmark's spam check (0),
+  a DNS-over-HTTPS TXT answer (1) or a mail-tester result (2); the rest is
+  the answer body. A spam check is read exactly when it is a JSON object
+  with `"success": true` and a finite score; it keeps at most 64 rules,
+  each named only with a word from the report table, and its findings
+  never carry `skipped` advice. A DNS answer is read exactly when its
+  `Status` is 0 or 3, with one record per TXT answer among the first 64,
+  none longer than its data, and SPF and DMARC verdicts that name only the
+  DNS check. A mail-tester answer with `"access": false` is refused, one
+  with `"status": false` waits, and a read mark lies in 0 to 10 with at
+  most 24 findings and a check that links the report page. Merged advice
+  stays within its cap. The shared oracle is
+  `fuzz/oracles/checker_answers.rs`, replayed from
+  `bookclerk-plugin-notifier-email`.
 - **`smtp_session`**: byte 0 picks the case. A server's byte stream is
   read reply by reply against the oracle's own line splitter, which must
   agree on every prefix (incomplete, refused, or the same code, lines and

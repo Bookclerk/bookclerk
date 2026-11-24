@@ -1746,6 +1746,7 @@ The typed methods on `Notifier` and `NotifierEntrypoint` are:
 | `health` | Liveness and readiness: can the service be reached with the current settings |
 | `send` | `({ message, destination })` → `{ providerId? }`. Deliver one message; `providerId` is the service's id for it, when it gives one |
 | `validateDestination` | `({ addressJson })` → `{ addressJson, label? }`. Check and normalise a personal address a patron entered; `label` is a short hint that is never a secret (`a***@example.com`). The default accepts the address as given |
+| `checkDeliverability` | `({ message })` → `{ checks, advice }`. Run the plugin's own deliverability checks on a sample (the host's `test` notification) and merge what they find. Only called when the manifest sets `deliverability_check`; the default answers `unsupported`. The host waits up to `DELIVERABILITY_CHECK_DEADLINE_MS` (two minutes) |
 
 A `NotificationMessage` carries `notificationId` (the same on every
 destination's copy; where the service takes an idempotency key, build it
@@ -1756,7 +1757,9 @@ optional `markdown` and `html` bodies, an optional `link` into the
 library, labelled `fields`, an optional `groupKey` for threading, and an
 alert action and key for services that open and close incidents. When
 `sensitive` is set the body carries a secret, such as an account-mail
-link: never log it. The destination is `channel` (its target lives in
+link: never log it. `libraryOrigin` is the library's home page, built from
+its public origin like `link`, for footers; it is absent when no public
+origin is set. The destination is `channel` (its target lives in
 the instance's settings, and `addressJson` is empty) or `personal` (its
 `addressJson` is a JSON object of the declared address fields, which may
 hold secrets and is never logged).
@@ -1786,6 +1789,15 @@ The host checks both directions:
   whole text is at most `MAX_NOTIFIER_ADDRESS_BYTES` (4 KiB). A
   `validateDestination` answer that breaks these rules, or an empty
   address, is refused as `internal`.
+- A deliverability report has at most `MAX_DELIVERABILITY_CHECKS` (8)
+  checks, each with a `service`, an `outcome` (`passed`, `warning`,
+  `failed` or `skipped`), a one-line `summary` and an optional
+  `reportUrl`, and at most `MAX_DELIVERABILITY_ADVICE` (32) pieces of
+  advice, each with an `outcome`, a `title`, a `detail` and the `sources`
+  that raised it. A longer list refuses the report. Every text is cut to
+  one line at its cap (256 bytes for names and titles, 1 KiB otherwise), a
+  report link is dropped unless it is a credential-free `https` URL,
+  `skipped` advice is shown as `warning`, and at most 8 sources are kept.
 - A provider id that is empty, longer than 1 KiB or not one line is
   dropped; the message still counts as delivered. An error's text is cut
   to one line of 512 bytes for the delivery log.

@@ -9,6 +9,7 @@ entrypoints = ["notifier"]
 [notifier]
 destinations = ["channel", "personal"]
 account_mail = true
+deliverability_check = true
 formats = ["text", "html"]
 
 [[notifier.address_fields]]
@@ -19,9 +20,17 @@ required = true
 [capabilities.network]
 mode = "outbound"
 # The mail server comes from the `server` setting, whose destination the
-# operator approves on the consent form; nothing else is reached. The guest
-# is native because workerd plugins can't run TLS on a raw TCP connection:
-# it tunnels through the host and runs TLS itself.
+# operator approves on the consent form. The guest is native because workerd
+# plugins can't run TLS on a raw TCP connection: it tunnels through the host
+# and runs TLS itself. The three hosts below are only for the operator's
+# deliverability check (Postmark's spam check, DNS-over-HTTPS for SPF and
+# DMARC records, mail-tester.com results); refusing them on the consent form
+# leaves sending untouched and marks those checks as not run.
+tcp = [
+  { host = "spamcheck.postmarkapp.com", ports = [443] },
+  { host = "cloudflare-dns.com", ports = [443] },
+  { host = "www.mail-tester.com", ports = [443] },
+]
 
 [vars]
 
@@ -76,3 +85,9 @@ key = "to"
 label = "Channel recipients"
 type = "string"
 description = "Where channel notifications go: up to 10 addresses separated by commas. Leave it empty when only patrons' own addresses are used."
+
+[[settings]]
+key = "mail_tester_account"
+label = "mail-tester.com account"
+type = "string"
+description = "Optional. Your mail-tester.com account name (the part before the dash in your test addresses). With it, the deliverability check also sends a real message through your server to mail-tester and reads its score, which covers DKIM, reverse DNS and blocklists. Tests may use your mail-tester credits."

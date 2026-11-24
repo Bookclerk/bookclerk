@@ -12,6 +12,7 @@ import { LibraryConsentsPanel } from "@/components/LibraryConsentsPanel";
 import { NodesPanel } from "@/components/NodesPanel";
 import { OidcSettingsPanel } from "@/components/OidcSettingsPanel";
 import { OutputSettingsPanel } from "@/components/OutputSettingsPanel";
+import { DeliverabilityPanel } from "@/components/DeliverabilityPanel";
 import { GuidedSetupPanel } from "@/components/GuidedSetupPanel";
 import { PlacementBadge, PlacementPanel } from "@/components/PlacementPanel";
 import { RecoveryCopyReminder } from "@/components/RecoveryCopy";
@@ -2260,6 +2261,12 @@ export function SettingsPage({
                                         <GuidedSetupPanel
                                           plugin={plugin}
                                           onChanged={reloadSettings}
+                                          onSessionExpired={onSessionExpired}
+                                        />
+                                      ) : null}
+                                      {instanceGroup ? (
+                                        <DeliverabilityPanel
+                                          plugin={plugin}
                                           onSessionExpired={onSessionExpired}
                                         />
                                       ) : null}

@@ -285,7 +285,11 @@ async fn send_params(state: &AppState, work: &SendWork) -> NotifySendParams {
             address_json: d.address_json.clone(),
         });
     NotifySendParams {
-        message: stored.notification.message(&stored.id, link),
+        message: stored.notification.message(
+            &stored.id,
+            link,
+            link_for(origin.as_deref(), Some("/")),
+        ),
         destination,
     }
 }
