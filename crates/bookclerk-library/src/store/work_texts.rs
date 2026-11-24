@@ -304,19 +304,8 @@ impl LibraryStore {
                 .execute_host_batch(batch::request(&operation_id, statements))
                 .await
             {
-                // Drop what this write staged before the failure; a failed
-                // clean-up leaves only unnamed pieces, which are never read.
-                if let Some(version) = placed.version.as_deref() {
-                    let operation_id = format!("work-text-parts-drop-{}", uuid::Uuid::new_v4());
-                    let _ = self
-                        .execute_host_batch(batch::request(
-                            &operation_id,
-                            drop_unnamed_versions(&row.id, &[version])
-                                .into_iter()
-                                .collect(),
-                        ))
-                        .await;
-                }
+                self.drop_staged_version(row, placed.version.as_deref())
+                    .await;
                 return Err(err);
             }
         }
@@ -350,10 +339,44 @@ impl LibraryStore {
             .flatten()
             .collect();
         statements.extend(drop_unnamed_versions(&row.id, &versions));
-        let reply = self
+        match self
             .execute_host_batch(batch::request(&operation_id, statements))
-            .await?;
-        Ok(batch::rows_affected(&reply, 0) > 0)
+            .await
+        {
+            Ok(reply) => Ok(batch::rows_affected(&reply, 0) > 0),
+            Err(err) => {
+                // The publication either never applied or applied with its
+                // reply lost; the guarded drop keeps the version only in the
+                // second case, where the row names it.
+                self.drop_staged_version(row, placed.version.as_deref())
+                    .await;
+                Err(err)
+            }
+        }
+    }
+
+    /// Drops the pieces this write staged under `version` unless a row now
+    /// names them, on a best-effort basis.
+    ///
+    /// A failed clean-up leaves only unnamed pieces, which are never read.
+    ///
+    /// # Arguments
+    ///
+    /// * `row` - The work row the write targeted.
+    /// * `version` - The version the write staged, if its texts were pieced.
+    async fn drop_staged_version(&self, row: &works::Model, version: Option<&str>) {
+        let Some(version) = version else {
+            return;
+        };
+        let operation_id = format!("work-text-parts-drop-{}", uuid::Uuid::new_v4());
+        let _ = self
+            .execute_host_batch(batch::request(
+                &operation_id,
+                drop_unnamed_versions(&row.id, &[version])
+                    .into_iter()
+                    .collect(),
+            ))
+            .await;
     }
 
     /// Places `texts` for `row`: inline while each fits one piece and the
@@ -803,6 +826,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_failed_publication_keeps_only_what_a_row_names() {
+        for profile in Profile::ALL {
+            let name = format!("{profile:?}");
+            for lost_reply in [false, true] {
+                let kit = sqlite::memory(profile).await;
+                let store = kit.store();
+                store
+                    .upsert_account("audible", "a1", "us", None, true, "audible")
+                    .await
+                    .unwrap();
+                let record = store
+                    .upsert_book(&NewBook::minimal("B00X", "a1", "US", "Dune"))
+                    .await
+                    .unwrap();
+                let work_id = store
+                    .work_of_holding(&record.holding_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let piece = crate::control_plane::chunk_bytes(store.db_capabilities());
+                let description = long_text(piece.saturating_mul(3).min(12_000));
+                // Staging succeeds; only the batch that names the pieces
+                // fails, before it applies or with its reply lost.
+                kit.aim_faults_at(Some("UPDATE works SET description"));
+                if lost_reply {
+                    kit.lose_next_replies(1);
+                } else {
+                    kit.lock_next_requests(1);
+                }
+                let err = store
+                    .set_work_enrichment(
+                        &work_id,
+                        &WorkEnrichment {
+                            description: Some(description.clone()),
+                            ..WorkEnrichment::default()
+                        },
+                    )
+                    .await
+                    .unwrap_err();
+                kit.aim_faults_at(None);
+                assert!(
+                    matches!(err, LibraryError::Unavailable(_)),
+                    "{name}: {err:?}"
+                );
+                let work = store.get_work(&work_id).await.unwrap().unwrap();
+                let row = uncapped(works::Entity::find_by_id(work_id.clone()).one(store.db()))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let stored = pieces(store).await;
+                if lost_reply {
+                    // The publication applied: its pieces stay and read back.
+                    assert_eq!(
+                        work.description.as_deref(),
+                        Some(description.as_str()),
+                        "{name}"
+                    );
+                    if description.len() > piece {
+                        assert!(!stored.is_empty(), "{name}");
+                    }
+                    assert!(
+                        stored
+                            .iter()
+                            .all(|p| Some(&p.version) == row.text_version.as_ref()),
+                        "{name}"
+                    );
+                } else {
+                    // Nothing was published: the staged pieces are gone.
+                    assert!(work.description.is_none(), "{name}");
+                    assert!(row.text_version.is_none(), "{name}");
+                    assert!(stored.is_empty(), "{name}");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn a_losing_write_keeps_pieces_another_write_is_staging() {
         use sea_orm::{ActiveModelTrait, ActiveValue::Set};
 
@@ -869,7 +969,13 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let mut rows = [row.clone(), row];
+        let mut rows = [row.clone(), row.clone()];
+        store.complete_work_texts(&mut rows).await.unwrap();
+        for row in rows {
+            assert_eq!(row.description.as_deref(), Some(description.as_str()));
+        }
+        // More copies than one lookup takes: the pieces are still read once.
+        let mut rows = vec![row; store.lookup_chunk() * 2 + 1];
         store.complete_work_texts(&mut rows).await.unwrap();
         for row in rows {
             assert_eq!(row.description.as_deref(), Some(description.as_str()));

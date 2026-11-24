@@ -113,6 +113,9 @@ pub struct ProfileExec {
     lose_replies: Mutex<u32>,
     /// Batches still to be refused as lock contention.
     lock_requests: Mutex<u32>,
+    /// When set, armed faults reach only batches whose first statement's
+    /// SQL starts with this text; other batches pass untouched.
+    fault_target: Mutex<Option<String>>,
 }
 
 impl ProfileExec {
@@ -125,6 +128,7 @@ impl ProfileExec {
             sizes: Mutex::new(Vec::new()),
             lose_replies: Mutex::new(0),
             lock_requests: Mutex::new(0),
+            fault_target: Mutex::new(None),
         }
     }
 
@@ -145,6 +149,23 @@ impl ProfileExec {
     /// sees `unavailable` naming `SQLITE_BUSY`.
     pub fn lock_next_requests(&self, n: u32) {
         *Self::counter(&self.lock_requests) = n;
+    }
+
+    /// Aims armed faults at batches whose first statement's SQL starts
+    /// with `prefix`, or at every batch when `None`.
+    pub fn aim_faults_at(&self, prefix: Option<&str>) {
+        *self.fault_target.lock().unwrap_or_else(|e| e.into_inner()) = prefix.map(str::to_owned);
+    }
+
+    /// Whether armed faults reach `request`.
+    fn is_fault_target(&self, request: &ExecuteRequest) -> bool {
+        let target = self.fault_target.lock().unwrap_or_else(|e| e.into_inner());
+        target.as_deref().is_none_or(|prefix| {
+            request
+                .statements
+                .first()
+                .is_some_and(|statement| statement.sql.starts_with(prefix))
+        })
     }
 
     /// Takes one armed fault from `counter`, if any remain.
@@ -214,7 +235,8 @@ impl TypedAtomicExec for ProfileExec {
         // statement proves is held to the profile too.
         self.caps
             .admit_proven_execute(&envelope.request, &envelope.proofs)?;
-        if Self::take(&self.lock_requests) {
+        let targeted = self.is_fault_target(&envelope.request);
+        if targeted && Self::take(&self.lock_requests) {
             return Err(PluginError::unavailable(
                 "database is locked (SQLITE_BUSY): injected lock contention",
             ));
@@ -232,7 +254,7 @@ impl TypedAtomicExec for ProfileExec {
         .await
         .map_err(engine_error)?;
         validate_execute_reply(&envelope.request, &reply, &self.caps).map_err(to_plugin_error)?;
-        if Self::take(&self.lose_replies) {
+        if targeted && Self::take(&self.lose_replies) {
             return Err(PluginError::unavailable(
                 "injected lost reply: the batch was applied, its reply never arrived",
             ));
@@ -456,6 +478,13 @@ impl ProfileStore {
     /// anything is applied, the way a busy file lock answers.
     pub fn lock_next_requests(&self, n: u32) {
         self.exec.lock_next_requests(n);
+    }
+
+    /// Aims the armed faults at batches whose first statement's SQL starts
+    /// with `prefix`, so a test can fail one step of a multi-batch write;
+    /// `None` aims them at every batch again.
+    pub fn aim_faults_at(&self, prefix: Option<&str>) {
+        self.exec.aim_faults_at(prefix);
     }
 
     /// Runs one host-authored batch through the profile the way a store

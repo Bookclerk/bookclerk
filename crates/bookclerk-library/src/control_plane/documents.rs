@@ -718,6 +718,9 @@ pub async fn replace_document(
     let body = stored_body(store, key, document_json, operation_id);
     let (inline, parts, parts_id) = (body.inline.clone(), body.parts, body.parts_id.clone());
     write_parts(store, key, body).await?;
+    // Another write can commit after these pieces are staged and before the
+    // swap below names them.
+    pause_after_staging(operation_id).await;
     let now = Utc::now().to_rfc3339();
     let expires = (Utc::now() + Duration::hours(24)).to_rfc3339();
     let slot = format!("config-cas:{operation_id}");
@@ -975,6 +978,34 @@ async fn pause_after_empty_receipt_lookup(operation_id: &str) {
 #[cfg(not(test))]
 async fn pause_after_empty_receipt_lookup(_operation_id: &str) {}
 
+/// Test barrier between staging a replacement's pieces and the swap that
+/// names them.
+///
+/// Production builds do nothing. Tests arm it so another write can commit
+/// while this caller's pieces are staged but not yet named.
+#[cfg(test)]
+async fn pause_after_staging(operation_id: &str) {
+    let pause = {
+        let mut slot = STAGED_PAUSE.lock().await;
+        if slot
+            .as_ref()
+            .is_some_and(|pause| pause.operation_id == operation_id)
+        {
+            slot.take()
+        } else {
+            None
+        }
+    };
+    if let Some(pause) = pause {
+        let _ = pause.arrived.send(());
+        let _ = pause.release.await;
+    }
+}
+
+/// No pause outside tests.
+#[cfg(not(test))]
+async fn pause_after_staging(_operation_id: &str) {}
+
 /// One paused empty-receipt lookup.
 #[cfg(test)]
 pub(crate) struct EmptyReceiptPause {
@@ -994,6 +1025,18 @@ static EMPTY_RECEIPT_PAUSE: tokio::sync::Mutex<Option<EmptyReceiptPause>> =
 #[cfg(test)]
 pub(crate) async fn arm_empty_receipt_pause(pause: EmptyReceiptPause) {
     *EMPTY_RECEIPT_PAUSE.lock().await = Some(pause);
+}
+
+/// The armed pause between staging a replacement's pieces and its swap.
+#[cfg(test)]
+static STAGED_PAUSE: tokio::sync::Mutex<Option<EmptyReceiptPause>> =
+    tokio::sync::Mutex::const_new(None);
+
+/// Arms the replacement named by `pause.operation_id` to pause after it
+/// stages its pieces, until `release` completes.
+#[cfg(test)]
+pub(crate) async fn arm_staged_pause(pause: EmptyReceiptPause) {
+    *STAGED_PAUSE.lock().await = Some(pause);
 }
 
 /// Resolves a prior receipt before a new compare-and-swap.
@@ -1301,43 +1344,80 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_losing_replacement_keeps_pieces_another_write_is_staging() {
-        use sea_orm::{ActiveModelTrait, ActiveValue::Set};
-
-        let store = sqlite::memory(Profile::Minimum).await.into_store();
-        let key = DocumentKey::library("test.wide");
-        let width = super::super::chunk_bytes(store.db_capabilities());
-        let wide = wide_document(width * 3);
-        import_if_absent(&store, &operator(), &key, 1, &wide, "op-import")
-            .await
-            .unwrap();
-        replace_document(&store, &operator(), &key, 1, 1, &wide, "op-second")
-            .await
-            .unwrap();
-        // Another write has staged its pieces and not committed yet.
-        configuration_document_parts::ActiveModel {
-            scope_type: Set(key.scope_type.clone()),
-            scope_id: Set(key.scope_id.clone()),
-            namespace: Set(key.namespace.clone()),
-            parts_id: Set("op-staging:x".into()),
-            seq: Set(0),
-            body: Set("{}".into()),
+    async fn a_replacement_that_loses_after_staging_keeps_the_winners_pieces() {
+        for profile in Profile::ALL {
+            let name = format!("{profile:?}");
+            let store = sqlite::memory(profile).await.into_store();
+            let key = DocumentKey::library("test.wide");
+            let width = super::super::chunk_bytes(store.db_capabilities());
+            let first = wide_document(width.saturating_mul(3).min(8_000));
+            let losing = wide_document(width.saturating_mul(3).min(8_000) + 7);
+            let winning = wide_document(width.saturating_mul(3).min(8_000) + 13);
+            import_if_absent(&store, &operator(), &key, 1, &first, "op-import")
+                .await
+                .unwrap();
+            // The losing write reads revision 1, stages its pieces and
+            // pauses before its swap.
+            let (arrived_tx, arrived_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            arm_staged_pause(EmptyReceiptPause {
+                operation_id: "op-lost".into(),
+                arrived: arrived_tx,
+                release: release_rx,
+            })
+            .await;
+            let loser_store = store.clone();
+            let loser_key = key.clone();
+            let loser = tokio::spawn(async move {
+                replace_document(
+                    &loser_store,
+                    &operator(),
+                    &loser_key,
+                    1,
+                    1,
+                    &losing,
+                    "op-lost",
+                )
+                .await
+            });
+            arrived_rx
+                .await
+                .expect("the losing write stages its pieces");
+            // Another write commits revision 2 meanwhile.
+            let won = replace_document(&store, &operator(), &key, 1, 1, &winning, "op-won")
+                .await
+                .unwrap();
+            assert!(matches!(won, ReplaceOutcome::Applied(_)), "{name}: {won:?}");
+            release_tx.send(()).expect("release the losing write");
+            let lost = loser.await.unwrap().unwrap();
+            assert!(
+                matches!(
+                    lost,
+                    ReplaceOutcome::Conflict {
+                        current_revision: 2
+                    }
+                ),
+                "{name}: {lost:?}"
+            );
+            // The winner reads back whole; only its pieces remain.
+            let loaded = load_document(&store, &key).await.unwrap().unwrap();
+            assert_eq!(loaded.revision, 2, "{name}");
+            assert_eq!(loaded.document_json, winning, "{name}");
+            let sets: std::collections::BTreeSet<String> = pieces(&store, &key)
+                .await
+                .into_iter()
+                .map(|piece| piece.parts_id)
+                .collect();
+            if winning.len() > width {
+                assert_eq!(sets.len(), 1, "{name}: {sets:?}");
+                assert!(
+                    sets.iter().all(|id| id.starts_with("op-won:")),
+                    "{name}: {sets:?}"
+                );
+            } else {
+                assert!(sets.is_empty(), "{name}: {sets:?}");
+            }
         }
-        .insert(store.db())
-        .await
-        .unwrap();
-        let lost = replace_document(&store, &operator(), &key, 1, 1, &wide, "op-lost")
-            .await
-            .unwrap();
-        assert!(matches!(lost, ReplaceOutcome::Conflict { .. }), "{lost:?}");
-        let sets: std::collections::BTreeSet<String> = pieces(&store, &key)
-            .await
-            .into_iter()
-            .map(|piece| piece.parts_id)
-            .collect();
-        assert_eq!(sets.len(), 2, "{sets:?}");
-        assert!(sets.contains("op-staging:x"));
-        assert!(sets.iter().any(|id| id.starts_with("op-second:")));
     }
 
     #[tokio::test]
