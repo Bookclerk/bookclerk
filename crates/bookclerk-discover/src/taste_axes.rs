@@ -86,7 +86,7 @@ const NAME_MIN_DISTINCT: f64 = 0.2;
 /// Characters of a description read for phrases: what is embedded of it.
 const PHRASE_DESCRIPTION_CHARS: usize = 1200;
 
-/// Words a description phrase may not start or end with.
+/// Words a description phrase may not hold.
 const STOPWORDS: [&str; 62] = [
     "a", "an", "the", "of", "and", "or", "in", "on", "to", "for", "with", "by", "from", "at", "is",
     "are", "was", "were", "be", "been", "this", "that", "these", "those", "it", "its", "his",
@@ -848,9 +848,12 @@ fn phrase_display(phrase: &str) -> String {
         .join(" ")
 }
 
-/// The phrases of two to four words in a description that neither start
-/// nor end with a stopword and are not only praise or a reviewer's name
+/// The phrases of two to four words in a description that hold no
+/// stopword or number and are not only praise or a reviewer's name
 /// ([`RECEPTION_WORDS`]), each once, as (phrase as shown, lowercase key).
+///
+/// A run of words with a stopword in it ("One Of The New") is a piece of
+/// a sentence, not a name for anything.
 fn description_phrases(description: &str) -> Vec<(String, String)> {
     let words = description_words(description);
     let lower: Vec<String> = words.iter().map(|word| word.to_lowercase()).collect();
@@ -860,12 +863,12 @@ fn description_phrases(description: &str) -> Vec<(String, String)> {
     for len in 2..=4 {
         for start in 0..words.len().saturating_sub(len - 1) {
             let end = start + len;
-            if plain(&lower[start]) || plain(&lower[end - 1]) {
+            if lower[start..end].iter().any(|word| plain(word)) {
                 continue;
             }
-            let reception = lower[start..end].iter().all(|word| {
-                RECEPTION_WORDS.contains(&word.as_str()) || STOPWORDS.contains(&word.as_str())
-            });
+            let reception = lower[start..end]
+                .iter()
+                .all(|word| RECEPTION_WORDS.contains(&word.as_str()));
             if reception {
                 continue;
             }
@@ -1817,6 +1820,7 @@ mod tests {
             "Library Journal",
             "starred review",
             "Library Journal starred review",
+            "One of the best",
         ] {
             assert!(!phrases.iter().any(|p| p == dull), "{dull}");
         }

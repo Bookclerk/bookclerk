@@ -600,9 +600,8 @@ make a shape.
 **Names.** An axis is named by what its works share and the person's
 other works lack, whatever genre a store files them under. A name is a
 genre label, a series, or a phrase of two to four words from the works'
-descriptions (their first 1,200 characters, markup removed, not starting
-or ending with a common word or a number), such as "New York Times
-bestseller". Its distinctiveness is the share of the axis's works that
+descriptions (their first 1,200 characters, markup removed, with no
+common word or number in it), such as "New York Times bestseller". Its distinctiveness is the share of the axis's works that
 carry it less the share of the other axes' works that do, each work
 counted by its weight: the wishes that make an axis name it, not the
 light library books that sit with them. A work only a wish names is
