@@ -1492,48 +1492,68 @@ mod tests {
         let ready = std::env::temp_dir().join(format!("bookclerk-cpu-ready-{stamp}"));
         let gate = std::env::temp_dir().join(format!("bookclerk-cpu-gate-{stamp}"));
         let quote = |path: &std::path::Path| path.display().to_string().replace('\'', "''");
+        // The burner prints its own burn time (its Stopwatch, started once
+        // the gate opens), so a pause in this process cannot widen the bound.
         let script = format!(
-            "$ready='{}'; $gate='{}'; [IO.File]::WriteAllText($ready, 'up'); while(-not (Test-Path -LiteralPath $gate)){{ Start-Sleep -Milliseconds 20 }}; $sw=[Diagnostics.Stopwatch]::StartNew(); while($sw.ElapsedMilliseconds -lt 2000){{}}",
+            "$ready='{}'; $gate='{}'; [IO.File]::WriteAllText($ready, 'up'); while(-not (Test-Path -LiteralPath $gate)){{ Start-Sleep -Milliseconds 20 }}; $sw=[Diagnostics.Stopwatch]::StartNew(); while($sw.ElapsedMilliseconds -lt 2000){{}}; [Console]::Out.WriteLine($sw.ElapsedMilliseconds)",
             quote(&ready),
             quote(&gate)
         );
         let mut child = std::process::Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .stdout(std::process::Stdio::piped())
             .spawn()
             .expect("powershell");
+        // Until it is in the Job nothing else ends the burner, so every
+        // failure before then kills and reaps it first.
+        let abandon = |child: &mut std::process::Child, why: String| -> ! {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_file(&ready);
+            panic!("{why}");
+        };
         let started = std::time::Instant::now();
         while !ready.exists() {
-            if let Some(status) = child.try_wait().expect("poll burner") {
-                panic!("burner exited before it was ready: {status}");
+            match child.try_wait() {
+                Ok(Some(status)) => abandon(
+                    &mut child,
+                    format!("burner exited before it was ready: {status}"),
+                ),
+                Ok(None) => {}
+                Err(err) => abandon(&mut child, format!("poll burner: {err}")),
             }
-            assert!(
-                started.elapsed() < std::time::Duration::from_secs(120),
-                "burner never signalled ready"
-            );
+            if started.elapsed() >= std::time::Duration::from_secs(120) {
+                abandon(&mut child, "burner never signalled ready".into());
+            }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        job.assign(child.as_raw_handle()).expect("assign burner");
+        if let Err(err) = job.assign(child.as_raw_handle()) {
+            abandon(&mut child, format!("assign burner: {err}"));
+        }
         // Whether or not Job accounting carries time charged before the
         // assignment, the baseline removes it from the measurement.
         let baseline = job.cpu_time().expect("baseline cpu time");
-        let window = std::time::Instant::now();
         std::fs::write(&gate, b"go").expect("open gate");
-        let _ = child.wait().expect("wait burner");
-        let wall = window.elapsed();
+        let output = child.wait_with_output().expect("wait burner");
         let _ = std::fs::remove_file(&gate);
         let _ = std::fs::remove_file(&ready);
         let cpu = job.cpu_time().expect("cpu time").saturating_sub(baseline);
+        let burn = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse::<u64>()
+            .map(std::time::Duration::from_millis)
+            .unwrap_or_else(|err| panic!("burner did not report its burn time: {err}"));
         assert!(
-            wall >= std::time::Duration::from_millis(2000),
-            "burn ended early: {wall:?}"
+            burn >= std::time::Duration::from_millis(2000),
+            "burn ended early: {burn:?}"
         );
-        // The cap allows 10% of one core over the measured wall time; an
-        // uncapped single-threaded burn uses close to all of it. Half the wall
-        // time leaves room for interval bursts and process exit while still
-        // failing when the cap is not enforced.
+        // The cap allows 10% of one core over the burn; an uncapped
+        // single-threaded burn uses close to all of it. Half the burn time
+        // leaves room for interval bursts, the gate wait and process exit
+        // while still failing when the cap is not enforced.
         assert!(
-            cpu < wall / 2,
-            "10% of one core over {wall:?} wall exceeded half a core: {cpu:?}"
+            cpu < burn / 2,
+            "10% of one core over a {burn:?} burn exceeded half a core: {cpu:?}"
         );
         assert!(
             cpu > std::time::Duration::from_millis(15),
