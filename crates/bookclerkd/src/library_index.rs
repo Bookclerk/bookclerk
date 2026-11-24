@@ -679,6 +679,52 @@ mod tests {
         assert!(!library.library_index_built().await.unwrap());
     }
 
+    /// A title acquired, reset and acquired again inside the event
+    /// retention window ends with an acquired row: the second acquire
+    /// publishes its own `book_acquired`, which the index consumer applies.
+    #[tokio::test]
+    async fn a_title_acquired_again_after_a_reset_reads_acquired_in_the_index() {
+        use bookclerk_library::AcquireStatus;
+        let files = tempfile::tempdir().expect("tempdir");
+        let (_state, library) = crate::node_api::tests::test_state(&files).await;
+        let node = "node-a";
+        upsert_catalog_row(&library, node).await;
+        library
+            .upsert_account("audible", "acct", "us", None, true, "audible")
+            .await
+            .expect("account");
+        library
+            .upsert_book(&NewBook::minimal("B0AGAIN1", "acct", "us", "Again"))
+            .await
+            .expect("book");
+        deliver_all(&library, node).await;
+        let status = || async {
+            let page = library
+                .library_works_page(&WorkPageQuery {
+                    limit: 10,
+                    ..WorkPageQuery::default()
+                })
+                .await
+                .expect("page");
+            assert_eq!(page.works.len(), 1);
+            page.works[0].acquire_status
+        };
+        assert_eq!(status().await, AcquireStatus::NotAcquired);
+        for (written, expected) in [
+            (AcquireStatus::Acquired, AcquireStatus::Acquired),
+            (AcquireStatus::NotAcquired, AcquireStatus::NotAcquired),
+            (AcquireStatus::Queued, AcquireStatus::Queued),
+            (AcquireStatus::Acquired, AcquireStatus::Acquired),
+        ] {
+            library
+                .set_acquire_status("B0AGAIN1", "acct", written, Some("A/Again.m4b"), None)
+                .await
+                .expect("write");
+            assert!(deliver_all(&library, node).await >= 1, "{written:?}");
+            assert_eq!(status().await, expected, "after writing {written:?}");
+        }
+    }
+
     #[tokio::test]
     async fn ready_deliveries_are_handled_in_one_batch() {
         let files = tempfile::tempdir().expect("tempdir");
