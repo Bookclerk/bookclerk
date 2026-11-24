@@ -603,12 +603,15 @@ genre label, a series, or a phrase of two to four words from the works'
 descriptions (their first 1,200 characters, markup removed, not starting
 or ending with a common word or a number), such as "New York Times
 bestseller". Its distinctiveness is the share of the axis's works that
-carry it less the share of the other axes' works that do.
+carry it less the share of the other axes' works that do, each work
+counted by its weight: the wishes that make an axis name it, not the
+light library books that sit with them. A work only a wish names is
+read with the genres, series and description its wish holds.
 
 | Rule | Value |
 | --- | --- |
-| Works that must carry a genre or series | 2, and a third of the axis |
-| Works that must carry a phrase | 2, and half of the axis |
+| Works that must carry a genre or series | 2, and a third of the axis's weight |
+| Works that must carry a phrase | 2, and half of the axis's weight |
 | Least distinctiveness | 0.2 |
 | Phrase against genre or series | The phrase must be 0.15 more distinctive |
 | Equal names | The one with more words, then by name |

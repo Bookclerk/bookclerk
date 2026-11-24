@@ -729,17 +729,44 @@ pub struct AxisBook {
     pub series: Vec<String>,
     /// Synopsis; may contain HTML.
     pub description: Option<String>,
+    /// How much the work counts in the taste: a name is judged by the
+    /// weight of the works that carry it, so a few light library books
+    /// do not name an axis of wishes.
+    pub weight: f64,
 }
 
 impl AxisBook {
-    /// What naming reads of a library work.
+    /// What naming reads of a library work that counts 1.
     #[must_use]
     pub fn of(work: &WorkRecord) -> Self {
+        Self::of_wished(work, None, 1.0)
+    }
+
+    /// What naming reads of a library work that counts `weight`, with
+    /// what an open wish for it knows wherever the work has none of its
+    /// own: a work only a wish names carries no genres or description.
+    #[must_use]
+    pub fn of_wished(
+        work: &WorkRecord,
+        wish: Option<&crate::embed::WishText>,
+        weight: f64,
+    ) -> Self {
+        let own = |text: &Option<String>| text.clone().filter(|text| !text.trim().is_empty());
         Self {
             title: work.title.clone(),
-            genres: work.categories.clone().or_else(|| work.subjects.clone()),
-            series: work.series.clone(),
-            description: work.description.clone(),
+            genres: own(&work.categories)
+                .or_else(|| own(&work.subjects))
+                .or_else(|| wish.and_then(|wish| own(&wish.genres))),
+            series: if work.series.is_empty() {
+                wish.and_then(|wish| own(&wish.series))
+                    .into_iter()
+                    .collect()
+            } else {
+                work.series.clone()
+            },
+            description: own(&work.description)
+                .or_else(|| wish.and_then(|wish| own(&wish.description))),
+            weight,
         }
     }
 }
@@ -821,14 +848,16 @@ struct Candidate {
     phrase: bool,
     /// Works carrying it, by the group they are in.
     works: Vec<usize>,
-    /// Works carrying it in all.
-    total: usize,
+    /// The weight of the works carrying it, by the group they are in.
+    weights: Vec<f64>,
+    /// The weight of the works carrying it in all.
+    total: f64,
 }
 
-/// Whether `part` is at least the share `of` (numerator, denominator) of
-/// `whole`.
-fn at_least(part: usize, whole: usize, of: (usize, usize)) -> bool {
-    part.saturating_mul(of.1) >= whole.saturating_mul(of.0)
+/// Whether the weight `part` is at least the share `of` (numerator,
+/// denominator) of the weight `whole`.
+fn at_least(part: f64, whole: f64, of: (usize, usize)) -> bool {
+    part * count(of.1) + 1e-9 >= whole * count(of.0)
 }
 
 /// `count` as a float; the counts here are of works, far below the
@@ -843,7 +872,8 @@ fn count(count: usize) -> f64 {
 /// A name is a genre label, a series, or a phrase of two to four words
 /// from the works' descriptions. Its distinctiveness is the share of the
 /// group's works that carry it less the share of the other groups' works
-/// that do; the most distinctive names the group, a genre or series
+/// that do, each work counted by its weight, so the works that make the
+/// axis name it and not the light ones that sit with them; the most distinctive names the group, a genre or series
 /// winning over a phrase unless the phrase is clearly more distinctive
 /// (`PHRASE_HANDICAP`), and a longer phrase over the shorter one inside
 /// it. A group with nothing distinctive enough is named after its first
@@ -891,42 +921,48 @@ pub fn name_axes(groups: &[Vec<usize>], books: &[AxisBook]) -> Vec<String> {
                         display,
                         phrase,
                         works: vec![0; groups.len()],
-                        total: 0,
+                        weights: vec![0.0; groups.len()],
+                        total: 0.0,
                     });
                     candidates.len() - 1
                 });
                 candidates[at].works[group] += 1;
-                candidates[at].total += 1;
+                candidates[at].weights[group] += book.weight.max(0.0);
+                candidates[at].total += book.weight.max(0.0);
             }
         }
     }
-    let everyone: usize = groups.iter().map(Vec::len).sum();
+    let weight_of = |members: &Vec<usize>| -> f64 {
+        members
+            .iter()
+            .filter_map(|member| books.get(*member))
+            .map(|book| book.weight.max(0.0))
+            .sum()
+    };
+    let everyone: f64 = groups.iter().map(weight_of).sum();
     let mut taken: Vec<String> = Vec::new();
     let mut names = Vec::with_capacity(groups.len());
     for (group, members) in groups.iter().enumerate() {
-        let others = everyone - members.len();
+        let own = weight_of(members);
+        let others = everyone - own;
         // (score, words, display): the best so far.
         let mut best: Option<(f64, usize, &str)> = None;
         for candidate in &candidates {
-            let inside = candidate.works[group];
+            let inside = candidate.weights[group];
             let share = if candidate.phrase {
                 PHRASE_MIN_SHARE
             } else {
                 LABEL_MIN_SHARE
             };
-            if inside < AXIS_MIN_WORKS
-                || !at_least(inside, members.len(), share)
+            if candidate.works[group] < AXIS_MIN_WORKS
+                || !at_least(inside, own, share)
                 || taken.contains(&candidate.display.to_lowercase())
             {
                 continue;
             }
             let outside = candidate.total - inside;
-            let distinct = count(inside) / count(members.len())
-                - if others == 0 {
-                    0.0
-                } else {
-                    count(outside) / count(others)
-                };
+            let distinct = if own > 0.0 { inside / own } else { 0.0 }
+                - if others > 0.0 { outside / others } else { 0.0 };
             if distinct < NAME_MIN_DISTINCT {
                 continue;
             }
@@ -1027,12 +1063,19 @@ pub(crate) async fn build_axes(
         .map(|position| seeds[*position].work_id.clone())
         .collect();
     let works = library.works_by_ids(&grouped).await?;
+    // A wished work is named from what its wish knows of the book.
+    let wished: HashMap<String, crate::embed::WishText> = library
+        .list_global_request_queue()
+        .await?
+        .iter()
+        .map(|entry| (entry.work_id.clone(), crate::embed::WishText::of(entry)))
+        .collect();
     let books: Vec<AxisBook> = seeds
         .iter()
         .map(|seed| {
             works
                 .get(&seed.work_id)
-                .map(AxisBook::of)
+                .map(|work| AxisBook::of_wished(work, wished.get(&seed.work_id), seed.weight))
                 .unwrap_or_default()
         })
         .collect();
@@ -1380,6 +1423,60 @@ mod tests {
     }
 
     #[test]
+    fn the_heavy_works_of_an_axis_name_it_not_its_light_ones() {
+        let weighed = |title: &str, genres: &str, series: &[&str], weight: f64| AxisBook {
+            weight,
+            ..book(title, genres, series, "")
+        };
+        let books = vec![
+            weighed("Red Rising", "Science Fiction", &[], 1.5),
+            weighed("Hyperion", "Science Fiction", &[], 1.5),
+            weighed("Leviathan Wakes", "Science Fiction", &[], 1.5),
+            weighed("The Final Empire", "Fantasy", &["Mistborn"], 0.25),
+            weighed("The Final Empire (2)", "Fantasy", &["Mistborn"], 0.25),
+            weighed("A Garden Year", "Gardening", &[], 1.0),
+            weighed("Garden Beds", "Gardening", &[], 1.0),
+        ];
+        // By count, Mistborn (2 of 5, none outside) would beat nothing
+        // else here but still qualify; by weight it is a tenth of the
+        // axis, and the wishes' genre names it.
+        let names = name_axes(&[vec![3, 0, 1, 2, 4], vec![5, 6]], &books);
+        assert_eq!(names, ["Science Fiction", "Gardening"]);
+    }
+
+    #[test]
+    fn a_wished_work_is_named_from_what_its_wish_knows() {
+        let now = Utc::now();
+        let work = WorkRecord {
+            id: "w".into(),
+            kind: "book".into(),
+            title: "D-Day".into(),
+            parent_work_id: None,
+            credits: vec!["Stephen E. Ambrose".into()],
+            narrators: Vec::new(),
+            series: Vec::new(),
+            description: None,
+            subjects: None,
+            categories: Some(" ".into()),
+            cover_url: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let wish = crate::embed::WishText {
+            series: Some("Ambrose".into()),
+            genres: Some("History, Military".into()),
+            description: Some("The Normandy landings.".into()),
+        };
+        let named = AxisBook::of_wished(&work, Some(&wish), 1.5);
+        assert_eq!(named.genres.as_deref(), Some("History, Military"));
+        assert_eq!(named.series, ["Ambrose"]);
+        assert_eq!(named.description.as_deref(), Some("The Normandy landings."));
+        assert!((named.weight - 1.5).abs() < 1e-9);
+        let bare = AxisBook::of(&work);
+        assert_eq!((bare.genres, bare.weight), (None, 1.0));
+    }
+
+    #[test]
     fn a_shouted_phrase_is_shown_in_plain_capitals() {
         assert_eq!(phrase_display("NEW YORK TIMES"), "New York Times");
         assert_eq!(phrase_display("New York Times"), "New York Times");
@@ -1458,6 +1555,7 @@ mod tests {
             genres: (!genres.is_empty()).then(|| genres.to_string()),
             series: series.iter().map(|s| (*s).to_string()).collect(),
             description: (!description.is_empty()).then(|| description.to_string()),
+            weight: 1.0,
         }
     }
 
