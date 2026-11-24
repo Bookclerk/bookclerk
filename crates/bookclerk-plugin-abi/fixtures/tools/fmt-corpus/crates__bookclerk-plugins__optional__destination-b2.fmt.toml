@@ -22,6 +22,11 @@ path = "index.js"
 type = "js"
 
 [[modules]]
+name = "destination.js"
+path = "destination.js"
+type = "js"
+
+[[modules]]
 name = "backend.js"
 path = "backend.js"
 type = "js"
