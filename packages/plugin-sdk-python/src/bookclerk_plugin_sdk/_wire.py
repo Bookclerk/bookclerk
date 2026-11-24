@@ -863,6 +863,9 @@ def _write_entrypoints(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("webhookHandler") is not None:
         if v["webhookHandler"] is not None:
             s.set_cap(17, caps.export_cap(v["webhookHandler"]))
+    if v.get("provisioning") is not None:
+        if v["provisioning"] is not None:
+            s.set_cap(18, caps.export_cap(v["provisioning"]))
 
 
 def _read_entrypoints(s: _StructReader, caps: _CapTable) -> Any:
@@ -922,18 +925,21 @@ def _read_entrypoints(s: _StructReader, caps: _CapTable) -> Any:
     webhook_handler = caps.import_cap(s.get_cap_index(17))
     if not (webhook_handler is None):
         out["webhookHandler"] = webhook_handler
+    provisioning = caps.import_cap(s.get_cap_index(18))
+    if not (provisioning is None):
+        out["provisioning"] = provisioning
     return out
 
 
-_entrypoints_codec = _Codec(0, 18, _write_entrypoints, _read_entrypoints)
-"""Wire codec for ``Entrypoints`` (0 data words, 18 pointers)."""
+_entrypoints_codec = _Codec(0, 19, _write_entrypoints, _read_entrypoints)
+"""Wire codec for ``Entrypoints`` (0 data words, 19 pointers)."""
 
 
 def _write_entrypoints_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        _entrypoints_codec.write(s.init_struct(0, 0, 18), v["value"], caps)
+        _entrypoints_codec.write(s.init_struct(0, 0, 19), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
@@ -944,7 +950,7 @@ def _write_entrypoints_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
 def _read_entrypoints_reply(s: _StructReader, caps: _CapTable) -> Any:
     disc = s.get_u16(0)
     if disc == 0:
-        return {"kind": "ok", "value": _entrypoints_codec.read(s.get_struct(0, 0, 18), caps)}
+        return {"kind": "ok", "value": _entrypoints_codec.read(s.get_struct(0, 0, 19), caps)}
     elif disc == 1:
         return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
     raise ValueError(f"unknown EntrypointsReply union member: {disc}")
@@ -4195,6 +4201,7 @@ def _write_invocation(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_u64(0, v["deadlineUnixMs"])
     s.set_text(2, v["correlationId"])
     s.set_text(3, v["causationId"])
+    s.set_u16(4, _ord(A.INVOCATION_PURPOSES, v["purpose"], "InvocationPurpose"))
 
 
 def _read_invocation(s: _StructReader, caps: _CapTable) -> Any:
@@ -4204,11 +4211,12 @@ def _read_invocation(s: _StructReader, caps: _CapTable) -> Any:
         "deadlineUnixMs": s.get_u64(0),
         "correlationId": s.get_text(2),
         "causationId": s.get_text(3),
+        "purpose": _from_ord(A.INVOCATION_PURPOSES, s.get_u16(4), "InvocationPurpose"),
     }
 
 
-_invocation_codec = _Codec(1, 4, _write_invocation, _read_invocation)
-"""Wire codec for ``Invocation`` (1 data words, 4 pointers)."""
+_invocation_codec = _Codec(2, 4, _write_invocation, _read_invocation)
+"""Wire codec for ``Invocation`` (2 data words, 4 pointers)."""
 
 
 def _write_queue_message(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -5873,6 +5881,7 @@ def _write_socket_connect_request(s: _CapnpStruct, v: Any, caps: _CapTable) -> N
         _socket_auto_response_codec.write(item, elem, caps)
     s.set_data(4, v["attachment"])
     s.set_data_list(5, v["trustAnchors"])
+    s.set_text(6, v["serverName"])
 
 
 def _read_socket_connect_request(s: _StructReader, caps: _CapTable) -> Any:
@@ -5883,11 +5892,12 @@ def _read_socket_connect_request(s: _StructReader, caps: _CapTable) -> Any:
         "autoResponses": [_socket_auto_response_codec.read(item, caps) for item in s.get_struct_list(3, 0, 2)],
         "attachment": s.get_data(4),
         "trustAnchors": s.get_data_list(5),
+        "serverName": s.get_text(6),
     }
 
 
-_socket_connect_request_codec = _Codec(0, 6, _write_socket_connect_request, _read_socket_connect_request)
-"""Wire codec for ``SocketConnectRequest`` (0 data words, 6 pointers)."""
+_socket_connect_request_codec = _Codec(0, 7, _write_socket_connect_request, _read_socket_connect_request)
+"""Wire codec for ``SocketConnectRequest`` (0 data words, 7 pointers)."""
 
 
 def _write_socket_info(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -6436,6 +6446,124 @@ def _read_webhook_delivered(s: _StructReader, caps: _CapTable) -> Any:
 
 _webhook_delivered_codec = _Codec(1, 1, _write_webhook_delivered, _read_webhook_delivered)
 """Wire codec for ``WebhookDelivered`` (1 data words, 1 pointers)."""
+
+
+def _write_provision_grant(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_u16(0, _ord(A.PROVISION_GRANT_KINDS, v["kind"], "ProvisionGrantKind"))
+    if v.get("token") is not None:
+        s.set_text(0, v["token"])
+    if v.get("expiresAtUnixMs") is not None:
+        s.set_u64(1, v["expiresAtUnixMs"])
+
+
+def _read_provision_grant(s: _StructReader, caps: _CapTable) -> Any:
+    out: dict[str, Any] = {
+        "kind": _from_ord(A.PROVISION_GRANT_KINDS, s.get_u16(0), "ProvisionGrantKind"),
+    }
+    token = s.get_text(0)
+    if not (token == ""):
+        out["token"] = token
+    expires_at_unix_ms = s.get_u64(1)
+    if not (expires_at_unix_ms == 0):
+        out["expiresAtUnixMs"] = expires_at_unix_ms
+    return out
+
+
+_provision_grant_codec = _Codec(2, 1, _write_provision_grant, _read_provision_grant)
+"""Wire codec for ``ProvisionGrant`` (2 data words, 1 pointers)."""
+
+
+def _write_provision_request(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("grant") is not None:
+        _provision_grant_codec.write(s.init_struct(0, 2, 1), v["grant"], caps)
+    s.set_text(1, v["inputsJson"])
+
+
+def _read_provision_request(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "grant": _provision_grant_codec.read(s.get_struct(0, 2, 1), caps),
+        "inputsJson": s.get_text(1),
+    }
+
+
+_provision_request_codec = _Codec(0, 2, _write_provision_request, _read_provision_request)
+"""Wire codec for ``ProvisionRequest`` (0 data words, 2 pointers)."""
+
+
+def _write_provisioned_secret(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["key"])
+    s.set_text(1, v["value"])
+
+
+def _read_provisioned_secret(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "key": s.get_text(0),
+        "value": s.get_text(1),
+    }
+
+
+_provisioned_secret_codec = _Codec(0, 2, _write_provisioned_secret, _read_provisioned_secret)
+"""Wire codec for ``ProvisionedSecret`` (0 data words, 2 pointers)."""
+
+
+def _write_provisioned(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    s.set_text(0, v["settingsJson"])
+    items = s.init_struct_list(1, len(v["secrets"]), 0, 2)
+    for item, elem in zip(items, v["secrets"], strict=True):
+        _provisioned_secret_codec.write(item, elem, caps)
+    s.set_text_list(2, v["summary"])
+
+
+def _read_provisioned(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "settingsJson": s.get_text(0),
+        "secrets": [_provisioned_secret_codec.read(item, caps) for item in s.get_struct_list(1, 0, 2)],
+        "summary": s.get_text_list(2),
+    }
+
+
+_provisioned_codec = _Codec(0, 3, _write_provisioned, _read_provisioned)
+"""Wire codec for ``Provisioned`` (0 data words, 3 pointers)."""
+
+
+def _write_provision_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    kind = v["kind"]
+    if kind == "ok":
+        s.set_u16(0, 0)
+        _provisioned_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    elif kind == "err":
+        s.set_u16(0, 1)
+        _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
+    else:
+        raise ValueError(f"unknown ProvisionReply union member: {kind}")
+
+
+def _read_provision_reply(s: _StructReader, caps: _CapTable) -> Any:
+    disc = s.get_u16(0)
+    if disc == 0:
+        return {"kind": "ok", "value": _provisioned_codec.read(s.get_struct(0, 0, 3), caps)}
+    elif disc == 1:
+        return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
+    raise ValueError(f"unknown ProvisionReply union member: {disc}")
+
+
+_provision_reply_codec = _Codec(1, 1, _write_provision_reply, _read_provision_reply)
+"""Wire codec for ``ProvisionReply`` (1 data words, 1 pointers)."""
+
+
+def _write_deprovision_request(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("grant") is not None:
+        _provision_grant_codec.write(s.init_struct(0, 2, 1), v["grant"], caps)
+
+
+def _read_deprovision_request(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "grant": _provision_grant_codec.read(s.get_struct(0, 2, 1), caps),
+    }
+
+
+_deprovision_request_codec = _Codec(0, 1, _write_deprovision_request, _read_deprovision_request)
+"""Wire codec for ``DeprovisionRequest`` (0 data words, 1 pointers)."""
 
 
 def _write_db_value(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -8341,12 +8469,12 @@ _kv_namespace_list_results_codec = _Codec(0, 1, _write_kv_namespace_list_results
 
 def _write_sockets_connect_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("request") is not None:
-        _socket_connect_request_codec.write(s.init_struct(0, 0, 6), v["request"], caps)
+        _socket_connect_request_codec.write(s.init_struct(0, 0, 7), v["request"], caps)
 
 
 def _read_sockets_connect_params(s: _StructReader, caps: _CapTable) -> Any:
     return {
-        "request": _socket_connect_request_codec.read(s.get_struct(0, 0, 6), caps),
+        "request": _socket_connect_request_codec.read(s.get_struct(0, 0, 7), caps),
     }
 
 
@@ -8700,6 +8828,66 @@ def _read_ingress_stop_results(s: _StructReader, caps: _CapTable) -> Any:
 
 _ingress_stop_results_codec = _Codec(0, 1, _write_ingress_stop_results, _read_ingress_stop_results)
 """Wire codec for ``IngressStopResults`` (0 data words, 1 pointers)."""
+
+
+def _write_provisioning_provision_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("request") is not None:
+        _provision_request_codec.write(s.init_struct(0, 0, 2), v["request"], caps)
+
+
+def _read_provisioning_provision_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "request": _provision_request_codec.read(s.get_struct(0, 0, 2), caps),
+    }
+
+
+_provisioning_provision_params_codec = _Codec(0, 1, _write_provisioning_provision_params, _read_provisioning_provision_params)
+"""Wire codec for ``ProvisioningProvisionParams`` (0 data words, 1 pointers)."""
+
+
+def _write_provisioning_provision_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("result") is not None:
+        _provision_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_provisioning_provision_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _provision_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_provisioning_provision_results_codec = _Codec(0, 1, _write_provisioning_provision_results, _read_provisioning_provision_results)
+"""Wire codec for ``ProvisioningProvisionResults`` (0 data words, 1 pointers)."""
+
+
+def _write_provisioning_deprovision_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("request") is not None:
+        _deprovision_request_codec.write(s.init_struct(0, 0, 1), v["request"], caps)
+
+
+def _read_provisioning_deprovision_params(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "request": _deprovision_request_codec.read(s.get_struct(0, 0, 1), caps),
+    }
+
+
+_provisioning_deprovision_params_codec = _Codec(0, 1, _write_provisioning_deprovision_params, _read_provisioning_deprovision_params)
+"""Wire codec for ``ProvisioningDeprovisionParams`` (0 data words, 1 pointers)."""
+
+
+def _write_provisioning_deprovision_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    if v.get("result") is not None:
+        _empty_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+
+
+def _read_provisioning_deprovision_results(s: _StructReader, caps: _CapTable) -> Any:
+    return {
+        "result": _empty_reply_codec.read(s.get_struct(0, 1, 1), caps),
+    }
+
+
+_provisioning_deprovision_results_codec = _Codec(0, 1, _write_provisioning_deprovision_results, _read_provisioning_deprovision_results)
+"""Wire codec for ``ProvisioningDeprovisionResults`` (0 data words, 1 pointers)."""
 
 
 def _write_webhooks_url_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -10605,14 +10793,14 @@ _plugin_worker_describe_results_codec = _Codec(0, 1, _write_plugin_worker_descri
 
 def _write_plugin_worker_open_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("invocation") is not None:
-        _invocation_codec.write(s.init_struct(0, 1, 4), v["invocation"], caps)
+        _invocation_codec.write(s.init_struct(0, 2, 4), v["invocation"], caps)
     if v.get("bindings") is not None:
         _bindings_codec.write(s.init_struct(1, 0, 15), v["bindings"], caps)
 
 
 def _read_plugin_worker_open_params(s: _StructReader, caps: _CapTable) -> Any:
     return {
-        "invocation": _invocation_codec.read(s.get_struct(0, 1, 4), caps),
+        "invocation": _invocation_codec.read(s.get_struct(0, 2, 4), caps),
         "bindings": _bindings_codec.read(s.get_struct(1, 0, 15), caps),
     }
 

@@ -172,6 +172,9 @@ MAX_SOCKET_TRUST_ANCHORS: int = 4
 MAX_SOCKET_TRUST_ANCHOR_BYTES: int = 8192
 """Largest DER certificate in `SocketConnectRequest.trustAnchors`, in bytes."""
 
+MAX_SOCKET_SERVER_NAME_BYTES: int = 253
+"""Longest `SocketConnectRequest.serverName`, in bytes (a DNS name's limit)."""
+
 MAX_SOCKET_URL_BYTES: int = 2048
 """Longest `SocketConnectRequest.url`, in bytes."""
 
@@ -223,6 +226,26 @@ MAX_WEBHOOK_NAME_BYTES: int = 32
 
 MAX_WEBHOOK_HEADER_VALUE_BYTES: int = 8192
 """Longest kept request header value, in bytes."""
+
+MAX_PROVISION_TOKEN_BYTES: int = 4096
+"""Longest `ProvisionGrant.token`, in bytes."""
+
+MAX_PROVISION_SECRET_BYTES: int = 1024
+"""Longest `ProvisionedSecret.value`, in bytes."""
+
+MAX_PROVISION_SECRETS: int = 16
+"""Most credentials one `Provisioned` returns."""
+
+MAX_PROVISION_SETTINGS_BYTES: int = 16384
+"""Largest `Provisioned.settingsJson` and `ProvisionRequest.inputsJson`, in
+bytes.
+"""
+
+MAX_PROVISION_SUMMARY_LINES: int = 8
+"""Most lines in `Provisioned.summary`."""
+
+MAX_PROVISION_SUMMARY_LINE_BYTES: int = 200
+"""Longest line of `Provisioned.summary`, in bytes."""
 
 MAX_KV_METADATA_BYTES: int = 1024
 """Largest `KvNamespace` metadata JSON text in bytes."""
@@ -304,7 +327,7 @@ code.
 Wire strings of ``PluginErrorCode`` in ordinal order (snake_case ``Text`` codes).
 """
 
-ENTRYPOINTS: tuple[str, ...] = ("storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles", "notifier", "ingress", "ai")
+ENTRYPOINTS: tuple[str, ...] = ("storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles", "notifier", "ingress", "ai", "provisioning")
 """Named entrypoint a plugin exports (Cloudflare Workers named-entrypoint
 analogue). Each value is a capability the host calls over RPC; triggers on
 the default entrypoint (`event`, `job`) are declared separately.
@@ -427,6 +450,12 @@ OFFERED_AAC_PROFILES: tuple[str, ...] = ("unknown", "lc", "he", "heV2", "xhe")
 Ordinal-ordered ``OfferedAacProfile`` wire names (index = Cap'n Proto ordinal).
 """
 
+INVOCATION_PURPOSES: tuple[str, ...] = ("serve", "provision")
+"""Why the host opens a plugin's entrypoints (`Invocation.purpose`).
+
+Ordinal-ordered ``InvocationPurpose`` wire names (index = Cap'n Proto ordinal).
+"""
+
 REMOTE_MEDIAS: tuple[str, ...] = ("image", "audio")
 """The kind of public media `CoverFetcher.fetchCovers` downloads.
 
@@ -479,6 +508,12 @@ AI_TEXT_ROLES: tuple[str, ...] = ("document", "query")
 differently from the documents it is matched against.
 
 Ordinal-ordered ``AiTextRole`` wire names (index = Cap'n Proto ordinal).
+"""
+
+PROVISION_GRANT_KINDS: tuple[str, ...] = ("none", "apiToken", "oauthAccessToken")
+"""What kind of grant the operator gave a guided setup (`ProvisionGrant`).
+
+Ordinal-ordered ``ProvisionGrantKind`` wire names (index = Cap'n Proto ordinal).
 """
 
 DB_TYPES: tuple[str, ...] = ("unspecified", "bool", "int64", "float64", "text", "bytes")
@@ -566,6 +601,7 @@ __all__ = [
     "MAX_SOCKET_AUTO_RESPONSE_BYTES",
     "MAX_SOCKET_TRUST_ANCHORS",
     "MAX_SOCKET_TRUST_ANCHOR_BYTES",
+    "MAX_SOCKET_SERVER_NAME_BYTES",
     "MAX_SOCKET_URL_BYTES",
     "MAX_SOCKET_HEADERS",
     "MAX_ORIGIN_HEADERS",
@@ -580,6 +616,12 @@ __all__ = [
     "MAX_WEBHOOK_HEADERS",
     "MAX_WEBHOOK_NAME_BYTES",
     "MAX_WEBHOOK_HEADER_VALUE_BYTES",
+    "MAX_PROVISION_TOKEN_BYTES",
+    "MAX_PROVISION_SECRET_BYTES",
+    "MAX_PROVISION_SECRETS",
+    "MAX_PROVISION_SETTINGS_BYTES",
+    "MAX_PROVISION_SUMMARY_LINES",
+    "MAX_PROVISION_SUMMARY_LINE_BYTES",
     "MAX_KV_METADATA_BYTES",
     "MAX_NETWORK_GRANT_ENTRIES",
     "MAX_PLUGIN_MIGRATION_OPS",
@@ -618,6 +660,7 @@ __all__ = [
     "EXPLICITNESSS",
     "OFFERED_CODECS",
     "OFFERED_AAC_PROFILES",
+    "INVOCATION_PURPOSES",
     "REMOTE_MEDIAS",
     "METADATA_FIELDS",
     "NOTIFICATION_SEVERITYS",
@@ -626,6 +669,7 @@ __all__ = [
     "NOTIFY_DESTINATION_KINDS",
     "AI_TASKS",
     "AI_TEXT_ROLES",
+    "PROVISION_GRANT_KINDS",
     "DB_TYPES",
     "DB_STATEMENT_KINDS",
     "DB_RESULT_SELECTIONS",

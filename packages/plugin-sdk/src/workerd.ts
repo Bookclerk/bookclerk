@@ -55,6 +55,8 @@ export {
   JobController,
   CoverEntrypoint,
   IngressEntrypoint,
+  ProvisioningEntrypoint,
+  provisioned,
   MetadataEntrypoint,
   MetadataFilesEntrypoint,
   NamedEntrypoint,

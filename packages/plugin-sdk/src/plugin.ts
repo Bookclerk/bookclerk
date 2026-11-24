@@ -150,6 +150,9 @@ import type {
   OriginRequest,
   IngressHealth,
   IngressStarted,
+  DeprovisionRequest,
+  ProvisionRequest,
+  Provisioned,
   PlainFetch,
   PluginCapabilities as WirePluginCapabilities,
   PluginDescribe as WirePluginDescribe,
@@ -1324,6 +1327,7 @@ export function invocationOf(context: GrantedContext | undefined): Invocation {
     deadlineUnixMs: Number(inv.deadlineUnixMs ?? 0) || 0,
     correlationId: String(inv.correlationId ?? ""),
     causationId: String(inv.causationId ?? ""),
+    purpose: inv.purpose === "provision" ? "provision" : "serve",
   });
 }
 
@@ -3293,6 +3297,66 @@ export class AiEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extends Named
 }
 
 /**
+ * `provisioning` entrypoint (`Provisioning`): guided setup at a cloud
+ * provider. The host collects a short-lived grant from the operator (a pasted
+ * API token), hands it to `provision`, and stores what it returns: settings
+ * listed in `[provisioning] outputs` and credentials it seals. The grant is
+ * dropped after the call, so return any lasting credential you create. On a
+ * re-run `env.CONFIG` and `env.SECRETS` hold the earlier outputs: update or
+ * rotate rather than create again. Export it as
+ * `export class Provisioning extends ProvisioningEntrypoint`.
+ */
+export class ProvisioningEntrypoint<
+  Env extends BookclerkEnv = BookclerkEnv,
+> extends NamedEntrypoint<Env> {
+  static override bookclerkMethods = Object.freeze(["provision", "deprovision"]);
+
+  /**
+   * Creates (or updates) what the instance needs.
+   *
+   * @param request - The operator's grant and choices (`inputsJson`, a JSON
+   *   object keyed by `[provisioning] inputs`).
+   * @returns Settings to store (`settingsJson`), credentials to seal and
+   *   summary lines for the setup screen; see {@link provisioned}.
+   */
+  provision(request: ProvisionRequest): Promise<Provisioned> {
+    void request;
+    return Promise.reject(unsupported("provision"));
+  }
+  /**
+   * Removes what `provision` created. Removing what is already gone is not
+   * an error.
+   *
+   * @param request - The operator's grant, or kind `none` to use the stored
+   *   secrets.
+   * @returns Resolves once the resources are gone.
+   */
+  deprovision(request: DeprovisionRequest): Promise<void> {
+    void request;
+    return Promise.reject(unsupported("deprovision"));
+  }
+}
+
+/**
+ * Builds a {@link Provisioned} answer from plain objects.
+ *
+ * @param answer - Settings to store, credentials to seal (by `secret`
+ *   setting key) and summary lines.
+ * @returns The wire shape `provision` returns.
+ */
+export function provisioned(answer: {
+  settings?: Record<string, string | number | boolean>;
+  secrets?: Record<string, string>;
+  summary?: string[];
+}): Provisioned {
+  return {
+    settingsJson: JSON.stringify(answer.settings ?? {}),
+    secrets: Object.entries(answer.secrets ?? {}).map(([key, value]) => ({ key, value })),
+    summary: answer.summary ?? [],
+  };
+}
+
+/**
  * `notifier` entrypoint (`Notifier`): delivers messages the host already
  * rendered to one outside service (a chat webhook, a mail relay, a paging
  * service). The host decides what to send and where; the entrypoint only
@@ -3395,7 +3459,8 @@ export type EntrypointName =
   | "metadataFiles"
   | "notifier"
   | "ingress"
-  | "ai";
+  | "ai"
+  | "provisioning";
 
 /** Adapter binding name for each named entrypoint. */
 export const ENTRYPOINT_BINDINGS: Readonly<Record<EntrypointName, string>> = Object.freeze({
@@ -3411,6 +3476,7 @@ export const ENTRYPOINT_BINDINGS: Readonly<Record<EntrypointName, string>> = Obj
   notifier: "PLUGIN_NOTIFIER",
   ingress: "PLUGIN_INGRESS",
   ai: "PLUGIN_AI",
+  provisioning: "PLUGIN_PROVISIONING",
 });
 
 /** Exported class name the launcher binds for each named entrypoint. */
@@ -3427,6 +3493,7 @@ export const ENTRYPOINT_CLASSES: Readonly<Record<EntrypointName, string>> = Obje
   notifier: "Notifier",
   ingress: "Ingress",
   ai: "Ai",
+  provisioning: "Provisioning",
 });
 
 /** Reverse-channel fetcher bound as `GRANTED` on the adapter isolate. */

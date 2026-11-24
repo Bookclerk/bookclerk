@@ -45,7 +45,7 @@ use std::collections::BTreeSet;
 use super::job_routing::job_source_plugin_key;
 use super::remote_work::{fenced_job, remote_job_fence};
 use super::trust::{
-    accounts_named, accounts_owned_by, node_may_claim_job, node_trust, Claimant, NodeTrust,
+    accounts_named_as, accounts_owned_by, node_may_claim_job, node_trust, Claimant, NodeTrust,
 };
 use crate::error::Result;
 use crate::models::JobKind;
@@ -167,7 +167,9 @@ pub async fn accept_scan_rows(
     // The job's selector resolved as the claim resolved it (id or label,
     // ignoring case), so the canonical id a host was handed validates.
     let job_accounts = match job.payload.account.as_deref().filter(|a| !a.is_empty()) {
-        Some(selector) => Some(accounts_named(store, selector, Some(plugin_key)).await?),
+        Some(selector) => Some(
+            accounts_named_as(store, selector, Some(plugin_key), job.payload.account_match).await?,
+        ),
         None => None,
     };
     // Every row is checked before any is written.
@@ -291,7 +293,7 @@ async fn account_report_refusal(
     }
     let key = (plugin_key.to_string(), account_id.to_string());
     if let Some(selector) = job.payload.account.as_deref().filter(|a| !a.is_empty()) {
-        if !accounts_named(store, selector, Some(plugin_key))
+        if !accounts_named_as(store, selector, Some(plugin_key), job.payload.account_match)
             .await?
             .contains(&key)
         {

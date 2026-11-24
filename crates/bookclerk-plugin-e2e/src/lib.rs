@@ -43,6 +43,8 @@ pub const OPTIONAL_PLUGINS: &[&str] = &[
     "openlibrary",
     "cloudflare_relay",
     "ngrok",
+    "cloudflare_tunnel",
+    "cloudflare_dns",
     "webhook",
     "email",
 ];

@@ -779,6 +779,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "provision_reply"
+path = "fuzz_targets/provision_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cloudflare_api"
+path = "fuzz_targets/cloudflare_api.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "smtp_session"
 path = "fuzz_targets/smtp_session.rs"
 test = false

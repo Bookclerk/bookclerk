@@ -32,6 +32,7 @@ boundary extends it.
 | `setting_destination` | Operator-entered values of network settings: the one destination each grants | `bookclerk-plugin-manifest::derive_setting_destination` |
 | `cron_schedule` | `[triggers] crons` parse and fire-time search | `bookclerk-plugin-manifest::CronSchedule` |
 | `abi_decode` | Every generated Cap'n Proto `read_*` codec, the database envelope decoders, and the reply helpers every payload-free guest reply and guest error goes through (`read_empty`, `read_error`) | `bookclerk-plugin-abi` |
+| `provision_reply` | A plugin's answer to its guided setup (`Provisioning.provision`): the Cap'n Proto reply, then the settings JSON, credentials and summary checked against the manifest's `[provisioning] outputs` before anything is stored or sealed | `bookclerk-plugin-abi::provision` |
 | `db_stream` | `executeStreamed` frames an adapter sends, reassembled by the host and the SDKs under the streamed result budget. The TypeScript and Python SDK tests replay the same corpus as shared vectors against their own decoders | `bookclerk-plugin-abi::ExecuteStreamDecoder` |
 | `cover_sink_key` | The key a cover fetcher writes each image under, mapped to a URL slot | `bookclerk-plugin-abi::cover_sink_slot` |
 | `cover_process` | Cover images from any public website: sniff, decode under limits, resize, re-encode | `bookclerk-cover::process` |
@@ -62,9 +63,10 @@ boundary extends it.
 | `storage_reply` | A storage plugin's replies to intent operations: `moveMany`, `deleteMany`, `headMany`, `translateKeys` and `changes` replies and the hinted `list` page, checked against the request that asked for them | `bookclerk-plugin-abi::validate_move_many_page` and siblings |
 | `s3_event` | Messages on an S3 bucket's notification queue, which the `s3` guest turns into change-feed entries: S3 event notifications, SNS envelopes and EventBridge events, the percent-encoded keys of S3 and SNS records, buckets and prefixes | `bookclerk-storage::s3_events` |
 | `r2_event` | What the `r2` guest reads from Cloudflare to serve its change feed: Queues HTTP pull replies (the envelope, lease ids and base64 or text bodies) and the R2 event notifications in them, with their accounts, buckets and prefixes | `bookclerk-storage::r2_events` |
+| `cloudflare_api` | What the `r2` guest's guided setup reads from the Cloudflare API: the v4 envelope and its errors, account lists, bucket create replies, permission group lists and token create replies, and the bucket names it sends | `bookclerk-storage::cloudflare_api` |
 | `b2_reply` | What the `b2` guest reads from Backblaze B2: native API replies (authorization, buckets, upload URLs, file versions, file-name and file-version listings, uploaded parts, errors) and download headers, and the percent-encoding of file names | `bookclerk-storage::b2_api` |
 | `b2_event` | What the `b2` guest reads to serve its change feed: B2 event notification webhook bodies (event types, buckets, object names, times) and `b2_get_bucket_notification_rules` / `b2_set_bucket_notification_rules` replies | `bookclerk-storage::b2_events` |
-| `socket_request` | A plugin's host-brokered socket request (`Sockets.connect`): its URL (`ws://`, `wss://` or `tls://host:port`), headers, subprotocols or ALPN ids, heartbeat pairs, attachment and trust anchors' DER shape, and the `SocketMessage` the host delivers to a socket handler | `bookclerk-plugin-abi::sockets` |
+| `socket_request` | A plugin's host-brokered socket request (`Sockets.connect`): its URL (`ws://`, `wss://` or `tls://host:port`), headers, subprotocols or ALPN ids, heartbeat pairs, attachment, trust anchors' DER shape and `tls://` server name, and the `SocketMessage` the host delivers to a socket handler | `bookclerk-plugin-abi::sockets` |
 | `origin_request` | What a relay ingress plugin hands the host: the framed `POST /origin/fetch` body on the isolate bridge, request heads (method, target, headers, client address), response heads, and the public origin `Ingress.start` reports | `bookclerk-plugin-abi::origin` |
 | `socket_broker` | What the socket broker does with a remote WebSocket server's frames and closes and a plugin's socket requests: heartbeat answers, deliveries, attachments, the per-instance limit and close reporting | `bookclerk-workerd::socket_table` |
 | `socket_route` | A workerd plugin's `env.SOCKETS` calls on the granted reverse channel: the `POST /sockets/<op>` JSON body for `connect`, `send`, `close`, `attachment` and `list` | `bookclerk-workerd::granted_sockets` |
@@ -639,14 +641,42 @@ only that. The others check:
   sending back the rules that are not the destination's own keeps each one
   as listed without B2's computed fields. The shared oracle is
   `fuzz/oracles/b2_event.rs`, replayed from `bookclerk-storage`.
+- **`cloudflare_api`**: byte 0 modulo 6 picks the reader: the bare
+  envelope (0), an account list (1), a bucket create reply (2), a
+  permission group list searched for the bucket item group (3), a token
+  create reply (4) or a bucket name (5). Reading never panics and answers
+  the same twice; a reply over 1 MiB is refused as too large. A refusal
+  keeps at most 4 errors, each message within 160 characters without
+  control characters, and only for a reply whose `success` is not `true`.
+  An accepted reply says `success: true` and agrees with an independent
+  walk of the same JSON: account, group and token ids are the reply's own
+  32 hex digits, lowercased; a token value is the reply's own printable
+  value, and its S3 secret is the oracle's own SHA-256 of it; a bucket
+  create counts as already owned exactly when the reply refused with
+  code 10004. A bucket name passes exactly when the oracle's own reading
+  of R2's naming rules accepts it. The shared oracle is
+  `fuzz/oracles/cloudflare_api.rs`, replayed from `bookclerk-storage`.
+- **`provision_reply`**: byte 0 bit 0 picks the form (clear: a Cap'n
+  Proto `ProvisionReply`; set: NUL-separated settings JSON, credential
+  pairs up to `--`, then summary lines) and bit 1 whether the run had a
+  grant token. Decoding and checking never panic and answer the same
+  twice, and a decoded reply round-trips. An accepted answer stores only
+  declared, distinct keys whose values agree with an independent
+  `serde_json::Value` read: settings are short single-line strings,
+  numbers or booleans; credentials are non-empty, single-line, trimmed and
+  within 1,024 bytes, at most 16; the summary is at most 8 lines of 200
+  bytes; and no credential or grant token appears in a setting or summary
+  line. A refusal names a key that really breaks the rule it reports. The
+  shared oracle is `fuzz/oracles/provision_reply.rs`, replayed from
+  `bookclerk-plugin-abi`.
 - **`socket_request`**: byte 0 modulo 3 picks a socket URL (0), a Cap'n
   Proto `SocketConnectRequest` (1) or a `SocketMessage` (2). Every URL the
   parser accepts is one a WHATWG URL parser (the `url` crate) reads as the
   same scheme, host and port with no credentials or fragment, so the
   network grant and the connection can't disagree about the target.
   Connect validation accepts exactly the requests whose URL parses and
-  that an independent restatement of the header, subprotocol, heartbeat
-  and attachment rules accepts; heartbeat matching answers exactly the
+  that an independent restatement of the header, subprotocol, heartbeat,
+  attachment and server name rules accepts; heartbeat matching answers exactly the
   frames equal to a declared request; delivery checks agree with the
   restated id, frame and attachment bounds; and a decoded message
   survives `write` then `read` unchanged. The shared oracle is
@@ -805,7 +835,8 @@ only that. The others check:
   plugin instances) and one Member's scan or acquire request into an
   in-memory database, then plans it. Every planned job names an account,
   and every account its needle reaches at run time (id or label, ignoring
-  ASCII case, within the pinned instance's plugin) is linked to that
+  ASCII case, or only the exact id when the job says so, within the pinned
+  instance's plugin) is linked to that
   Member, checked against the oracle's own model rather than the planner's
   queries. A refusal is `Forbidden` or `Invalid`. The shared oracle is
   `fuzz/oracles/plan_authz.rs`, replayed from `bookclerk-library`.
@@ -2167,6 +2198,71 @@ text mutations in `npm test` (the `workerd_guests` check); `FUZZ_SEED` and
   close reasons, close codes from the wire set, a message cap checked as
   each header arrives). The decoder gives the same messages and the same
   close code whatever the chunk boundaries.
+
+### Cloudflare DNS guest
+
+The `cloudflare_dns` guest reads three things it did not produce: the
+address echo's answer, the Cloudflare API's answers, and the host name
+the operator typed.
+`crates/bookclerk-plugins/optional/ingress-cloudflare-dns/test/fuzz.test.ts`
+replays `fuzz/address/` (a family digit, a space, then the body with
+`\n` for a newline), `fuzz/api/` (API answer JSON) and `fuzz/hostname/`,
+and runs seeded text mutations in `npm test` (the `workerd_guests` check);
+`FUZZ_SEED` and `FUZZ_ITERATIONS` pick another run.
+
+- **Echo answers** (`parseEchoAnswer`, `isPublicAddress` in
+  `src/address.ts`). Oracle: Node's `net.isIPv4` and `net.isIPv6` (less
+  zones) decide what is an address, the WHATWG URL serializer gives the
+  canonical IPv6 text, and a `net.BlockList` of the special-purpose ranges
+  decides what is public.
+- **API answers** (`parseEnvelope`, `parseZone`, `parseRecords` in
+  `src/dns.ts`). Oracle: the envelope, zone and record rules restated over
+  `JSON.parse`'s value (a success only with a 2xx status and
+  `success: true`, Cloudflare's first error message cut to 200
+  characters, ids of 32 lowercase hex digits checked by character, only
+  records named exactly the host name).
+- **Host names** (`parseHostname`, `zoneCandidates`). Oracle: RFC 1035's
+  label rules restated character by character (at most 253 bytes, at
+  least two labels of 1 to 63 letters, digits and inner dashes, no `xn--`
+  label, a top label that starts with a letter); each zone candidate is a
+  parent of the name.
+
+### Cloudflare Tunnel guest
+
+The `cloudflare_tunnel` guest parses everything on its edge connection:
+HTTP/2 frames and HPACK header blocks, the Cap'n Proto RPC messages on
+the control stream, the request fields any internet client sends, and the
+WebSocket frames that client sends after an upgrade.
+`crates/bookclerk-plugins/optional/ingress-cloudflare-tunnel/test/fuzz.test.ts`
+replays `fuzz/h2/`, `fuzz/hpack/`, `fuzz/capnp/` and `fuzz/wsframe/` (hex
+bytes) and `fuzz/head/` (a JSON field list), and runs seeded byte and text
+mutations in `npm test` (the `workerd_guests` check); `FUZZ_SEED` and
+`FUZZ_ITERATIONS` pick another run.
+
+- **HTTP/2 frames** (`FrameReader` in `src/h2.ts`). Oracle: RFC 9113's
+  framing rules restated over the whole input (the preface, then
+  SETTINGS; frames up to 16 KiB; each type's stream and size rules;
+  padding and priority; header blocks joined across CONTINUATION up to
+  256 KiB; setting values; no PUSH_PROMISE; unknown types skipped). The
+  reader gives the same frames and error code whatever the chunk
+  boundaries.
+- **Header blocks** (`HpackDecoder` in `src/hpack.ts`). Oracle: an
+  independent RFC 7541 decoder (its own integer, string and table code,
+  Huffman strings decoded by prefix lookup). A separate property encodes
+  random octets with an encoder written from the code table and checks
+  they decode back.
+- **RPC messages** (`MessageFramer`, `readIncoming` in `src/capnp.ts` and
+  `src/rpc.ts`). The framer and reader give the same answer whatever the
+  chunk boundaries, fail only with `CapnpError`, and the message kind
+  matches its union tag read straight from the bytes. The connector's own
+  messages and the edge's answers are checked byte for byte against the
+  reference encoder in the unit tests.
+- **Request fields** (`requestHead` in `src/agent.ts`). Oracle: RFC 9113
+  section 8.3 restated (pseudo-fields first, `:method` and `:path` once,
+  a token method, an origin-form path, lowercase names, no CR, LF or NUL
+  in values).
+- **WebSocket frames** (`FrameDecoder` in `src/ws.ts`). As in the ngrok
+  guest.
 
 ### Webhook notifier guest
 

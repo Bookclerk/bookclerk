@@ -36,6 +36,7 @@ import type {
   Explicitness,
   OfferedCodec,
   OfferedAacProfile,
+  InvocationPurpose,
   RemoteMedia,
   MetadataField,
   NotificationSeverity,
@@ -44,6 +45,7 @@ import type {
   NotifyDestinationKind,
   AiTask,
   AiTextRole,
+  ProvisionGrantKind,
   DbType,
   DbStatementKind,
   DbResultSelection,
@@ -75,6 +77,7 @@ export type {
   Explicitness,
   OfferedCodec,
   OfferedAacProfile,
+  InvocationPurpose,
   RemoteMedia,
   MetadataField,
   NotificationSeverity,
@@ -83,6 +86,7 @@ export type {
   NotifyDestinationKind,
   AiTask,
   AiTextRole,
+  ProvisionGrantKind,
   DbType,
   DbStatementKind,
   DbResultSelection,
@@ -767,6 +771,11 @@ export interface Entrypoints {
    * Null when the guest does not export this capability.
    */
   webhookHandler?: WebhookHandler | null;
+  /**
+   * `provisioning` entrypoint: guided setup.
+   * Null when the guest does not export this capability.
+   */
+  provisioning?: Provisioning | null;
 }
 
 /** Result union of `PluginWorker.open`. */
@@ -1695,6 +1704,34 @@ export interface Ingress {
    * @returns {@link EmptyReply}
    */
   stop(): Promise<EmptyReply>;
+}
+
+/**
+ * Guided setup (`Entrypoints.provisioning`). The host collects a
+ * short-lived grant from the operator (a pasted API token, or an OAuth access
+ * token), opens the instance with `Invocation.purpose = provision` and hands
+ * the grant over. The plugin creates what it needs at the provider and
+ * returns settings and narrowly scoped credentials; the host checks them
+ * against `[provisioning] outputs` and the pinned settings schema, writes the
+ * settings, seals the credentials and drops the grant.
+ */
+export interface Provisioning {
+  /**
+   * Create (or, when `CONFIG` holds earlier outputs, update or rotate) what
+   * the instance needs.
+   *
+   * @param request - The grant and the operator's choices.
+   * @returns {@link ProvisionReply}
+   */
+  provision(request: ProvisionRequest): Promise<ProvisionReply>;
+  /**
+   * Remove what `provision` created. Removing what is already gone is not an
+   * error.
+   *
+   * @param request - A grant, or none to use stored secrets.
+   * @returns {@link EmptyReply}
+   */
+  deprovision(request: DeprovisionRequest): Promise<EmptyReply>;
 }
 
 /**
@@ -3588,6 +3625,13 @@ export interface Invocation {
   correlationId: string;
   /** Id of the event or command that caused this invocation; empty when none. */
   causationId: string;
+  /**
+   * What the host opens the entrypoints for. `provision` opens an instance
+   * that may not be configured yet: `CONFIG` and `SECRETS` hold what is
+   * stored so far, required settings may be missing, and the host calls
+   * only `Entrypoints.provisioning`.
+   */
+  purpose: InvocationPurpose;
 }
 
 /** One message on a Workers-style queue, delivered by `QueueConsumer.queue`. */
@@ -4600,6 +4644,15 @@ export interface SocketConnectRequest {
    * (an ngrok or Cloudflare Tunnel agent endpoint). Empty uses Mozilla's.
    */
   trustAnchors: Uint8Array[];
+  /**
+   * `tls://` only: the DNS name to send as SNI and to check the server's
+   * certificate against, for an endpoint reached at one name that answers
+   * for another (a Cloudflare Tunnel edge, dialed at `region1.v2.argotunnel.com`
+   * and serving `h2.cftunnel.com`). It must be on a `tcp` grant for the
+   * URL's port too, so it can't route past the grant by name. At most
+   * `maxSocketServerNameBytes`; empty uses the URL's host.
+   */
+  serverName: string;
 }
 
 /** One open host-brokered socket. */
@@ -4858,6 +4911,73 @@ export interface WebhookDelivered {
   name: string;
   /** Deliveries waiting for this webhook when the host called. */
   waiting: number;
+}
+
+/**
+ * A short-lived credential for one guided setup run. The host never stores
+ * or logs it; the plugin uses it only during the call.
+ */
+export interface ProvisionGrant {
+  /** Kind of grant. */
+  kind: ProvisionGrantKind;
+  /**
+   * The token; empty for `none`. At most `maxProvisionTokenBytes`.
+   * Omitted when absent (wire zero value).
+   */
+  token?: string;
+  /**
+   * When the token expires (UTC Unix milliseconds); zero when unknown or it
+   * does not expire.
+   * Omitted when absent (wire zero value).
+   */
+  expiresAtUnixMs?: number;
+}
+
+/** Arguments of `Provisioning.provision`. */
+export interface ProvisionRequest {
+  /** The operator's grant; never `none`. */
+  grant: ProvisionGrant;
+  /**
+   * The operator's choices as a JSON object keyed by `[provisioning] inputs`
+   * setting keys (`{"bucket": "books"}`); `{}` when none were asked for.
+   */
+  inputsJson: string;
+}
+
+/** One credential a guided setup returns for the host to seal. */
+export interface ProvisionedSecret {
+  /** A `secret` setting key listed in `[provisioning] outputs`. */
+  key: string;
+  /** The credential, at most `maxProvisionSecretBytes`. */
+  value: string;
+}
+
+/** Success payload of `Provisioning.provision`. */
+export interface Provisioned {
+  /**
+   * Non-secret settings to store, as a JSON object keyed by setting keys
+   * listed in `[provisioning] outputs`; at most `maxProvisionSettingsBytes`.
+   */
+  settingsJson: string;
+  /** Credentials to seal; each key at most once. */
+  secrets: ProvisionedSecret[];
+  /**
+   * Short lines for the setup screen ("Created bucket books"), at most
+   * `maxProvisionSummaryLines` of `maxProvisionSummaryLineBytes`. Never a
+   * credential.
+   */
+  summary: string[];
+}
+
+/** Result union of `Provisioning.provision`. */
+export type ProvisionReply =
+  | { kind: "ok"; value: Provisioned } // Success: what to store.
+  | { kind: "err"; value: PluginError }; // Typed failure: `invalid_params` for a refused choice, `unauthorized` or `forbidden` when the grant cannot do what is needed.
+
+/** Arguments of `Provisioning.deprovision`. */
+export interface DeprovisionRequest {
+  /** The operator's grant, or kind `none` to use the stored secrets. */
+  grant: ProvisionGrant;
 }
 
 /** One typed SQL cell or bind parameter. */

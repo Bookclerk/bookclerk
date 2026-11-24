@@ -72,6 +72,7 @@ var NOTIFICATION_ALERT_ACTIONS = ["none", "trigger", "resolve"];
 var NOTIFY_DESTINATION_KINDS = ["channel", "personal"];
 var AI_TASKS = ["textEmbeddings"];
 var AI_TEXT_ROLES = ["document", "query"];
+var PROVISION_GRANT_KINDS = ["none", "apiToken", "oauthAccessToken"];
 var DB_TYPES = ["unspecified", "bool", "int64", "float64", "text", "bytes"];
 var DB_STATEMENT_KINDS = ["execute", "select", "returning"];
 var DB_RESULT_SELECTIONS = ["discard", "affectedRows", "rows"];
@@ -6245,6 +6246,136 @@ var WebhookDeliveredCodec = {
     };
   }
 };
+var ProvisionGrantCodec = {
+  dataWords: 2,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setUint16(0, ord(PROVISION_GRANT_KINDS, v.kind ?? PROVISION_GRANT_KINDS[0], "ProvisionGrantKind"));
+    if (v.token !== void 0) {
+      s.setText(0, v.token ?? "");
+    }
+    if (v.expiresAtUnixMs !== void 0) {
+      s.setUint64(1, BigInt(v.expiresAtUnixMs ?? 0));
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const out = {
+      kind: fromOrd(PROVISION_GRANT_KINDS, s.getUint16(0), "ProvisionGrantKind")
+    };
+    const tokenValue = s.getText(0);
+    if (!(tokenValue === "")) {
+      out.token = tokenValue;
+    }
+    const expiresAtUnixMsValue = Number(s.getUint64(1));
+    if (!(expiresAtUnixMsValue === 0)) {
+      out.expiresAtUnixMs = expiresAtUnixMsValue;
+    }
+    return out;
+  }
+};
+var ProvisionRequestCodec = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    if (v.grant != null) {
+      ProvisionGrantCodec.write(s.initStruct(0, 2, 1), v.grant, caps);
+    }
+    s.setText(1, v.inputsJson ?? "");
+  },
+  read(s, caps) {
+    return {
+      grant: ProvisionGrantCodec.read(s.getStruct(0, 2, 1), caps),
+      inputsJson: s.getText(1)
+    };
+  }
+};
+var ProvisionedSecretCodec = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.key ?? "");
+    s.setText(1, v.value ?? "");
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      key: s.getText(0),
+      value: s.getText(1)
+    };
+  }
+};
+var ProvisionedCodec = {
+  dataWords: 0,
+  pointerCount: 3,
+  write(s, v, caps) {
+    s.setText(0, v.settingsJson ?? "");
+    {
+      const list = v.secrets ?? [];
+      const items = s.initStructList(1, list.length, 0, 2);
+      for (let i = 0; i < items.length; i++) {
+        ProvisionedSecretCodec.write(items[i], list[i], caps);
+      }
+    }
+    s.setTextList(2, v.summary ?? []);
+  },
+  read(s, caps) {
+    return {
+      settingsJson: s.getText(0),
+      secrets: s.getStructList(1, 0, 2).map((item) => ProvisionedSecretCodec.read(item, caps)),
+      summary: s.getTextList(2)
+    };
+  }
+};
+var ProvisionReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          ProvisionedCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("ProvisionReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: ProvisionedCodec.read(s.getStruct(0, 0, 3), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("ProvisionReply", disc);
+    }
+  }
+};
+var DeprovisionRequestCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.grant != null) {
+      ProvisionGrantCodec.write(s.initStruct(0, 2, 1), v.grant, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      grant: ProvisionGrantCodec.read(s.getStruct(0, 2, 1), caps)
+    };
+  }
+};
 var DbValueCodec = {
   dataWords: 2,
   pointerCount: 1,
@@ -7935,6 +8066,62 @@ var IngressStopParamsCodec = {
   }
 };
 var IngressStopResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var ProvisioningProvisionParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.request != null) {
+      ProvisionRequestCodec.write(s.initStruct(0, 0, 2), v.request, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      request: ProvisionRequestCodec.read(s.getStruct(0, 0, 2), caps)
+    };
+  }
+};
+var ProvisioningProvisionResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      ProvisionReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: ProvisionReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var ProvisioningDeprovisionParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.request != null) {
+      DeprovisionRequestCodec.write(s.initStruct(0, 0, 1), v.request, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      request: DeprovisionRequestCodec.read(s.getStruct(0, 0, 1), caps)
+    };
+  }
+};
+var ProvisioningDeprovisionResultsCodec = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
@@ -11203,6 +11390,17 @@ var okAiModels = (value) => {
   }
   return okValue({ models: v.models });
 };
+var okProvisioned = (value) => {
+  const out = value ?? {};
+  return okValue({
+    settingsJson: typeof out.settingsJson === "string" ? out.settingsJson : "{}",
+    secrets: asList(out.secrets).map((secret) => ({
+      key: String(secret.key ?? ""),
+      value: String(secret.value ?? "")
+    })),
+    summary: asList(out.summary).map(String)
+  });
+};
 var okAiRun = (value) => {
   const out = (value ?? {}).output?.textEmbeddings;
   if (!out || !(out.vectors instanceof Uint8Array)) {
@@ -11665,6 +11863,22 @@ var METHODS = {
     models: withoutParams("ai", "models", AiModelsModelsParamsCodec, AiModelsModelsResultsCodec, okAiModels),
     run: withParams("ai", "run", AiModelsRunParamsCodec, AiModelsRunResultsCodec, okAiRun)
   },
+  Provisioning: {
+    provision: spec({
+      params: ProvisioningProvisionParamsCodec,
+      results: ProvisioningProvisionResultsCodec,
+      stub: "provisioning",
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "provision", [p.request ?? {}]),
+      ok: okProvisioned
+    }),
+    deprovision: spec({
+      params: ProvisioningDeprovisionParamsCodec,
+      results: ProvisioningDeprovisionResultsCodec,
+      stub: "provisioning",
+      call: (s, p, cx) => named(s, cx.host.bindContext(cx.ctx), "deprovision", [p.request ?? {}]),
+      ok: okEmpty
+    })
+  },
   Notifier: {
     health: withoutParams("notifier", "health", NotifierHealthParamsCodec, NotifierHealthResultsCodec, okHealth),
     send: withParams("notifier", "send", NotifierSendParamsCodec, NotifierSendResultsCodec, okNotifySent),
@@ -12050,7 +12264,8 @@ function connectBody(url, options) {
       response: routeFrame(pair.response)
     })),
     attachment: toBase64(encodeAttachment(options?.attachment)),
-    trustAnchors: (options?.trustAnchors ?? []).map((anchor) => typeof anchor === "string" ? pemBody(anchor) : toBase64(anchor))
+    trustAnchors: (options?.trustAnchors ?? []).map((anchor) => typeof anchor === "string" ? pemBody(anchor) : toBase64(anchor)),
+    serverName: String(options?.serverName ?? "")
   };
 }
 function pemBody(pem) {
@@ -12888,7 +13103,8 @@ function invocationOf(context) {
     accountId: String(inv.accountId ?? ""),
     deadlineUnixMs: Number(inv.deadlineUnixMs ?? 0) || 0,
     correlationId: String(inv.correlationId ?? ""),
-    causationId: String(inv.causationId ?? "")
+    causationId: String(inv.causationId ?? ""),
+    purpose: inv.purpose === "provision" ? "provision" : "serve"
   });
 }
 function unixMs(value) {
@@ -14267,6 +14483,40 @@ var AiEntrypoint = class extends NamedEntrypoint {
     return Promise.reject(unsupported("run"));
   }
 };
+var ProvisioningEntrypoint = class extends NamedEntrypoint {
+  static bookclerkMethods = Object.freeze(["provision", "deprovision"]);
+  /**
+   * Creates (or updates) what the instance needs.
+   *
+   * @param request - The operator's grant and choices (`inputsJson`, a JSON
+   *   object keyed by `[provisioning] inputs`).
+   * @returns Settings to store (`settingsJson`), credentials to seal and
+   *   summary lines for the setup screen; see {@link provisioned}.
+   */
+  provision(request) {
+    void request;
+    return Promise.reject(unsupported("provision"));
+  }
+  /**
+   * Removes what `provision` created. Removing what is already gone is not
+   * an error.
+   *
+   * @param request - The operator's grant, or kind `none` to use the stored
+   *   secrets.
+   * @returns Resolves once the resources are gone.
+   */
+  deprovision(request) {
+    void request;
+    return Promise.reject(unsupported("deprovision"));
+  }
+};
+function provisioned(answer) {
+  return {
+    settingsJson: JSON.stringify(answer.settings ?? {}),
+    secrets: Object.entries(answer.secrets ?? {}).map(([key, value]) => ({ key, value })),
+    summary: answer.summary ?? []
+  };
+}
 var NotifierEntrypoint = class extends NamedEntrypoint {
   static bookclerkMethods = Object.freeze(["health", "send", "validateDestination"]);
   /**
@@ -14342,7 +14592,8 @@ var ENTRYPOINT_BINDINGS = Object.freeze({
   metadataFiles: "PLUGIN_METADATA_FILES",
   notifier: "PLUGIN_NOTIFIER",
   ingress: "PLUGIN_INGRESS",
-  ai: "PLUGIN_AI"
+  ai: "PLUGIN_AI",
+  provisioning: "PLUGIN_PROVISIONING"
 });
 var ENTRYPOINT_CLASSES = Object.freeze({
   storefront: "Storefront",
@@ -14356,7 +14607,8 @@ var ENTRYPOINT_CLASSES = Object.freeze({
   metadataFiles: "MetadataFiles",
   notifier: "Notifier",
   ingress: "Ingress",
-  ai: "Ai"
+  ai: "Ai",
+  provisioning: "Provisioning"
 });
 function exactLengthBody(body, expected) {
   if (body == null || expected == null || !Number.isFinite(expected)) {
@@ -16106,6 +16358,7 @@ export {
   PRODUCT_API_VERSION,
   PluginError,
   ProgressSink,
+  ProvisioningEntrypoint,
   QueueBatch,
   QueueMessage,
   RemoteLibraryEntrypoint,
@@ -16146,6 +16399,7 @@ export {
   jsonPayload,
   packEmbeddingVectors,
   parseDbValue,
+  provisioned,
   queueBatchResults,
   rawStreamCeiling,
   requirePluginMigrationRegistration,

@@ -3,7 +3,7 @@
 //! Each submodule exposes a single [`NAME`](health::NAME) constant equal to
 //! the corresponding `ContentSource` / `RemoteLibrary` / `Oidc` /
 //! `MetadataProvider` / `CoverFetcher` / `MetadataFiles` / `Notifier` /
-//! `NotificationRaiser` / `AiModels` / `AiRunner` / `Cli` /
+//! `NotificationRaiser` / `AiModels` / `AiRunner` / `Provisioning` / `Cli` /
 //! `EventConsumer` / `EventPublisher` / `QueueConsumer` / `QueueProducer` /
 //! `PluginWorker` method in
 //! `schema/plugin.capnp`. Prefer these constants over string literals when
@@ -58,6 +58,8 @@ pub const METHOD_NAMES: &[&str] = &[
     raise::NAME,
     models::NAME,
     run::NAME,
+    provision::NAME,
+    deprovision::NAME,
     put::NAME,
     get::NAME,
     exists::NAME,
@@ -281,6 +283,24 @@ pub mod models {
 pub mod run {
     /// Wire method name `"run"`.
     pub const NAME: &str = "run";
+}
+
+/// Run a guided setup with the operator's grant (Cap'n Proto
+/// `Provisioning.provision`).
+///
+/// Params: [`crate::ProvisionRequest`]. Result: [`crate::Provisioned`].
+pub mod provision {
+    /// Wire method name `"provision"`.
+    pub const NAME: &str = "provision";
+}
+
+/// Remove what a guided setup created (Cap'n Proto
+/// `Provisioning.deprovision`).
+///
+/// Params: [`crate::DeprovisionRequest`].
+pub mod deprovision {
+    /// Wire method name `"deprovision"`.
+    pub const NAME: &str = "deprovision";
 }
 
 /// Plugin-provided OIDC client templates (Cap'n Proto `Oidc.clients`).

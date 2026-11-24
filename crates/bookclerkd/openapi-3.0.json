@@ -8816,6 +8816,478 @@
         "x-bookclerk-access": "The operator (token or session) only."
       }
     },
+    "/api/config/plugin-instances/{id}/provision": {
+      "post": {
+        "tags": [
+          "Plugins"
+        ],
+        "summary": "`POST /api/config/plugin-instances/{id}/provision`: runs the plugin's\nguided setup with the operator's token and stores what it returns.",
+        "description": "Operator principal only. The plugin must be installed on this server.\nThe token is used for this run only: it is never stored, logged or\nechoed back. The plugin runs under its normal grant, network included.\nIts settings and credentials are checked against `[provisioning]\noutputs` and the pinned schema, then written with the inputs as one\nrevision; the credentials are sealed. A running instance picks up the\nnew revision as it does any configuration change.",
+        "operationId": "post_plugin_instance_provision",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin instance id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProvisionPluginInstance"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The document after the run.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginInstanceProvisioned"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body, the token or an input is invalid. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "invalid token: the token is empty"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such instance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`expected_revision` is not current, the plugin offers no guided setup, or it is not installed here.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "current_revision": 7,
+                  "error": "revision_conflict"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The plugin refused the run: a choice it cannot honour, or a token without the permissions it needs. As `text/plain`, when the JSON does not fit the body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the plugin refused (forbidden): the token cannot create R2 buckets"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `expected_revision` at line 1 column 2"
+              }
+            }
+          },
+          "502": {
+            "description": "The plugin could not run, or its answer broke the provisioning contract.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the plugin's answer was refused: setting `region` is not a declared output"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator (token or session) only."
+      }
+    },
+    "/api/config/plugin-instances/{id}/deprovision": {
+      "post": {
+        "tags": [
+          "Plugins"
+        ],
+        "summary": "`POST /api/config/plugin-instances/{id}/deprovision`: asks the plugin to\nremove what its guided setup created, before the instance is deleted.",
+        "description": "Operator principal only. The plugin must be installed on this server and\nset `[provisioning] deprovision = true`. Without a grant it uses its\nstored credentials; a plugin whose credentials cannot remove what it made\nrefuses with `unauthorized`, and the operator retries with a token. The\ninstance's settings are left as they are.",
+        "operationId": "post_plugin_instance_deprovision",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin instance id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeprovisionPluginInstance"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What the guided setup created is gone.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginInstanceDeprovisioned"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body or the token is invalid. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "invalid token: the token holds a space or a control character"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role does not allow this route. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such instance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The plugin does not remove what it creates, or it is not installed here.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "plugin `r2` does not remove what its guided setup creates"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The plugin refused; with `unauthorized`, retry with a token. As `text/plain`, when the JSON does not fit the body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the plugin refused (unauthorized): a token is needed to delete the bucket's API token"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: invalid type: null, expected struct DeprovisionPluginInstance at line 1 column 4"
+              }
+            }
+          },
+          "502": {
+            "description": "The plugin could not run.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the guided setup could not run: the plugin did not start"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator (token or session) only."
+      }
+    },
+    "/api/config/plugin-instances/{id}/provisioning": {
+      "get": {
+        "tags": [
+          "Plugins"
+        ],
+        "summary": "`GET /api/config/plugin-instances/{id}/provisioning`: whether the\ninstance's plugin offers a guided setup here, and what it asks for.",
+        "description": "Read from the plugin installed on this server, since the guided setup\nruns where the plugin is.",
+        "operationId": "get_plugin_instance_provisioning",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin instance id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The plugin's guided setup, if it offers one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginInstanceProvisioning"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role does not allow this route.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such instance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "plugin instance 3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b not found"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The plugin is not installed on this server.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "plugin r2 is not installed on this server; run the guided setup on a server that has it"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator (token or session) only."
+      }
+    },
     "/api/config/plugin-instances/{id}/filter": {
       "get": {
         "tags": [
@@ -28053,6 +28525,20 @@
             }
           },
           {
+            "name": "search",
+            "in": "query",
+            "description": "How `q` is matched (default `words`). `meaning` needs the library's\nembedding model on the node that answers and the library embedded\nwith it (`GET /api/library/works/meaning` says whether it is\nready); `q` is then plain text, not a Lucene query.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "How `q` is matched against the library's works.",
+              "enum": [
+                "words",
+                "meaning"
+              ]
+            }
+          },
+          {
             "name": "sort",
             "in": "query",
             "description": "Order of the page (default `title`).",
@@ -28296,6 +28782,324 @@
                       "error": "the search index is being built; try again shortly"
                     }
                   },
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          },
+          {
+            "clerkToken": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
+      }
+    },
+    "/api/library/works/meaning": {
+      "get": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Says whether search by meaning and similar works are ready.",
+        "description": "A client asks before it offers either. `search` is about the node\nthat answers: it needs the library's embedding model there.",
+        "operationId": "get_meaning_status",
+        "responses": {
+          "200": {
+            "description": "What is ready.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeaningStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "clerk_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "clerk_sign_in_unavailable",
+                      "message": "This library does not accept clerks on this address.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          },
+          {
+            "clerkToken": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any library session, including a library card (refused with 403 `transport_insecure` off loopback without TLS, or `clerk_sign_in_unavailable` where remote installs are not served)."
+      }
+    },
+    "/api/library/works/{id}/similar": {
+      "get": {
+        "tags": [
+          "Library"
+        ],
+        "summary": "Lists the held works most like one work.",
+        "description": "Likeness is how close the works' descriptions are in meaning, as the\nlibrary's embedding model reads them. The caller sees only works\ninside their own scope.",
+        "operationId": "list_similar_works",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Work id (a podcast's show).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Most works to list, clamped to 1–40 (default 12).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The similar works, or why there are none.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimilarWorks"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the credential is wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A library card sent over plain HTTP from another machine gets `transport_insecure`. A library card sent where the node API is not mounted gets `clerk_sign_in_unavailable`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "clerk_sign_in_unavailable": {
+                    "summary": "A library card on a listener without the node API",
+                    "value": {
+                      "error": "clerk_sign_in_unavailable",
+                      "message": "This library does not accept clerks on this address.",
+                      "status": 403
+                    }
+                  },
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "transport_insecure": {
+                    "summary": "A library card over plain HTTP from another machine",
+                    "value": {
+                      "error": "transport_insecure",
+                      "message": "A library card is only accepted over HTTPS, or on this machine.",
+                      "status": 403
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "work 0b8f6a52-3c1d-4e2f-9a7b-6c5d4e3f2a1b not found"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
                   "session_check_unavailable": {
                     "summary": "The sign-in could not be checked in time",
                     "value": {
@@ -58020,6 +58824,40 @@
         ],
         "description": "`PUT /api/config/plugin-instances/{id}/deployments/{node_id}` `409` body: the two conflicts a deployment write can hit."
       },
+      "DeprovisionPluginInstance": {
+        "type": "object",
+        "description": "`POST /api/config/plugin-instances/{id}/deprovision` body.",
+        "properties": {
+          "grant": {
+            "description": "A fresh grant, when the plugin's stored credentials cannot remove\nwhat it created; omitted to use them.",
+            "oneOf": [
+              {
+                "type": "object",
+                "description": "An API token the operator created at the provider. It is used for\nthis one run and never stored, logged or echoed back.",
+                "required": [
+                  "token",
+                  "kind"
+                ],
+                "properties": {
+                  "token": {
+                    "type": "string",
+                    "description": "The token text.",
+                    "example": "q9W2...redacted"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "api_token"
+                    ]
+                  }
+                }
+              }
+            ],
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "DesiredState": {
         "type": "string",
         "description": "What a deployment row asks its node to do, and who decided it.\n\nOperators write [`DesiredState::Present`] and [`DesiredState::Absent`]\n(`plugins deploy|undeploy`, the Settings switch). The placement scheduler\nwrites [`DesiredState::Placed`] and [`DesiredState::Unplaced`] for an\ninstance it owns. A node runs the instance for `present` and `placed`\nand retires it for `absent` and `unplaced`; the split only records whose\ndecision the row carries, so \"the operator turned this off\" never reads\nlike \"the scheduler put the replica elsewhere\".",
@@ -62955,6 +63793,41 @@
             "description": "Optional display label from the identity row.",
             "example": "Dana Reader",
             "nullable": true
+          }
+        }
+      },
+      "MeaningState": {
+        "type": "string",
+        "description": "Whether a way of reading the library by meaning can be used now.",
+        "enum": [
+          "ready",
+          "no_model",
+          "embedding"
+        ]
+      },
+      "MeaningStatus": {
+        "type": "object",
+        "description": "Answer of `GET /api/library/works/meaning`.",
+        "required": [
+          "search",
+          "similar"
+        ],
+        "properties": {
+          "search": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MeaningState"
+              }
+            ],
+            "description": "Whether `search=meaning` answers on this node."
+          },
+          "similar": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MeaningState"
+              }
+            ],
+            "description": "Whether `GET /api/library/works/{id}/similar` lists works."
           }
         }
       },
@@ -69435,6 +70308,168 @@
           }
         }
       },
+      "PluginInstanceDeprovisioned": {
+        "type": "object",
+        "description": "`POST /api/config/plugin-instances/{id}/deprovision` reply.",
+        "required": [
+          "plugin_instance_id",
+          "deprovisioned"
+        ],
+        "properties": {
+          "plugin_instance_id": {
+            "type": "string",
+            "description": "Instance id.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+          },
+          "deprovisioned": {
+            "type": "boolean",
+            "description": "Always true: what the guided setup created is gone.",
+            "example": true
+          }
+        }
+      },
+      "PluginInstanceProvisioned": {
+        "type": "object",
+        "description": "`POST /api/config/plugin-instances/{id}/provision` reply: the document\nafter the plugin's settings and credentials were stored.",
+        "required": [
+          "plugin_instance_id",
+          "revision",
+          "settings",
+          "secret_refs",
+          "summary"
+        ],
+        "properties": {
+          "plugin_instance_id": {
+            "type": "string",
+            "description": "Instance id.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Revision after the write.",
+            "example": 3
+          },
+          "settings": {
+            "type": "object",
+            "description": "Scalar settings now stored.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SettingValue"
+            },
+            "example": {
+              "account_id": "3f4b7e3dcab231cbfdaa90a6a28bd548",
+              "bucket": "audiobooks"
+            }
+          },
+          "secret_refs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InstanceSecretRefV1"
+            },
+            "description": "Secret refs now stored, the newly sealed credentials included."
+          },
+          "summary": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What the plugin did, for the setup screen.",
+            "example": [
+              "Created bucket audiobooks",
+              "Created an API token for the bucket"
+            ]
+          }
+        }
+      },
+      "PluginInstanceProvisioning": {
+        "type": "object",
+        "description": "`GET /api/config/plugin-instances/{id}/provisioning` body: what the\nsetup screen asks for before it runs the plugin's guided setup.",
+        "required": [
+          "plugin_instance_id"
+        ],
+        "properties": {
+          "plugin_instance_id": {
+            "type": "string",
+            "description": "Instance id.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b"
+          },
+          "provisioning": {
+            "description": "The plugin's `[provisioning]` table; absent when it offers no guided\nsetup.",
+            "type": "object",
+            "required": [
+              "provider",
+              "grants",
+              "token_permissions",
+              "inputs",
+              "outputs",
+              "deprovision"
+            ],
+            "properties": {
+              "provider": {
+                "type": "string",
+                "description": "The provider the grant is for, lowercase.",
+                "example": "cloudflare"
+              },
+              "grants": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The grants the plugin accepts, in `plugin.toml` spelling; never empty.",
+                "example": [
+                  "api_token"
+                ]
+              },
+              "token_url": {
+                "type": "string",
+                "description": "Where the operator creates a token at the provider.",
+                "example": "https://dash.cloudflare.com/profile/api-tokens",
+                "nullable": true
+              },
+              "token_permissions": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The permissions a pasted token needs, one line each.",
+                "example": [
+                  "Account > Workers R2 Storage > Edit"
+                ]
+              },
+              "inputs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Setting keys the screen asks for before running.",
+                "example": [
+                  "bucket",
+                  "jurisdiction"
+                ]
+              },
+              "outputs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Setting keys the plugin may write back.",
+                "example": [
+                  "account_id",
+                  "bucket",
+                  "access_key_id",
+                  "secret_access_key"
+                ]
+              },
+              "deprovision": {
+                "type": "boolean",
+                "description": "Whether the plugin removes what it created, which the screen offers\nbefore the instance is deleted.",
+                "example": true
+              }
+            },
+            "nullable": true
+          }
+        }
+      },
       "PluginInstanceView": {
         "type": "object",
         "description": "One plugin instance with its schema, document, and deployments.",
@@ -70946,6 +71981,141 @@
             "description": "Cursor of the next page; absent on the last.",
             "example": "MjAyNi0xMS0xOVQwOTowMjo0MSswMDowMHw1ZDJj",
             "nullable": true
+          }
+        }
+      },
+      "ProvisionGrantBody": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "An API token the operator created at the provider. It is used for\nthis one run and never stored, logged or echoed back.",
+            "required": [
+              "token",
+              "kind"
+            ],
+            "properties": {
+              "token": {
+                "type": "string",
+                "description": "The token text.",
+                "example": "q9W2...redacted"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "api_token"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "The grant an operator gives a guided setup run."
+      },
+      "ProvisionPluginInstance": {
+        "type": "object",
+        "description": "`POST /api/config/plugin-instances/{id}/provision` body.",
+        "required": [
+          "expected_revision",
+          "grant"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Revision the caller last observed; the run is refused before it\nstarts when it is not current.",
+            "example": 2
+          },
+          "grant": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProvisionGrantBody"
+              }
+            ],
+            "description": "The operator's grant for this run."
+          },
+          "inputs": {
+            "type": "object",
+            "description": "The operator's choices, keyed by `[provisioning] inputs`; they are\nstored with what the plugin returns.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SettingValue"
+            },
+            "example": {
+              "bucket": "audiobooks"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProvisioningView": {
+        "type": "object",
+        "description": "A plugin's `[provisioning]` table as the setup screen reads it.",
+        "required": [
+          "provider",
+          "grants",
+          "token_permissions",
+          "inputs",
+          "outputs",
+          "deprovision"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "description": "The provider the grant is for, lowercase.",
+            "example": "cloudflare"
+          },
+          "grants": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The grants the plugin accepts, in `plugin.toml` spelling; never empty.",
+            "example": [
+              "api_token"
+            ]
+          },
+          "token_url": {
+            "type": "string",
+            "description": "Where the operator creates a token at the provider.",
+            "example": "https://dash.cloudflare.com/profile/api-tokens",
+            "nullable": true
+          },
+          "token_permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The permissions a pasted token needs, one line each.",
+            "example": [
+              "Account > Workers R2 Storage > Edit"
+            ]
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Setting keys the screen asks for before running.",
+            "example": [
+              "bucket",
+              "jurisdiction"
+            ]
+          },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Setting keys the plugin may write back.",
+            "example": [
+              "account_id",
+              "bucket",
+              "access_key_id",
+              "secret_access_key"
+            ]
+          },
+          "deprovision": {
+            "type": "boolean",
+            "description": "Whether the plugin removes what it created, which the screen offers\nbefore the instance is deleted.",
+            "example": true
           }
         }
       },
@@ -74294,6 +75464,31 @@
             "description": "Known social preset the client may style (`google`, `github`, …), when the provider matches one.",
             "example": "google",
             "nullable": true
+          }
+        }
+      },
+      "SimilarWorks": {
+        "type": "object",
+        "description": "Answer of `GET /api/library/works/{id}/similar`.",
+        "required": [
+          "state",
+          "works"
+        ],
+        "properties": {
+          "state": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MeaningState"
+              }
+            ],
+            "description": "`ready` when `works` was looked up; otherwise why it is empty."
+          },
+          "works": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkSummaryJson"
+            },
+            "description": "The held works most like the one asked about, most alike first.\nEmpty when the work has no vector yet."
           }
         }
       },

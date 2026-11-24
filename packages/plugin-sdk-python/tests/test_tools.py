@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 from datetime import date, timedelta
 from pathlib import Path
@@ -418,6 +419,23 @@ mode = "deny"
 """
     with pytest.raises(ValueError, match="compatibility_date"):
         validate_manifest(tomllib.loads(text))
+
+
+_FMT_CORPUS = FIXTURES / "fmt-corpus"
+_FMT_CORPUS_INDEX: dict[str, str] = json.loads(
+    (_FMT_CORPUS / "index.json").read_text(encoding="utf-8")
+)
+
+
+@pytest.mark.parametrize("name", sorted(_FMT_CORPUS_INDEX))
+def test_fmt_matches_the_rust_corpus(name: str, tmp_path: Path) -> None:
+    """``fmt`` writes what the Rust formatter wrote for each first-party manifest."""
+    target = tmp_path / "plugin.toml"
+    shutil.copyfile(ROOT / _FMT_CORPUS_INDEX[name], target)
+    fmt_plugin_toml(target, check_only=False)
+    # Bytes, so a CRLF write on Windows cannot pass as the LF fixture.
+    assert target.read_bytes() == (_FMT_CORPUS / name).read_bytes()
+    assert fmt_plugin_toml(_FMT_CORPUS / name, check_only=True).startswith("ok ")
 
 
 def test_format_manifest_does_not_insert_python_flags():
@@ -1320,8 +1338,31 @@ def test_validate_accepts_and_rejects_cron_triggers():
         validate_manifest({**base, "triggers": {"crons": [5]}})
     with pytest.raises(ValueError, match="needs 5 fields"):
         validate_manifest({**base, "triggers": {"crons": ["* * * *"]}})
-    with pytest.raises(ValueError, match="is not valid cron"):
+    with pytest.raises(ValueError, match="is not recognized"):
         validate_manifest({**base, "triggers": {"crons": ["@daily * * * *"]}})
+    # The host's field bounds: minute 59 passes, 60 does not.
+    validate_manifest({**base, "triggers": {"crons": ["59 * * * *", "0 0 1-31/2 jan-dec 7"]}})
+    with pytest.raises(ValueError, match="minute value 60 is outside 0-59"):
+        validate_manifest({**base, "triggers": {"crons": ["60 * * * *"]}})
+    with pytest.raises(ValueError, match="range 5-3 is reversed"):
+        validate_manifest({**base, "triggers": {"crons": ["0 5-3 * * *"]}})
+    with pytest.raises(ValueError, match="step 0 is outside"):
+        validate_manifest({**base, "triggers": {"crons": ["*/0 * * * *"]}})
+    # Schedules decode before any rule, and the list rules run after the
+    # registry rule.
+    no_command = {k: v for k, v in base.items() if k != "command"}
+    with pytest.raises(ValueError, match="minute value 60"):
+        validate_manifest(
+            {**no_command, "entrypoints": ["cli"], "triggers": {"crons": ["60 * * * *"]}}
+        )
+    with pytest.raises(ValueError, match="cannot be combined"):
+        validate_manifest(
+            {
+                **base,
+                "entrypoints": ["storage"],
+                "triggers": {"crons": ["0 3 * * *", "0 3 * * *"]},
+            }
+        )
     with pytest.raises(ValueError, match="is duplicated"):
         validate_manifest({**base, "triggers": {"crons": ["0 * * * *", "0  *  * * *"]}})
     media = {"works": ["book"], "lists": ["audio"]}
@@ -1811,7 +1852,8 @@ def test_format_manifest_writes_the_defaults_a_manifest_leaves_out():
     consumer = parsed["events"]["consumers"][0]
     assert consumer["schema_versions"] == [1]
     assert consumer["resource_class"] == "network"
-    assert "filter" not in consumer
+    # The Rust formatter keeps an empty filter table (`Some({})`).
+    assert consumer["filter"] == {}
     assert parsed["capabilities"]["network"] == {"mode": "deny"}
     assert parsed["cli"]["commands"][0]["args"][0]["kind"] == "string"
     client = parsed["oidc"]["clients"][0]
@@ -2034,3 +2076,214 @@ def test_acquire_rejects_fields_the_host_does_not_know() -> None:
     for scalar in (False, 100, "fast", [1], date(1979, 5, 27)):
         with pytest.raises(ValueError, match=r"`\[acquire\]` must be a table"):
             validate_manifest({**base, "acquire": scalar})
+
+
+_DECODE_BASE: dict[str, Any] = {
+    "api_version": 3,
+    "id": "echo",
+    "version": "0.1.0",
+    "runtime": "native",
+    "command": "./echo",
+    "entrypoints": ["cli"],
+    "capabilities": {"network": {"mode": "deny"}},
+}
+
+
+@pytest.mark.parametrize(
+    ("label", "extra", "needle"),
+    [
+        (
+            "credentials enum",
+            {"entrypoints": ["storefront"], "credentials": "bogus"},
+            "`credentials` must be `shareable` or `single_keeper`",
+        ),
+        (
+            "tcp port range",
+            {
+                "capabilities": {
+                    "network": {
+                        "mode": "outbound",
+                        "tcp": [{"host": "example.com", "ports": [65536]}],
+                    }
+                }
+            },
+            "ports must be integers from 0 to 65535",
+        ),
+        (
+            "tcp port bool",
+            {
+                "capabilities": {
+                    "network": {
+                        "mode": "outbound",
+                        "tcp": [{"host": "example.com", "ports": [True]}],
+                    }
+                }
+            },
+            "ports must be integers from 0 to 65535",
+        ),
+        (
+            "schema version range",
+            {"events": {"consumers": [{"type": "book_added", "schema_versions": [-1]}]}},
+            "schema_versions entries must be integers",
+        ),
+        (
+            "bad cron before the registry rule",
+            {"entrypoints": ["storage"], "triggers": {"crons": ["bad"]}},
+            "5 fields",
+        ),
+        ("settings row shape", {"settings": [42]}, "row 0 must be a table"),
+        ("settings list shape", {"settings": {"key": "x"}}, "must be an array of tables"),
+        (
+            "webhook encoding",
+            {
+                "settings": [{"key": "hook_key", "type": "secret"}],
+                "webhooks": [
+                    {
+                        "name": "push",
+                        "signature": {
+                            "scheme": "hmac-sha256",
+                            "header": "x-signature",
+                            "secret_setting": "hook_key",
+                            "encoding": "base64url",
+                        },
+                    }
+                ],
+            },
+            "signature.encoding must be `hex` or `base64`",
+        ),
+    ],
+)
+def test_validate_refuses_what_the_host_cannot_decode(label: str, extra: dict, needle: str) -> None:
+    """Values the host refuses while decoding are refused by ``check`` too."""
+    from bookclerk_plugin_sdk.tools import validate_manifest
+
+    with pytest.raises(ValueError, match=None) as err:
+        validate_manifest({**_DECODE_BASE, **extra})
+    assert needle in str(err.value), (label, str(err.value))
+
+
+def test_secret_lookup_ignores_malformed_setting_keys() -> None:
+    """A list-valued setting key reaches settings validation, not a ``TypeError``."""
+    from bookclerk_plugin_sdk.tools import validate_manifest
+
+    with pytest.raises(ValueError):
+        validate_manifest({**_DECODE_BASE, "settings": [{"key": ["hook_key"], "type": "secret"}]})
+
+
+def test_long_port_and_cidr_text_is_refused_as_a_grant_error() -> None:
+    """Oversized digit runs are reported as bad grants, not int-conversion errors."""
+    from bookclerk_plugin_sdk.tools import validate_manifest
+
+    digits = "9" * 5000
+    for network in (
+        {
+            "mode": "outbound",
+            "tcp": [{"host": "example.com", "ports": [443]}],
+            "address_cidrs": [f"10.0.0.0/{digits}"],
+        },
+    ):
+        with pytest.raises(ValueError, match="invalid CIDR prefix"):
+            validate_manifest({**_DECODE_BASE, "capabilities": {"network": network}})
+    ok = {
+        "mode": "outbound",
+        "tcp": [{"host": "example.com", "ports": [443]}],
+        "address_cidrs": ["10.0.0.0/0008"],
+    }
+    validate_manifest({**_DECODE_BASE, "capabilities": {"network": ok}})
+
+
+def test_fmt_keeps_free_form_values_and_normalizes_crons() -> None:
+    """Keys needing quotes, array-of-tables rows and cron spacing survive ``fmt``."""
+    import tomllib
+
+    text = format_manifest(
+        {
+            **_DECODE_BASE,
+            "triggers": {"crons": ["0  3 * * MON"]},
+            "vars": {"key\n": "v", "rows": [{"id": 1}, {"meta": {"x": 2}}]},
+        }
+    )
+    assert 'crons = ["0 3 * * MON"]' in text
+    back = tomllib.loads(text)
+    assert back["vars"]["key\n"] == "v"
+    assert back["vars"]["rows"] == [{"id": 1}, {"meta": {"x": 2}}]
+
+
+def test_shape_rules_the_host_decodes() -> None:
+    """Wrong-shaped webhooks, headers, prefixes, columns and vars are refused."""
+    from bookclerk_plugin_sdk.tools import validate_manifest
+
+    hook = {"name": "inbound", "signature": {"scheme": "none"}}
+    cases = [
+        ({"webhooks": {}}, "`webhooks` must be an array"),
+        ({"webhooks": [{**hook, "headers": "x"}]}, "headers must be an array"),
+        (
+            {"webhooks": [{"name": "inbound", "signature": {"scheme": "none", "header": "x"}}]},
+            "does not apply to",
+        ),
+        (
+            {
+                "webhooks": [
+                    {
+                        "name": "inbound",
+                        "signature": {
+                            "scheme": "hmac-sha256",
+                            "header": "x-sig",
+                            "secret_setting": "hook_key",
+                            "algorithm": "sha1",
+                        },
+                    }
+                ]
+            },
+            "signature.algorithm is not a field",
+        ),
+        (
+            {
+                "webhooks": [
+                    {
+                        "name": "inbound",
+                        "signature": {
+                            "scheme": "hmac-sha256",
+                            "header": "x-sig",
+                            "secret_setting": "hook_key",
+                            "prefix": 123,
+                        },
+                    }
+                ],
+                "settings": [{"key": "hook_key", "label": "Key", "type": "secret"}],
+                "secrets": {},
+            },
+            "prefix must be a string",
+        ),
+        (
+            {"settings": [{"key": "rows", "label": "Rows", "type": "table", "columns": [42]}]},
+            "column 1 must be a table",
+        ),
+        (
+            {"settings": [{"key": "x", "label": "X", "type": "string", "columns": ""}]},
+            "`columns` must be an array",
+        ),
+        (
+            {"settings": [{"key": "x", "label": "X", "type": "string"}], "vars": []},
+            "requires the `[vars]` binding",
+        ),
+    ]
+    for extra, needle in cases:
+        with pytest.raises(ValueError, match=re.escape(needle)):
+            validate_manifest({**_DECODE_BASE, **extra})
+    validate_manifest({**_DECODE_BASE, "webhooks": [], "vars": {}})
+    validate_manifest(
+        {
+            **_DECODE_BASE,
+            "settings": [{"key": "x", "label": "X", "type": "string"}],
+            "vars": {},
+        }
+    )
+
+
+def test_wildcard_suffix_is_trimmed_like_the_host() -> None:
+    """``*. example.com`` normalizes to ``*.example.com`` as the host does."""
+    from bookclerk_plugin_sdk.tools import validate_manifest
+
+    network = {"mode": "outbound", "tcp": [{"host": "*. example.com", "ports": [443]}]}
+    validate_manifest({**_DECODE_BASE, "capabilities": {"network": network}})

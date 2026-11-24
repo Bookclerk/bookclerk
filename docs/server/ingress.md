@@ -161,10 +161,95 @@ lists its limits.
 > ngrok ends TLS at its edge and can read the traffic it carries:
 > sign-ins, cookies and audio.
 
+## Cloudflare Tunnel
+
+The first-party `cloudflare_tunnel` plugin serves the library on a
+hostname routed to a Cloudflare Tunnel in your Cloudflare account. It
+needs the hostname and the tunnel's token from the Cloudflare dashboard.
+No `cloudflared` program runs on your computer: the plugin connects to
+Cloudflare's edge as a tunnel connector itself, over one TLS connection
+the host holds. It is experimental.
+
+1. In the Cloudflare dashboard, create a tunnel and add a public hostname
+   to it (such as `books.example.com`). Copy the tunnel's token, the long
+   value after `cloudflared service install`.
+2. Install and approve `cloudflare_tunnel`, then set its hostname and
+   token:
+
+   ```sh
+   bookclerk plugins config set cloudflare_tunnel hostname books.example.com
+   bookclerk plugins config set cloudflare_tunnel token --secret
+   ```
+
+3. Deploy it on this computer and activate it:
+
+   ```sh
+   bookclerk plugins deploy cloudflare_tunnel
+   bookclerk ingress activate cloudflare_tunnel
+   ```
+
+The library answers at `https://<hostname>`. Every request on the
+hostname goes to the library; the tunnel's own routing rules are ignored.
+The limits are those of the ngrok plugin: one request at a time, bodies
+up to 32 MiB, responses over 4 MiB in byte ranges, and WebSocket messages
+up to 256 KiB. The plugin keeps one connection to the edge, where
+`cloudflared` keeps four. Its
+[README](../../crates/bookclerk-plugins/optional/ingress-cloudflare-tunnel/README.md)
+lists its limits.
+
+> [!WARNING]
+> Cloudflare ends TLS at its edge and can read the traffic it carries:
+> sign-ins, cookies and audio.
+
+## Cloudflare DNS
+
+The first-party `cloudflare_dns` plugin is the direct kind: dynamic DNS.
+It keeps a host name on Cloudflare DNS pointed at this computer's public
+address, and traffic comes straight to the daemon's own TLS listener, so
+TLS ends at home. It needs a domain on Cloudflare, an API token, and a
+port open at home.
+
+1. Create a Cloudflare API token with the **Zone: Zone: Read** and
+   **Zone: DNS: Edit** permissions on the domain's zone.
+2. Set up the TLS listener in `config.toml`: `[daemon.node_api]
+   mode = "acme"`, with `acme_contact` and `tls_listen`, and set
+   `integrations.public_origin` to `https://` and the host name. See
+   [Node API transport](configuration.md#node-api-transport).
+3. Forward TCP port 443 on the router to `tls_listen`.
+4. Install and approve `cloudflare_dns`, then set its host name and
+   token:
+
+   ```sh
+   bookclerk plugins config set cloudflare_dns hostname books.example.com
+   bookclerk plugins config set cloudflare_dns api_token --secret
+   ```
+
+5. Deploy it on this computer and activate it:
+
+   ```sh
+   bookclerk plugins deploy cloudflare_dns
+   bookclerk ingress activate cloudflare_dns
+   ```
+
+The plugin keeps the name's `A` record current, checking this computer's
+address every minute, and the daemon gets its certificate for the name
+over ACME. IPv6 (an `AAAA` record) is off by default, because IPv6 has no
+port forwarding: turn it on with `ipv6 true` once the daemon listens on
+port 443 itself. Its
+[README](../../crates/bookclerk-plugins/optional/ingress-cloudflare-dns/README.md)
+covers carrier-grade NAT and its other limits.
+
+> [!NOTE]
+> Traffic on a direct address reaches the TLS listener, not a relay, so
+> the exposure choice above does not apply to it: the TLS listener serves
+> the whole library, as in `acme` mode without ingress.
+
 ## The library's name
 
 `integrations.public_origin` in `config.toml` still wins when it is set.
-Leave it unset to use the ingress origin.
+Leave it unset to use a relay's origin. A direct plugin needs it set to
+the same name, because the TLS listener takes its certificate name from
+it when the daemon starts.
 
 If the active plugin later reports a different name, the library keeps
 serving under the old one and `bookclerk ingress status` shows the new
@@ -192,9 +277,9 @@ Invite links name the public origin, from the daemon and from
 
 ## Not built yet
 
-- The Cloudflare relay and ngrok are the first-party ingress plugins.
-  Cloudflare Tunnel and dynamic DNS come next, and the relay can't use a
-  custom domain yet.
+- The first-party ingress plugins are the Cloudflare relay, ngrok,
+  Cloudflare Tunnel and Cloudflare DNS. Dynamic DNS with other providers
+  comes later, and the relay can't use a custom domain yet.
 - There is no web app screen yet; use the CLI or the web API.
 
 ## Next steps

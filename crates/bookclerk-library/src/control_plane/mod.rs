@@ -209,11 +209,11 @@ pub use ingress::{
 pub use instance_config::{
     import_instance_config_if_absent, load_instance_config, parse_setting_text,
     reconcile_instance_configs_to_schema, replace_instance_config, resolve_instance_bindings,
-    seal_instance_secret, set_secret_ref, set_setting, InstanceBindingGrant,
-    InstanceConfigDocument, InstanceConfigReplace, InstanceSecretRefV1, PluginInstanceConfigV1,
-    PrunedInstanceConfig, ResolvedInstanceBindings, SettingCell, SettingValue,
-    MAX_INSTANCE_SECRET_REFS, MAX_INSTANCE_SETTINGS, MAX_INSTANCE_SETTING_BYTES,
-    PLUGIN_INSTANCE_CONFIG_SCHEMA_VERSION,
+    resolve_instance_bindings_with, seal_instance_secret, set_secret_ref, set_setting,
+    InstanceBindingGrant, InstanceConfigDocument, InstanceConfigReplace, InstanceSecretRefV1,
+    PluginInstanceConfigV1, PrunedInstanceConfig, RequiredSettings, ResolvedInstanceBindings,
+    SettingCell, SettingValue, MAX_INSTANCE_SECRET_REFS, MAX_INSTANCE_SETTINGS,
+    MAX_INSTANCE_SETTING_BYTES, PLUGIN_INSTANCE_CONFIG_SCHEMA_VERSION,
 };
 pub use instances::{
     create_node_local_instance, create_plugin_instance, default_instance_for_key,
@@ -233,8 +233,8 @@ pub use job_routing::{
     account_semaphore, claim_routed_job, class_semaphore, common_deployment_nodes,
     instance_running_on_database_node, instance_semaphore, job_permit_holder_prefix,
     job_plugin_keys, job_semaphores, job_source_plugin_key, node_can_run_job,
-    resolve_job_requirements, JobClaimFilter, JobClaimLimits, JobClaimRequest, RoutedJobClaim,
-    ACCOUNT_SEMAPHORE_LIMIT, ROUTED_CLAIM_CANDIDATES,
+    resolve_job_requirements, JobClaimFilter, JobClaimLimits, JobClaimRequest, NodeBoundKey,
+    RoutedJobClaim, ACCOUNT_SEMAPHORE_LIMIT, ROUTED_CLAIM_CANDIDATES,
 };
 pub use keeper::{
     adopt_library_sign_in, apply_keeper_update, confirmed_keeping_branch, keeper_reconcile,
@@ -280,10 +280,10 @@ pub use node_queue::{
 };
 pub use node_status::{
     instance_demand, list_node_statuses, load_node_status, next_availability, node_reservations,
-    record_deployment_reservation, record_node_heartbeat, CacheUsage, GuestReservation,
-    NodeHeartbeat, NodeSampler, NodeStatus, AVAILABILITY_FULL_PPM, AVAILABILITY_TAU,
-    DEFAULT_GUEST_CPU_MILLICORES, DEFAULT_GUEST_MEMORY_BYTES, NODE_HEARTBEAT_INTERVAL,
-    NODE_LIVE_INTERVALS,
+    record_deployment_reservation, record_node_heartbeat, BudgetShare, CacheUsage,
+    GuestReservation, NodeHeartbeat, NodeSampler, NodeStatus, AVAILABILITY_FULL_PPM,
+    AVAILABILITY_TAU, DEFAULT_GUEST_CPU_MILLICORES, DEFAULT_GUEST_MEMORY_BYTES,
+    NODE_HEARTBEAT_INTERVAL, NODE_LIVE_INTERVALS,
 };
 pub use output::{
     import_output_if_absent, is_output_setting_key, load_output, overlay_output,

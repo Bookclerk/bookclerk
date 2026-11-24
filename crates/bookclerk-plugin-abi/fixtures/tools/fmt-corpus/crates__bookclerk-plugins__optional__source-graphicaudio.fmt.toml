@@ -1,0 +1,117 @@
+api_version = 3
+id = "graphicaudio"
+name = "GraphicAudio"
+version = "0.1.0"
+logo = "https://www.google.com/s2/favicons?domain=graphicaudio.com&sz=128"
+runtime = "native"
+command = "./bookclerk-plugin-source-graphicaudio"
+entrypoints = ["storefront"]
+credentials = "shareable"
+
+[[databases]]
+binding = "SCAN_STATE"
+
+[vars]
+
+[[settings]]
+key = "access"
+label = "Access mode"
+type = "enum"
+default = "web"
+
+[[settings.values]]
+id = "web"
+label = "Web player"
+
+[[settings.values]]
+id = "zip"
+label = "ZIP download"
+
+[[settings.values]]
+id = "device"
+label = "Device stream"
+
+[[settings]]
+key = "bitrate"
+label = "Bitrate (device)"
+type = "enum"
+default = "hi"
+
+[[settings.values]]
+id = "hi"
+label = "High"
+
+[[settings.values]]
+id = "lo"
+label = "Low"
+
+[[settings]]
+key = "container"
+label = "Container (zip)"
+type = "enum"
+default = "auto"
+
+[[settings.values]]
+id = "auto"
+label = "Auto"
+
+[[settings.values]]
+id = "m4b"
+label = "M4B"
+
+[[settings.values]]
+id = "mp3"
+label = "MP3"
+
+[[settings.values]]
+id = "flac"
+label = "FLAC"
+
+[[settings]]
+key = "base_url"
+label = "Base URL"
+type = "string"
+description = "Override the GraphicAudio site origin (testing only)."
+
+[[settings]]
+key = "store_url"
+label = "Store URL"
+type = "string"
+description = "Override the GraphicAudio store origin (testing only)."
+
+[secrets]
+
+[work_fs]
+
+[media]
+works = ["book"]
+lists = ["audio"]
+fetches = ["audio"]
+
+[acquire]
+downloads_per_day = 50
+min_gap_seconds = 30
+cooldown_seconds = 3600
+
+[capabilities.network]
+mode = "outbound"
+
+[[capabilities.network.tcp]]
+host = "www.graphicaudio.net"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "media.graphicaudio.net"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "*.cloudfront.net"
+ports = [443]
+
+[capabilities.network.own_user_agent]
+hosts = [
+    "www.graphicaudio.net",
+    "media.graphicaudio.net",
+    "*.cloudfront.net",
+]
+reason = "GraphicAudio's app API expects its Android app, and its web player sign-in and streams are only tested with a browser agent."

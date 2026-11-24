@@ -1,9 +1,9 @@
 //! Destination + job-handler surface for the Cloudflare R2 guest.
 
 use bookclerk_plugin_sdk::{
-    manifest_capabilities, Bindings, Entrypoints, ExtensibleConfig, Invocation, PluginDescribe,
-    PluginError, PluginWorker, ScalarLimits, StreamCopyHandler, FEATURE_SCALAR_LIMITS,
-    FEATURE_STORAGE_COPY, FEATURE_STREAMS, PRODUCT_API_VERSION,
+    manifest_capabilities, Bindings, Entrypoints, ExtensibleConfig, Invocation, InvocationPurpose,
+    PluginDescribe, PluginError, PluginWorker, ScalarLimits, StreamCopyHandler,
+    FEATURE_SCALAR_LIMITS, FEATURE_STORAGE_COPY, FEATURE_STREAMS, PRODUCT_API_VERSION,
 };
 use bookclerk_storage::guest;
 use bookclerk_storage::s3_guest::ObjectStoreDestination;
@@ -13,6 +13,7 @@ use bookclerk_storage::{
 };
 use serde::Deserialize;
 
+use crate::provision::R2Provisioning;
 use crate::ID;
 
 /// Result alias matching the ABI crate.
@@ -217,7 +218,30 @@ impl PluginWorker for R2Root {
         })
     }
 
-    async fn open(&self, _invocation: Invocation, bindings: Bindings) -> Result<Entrypoints> {
+    async fn open(&self, invocation: Invocation, bindings: Bindings) -> Result<Entrypoints> {
+        match invocation.purpose {
+            // The instance may not be configured yet: serve only the guided
+            // setup, from what is stored so far.
+            InvocationPurpose::Provision => {
+                let config = bindings
+                    .config
+                    .json_value()
+                    .unwrap_or(serde_json::Value::Null);
+                let secrets = bindings
+                    .secrets
+                    .json_value()
+                    .unwrap_or(serde_json::Value::Null);
+                return Ok(Entrypoints {
+                    provisioning: Some(Box::new(R2Provisioning::new(
+                        crate::provision::API_BASE,
+                        config,
+                        secrets,
+                    )?)),
+                    ..Entrypoints::default()
+                });
+            }
+            InvocationPurpose::Serve => {}
+        }
         Ok(Entrypoints {
             storage: Some(Box::new(
                 destination_from(&bindings.config, &bindings.secrets).await?,

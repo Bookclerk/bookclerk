@@ -54,10 +54,10 @@ pub use catalog_search::{
     CatalogSearchHit, CatalogSearchPage, CatalogSearchPageOpts,
 };
 pub use embed::{
-    embed_dirty_works, embed_text, is_stand_in, open_embedder, prune_vectors, serving_space,
-    stand_in_space, text_for_work, text_vectors, EmbedFields, EmbedPass, Embedder, HashEmbedder,
-    SharedEmbedder, VectorSource, EMBED_PAGE_WORKS, LOCAL_HASH_DIMENSIONS, MODEL_LOCAL_HASH_V1,
-    OLD_SPACE_MAX_AGE, TEXT_VECTOR_MAX_AGE,
+    bytes_to_vector, embed_dirty_works, embed_text, is_stand_in, open_embedder, prune_vectors,
+    serving_space, stand_in_space, text_for_work, text_vectors, vector_to_bytes, EmbedFields,
+    EmbedPass, Embedder, HashEmbedder, SharedEmbedder, VectorSource, EMBED_PAGE_WORKS,
+    LOCAL_HASH_DIMENSIONS, MODEL_LOCAL_HASH_V1, OLD_SPACE_MAX_AGE, TEXT_VECTOR_MAX_AGE,
 };
 pub use error::DiscoverError;
 pub use identity::{

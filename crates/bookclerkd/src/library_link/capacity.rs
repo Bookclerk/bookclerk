@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use bookclerk_library::control_plane::{
-    LinkJobCap, NodeHeartbeat, NodeSampler, NodeStatus, DEFAULT_GUEST_CPU_MILLICORES,
+    BudgetShare, LinkJobCap, NodeHeartbeat, NodeSampler, NodeStatus, DEFAULT_GUEST_CPU_MILLICORES,
     DEFAULT_GUEST_MEMORY_BYTES,
 };
 use bookclerk_node_client::HeartbeatSource;
@@ -104,6 +104,9 @@ struct State {
     machine: usize,
     /// Jobs the branch's own workers run now.
     own_busy: usize,
+    /// This node's own budget, from its last recorded heartbeat; `None`
+    /// before the first.
+    budget: Option<BudgetShare>,
     /// Each running link's entry, by parent library id.
     links: BTreeMap<String, LinkShare>,
     /// Caps saved while their link had no entry (a client starting
@@ -193,6 +196,7 @@ impl CapacityShares {
             state: Mutex::new(State {
                 machine: SLOTS_BEFORE_FIRST_HEARTBEAT,
                 own_busy: 0,
+                budget: None,
                 links: BTreeMap::new(),
                 pending_caps: BTreeMap::new(),
             }),
@@ -280,9 +284,21 @@ impl CapacityShares {
     }
 
     /// Records this node's heartbeat as stored: its job slots
-    /// ([`machine_slots`]).
+    /// ([`machine_slots`]) and its budget, which each link's heartbeat
+    /// gives its library a share of ([`ShareSampler`]).
     pub fn record_status(&self, status: &NodeStatus) {
+        self.lock().budget = Some(BudgetShare {
+            cpu_millicores: status.cpu_budget_millicores,
+            memory_bytes: status.memory_budget_bytes,
+        });
         self.set_machine(machine_slots(status));
+    }
+
+    /// This node's budget and job slots now: the budget is `None` before
+    /// this node's first heartbeat is recorded.
+    fn budget_and_machine(&self) -> (Option<BudgetShare>, usize) {
+        let state = self.lock();
+        (state.budget, state.machine)
     }
 
     /// Takes a slot for a job the branch's own workers run, until the
@@ -306,6 +322,7 @@ impl CapacityShares {
     }
 
     /// The job slots the machine has now.
+    #[cfg(test)]
     #[must_use]
     pub fn machine(&self) -> usize {
         self.lock().machine
@@ -376,8 +393,9 @@ impl ShareSampler {
 /// The totals stay physical: the library applies its own runtime budget
 /// for this node on top (`record_node_heartbeat`), so cutting them to this
 /// node's budget here would count the budget twice. This node's budget
-/// still bounds the work: it sets the slots ([`machine_slots`]) and the
-/// claims stop at the share.
+/// still bounds the work: it sets the slots ([`machine_slots`]), the
+/// claims stop at the share, and the heartbeat carries the share of this
+/// node's budget ([`budget_share`]), which caps the library's.
 #[must_use]
 pub fn scale_heartbeat(sample: NodeHeartbeat, share: usize, machine: usize) -> NodeHeartbeat {
     let cpu = scaled(sample.cpu_millicores, share, machine);
@@ -406,12 +424,31 @@ pub fn scale_heartbeat(sample: NodeHeartbeat, share: usize, machine: usize) -> N
     }
 }
 
+/// The part of this node's `budget` a link with `share` of `machine` slots
+/// gives its library: that fraction of it, rounded down.
+///
+/// The library records the smaller of this and its own budget for the node
+/// (`record_node_heartbeat`), so a library whose budget percentage is
+/// higher than this node's own never plans more than this node budgeted.
+#[must_use]
+pub fn budget_share(budget: BudgetShare, share: usize, machine: usize) -> BudgetShare {
+    BudgetShare {
+        cpu_millicores: scaled(budget.cpu_millicores, share, machine),
+        memory_bytes: budget
+            .memory_bytes
+            .map(|value| scaled(value, share, machine)),
+    }
+}
+
 impl HeartbeatSource for ShareSampler {
     fn sample(&mut self) -> NodeHeartbeat {
         let mut sample = self.inner.sample();
         sample.public_origin = (self.public_origin)();
         let share = *self.share.borrow();
-        scale_heartbeat(sample, share, self.shares.machine())
+        let (budget, machine) = self.shares.budget_and_machine();
+        let mut scaled_sample = scale_heartbeat(sample, share, machine);
+        scaled_sample.budget_share = budget.map(|budget| budget_share(budget, share, machine));
+        scaled_sample
     }
 }
 
@@ -579,6 +616,7 @@ mod tests {
             files_dir_free_bytes: Some(5),
             cache: None,
             public_origin: None,
+            budget_share: None,
         };
         // Half the machine; the machine is mostly idle, so the library's
         // half is all free.
@@ -636,6 +674,7 @@ mod tests {
             files_dir_free_bytes: None,
             cache: None,
             public_origin: None,
+            budget_share: None,
         };
         let early = scale_heartbeat(sample, *share.borrow(), table.machine());
         assert_eq!(early.cpu_millicores, 0);
@@ -672,5 +711,44 @@ mod tests {
             sampler.sample().public_origin.as_deref(),
             Some("https://branch.example")
         );
+    }
+
+    /// Each link's heartbeat gives its library its share of this node's
+    /// own budget, so a library with a higher budget percentage cannot
+    /// plan more than this node budgeted (8,000 mc at a 40% budget is
+    /// 3,200 mc, however much a library's 80% would allow).
+    #[test]
+    fn each_link_carries_its_share_of_the_branch_budget() {
+        let files = tempfile::tempdir().expect("files");
+        let table = Arc::new(CapacityShares::new());
+        let first = table.register("c1", 1, None);
+        let second = table.register("c2", 2, None);
+        let mut sampler = ShareSampler::new(
+            NodeSampler::new(files.path()),
+            first,
+            Arc::clone(&table),
+            Box::new(|| None),
+        );
+        assert_eq!(
+            sampler.sample().budget_share,
+            None,
+            "no budget before the first beat"
+        );
+        let mut status = status(3_200, Some(8 << 30), true);
+        status.cpu_millicores = 8_000;
+        table.record_status(&status);
+        let machine = machine_slots(&status);
+        let shares = (*sampler.share.borrow(), *second.borrow());
+        assert_eq!(shares.0 + shares.1, machine);
+        let sampled = sampler.sample().budget_share.expect("a budget share");
+        let budget = BudgetShare {
+            cpu_millicores: 3_200,
+            memory_bytes: Some(8 << 30),
+        };
+        assert_eq!(sampled, budget_share(budget, shares.0, machine));
+        let other = budget_share(budget, shares.1, machine);
+        assert!(sampled.cpu_millicores + other.cpu_millicores <= 3_200);
+        assert_eq!(budget_share(budget, machine, machine), budget);
+        assert_eq!(budget_share(budget, 1, 0).cpu_millicores, 0);
     }
 }

@@ -10,7 +10,11 @@ gives you.
   [Discover and wishlist](discover.md).
 - **Library**: every book in the library, whoever bought it, once
   however many accounts or formats it has. Search by title, or by
-  `author:`, `narrator:`, `series:`, `asin:` or `isbn:`. Filter by acquire
+  `author:`, `narrator:`, `series:`, `asin:` or `isbn:`. When the library
+  has an embedding model, switch the search from **Words** to **Meaning**
+  and describe what you are after ("a slow mystery in a small town"); it
+  finds books about that, whatever words their descriptions use. Open a
+  book to see **More like this** from the library. Filter by acquire
   status, format, or one author, series, genre, narrator, publisher,
   store, your own tags or your progress, and sort by title, author,
   series, purchase date, date added or duration. Open a book to mark it

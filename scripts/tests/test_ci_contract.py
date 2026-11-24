@@ -934,6 +934,45 @@ class DraftDeferredWorkflowTests(unittest.TestCase):
         self.assertEqual(write["env"]["COVERAGE_OUTCOME"], "${{ steps.coverage.outcome }}")
         self.assertEqual(write["env"]["CONTRACT_OUTCOME"], "${{ steps.contract.outcome }}")
 
+    def test_jobs_after_carry_still_run_when_it_is_skipped(self) -> None:
+        """Every job downstream of `carry` survives `carry` being skipped.
+
+        `carry` is skipped on every event but a pull request. A job whose
+        `if` has no status function gets an implicit `success()`, which a
+        skipped ancestor fails, so the image and model pack publishing on
+        main was silently skipped. Each later job must start with
+        `!cancelled()` or `always()` and check its own needs' results.
+        """
+        wf_dir = REPO / ".github" / "workflows"
+        for name in sorted(self.CARRIED):
+            wf = yaml.safe_load((wf_dir / name).read_text(encoding="utf-8"))
+            jobs = wf["jobs"]
+            self.assertIn("pull_request", jobs["carry"]["if"])
+
+            def needs_of(job: str) -> list[str]:
+                raw = jobs[job].get("needs", [])
+                return [raw] if isinstance(raw, str) else list(raw)
+
+            downstream: set[str] = set()
+            changed = True
+            while changed:
+                changed = False
+                for job in jobs:
+                    if job not in downstream and any(n == "carry" or n in downstream for n in needs_of(job)):
+                        downstream.add(job)
+                        changed = True
+            self.assertTrue(downstream, name)
+            for job in sorted(downstream):
+                with self.subTest(workflow=name, job=job):
+                    cond = " ".join(str(jobs[job].get("if", "")).split())
+                    self.assertTrue(
+                        cond.startswith("!cancelled() &&") or cond.startswith("always() &&"),
+                        f"{name}: job {job!r} would be skipped whenever carry is: {cond!r}",
+                    )
+                    for need in needs_of(job):
+                        if need != "carry":
+                            self.assertIn(f"needs.{need}.result == 'success'", cond)
+
     def test_superseded_pull_request_runs_are_cancelled(self) -> None:
         wf_dir = REPO / ".github" / "workflows"
         osv = yaml.safe_load((wf_dir / "osv-scanner.yml").read_text(encoding="utf-8"))

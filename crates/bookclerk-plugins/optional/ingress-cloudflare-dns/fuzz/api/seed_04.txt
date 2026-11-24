@@ -1,0 +1,1 @@
+{"success":true,"result":[{"id":"0123456789abcdef0123456789abcdef","type":"A","name":"books.example.com","content":"104.16.0.1","proxied":false,"ttl":60,"comment":"Kept by Bookclerk (cloudflare_dns)"}]}

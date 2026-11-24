@@ -528,6 +528,7 @@ name = "bookclerk-discover"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bookclerk-config",
  "bookclerk-enrich",
  "bookclerk-library",
