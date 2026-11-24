@@ -1647,11 +1647,22 @@ impl JobKind {
                 payload.cron.as_deref().unwrap_or("-"),
             ),
             // One active fetch or ranking per subject: a burst of events
-            // folds into the job already queued.
-            Self::DiscoverCandidates => format!(
-                "discover_candidates:subject={}",
-                payload.subject.as_deref().unwrap_or("-")
-            ),
+            // folds into the job already queued. A fetch pinned to one
+            // storefront instance (deployed on another node than the one
+            // that ran the subject's fetch) is its own work.
+            Self::DiscoverCandidates => {
+                let subject = payload.subject.as_deref().unwrap_or("-");
+                match payload
+                    .plugin_instance_id
+                    .as_deref()
+                    .filter(|id| !id.is_empty())
+                {
+                    Some(instance) => {
+                        format!("discover_candidates:subject={subject}:instance={instance}")
+                    }
+                    None => format!("discover_candidates:subject={subject}"),
+                }
+            }
             Self::DiscoverFeed => format!(
                 "discover_feed:subject={}",
                 payload.subject.as_deref().unwrap_or("-")
@@ -3055,6 +3066,37 @@ mod wake_grant_tests {
             2,
             r#"{"source":"audible"}"#
         ));
+    }
+}
+
+#[cfg(test)]
+mod discover_dedup_tests {
+    use super::*;
+
+    #[test]
+    fn a_pinned_discover_fetch_dedups_per_instance() {
+        let payload = |instance: Option<&str>| JobPayload {
+            subject: Some(String::from("user:3")),
+            plugin_instance_id: instance.map(str::to_string),
+            ..JobPayload::default()
+        };
+        assert_eq!(
+            JobKind::DiscoverCandidates.dedup_key(&payload(None)),
+            "discover_candidates:subject=user:3"
+        );
+        // An empty pin is the subject's own fetch.
+        assert_eq!(
+            JobKind::DiscoverCandidates.dedup_key(&payload(Some(""))),
+            "discover_candidates:subject=user:3"
+        );
+        assert_eq!(
+            JobKind::DiscoverCandidates.dedup_key(&payload(Some("i1"))),
+            "discover_candidates:subject=user:3:instance=i1"
+        );
+        assert_ne!(
+            JobKind::DiscoverCandidates.dedup_key(&payload(Some("i1"))),
+            JobKind::DiscoverCandidates.dedup_key(&payload(Some("i2")))
+        );
     }
 }
 

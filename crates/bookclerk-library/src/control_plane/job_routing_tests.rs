@@ -783,3 +783,61 @@ async fn an_instance_runs_only_where_an_up_guest_has_a_live_database_node() {
         "the node's heartbeat went stale"
     );
 }
+
+/// Metadata providers are preferred for an acquire, never required: a
+/// provider that runs with the `local` output is added, so the acquire goes
+/// to a node with both; one deployed only elsewhere, or down, is left out.
+#[tokio::test]
+async fn acquires_prefer_nodes_that_run_the_metadata_providers() {
+    const PROVIDER_KEY: &str = "path:file:///tmp/audnexus#audnexus";
+    let (_dir, store, _other) = sqlite_stores().await;
+    let bound: BTreeSet<String> = [LOCAL_KEY.to_string()].into();
+    let providers: BTreeSet<String> = [PROVIDER_KEY.to_string()].into();
+    let payload = JobPayload {
+        title: Some("overlay".into()),
+        ..Default::default()
+    };
+    let requires = || async {
+        let hard = resolve_job_requirements(&store, JobKind::Acquire, &payload, &bound)
+            .await
+            .unwrap();
+        prefer_metadata_providers(&store, hard, &providers)
+            .await
+            .unwrap()
+    };
+
+    // With no output deployed, a running provider alone routes the acquire.
+    let provider = create_plugin_instance(&store, &operator(), PROVIDER_KEY, "")
+        .await
+        .unwrap();
+    deploy(&store, &provider.id, "node-b", DeploymentStatus::Healthy).await;
+    assert_eq!(requires().await, vec![provider.id.to_string()]);
+
+    // The output lives on node A only: the provider cannot join it there,
+    // so the acquire still goes where the output is, without the overlay.
+    let local = create_plugin_instance(&store, &operator(), LOCAL_KEY, "")
+        .await
+        .unwrap();
+    deploy(&store, &local.id, "node-a", DeploymentStatus::Healthy).await;
+    assert_eq!(requires().await, vec![local.id.to_string()]);
+
+    // A provider deployed beside the output but down is left out too.
+    deploy(&store, &provider.id, "node-a", DeploymentStatus::Error).await;
+    assert_eq!(requires().await, vec![local.id.to_string()]);
+
+    // Once it is up there, the acquire needs both, on node A.
+    deploy(&store, &provider.id, "node-a", DeploymentStatus::Running).await;
+    let mut expected = vec![local.id.to_string(), provider.id.to_string()];
+    expected.sort();
+    assert_eq!(requires().await, expected);
+    assert!(node_can_run_job(&store, "node-a", &expected).await.unwrap());
+
+    // No provider keys, no change.
+    let hard = vec![local.id.to_string()];
+    assert_eq!(
+        prefer_metadata_providers(&store, hard.clone(), &BTreeSet::new())
+            .await
+            .unwrap(),
+        hard
+    );
+}
