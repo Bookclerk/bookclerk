@@ -638,7 +638,6 @@ async fn delete_passkey(
     let _ = library
         .delete_elevated_operator_sessions_for_user(user.id)
         .await;
-    crate::recovery_codes::drop_without_factor(&library, user.id).await;
     Ok(Json(OkResponse::OK))
 }
 

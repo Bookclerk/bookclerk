@@ -269,7 +269,10 @@ export function AccountSettingsPanel({
 
   /** Rereads how many recovery codes are left, after a second factor changed. */
   async function refreshRecoveryCount() {
-    setRecoveryRemaining(await fetchRecoveryCodeCount().catch(() => null));
+    const remaining = await fetchRecoveryCodeCount().catch(() => null);
+    setRecoveryRemaining(remaining);
+    // Codes still on screen went with the last second factor.
+    if (remaining === 0) setShownCodes(null);
   }
 
   /** Shows a set of codes a first second factor brought, if any. */

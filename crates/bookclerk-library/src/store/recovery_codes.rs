@@ -1,6 +1,8 @@
 //! Second-factor recovery codes (`docs/adr/notifications.md` decision 8):
-//! issuing a set, reading one code's hash, and dropping the set when the
-//! account no longer has a second factor. Using a code happens inside a
+//! issuing a set and reading one code's hash. The set goes in the same
+//! write that removes the account's last second factor
+//! ([`LibraryStore::delete_webauthn_credential`],
+//! [`LibraryStore::disable_user_totp`]). Using a code happens inside a
 //! password reset's redemption
 //! ([`LibraryStore::redeem_password_reset`]).
 
@@ -179,32 +181,6 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?
             .map(|row| row.code_hash))
-    }
-
-    /// Deletes `user_id`'s recovery codes when they no longer have a second
-    /// factor, after an authenticator or passkey was removed.
-    ///
-    /// # Returns
-    ///
-    /// How many codes were deleted (none while a factor remains).
-    ///
-    /// # Errors
-    ///
-    /// An error when the write fails.
-    pub async fn drop_recovery_codes_without_factor(&self, user_id: i64) -> Result<u64> {
-        let operation_id = format!("recovery-codes-drop-{user_id}-{}", uuid::Uuid::new_v4());
-        let reply = self
-            .execute_host_batch(batch::request(
-                &operation_id,
-                vec![batch::exec(
-                    &format!(
-                        "DELETE FROM recovery_codes WHERE user_id = ? AND NOT {HAS_SECOND_FACTOR}"
-                    ),
-                    vec![batch::int(user_id), batch::int(user_id)],
-                )],
-            ))
-            .await?;
-        Ok(batch::rows_affected(&reply, 0))
     }
 
     /// Deletes the recovery codes of a user whose row is gone, after

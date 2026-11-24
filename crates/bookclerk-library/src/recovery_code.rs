@@ -53,14 +53,16 @@ impl RecoveryCode {
     /// Makes a fresh code from the operating system's random source.
     #[must_use]
     pub fn generate() -> Self {
-        let mut bytes = [0u8; SELECTOR_CHARS + SECRET_CHARS];
-        rand::rngs::OsRng.fill_bytes(&mut bytes);
+        let mut bytes = zeroize::Zeroizing::new([0u8; SELECTOR_CHARS + SECRET_CHARS]);
+        rand::rngs::OsRng.fill_bytes(bytes.as_mut());
         // 256 is a multiple of 32, so masking keeps every symbol equally
         // likely.
-        let symbols: String = bytes
-            .iter()
-            .map(|b| char::from(ALPHABET[usize::from(b & 31)]))
-            .collect();
+        let symbols: zeroize::Zeroizing<String> = zeroize::Zeroizing::new(
+            bytes
+                .iter()
+                .map(|b| char::from(ALPHABET[usize::from(b & 31)]))
+                .collect(),
+        );
         let (selector, secret) = symbols.split_at(SELECTOR_CHARS);
         Self {
             selector: selector.to_string(),

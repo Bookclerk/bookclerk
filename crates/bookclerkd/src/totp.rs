@@ -552,7 +552,6 @@ async fn disable_totp(
     let _ = library
         .insert_security_audit_event(&format!("user:{}", user.id), "totp_disable", None)
         .await;
-    crate::recovery_codes::drop_without_factor(&library, user.id).await;
     Ok(Json(crate::auth::OkResponse::OK))
 }
 

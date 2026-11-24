@@ -3341,19 +3341,39 @@ impl LibraryStore {
         Ok(())
     }
 
-    /// Delete a passkey owned by `user_id`.
+    /// Delete a passkey owned by `user_id`, and the user's recovery codes
+    /// in the same write when it was their last second factor.
+    ///
+    /// # Returns
+    ///
+    /// Whether the passkey existed.
     ///
     /// # Errors
     ///
     /// Returns an error when the operation fails.
     pub async fn delete_webauthn_credential(&self, user_id: i64, id: i64) -> Result<bool> {
-        let res = webauthn_credentials::Entity::delete_many()
-            .filter(webauthn_credentials::Column::Id.eq(id))
-            .filter(webauthn_credentials::Column::UserId.eq(user_id))
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        Ok(res.rows_affected > 0)
+        let operation_id = format!("webauthn-delete-{user_id}-{}", Uuid::new_v4());
+        let reply = self
+            .execute_host_batch(batch::request(
+                &operation_id,
+                vec![
+                    batch::exec(
+                        "DELETE FROM webauthn_credentials WHERE id = ? AND user_id = ?",
+                        vec![batch::int(id), batch::int(user_id)],
+                    ),
+                    // Recovery codes go with the last second factor, in the
+                    // same write, so no code outlives it.
+                    batch::exec(
+                        &format!(
+                            "DELETE FROM recovery_codes WHERE user_id = ? AND NOT {}",
+                            recovery_codes::HAS_SECOND_FACTOR
+                        ),
+                        vec![batch::int(user_id), batch::int(user_id)],
+                    ),
+                ],
+            ))
+            .await?;
+        Ok(batch::rows_affected(&reply, 0) > 0)
     }
 
     /// Set whether this user has a confirmed TOTP authenticator.
@@ -3456,7 +3476,8 @@ impl LibraryStore {
         Ok(())
     }
 
-    /// Delete TOTP secrets and clear `totp_enabled` in one transaction.
+    /// Delete TOTP secrets and clear `totp_enabled` in one transaction,
+    /// together with the user's recovery codes when no passkey remains.
     ///
     /// # Errors
     ///

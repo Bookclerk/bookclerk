@@ -1877,6 +1877,15 @@ fn plan_disable_user_totp(user_id: i64, now: &str) -> AtomicPlan {
                 "UPDATE users SET totp_enabled = 0, updated_at = ? WHERE id = ?",
                 vec![j_str(now), j_i64(user_id)],
             ),
+            // Recovery codes go with the last second factor, in the same
+            // write, so no code outlives it.
+            sql(
+                &format!(
+                    "DELETE FROM recovery_codes WHERE user_id = ? AND NOT {}",
+                    crate::store::recovery_codes::HAS_SECOND_FACTOR
+                ),
+                vec![j_i64(user_id), j_i64(user_id)],
+            ),
         ],
         outcome_index: 0,
         payload_index: None,

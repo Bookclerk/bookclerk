@@ -104,6 +104,19 @@ export function MfaEnrollDialog({
     }
   }
 
+  /** Finishes enrollment once the patron says the codes are saved. */
+  async function onCodesDone() {
+    setBusy(true);
+    setError(null);
+    try {
+      await onEnrolled();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not finish two-factor setup");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onLogout() {
     setBusy(true);
     setError(null);
@@ -147,7 +160,7 @@ export function MfaEnrollDialog({
         {step === "codes" ? (
           <RecoveryCodesList
             codes={recoveryCodes}
-            onDone={() => void onEnrolled()}
+            onDone={() => void onCodesDone()}
             doneLabel="I saved my codes, continue"
           />
         ) : step === "totp" && totpEnroll ? (

@@ -6,7 +6,8 @@
 //! that enrollment. They can see how many are left and make a new set,
 //! which replaces the old one. A code finishes a password reset in place
 //! of the authenticator code or passkey (`crate::password_reset`); the
-//! codes go when the account's last second factor does.
+//! codes go in the same write that removes the account's last second
+//! factor.
 
 use std::sync::Arc;
 
@@ -96,15 +97,6 @@ pub(crate) async fn issue_first_set(library: &LibraryStore, user_id: i64) -> Opt
             tracing::warn!(user_id, error = %err, "could not store recovery codes");
             None
         }
-    }
-}
-
-/// Drops a user's recovery codes after a second factor was removed, when
-/// none remains. A failure is logged: the codes then stay until the next
-/// change, and a code still asks for a password-reset link to use.
-pub(crate) async fn drop_without_factor(library: &LibraryStore, user_id: i64) {
-    if let Err(err) = library.drop_recovery_codes_without_factor(user_id).await {
-        tracing::warn!(user_id, error = %err, "could not drop recovery codes");
     }
 }
 

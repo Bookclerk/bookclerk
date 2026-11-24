@@ -131,28 +131,29 @@ async fn a_set_is_issued_only_with_a_second_factor_and_replaced_whole_under_ever
         }
         assert_eq!(audited(&store, "recovery_codes_issued").await, 2, "{name}");
 
-        // The set stays while a factor remains and goes with the last one.
-        assert_eq!(
-            store
-                .drop_recovery_codes_without_factor(user)
-                .await
-                .unwrap(),
-            0
-        );
-        let passkey = store.list_webauthn_credentials(user).await.unwrap()[0].id;
+        // The set stays while a factor remains and goes with the last one,
+        // in the same write that removes it.
+        let first_passkey = store.list_webauthn_credentials(user).await.unwrap()[0].id;
+        store
+            .insert_webauthn_credential(user, "cred-ash-spare", "{}", None)
+            .await
+            .unwrap();
         assert!(store
-            .delete_webauthn_credential(user, passkey)
+            .delete_webauthn_credential(user, first_passkey)
             .await
             .unwrap());
         assert_eq!(
-            store
-                .drop_recovery_codes_without_factor(user)
-                .await
-                .unwrap(),
+            store.count_recovery_codes(user).await.unwrap(),
             u64::try_from(RECOVERY_CODE_COUNT).unwrap(),
-            "{name}"
+            "{name}: codes went while a passkey remained"
         );
-        assert_eq!(store.count_recovery_codes(user).await.unwrap(), 0);
+        let spare = store.list_webauthn_credentials(user).await.unwrap()[0].id;
+        assert!(store.delete_webauthn_credential(user, spare).await.unwrap());
+        assert_eq!(
+            store.count_recovery_codes(user).await.unwrap(),
+            0,
+            "{name}: codes outlived the last passkey"
+        );
 
         // Deleting the user takes a set they still hold.
         store
@@ -264,6 +265,15 @@ async fn a_recovery_code_finishes_a_reset_once_and_removes_every_factor_under_ev
                 revoked_sessions: Some(0)
             }),
             "{name}"
+        );
+        let installed = store
+            .get_user_password_hash(user)
+            .await
+            .unwrap()
+            .expect("the new password is set");
+        assert!(
+            crate::verify_password(&fresh_password(), &installed).unwrap(),
+            "{name}: the recovery did not set the new password"
         );
         let lee = store.get_user(user).await.unwrap().unwrap();
         assert!(!lee.totp_enabled, "{name}: the authenticator stayed on");
