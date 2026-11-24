@@ -62,10 +62,10 @@ CI_WORKFLOW_FILE = "ci.yml"
 # The path the API reports for that workflow.
 CI_WORKFLOW_PATH = ".github/workflows/ci.yml"
 
-# Lanes pull requests may always use. With CodeQL's four slots and
-# ClusterFuzzLite's two they hold at most 36 of the 60 runners, so the merge
+# Lanes pull requests may always use. With CodeQL's seven slots and
+# ClusterFuzzLite's three they hold at most 36 of the 60 runners, so the merge
 # queue keeps 24: two merge groups' fan-outs at build concurrency 2.
-BASE_LANES = 30
+BASE_LANES = 26
 
 # Lanes lent to pull requests while the merge queue is idle, one job each:
 # with them pull requests can use all 60 runners.
