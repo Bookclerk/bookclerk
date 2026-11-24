@@ -882,7 +882,10 @@ go too, so the library picks its next keeper afresh. Writes that link a
 signed-in store account, take back a refused sign-in, or revoke a link
 are serialized per account by the `bookclerk_slots` row
 `store-account:<plugin key length>:<plugin key>:<account id>`, which is
-kept once created.
+kept once created. A patron's request for a new verification
+link is serialized the same way, by the row
+`account-mail:<kind>:<user id>`, so overlapping requests record one
+message.
 
 The library model ([ADR](../adr/library-data-model.md)) stores what the
 library holds as works, expressions and editions:
