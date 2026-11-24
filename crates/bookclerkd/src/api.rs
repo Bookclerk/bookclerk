@@ -1347,6 +1347,8 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
     groups.extend(crate::totp::route_groups());
     // Self-service password reset by account mail.
     groups.extend(crate::password_reset::route_groups());
+    // Second-factor recovery codes.
+    groups.extend(crate::recovery_codes::route_groups());
     // The player API for audiobook apps (`/player`).
     groups.extend(crate::player::route_groups());
     // The library key's recovery copy (the desktop first run, Settings).

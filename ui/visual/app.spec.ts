@@ -160,6 +160,15 @@ const PAGES: AppPage[] = [
     },
   },
   {
+    name: "settings-recovery-codes",
+    viewer: "owner",
+    path: "/settings",
+    prepare: async (page) => {
+      await page.getByRole("button", { name: "Make new codes" }).click();
+      await expect(page.getByRole("list", { name: "Recovery codes" })).toBeVisible();
+    },
+  },
+  {
     name: "settings-library-card",
     viewer: "owner",
     path: "/settings",
@@ -309,6 +318,17 @@ const PAGES: AppPage[] = [
     name: "reset-password",
     viewer: "signed-out",
     path: `/reset-password?token=${"0123456789abcdef".repeat(4)}`,
+  },
+  {
+    name: "reset-password-recovery-code",
+    viewer: "signed-out",
+    path: `/reset-password?token=${"0123456789abcdef".repeat(4)}`,
+    prepare: async (page) => {
+      await page
+        .getByRole("button", { name: "Lost your authenticator? Use a recovery code" })
+        .click();
+      await expect(page.getByLabel("Recovery code")).toBeVisible();
+    },
   },
 ];
 

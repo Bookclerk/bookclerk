@@ -1025,6 +1025,16 @@ fn the_reset_bodies_follow_their_rules() {
         finish.second_factor,
         ResetSecondFactor::Passkey { ref challenge_id, .. } if challenge_id == "c-1"
     ));
+    let finish = parse_password_reset_finish(
+        format!(r#"{{"token":"{hex}","password":"pw","recovery_code":"7k3m q9tb-2xwd hf6p"}}"#)
+            .as_bytes(),
+    )
+    .unwrap();
+    assert!(matches!(
+        finish.second_factor,
+        ResetSecondFactor::RecoveryCode(ref code)
+            if code.display().as_str() == "7K3M-Q9TB-2XWD-HF6P"
+    ));
     let long = "x".repeat(1025);
     for bad in [
         format!(r#"{{"token":"{hex}","password":"  "}}"#),
@@ -1040,6 +1050,11 @@ fn the_reset_bodies_follow_their_rules() {
         ),
         format!(
             r#"{{"token":"{hex}","password":"pw","totp_code":"123456","passkey":{{"challenge_id":"c","credential":{{}}}}}}"#
+        ),
+        format!(r#"{{"token":"{hex}","password":"pw","recovery_code":"7K3M-Q9TB-2XWD"}}"#),
+        format!(r#"{{"token":"{hex}","password":"pw","recovery_code":"7K3M-Q9TB-2XWD-HF6U"}}"#),
+        format!(
+            r#"{{"token":"{hex}","password":"pw","totp_code":"123456","recovery_code":"7K3M-Q9TB-2XWD-HF6P"}}"#
         ),
         format!(r#"{{"token":"{hex}","password":"pw","other":1}}"#),
     ] {

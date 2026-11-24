@@ -1,4 +1,5 @@
 import type { ButtonHTMLAttributes, SVGProps } from "react";
+import { KeyRound } from "lucide-react";
 import googleMark from "@/assets/sso/google.svg";
 import { Button } from "@/components/ui/button";
 import { useResolvedDark } from "@/components/ThemeProvider";
@@ -39,6 +40,15 @@ const MONO_MARKS: Record<
 };
 
 /**
+ * Shape of the Sign in with Google button in both themes, from Google's
+ * pre-approved Android + Web assets: 40px tall, 4px corners, a 1px stroke,
+ * 12px before the 20px "G", 10px between it and the label, 12px after,
+ * and the label in Google Sans Medium 14/20.
+ */
+const GOOGLE_SHAPE =
+  "h-10 gap-2.5 rounded-[4px] border px-3 font-google-sans text-sm font-medium shadow-none";
+
+/**
  * Official sign-in button chrome (fill / stroke / label) for the light SPA.
  *
  * Google: `#FFFFFF` fill, `#747775` 1px stroke, `#1F1F1F` label.
@@ -47,8 +57,7 @@ const MONO_MARKS: Record<
  * Discord: Clyde in white on Blurple `#5865F2`.
  */
 const BUTTON_CLASS_LIGHT: Record<string, string> = {
-  google:
-    "h-10 border border-[#747775] bg-white font-google-sans font-medium text-[#1F1F1F] shadow-none hover:bg-[#F2F2F2]",
+  google: `${GOOGLE_SHAPE} border-[#747775] bg-white text-[#1F1F1F] hover:bg-[#F2F2F2]`,
   apple: "h-10 border border-black bg-black font-medium text-white shadow-none hover:bg-[#1a1a1a]",
   github:
     "h-10 border border-[#1F2328] bg-[#1F2328] font-medium text-white shadow-none hover:bg-black",
@@ -59,13 +68,12 @@ const BUTTON_CLASS_LIGHT: Record<string, string> = {
 /**
  * Official sign-in button chrome when the SPA has resolved to dark.
  *
- * Google: `#131314` fill, `#8E918F` stroke, `#E3E3E3` label (G stays the 2025
- * gradient Super G on a white tile). Apple: white fill, black logo and title. GitHub: black
- * Invertocat on white. Discord: white Clyde on black.
+ * Google: `#131314` fill, `#8E918F` stroke, `#E3E3E3` label, with the
+ * full-color G directly on the fill. Apple: white fill, black logo and
+ * title. GitHub: black Invertocat on white. Discord: white Clyde on black.
  */
 const BUTTON_CLASS_DARK: Record<string, string> = {
-  google:
-    "h-10 border border-[#8E918F] bg-[#131314] font-google-sans font-medium text-[#E3E3E3] shadow-none hover:bg-[#1e1e1f]",
+  google: `${GOOGLE_SHAPE} border-[#8E918F] bg-[#131314] text-[#E3E3E3] hover:bg-[#1e1e1f]`,
   apple: "h-10 border border-white bg-white font-medium text-black shadow-none hover:bg-[#f5f5f5]",
   github: "h-10 border border-white bg-white font-medium text-black shadow-none hover:bg-[#f5f5f5]",
   discord:
@@ -128,10 +136,11 @@ export function SsoProviderMark({
   }
 
   if (brand === "google") {
-    // Light SIWG: the button is already white, so the G sits on it directly.
-    // Dark SIWG and settings cards: white tile — Identity + Partner Hub require
-    // the full-color G on white (or black), never on navy/cream/blurple.
-    if (onBrand && !dark) {
+    // On the sign-in button the G sits directly on the button fill, white
+    // or #131314, as in Google's pre-approved light and dark buttons.
+    // Settings cards: white tile, since the G may sit only on white, black
+    // or neutral, never on navy, cream or blurple.
+    if (onBrand) {
       return (
         <img src={googleMark} alt="" className={cn("h-6 w-6 shrink-0 object-contain", className)} />
       );
@@ -139,8 +148,7 @@ export function SsoProviderMark({
     return (
       <span
         className={cn(
-          "flex h-6 w-6 shrink-0 items-center justify-center rounded-[2px] bg-white",
-          onBrand ? "p-0.5" : "p-1 ring-1 ring-ink/15",
+          "flex h-6 w-6 shrink-0 items-center justify-center rounded-[2px] bg-white p-1 ring-1 ring-ink/15",
           className,
         )}
       >
@@ -220,7 +228,13 @@ export function SsoSignInButton({
       className={cn(brand ? chrome[brand] : "h-10", className)}
       {...props}
     >
-      <SsoProviderMark preset={preset} title={name} onBrand={Boolean(brand)} className="h-5 w-5" />
+      {brand ? (
+        <SsoProviderMark preset={preset} title={name} onBrand className="h-5 w-5" />
+      ) : (
+        // A generic issuer has no logo to show; a key reads as "sign in"
+        // without inventing one from its name.
+        <KeyRound aria-hidden className="h-4 w-4 shrink-0" />
+      )}
       {continueWithLabel(preset, name)}
     </Button>
   );

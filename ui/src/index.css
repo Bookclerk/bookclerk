@@ -142,12 +142,14 @@
 html {
   color-scheme: light;
   /* Under the body's gradient, and wherever a page runs past the body's
-     100% height (the gradient covers only the first screen). */
-  background-color: var(--color-paper);
+     100% height (the gradient covers only the first screen): the color
+     the gradient ends on, so a long page has no seam where it stops. */
+  background-color: #f0e6d4;
 }
 
 html.dark {
   color-scheme: dark;
+  background-color: #0d1620;
   --color-ink: #f3e5c6;
   --color-ink-soft: #d4c4a0;
   --color-paper: #121c26;

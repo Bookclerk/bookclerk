@@ -1008,7 +1008,8 @@ impl LibraryStore {
 
     /// Redeems a reset link: sets the new password, signs the account out
     /// everywhere (portal and elevated sessions, and OpenID refresh
-    /// tokens), records `password_reset_self` in the security audit log and
+    /// tokens), records `password_reset_self` in the security audit log
+    /// (`password_reset_recovery_code` when a recovery code was used) and
     /// spends the link, all in one atomic batch.
     ///
     /// The first statement claims the link: it marks the row with
@@ -1032,7 +1033,9 @@ impl LibraryStore {
     ///
     /// * `token` - The link's token.
     /// * `user_id` - The account the link was checked for.
-    /// * `factor` - The second factor the account required when checked.
+    /// * `factor` - The second factor the reset was checked with. A
+    ///   recovery code is used up, and the account's authenticator,
+    ///   passkeys and other codes are removed in the same write.
     /// * `password_hash` - The new Argon2id hash. Its salt makes it unique
     ///   to this attempt.
     /// * `now` - The current time.
@@ -1058,17 +1061,31 @@ impl LibraryStore {
         now: DateTime<Utc>,
     ) -> Result<Option<RedeemedReset>> {
         let token_hash = hash_token(token.expose());
-        let factor_sql = match factor {
-            PasswordResetFactor::None => {
+        let has_factor = "(users.totp_enabled <> 0 OR EXISTS (SELECT 1 FROM webauthn_credentials \
+                          WHERE webauthn_credentials.user_id = users.id))";
+        let (factor_sql, factor_params) = match &factor {
+            PasswordResetFactor::None => (
                 "users.totp_enabled = 0 AND NOT EXISTS (SELECT 1 FROM webauthn_credentials \
                  WHERE webauthn_credentials.user_id = users.id)"
-            }
-            PasswordResetFactor::Totp => "users.totp_enabled <> 0",
-            PasswordResetFactor::Passkey => {
+                    .to_string(),
+                Vec::new(),
+            ),
+            PasswordResetFactor::Totp => ("users.totp_enabled <> 0".to_string(), Vec::new()),
+            PasswordResetFactor::Passkey => (
                 "users.totp_enabled = 0 AND EXISTS (SELECT 1 FROM webauthn_credentials \
                  WHERE webauthn_credentials.user_id = users.id)"
-            }
+                    .to_string(),
+                Vec::new(),
+            ),
+            PasswordResetFactor::RecoveryCode { selector } => (
+                format!(
+                    "{has_factor} AND EXISTS (SELECT 1 FROM recovery_codes \
+                     WHERE recovery_codes.user_id = users.id AND recovery_codes.selector = ?)"
+                ),
+                vec![batch::text(selector)],
+            ),
         };
+        let recovering = matches!(factor, PasswordResetFactor::RecoveryCode { .. });
         let claimed = || {
             (
                 "EXISTS (SELECT 1 FROM password_resets \
@@ -1083,7 +1100,7 @@ impl LibraryStore {
         };
         // `expires_at` is always written as UTC RFC 3339, so it compares
         // as text, and the claim marker sorts before every real expiry.
-        let statements = vec![
+        let mut statements = vec![
             batch::exec(
                 &format!(
                     "UPDATE password_resets SET expires_at = ? \
@@ -1093,12 +1110,16 @@ impl LibraryStore {
                      AND users.email_verified_at IS NOT NULL AND users.status <> 'disabled' \
                      AND {factor_sql})"
                 ),
-                vec![
-                    batch::text(RESET_CLAIM),
-                    batch::text(&token_hash),
-                    batch::int(user_id),
-                    batch::text(&now.to_rfc3339()),
-                ],
+                {
+                    let mut params = vec![
+                        batch::text(RESET_CLAIM),
+                        batch::text(&token_hash),
+                        batch::int(user_id),
+                        batch::text(&now.to_rfc3339()),
+                    ];
+                    params.extend(factor_params);
+                    params
+                },
             ),
             guarded(
                 "UPDATE users SET password_hash = ?, \
@@ -1124,17 +1145,49 @@ impl LibraryStore {
                  WHERE user_id = ? AND revoked_at IS NULL",
                 vec![batch::text(&now.to_rfc3339()), batch::int(user_id)],
             ),
+        ];
+        if recovering {
+            // The patron recovered because they lost their authenticator
+            // and passkeys, so those go, and with them every recovery
+            // code, the used one included.
+            statements.extend([
+                guarded(
+                    "DELETE FROM encrypted_secrets WHERE kind = 'totp' AND account_type = 'user' \
+                     AND account_id = ?",
+                    vec![batch::text(&user_id.to_string())],
+                ),
+                guarded(
+                    "UPDATE users SET totp_enabled = 0 WHERE id = ?",
+                    vec![batch::int(user_id)],
+                ),
+                guarded(
+                    "DELETE FROM webauthn_credentials WHERE user_id = ?",
+                    vec![batch::int(user_id)],
+                ),
+                guarded(
+                    "DELETE FROM recovery_codes WHERE user_id = ?",
+                    vec![batch::int(user_id)],
+                ),
+            ]);
+        }
+        let action = if recovering {
+            "password_reset_recovery_code"
+        } else {
+            "password_reset_self"
+        };
+        statements.extend([
             // The audit row commits with the reset or not at all.
             batch::exec(
                 &format!(
                     "INSERT INTO security_audit_events (at, actor, action, detail_json) \
-                     SELECT ?, ?, 'password_reset_self', NULL WHERE {}",
+                     SELECT ?, ?, ?, NULL WHERE {}",
                     claimed().0
                 ),
                 {
                     let mut params = vec![
                         batch::text(&now.to_rfc3339()),
                         batch::text(&format!("user:{user_id}")),
+                        batch::text(action),
                     ];
                     params.extend(claimed().1);
                     params
@@ -1144,7 +1197,8 @@ impl LibraryStore {
                 "DELETE FROM password_resets WHERE token_hash = ? AND expires_at = ?",
                 vec![batch::text(&token_hash), batch::text(RESET_CLAIM)],
             ),
-        ];
+        ]);
+        let spent_index = statements.len() - 1;
         // A hash of the stored hash and the new one, so the id names this
         // attempt without repeating a stored value in logs.
         let operation_id = format!(
@@ -1153,25 +1207,33 @@ impl LibraryStore {
         );
         let request = batch::request(&operation_id, statements);
         let redeemed = |reply: &bookclerk_plugin_abi::ExecuteReply| {
-            (batch::rows_affected(reply, 6) == 1).then(|| RedeemedReset {
+            (batch::rows_affected(reply, spent_index) == 1).then(|| RedeemedReset {
                 revoked_sessions: Some(batch::rows_affected(reply, 3)),
             })
         };
-        match self.execute_host_batch(request.clone()).await {
-            Ok(reply) => Ok(redeemed(&reply)),
+        let outcome = match self.execute_host_batch(request.clone()).await {
+            Ok(reply) => redeemed(&reply),
             Err(LibraryError::Unavailable(_)) => {
                 let reply = self.execute_host_batch(request).await?;
-                if let Some(done) = redeemed(&reply) {
-                    return Ok(Some(done));
+                match redeemed(&reply) {
+                    Some(done) => Some(done),
+                    None => {
+                        let applied = self.get_user_password_hash(user_id).await?.as_deref()
+                            == Some(password_hash);
+                        applied.then_some(RedeemedReset {
+                            revoked_sessions: None,
+                        })
+                    }
                 }
-                let applied =
-                    self.get_user_password_hash(user_id).await?.as_deref() == Some(password_hash);
-                Ok(applied.then_some(RedeemedReset {
-                    revoked_sessions: None,
-                }))
             }
-            Err(err) => Err(err),
+            Err(err) => return Err(err),
+        };
+        if recovering && outcome.is_some() {
+            // The batch deleted the sealed authenticator secret, so drop
+            // any plaintext the process still caches for it.
+            crate::secrets::cache_invalidate_account(&user_id.to_string());
         }
+        Ok(outcome)
     }
 
     /// Deletes account-mail records older than

@@ -1251,6 +1251,9 @@ impl LibraryStore {
         // Until then they cannot sign in: a card is read through its
         // session row and a password through its user, both deleted.
         self.sweep_ended_player_rows().await?;
+        // And the user's recovery codes: a code is checked only alongside
+        // its user's row, which is gone, and user ids are never reused.
+        self.drop_recovery_codes_of_deleted_user(id).await?;
         // So are the pieces of a Discover feed stored in pieces: the plan
         // deleted the feed row that named them.
         self.drop_unnamed_feed_parts(&DiscoverSubject::User(id).key())
@@ -3338,19 +3341,39 @@ impl LibraryStore {
         Ok(())
     }
 
-    /// Delete a passkey owned by `user_id`.
+    /// Delete a passkey owned by `user_id`, and the user's recovery codes
+    /// in the same write when it was their last second factor.
+    ///
+    /// # Returns
+    ///
+    /// Whether the passkey existed.
     ///
     /// # Errors
     ///
     /// Returns an error when the operation fails.
     pub async fn delete_webauthn_credential(&self, user_id: i64, id: i64) -> Result<bool> {
-        let res = webauthn_credentials::Entity::delete_many()
-            .filter(webauthn_credentials::Column::Id.eq(id))
-            .filter(webauthn_credentials::Column::UserId.eq(user_id))
-            .exec(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
-        Ok(res.rows_affected > 0)
+        let operation_id = format!("webauthn-delete-{user_id}-{}", Uuid::new_v4());
+        let reply = self
+            .execute_host_batch(batch::request(
+                &operation_id,
+                vec![
+                    batch::exec(
+                        "DELETE FROM webauthn_credentials WHERE id = ? AND user_id = ?",
+                        vec![batch::int(id), batch::int(user_id)],
+                    ),
+                    // Recovery codes go with the last second factor, in the
+                    // same write, so no code outlives it.
+                    batch::exec(
+                        &format!(
+                            "DELETE FROM recovery_codes WHERE user_id = ? AND NOT {}",
+                            recovery_codes::HAS_SECOND_FACTOR
+                        ),
+                        vec![batch::int(user_id), batch::int(user_id)],
+                    ),
+                ],
+            ))
+            .await?;
+        Ok(batch::rows_affected(&reply, 0) > 0)
     }
 
     /// Set whether this user has a confirmed TOTP authenticator.
@@ -3358,35 +3381,43 @@ impl LibraryStore {
     /// # Arguments
     ///
     /// * `user_id` - First-party user id.
-    /// * `enabled` - `true` after a successful enroll confirm; `false` on disable.
+    /// * `enabled` - `true` after a successful enroll confirm; `false` on
+    ///   disable, which also drops the recovery codes when no passkey remains.
     ///
     /// # Errors
     ///
     /// Returns [`LibraryError::NotFound`] when the user does not exist.
     pub async fn set_user_totp_enabled(&self, user_id: i64, enabled: bool) -> Result<()> {
         let operation_id = format!("user-totp-enabled-{}", Uuid::new_v4());
+        let mut statements = vec![batch::exec(
+            "UPDATE users SET totp_enabled = ?, updated_at = ? WHERE id = ?",
+            vec![
+                batch::int(i64::from(enabled)),
+                batch::text(&now_str()),
+                batch::int(user_id),
+            ],
+        )];
+        if !enabled {
+            // Turning the authenticator off drops recovery codes in the
+            // same write when no passkey remains.
+            statements.push(batch::exec(
+                &format!(
+                    "DELETE FROM recovery_codes WHERE user_id = ? AND NOT {}",
+                    recovery_codes::HAS_SECOND_FACTOR
+                ),
+                vec![batch::int(user_id), batch::int(user_id)],
+            ));
+        }
+        statements.push(crate::control_plane::bump_if_any(
+            LiveTopic::Users,
+            batch::query(
+                "SELECT 1 FROM users WHERE id = ?",
+                vec![batch::int(user_id)],
+                1,
+            ),
+        ));
         let reply = self
-            .execute_host_batch(batch::request(
-                &operation_id,
-                vec![
-                    batch::exec(
-                        "UPDATE users SET totp_enabled = ?, updated_at = ? WHERE id = ?",
-                        vec![
-                            batch::int(i64::from(enabled)),
-                            batch::text(&now_str()),
-                            batch::int(user_id),
-                        ],
-                    ),
-                    crate::control_plane::bump_if_any(
-                        LiveTopic::Users,
-                        batch::query(
-                            "SELECT 1 FROM users WHERE id = ?",
-                            vec![batch::int(user_id)],
-                            1,
-                        ),
-                    ),
-                ],
-            ))
+            .execute_host_batch(batch::request(&operation_id, statements))
             .await?;
         if batch::rows_affected(&reply, 0) == 0 {
             return Err(LibraryError::missing(EntityKind::User));
@@ -3453,7 +3484,8 @@ impl LibraryStore {
         Ok(())
     }
 
-    /// Delete TOTP secrets and clear `totp_enabled` in one transaction.
+    /// Delete TOTP secrets and clear `totp_enabled` in one transaction,
+    /// together with the user's recovery codes when no passkey remains.
     ///
     /// # Errors
     ///
@@ -7232,6 +7264,7 @@ pub(crate) mod player_cards;
 pub(crate) mod player_catalog;
 pub(crate) mod plugin_databases;
 pub(crate) mod plugin_kv;
+pub(crate) mod recovery_codes;
 pub(crate) mod request_queue;
 pub(crate) mod retention;
 pub(crate) mod scan_state;
@@ -7269,6 +7302,7 @@ pub use edition_files::{
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
 pub use holdings::{HoldingSelection, NodeHoldingSelection, HOLDING_REMOVED};
 pub use notifications::{NotifyCursor, NotifyPage, NotifyQueueLimits, MAX_NOTIFY_PAGE};
+pub use recovery_codes::RecoveryCodeIssue;
 pub use request_queue::{QueueRank, StoredQueueRank, MAX_QUEUE_REASONS};
 pub use taste_titles::{apply_user_states, HeldIdentifiers};
 pub use vectors::{NewVector, SpaceCoverage, VectorSpace, VECTOR_KIND_TEXT, VECTOR_KIND_WORK};
@@ -7284,5 +7318,7 @@ mod account_mail_tests;
 mod notifications_tests;
 #[cfg(test)]
 mod paging_tests;
+#[cfg(test)]
+mod recovery_codes_tests;
 #[cfg(test)]
 mod tests;

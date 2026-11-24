@@ -102,6 +102,32 @@ is locked each answers `429`. A correct password clears the count.
 A failed password sign-in returns
 `{ error: "invalid_credentials", message: "Invalid login or password." }`.
 
+### Recovery codes
+
+Recovery codes let a patron who lost their authenticator app and
+passkeys back into their account.
+
+- Setting up a first second factor (an authenticator app or a passkey)
+  issues 10 single-use codes, shown once in the setup dialog or in
+  **Settings → Account**, with **Copy** and **Download**. A code is
+  four groups of four letters and digits, such as `7K3M-Q9TB-2XWD-HF6P`.
+- **Settings → Account → Recovery codes** shows how many are left.
+  **Make new codes** replaces the whole set; it asks for the password
+  when the sign-in is more than fifteen minutes old.
+- A code works only on a [password-reset link](notifications.md#password-reset),
+  so using one also needs the patron's verified email address. It
+  stands in for the authenticator code or passkey the link asks for.
+  Case, spaces and hyphens do not matter, and `I`, `L` and `O` are read
+  as `1`, `1` and `0`.
+- A reset finished with a code uses it up and removes the account's
+  authenticator app, passkeys and other codes, then signs every device
+  out. The patron signs in with the new password and sets up a new
+  second factor, which brings a new set of codes.
+- Removing the last authenticator or passkey removes the codes too.
+- Each code is stored as an Argon2id hash. Its first group names which
+  code to check, so a check costs one hash. Issuing a set is recorded in
+  the security audit log as `recovery_codes_issued`.
+
 ### Passkeys
 
 - Passkeys can have a name of up to 80 characters. An empty name shows as
@@ -443,6 +469,7 @@ A branch in Settings → Library has **Use a library card instead**. See
 | Bookclerk as IdP | `GET`/`POST /api/auth/oidc/clients`, `PUT`/`DELETE /api/auth/oidc/clients/{client_id}`, `POST /api/auth/oidc/clients/{client_id}/rotate-secret` (Owner or operator lists, operator changes) |
 | Passkeys | `GET`/`POST`/`DELETE /api/auth/passkeys…` (sign-in, register, elevate) |
 | TOTP | `POST /api/auth/totp/enroll/begin` and `/finish`, `GET`/`DELETE /api/auth/totp`, `POST /api/auth/totp/login` |
+| Recovery codes | `GET /api/auth/recovery-codes` (`{ remaining }`), `POST /api/auth/recovery-codes` `{ current_password? }` (a new set, `{ codes }`); TOTP enrollment and passkey registration answer `recovery_codes` for a first second factor |
 | Second-factor policy | `GET`/`PUT /api/auth/mfa-policy` `{ require_second_factor }` (Owner or operator reads, operator changes) |
 | Preferences | `GET`/`PATCH /api/preferences`: `default_view`, `disabled_shelves`, `theme` (subject `user:{id}`, `portal:{identity_id}` or `operator`) |
 | Portal | `/api/portal/*` (Accounts, invite claims) |
@@ -467,8 +494,8 @@ answer `503` with `Retry-After` and the slug `session_check_unavailable`,
 not `401`. The request is still refused, but the web app waits and asks
 again instead of showing the sign-in screen. The routes that check the
 session themselves (elevation, passwords, users, sessions, passkeys, the
-authenticator app, the profile and linked sign-in identities) answer the
-same way.
+authenticator app, recovery codes, the profile and linked sign-in
+identities) answer the same way.
 
 > [!NOTE]
 > A request that carries the operator token still goes ahead when it also
@@ -590,8 +617,9 @@ the store unlisted and logs why.
 - **Profile**: display name, email and picture. The role is shown;
   numeric user ids are not. Name and email save on blur or Enter, and
   Escape cancels.
-- **Security**: password, named passkeys, authenticator app, linked
-  identity providers, and Owner elevation.
+- **Security**: password, named passkeys, authenticator app,
+  [recovery codes](#recovery-codes), linked identity providers, and
+  Owner elevation.
 - **Player apps**: player passwords for phone and car apps, each shown
   once (see [Player apps](player-apps.md)).
 - **Sessions**: browsers, desktop windows, library cards and player apps,

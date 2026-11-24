@@ -20,6 +20,7 @@ import { SsoSignInButton } from "@/components/SsoProviderMark";
 import { AvatarPickerDialog } from "@/components/AvatarPickerDialog";
 import { CatalogListingSetting } from "@/components/CatalogListingSetting";
 import { PlayerPasswordsSection } from "@/components/PlayerPasswordsSection";
+import { RecoveryCodesList } from "@/components/RecoveryCodesList";
 import { SessionsPanel } from "@/components/SessionsPanel";
 import { TotpSetupHint } from "@/components/TotpSetupHint";
 import { UserAvatar, userDisplayLabel } from "@/components/UserAvatar";
@@ -31,6 +32,7 @@ import {
   deleteProfileAvatar,
   deleteUser,
   disableTotp,
+  fetchRecoveryCodeCount,
   elevate,
   endElevate,
   isApiError,
@@ -41,6 +43,7 @@ import {
   passkeyElevateFinish,
   passkeyRegisterBegin,
   passkeyRegisterFinish,
+  regenerateRecoveryCodes,
   patchProfile,
   requestEmailVerification,
   setPassword,
@@ -112,6 +115,8 @@ export function AccountSettingsPanel({
     qr_svg: string;
   } | null>(null);
   const [totpCode, setTotpCode] = useState("");
+  const [recoveryRemaining, setRecoveryRemaining] = useState<number | null>(null);
+  const [shownCodes, setShownCodes] = useState<string[] | null>(null);
   const [identities, setIdentities] = useState<LinkedIdentity[]>([]);
   const [oidcProviders, setOidcProviders] = useState<OidcProvider[]>([]);
   const [displayName, setDisplayName] = useState(user?.display_name ?? "");
@@ -144,13 +149,15 @@ export function AccountSettingsPanel({
     let cancelled = false;
     void (async () => {
       try {
-        const [keys, ids, oidc] = await Promise.all([
+        const [keys, ids, oidc, remaining] = await Promise.all([
           listPasskeys(),
           listOidcIdentities(),
           listOidcProviders(),
+          fetchRecoveryCodeCount().catch(() => null),
         ]);
         if (cancelled) return;
         setPasskeys(keys);
+        setRecoveryRemaining(remaining);
         setIdentities(ids);
         setOidcProviders(oidc.providers);
       } catch {
@@ -260,6 +267,33 @@ export function AccountSettingsPanel({
     }
   }
 
+  /** Rereads how many recovery codes are left, after a second factor changed. */
+  async function refreshRecoveryCount() {
+    const remaining = await fetchRecoveryCodeCount().catch(() => null);
+    setRecoveryRemaining(remaining);
+    // Codes still on screen went with the last second factor.
+    if (remaining === 0) setShownCodes(null);
+  }
+
+  /** Shows a set of codes a first second factor brought, if any. */
+  function showCodes(codes: string[] | undefined) {
+    if (codes && codes.length > 0) setShownCodes(codes);
+  }
+
+  async function onRegenerateRecoveryCodes() {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      setShownCodes(await regenerateRecoveryCodes(currentPassword || undefined));
+      await refreshRecoveryCount();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not make new recovery codes");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onRegisterPasskey() {
     setBusy(true);
     setError(null);
@@ -269,11 +303,17 @@ export function AccountSettingsPanel({
         passkeys.length > 0 ? currentPassword || undefined : undefined,
       );
       const result = await createPasskey(begin);
-      await passkeyRegisterFinish({
-        ...result,
-        name: passkeyName.trim() || undefined,
-      });
-      const [keys] = await Promise.all([listPasskeys(), onSessionChange?.()]);
+      showCodes(
+        await passkeyRegisterFinish({
+          ...result,
+          name: passkeyName.trim() || undefined,
+        }),
+      );
+      const [keys] = await Promise.all([
+        listPasskeys(),
+        onSessionChange?.(),
+        refreshRecoveryCount(),
+      ]);
       setPasskeys(keys);
       setPasskeyName("");
       setNotice("Passkey registered. You can use it to sign in if SSO is unavailable.");
@@ -289,7 +329,11 @@ export function AccountSettingsPanel({
     setError(null);
     try {
       await deletePasskey(id, currentPassword || undefined);
-      const [keys] = await Promise.all([listPasskeys(), onSessionChange?.()]);
+      const [keys] = await Promise.all([
+        listPasskeys(),
+        onSessionChange?.(),
+        refreshRecoveryCount(),
+      ]);
       setPasskeys(keys);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to remove passkey");
@@ -334,7 +378,8 @@ export function AccountSettingsPanel({
     setBusy(true);
     setError(null);
     try {
-      await totpEnrollFinish(totpCode.trim());
+      showCodes(await totpEnrollFinish(totpCode.trim()));
+      await refreshRecoveryCount();
       setTotpEnroll(null);
       setTotpCode("");
       setTotpEnabled(true);
@@ -352,6 +397,7 @@ export function AccountSettingsPanel({
     setError(null);
     try {
       await disableTotp(currentPassword || undefined);
+      await refreshRecoveryCount();
       setTotpEnabled(false);
       setTotpEnroll(null);
       setNotice("Authenticator app disabled.");
@@ -896,6 +942,41 @@ export function AccountSettingsPanel({
                   </Button>
                 )}
               </SecurityCard>
+
+              {shownCodes || totpEnabled || passkeys.length > 0 ? (
+                <SecurityCard
+                  icon={<KeyRound className="h-4 w-4" aria-hidden />}
+                  title="Recovery codes"
+                  description="Single-use codes that let you reset your password from a reset email if you lose your authenticator app and passkeys."
+                >
+                  {shownCodes ? (
+                    <RecoveryCodesList codes={shownCodes} onDone={() => setShownCodes(null)} />
+                  ) : (
+                    <>
+                      <p className="text-sm text-ink/70">
+                        {recoveryRemaining === null
+                          ? "Could not read how many codes are left."
+                          : recoveryRemaining === 0
+                            ? "You have no recovery codes left. Make a new set and keep it somewhere safe."
+                            : `${recoveryRemaining} of 10 codes left.`}
+                      </p>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        className="self-start"
+                        disabled={busy}
+                        onClick={() => void onRegenerateRecoveryCodes()}
+                      >
+                        <RefreshCw className="h-4 w-4" aria-hidden />
+                        Make new codes
+                      </Button>
+                      <p className="text-xs text-ink/60">
+                        A new set replaces the old one, so codes you saved before stop working.
+                      </p>
+                    </>
+                  )}
+                </SecurityCard>
+              ) : null}
 
               {showElevationControls ? (
                 <SecurityCard

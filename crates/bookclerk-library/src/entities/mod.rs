@@ -121,6 +121,7 @@ pub mod plugin_versions;
 pub mod plugin_webhooks;
 pub mod portal_identities;
 pub mod portal_sessions;
+pub mod recovery_codes;
 pub mod remote_plugin_consents;
 pub mod resolution_conflicts;
 pub mod resolution_overrides;

@@ -45,11 +45,12 @@ use crate::entities::{
     playback_progress, playback_sessions, player_card_tokens, player_cards, player_passwords,
     plugin_artifacts, plugin_cron_cursors, plugin_deployments, plugin_installs, plugin_instances,
     plugin_kv, plugin_placements, plugin_schemas, plugin_versions, plugin_webhooks,
-    portal_identities, portal_sessions, remote_plugin_consents, resolution_conflicts,
-    resolution_overrides, saved_filters, security_audit_events, series, series_entries,
-    store_listings, title_request_sources, title_requests, user_invites, user_preferences,
-    user_title_state, user_work_tags, users, webauthn_challenges, webauthn_credentials,
-    window_book_parts, window_books, work_identifiers, work_tags, work_text_parts, works,
+    portal_identities, portal_sessions, recovery_codes, remote_plugin_consents,
+    resolution_conflicts, resolution_overrides, saved_filters, security_audit_events, series,
+    series_entries, store_listings, title_request_sources, title_requests, user_invites,
+    user_preferences, user_title_state, user_work_tags, users, webauthn_challenges,
+    webauthn_credentials, window_book_parts, window_books, work_identifiers, work_tags,
+    work_text_parts, works,
 };
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
@@ -287,6 +288,7 @@ macro_rules! copied_entities {
         $each!(oidc_refresh_tokens);
         $each!(oidc_rp_states);
         $each!(webauthn_credentials);
+        $each!(recovery_codes);
         $each!(webauthn_challenges);
         $each!(plugin_schemas);
         $each!(plugin_versions);

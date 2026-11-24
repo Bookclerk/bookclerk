@@ -446,12 +446,12 @@ pub struct RedeemedReset {
     pub revoked_sessions: Option<u64>,
 }
 
-/// The second factor an account required when its reset was checked.
+/// The second factor a reset was checked with.
 ///
 /// Redeeming a link repeats the check inside the same atomic write, so a
 /// factor enrolled or removed after the check makes the redemption fail
 /// rather than set a password without it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PasswordResetFactor {
     /// No authenticator and no passkey.
     None,
@@ -459,6 +459,15 @@ pub enum PasswordResetFactor {
     Totp,
     /// At least one passkey and no authenticator.
     Passkey,
+    /// One of the account's recovery codes, in place of its authenticator
+    /// or passkey. The redemption uses the code up and removes the
+    /// account's authenticator, passkeys and other codes, since the patron
+    /// no longer has them.
+    RecoveryCode {
+        /// The selector of the code that was checked; it must still be
+        /// unused when the reset is redeemed.
+        selector: String,
+    },
 }
 
 /// The token of a password-reset link, as the patron's browser sends it
@@ -585,6 +594,9 @@ pub enum ResetSecondFactor {
         /// The browser's credential, a JSON object WebAuthn reads.
         credential: serde_json::Value,
     },
+    /// One of the account's recovery codes, in place of its authenticator
+    /// or passkey.
+    RecoveryCode(crate::recovery_code::RecoveryCode),
 }
 
 impl std::fmt::Debug for ResetSecondFactor {
@@ -593,6 +605,7 @@ impl std::fmt::Debug for ResetSecondFactor {
             Self::None => "None",
             Self::Totp(_) => "Totp(<redacted>)",
             Self::Passkey { .. } => "Passkey(<redacted>)",
+            Self::RecoveryCode(_) => "RecoveryCode(<redacted>)",
         })
     }
 }
@@ -636,6 +649,9 @@ struct FinishBody {
     /// authenticator app.
     #[serde(default)]
     passkey: Option<PasskeyAnswer>,
+    /// A recovery code, in place of the authenticator code or passkey.
+    #[serde(default)]
+    recovery_code: Option<String>,
 }
 
 /// A passkey assertion in a reset's finish body.
@@ -674,9 +690,11 @@ impl PasswordResetFinish {
     ///
     /// [`crate::LibraryError::Invalid`] naming the first rule the body
     /// breaks: the token is not a link token; the password is empty or
-    /// longer than [`MAX_PASSWORD_BYTES`]; `totp_code` is not six digits;
-    /// the passkey's challenge id is not 1 to 64 printable characters or
-    /// its credential is not an object; or both factors are sent.
+    /// longer than [`MAX_PASSWORD_BYTES`]; more than one second factor is
+    /// sent; `totp_code` is not six digits; the passkey's challenge id is
+    /// not 1 to 64 printable characters or its credential is not an
+    /// object; or `recovery_code` is not a recovery code
+    /// ([`crate::recovery_code::RecoveryCode::parse`]).
     pub fn validate(self) -> crate::Result<ResetFinish> {
         let body = self.0;
         let invalid = |rule: &str| crate::LibraryError::Invalid(format!("password reset: {rule}"));
@@ -688,32 +706,45 @@ impl PasswordResetFinish {
                 "password must be 1 to {MAX_PASSWORD_BYTES} bytes"
             )));
         }
-        let second_factor = match (body.totp_code, body.passkey) {
-            (Some(_), Some(_)) => return Err(invalid("send totp_code or passkey, not both")),
-            (Some(code), None) => {
-                if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
-                    return Err(invalid("totp_code must be six digits"));
-                }
-                ResetSecondFactor::Totp(code)
+        let sent = [
+            body.totp_code.is_some(),
+            body.passkey.is_some(),
+            body.recovery_code.is_some(),
+        ];
+        if sent.iter().filter(|&&s| s).count() > 1 {
+            return Err(invalid(
+                "send one of totp_code, passkey and recovery_code, not several",
+            ));
+        }
+        let second_factor = if let Some(code) = body.totp_code {
+            if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(invalid("totp_code must be six digits"));
             }
-            (None, Some(answer)) => {
-                if answer.challenge_id.is_empty()
-                    || answer.challenge_id.len() > MAX_CHALLENGE_ID_BYTES
-                    || !answer.challenge_id.bytes().all(|b| b.is_ascii_graphic())
-                {
-                    return Err(invalid(
-                        "passkey.challenge_id must be 1 to 64 printable characters",
-                    ));
-                }
-                if !answer.credential.is_object() {
-                    return Err(invalid("passkey.credential must be an object"));
-                }
-                ResetSecondFactor::Passkey {
-                    challenge_id: answer.challenge_id,
-                    credential: answer.credential,
-                }
+            ResetSecondFactor::Totp(code)
+        } else if let Some(answer) = body.passkey {
+            if answer.challenge_id.is_empty()
+                || answer.challenge_id.len() > MAX_CHALLENGE_ID_BYTES
+                || !answer.challenge_id.bytes().all(|b| b.is_ascii_graphic())
+            {
+                return Err(invalid(
+                    "passkey.challenge_id must be 1 to 64 printable characters",
+                ));
             }
-            (None, None) => ResetSecondFactor::None,
+            if !answer.credential.is_object() {
+                return Err(invalid("passkey.credential must be an object"));
+            }
+            ResetSecondFactor::Passkey {
+                challenge_id: answer.challenge_id,
+                credential: answer.credential,
+            }
+        } else if let Some(code) = body.recovery_code {
+            let code = zeroize::Zeroizing::new(code);
+            ResetSecondFactor::RecoveryCode(
+                crate::recovery_code::RecoveryCode::parse(&code)
+                    .map_err(|_| invalid("recovery_code must be 16 letters and digits"))?,
+            )
+        } else {
+            ResetSecondFactor::None
         };
         Ok(ResetFinish {
             token,

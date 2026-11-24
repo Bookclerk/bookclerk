@@ -2475,6 +2475,18 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         created_at TEXT NOT NULL
     )",
     ),
+    // A user's unused second-factor recovery codes (ADR decision 8): the
+    // selector as shown, the secret as an Argon2id hash. A used code is
+    // deleted, and a new set replaces the old one.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS recovery_codes (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        selector TEXT NOT NULL,
+        code_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, selector)
+    )",
+    ),
     // A chapter list, stored once and named by the SHA-256 of its
     // canonical encoding (`store::chapters`). The row is written in the
     // last batch of a list's write, after every entry, so a list with a

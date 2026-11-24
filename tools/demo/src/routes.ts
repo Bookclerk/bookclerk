@@ -92,6 +92,10 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["POST", "/api/auth/password-reset/check", "deny"],
   ["POST", "/api/auth/password-reset/finish", "deny"],
   ["POST", "/api/auth/password-reset/passkey", "deny"],
+  // Recovery codes: the Settings page may show how many are left; making
+  // a new set is a credential change and stays refused.
+  ["GET", "/api/auth/recovery-codes", "allow"],
+  ["POST", "/api/auth/recovery-codes", "deny"],
   ["PATCH", "/api/auth/profile", "deny"],
   ["PUT", "/api/auth/profile/avatar", "deny"],
   ["DELETE", "/api/auth/profile/avatar", "deny"],
