@@ -95,11 +95,15 @@ impl FetchStop {
     /// or, over budget, [`bookclerk_plugin_sdk::PluginError::limit_exceeded`].
     ///
     /// Before it returns, it removes what this fetch added to `dir` (each
-    /// file or folder that was not there when the call started), so a
-    /// stopped download leaves nothing behind; what an earlier fetch left
-    /// stays, since its acquire may still be reading it.
+    /// file or folder, at any depth, that was not there when the call
+    /// started), so a stopped download leaves nothing behind; what an
+    /// earlier fetch left stays, since its acquire may still be reading it.
+    /// When `dir` could not be listed whole as the call started, nothing is
+    /// removed.
     async fn wait(self) -> bookclerk_plugin_sdk::PluginError {
-        let earlier = dir_entries(&self.dir).await;
+        // A scratch that cannot be listed whole is left as it is: anything
+        // the listing missed would look like this fetch's and be removed.
+        let earlier = dir_paths(&self.dir).await.ok();
         let start = match self.max_bytes {
             Some(_) => dir_bytes(&self.dir).await,
             None => 0,
@@ -122,31 +126,47 @@ impl FetchStop {
                 }
             }
         };
-        for name in dir_entries(&self.dir).await.difference(&earlier) {
-            let path = self.dir.join(name);
-            let removed = match tokio::fs::symlink_metadata(&path).await {
-                Ok(meta) if meta.is_dir() => tokio::fs::remove_dir_all(&path).await,
-                Ok(_) => tokio::fs::remove_file(&path).await,
-                Err(err) => Err(err),
-            };
-            if let Err(err) = removed {
-                tracing::debug!(path = %path.display(), error = %err, "could not remove a stopped fetch's file");
+        if let (Some(earlier), Ok(now)) = (earlier, dir_paths(&self.dir).await) {
+            // Deepest first, so a new folder is empty by the time it goes;
+            // a folder that was already there keeps its earlier files.
+            let mut added: Vec<&PathBuf> = now.difference(&earlier).collect();
+            added.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+            for relative in added {
+                let path = self.dir.join(relative);
+                let removed = match tokio::fs::symlink_metadata(&path).await {
+                    Ok(meta) if meta.is_dir() => tokio::fs::remove_dir(&path).await,
+                    Ok(_) => tokio::fs::remove_file(&path).await,
+                    Err(err) => Err(err),
+                };
+                if let Err(err) = removed {
+                    tracing::debug!(path = %path.display(), error = %err, "could not remove a stopped fetch's file");
+                }
             }
         }
         stopped
     }
 }
 
-/// The names directly under `dir`; empty when it cannot be read.
-async fn dir_entries(dir: &std::path::Path) -> std::collections::BTreeSet<std::ffi::OsString> {
-    let mut names = std::collections::BTreeSet::new();
-    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
-        return names;
-    };
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        names.insert(entry.file_name());
+/// Every path under `dir`, relative to it, folders included; symbolic
+/// links are listed, not followed.
+///
+/// # Errors
+///
+/// Returns the error of any folder that cannot be listed whole.
+async fn dir_paths(dir: &std::path::Path) -> std::io::Result<std::collections::BTreeSet<PathBuf>> {
+    let mut paths = std::collections::BTreeSet::new();
+    let mut stack = vec![PathBuf::new()];
+    while let Some(relative) = stack.pop() {
+        let mut entries = tokio::fs::read_dir(dir.join(&relative)).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = relative.join(entry.file_name());
+            if entry.file_type().await?.is_dir() {
+                stack.push(path.clone());
+            }
+            paths.insert(path);
+        }
     }
-    names
+    Ok(paths)
 }
 
 /// Bytes the files under `root` take together; a directory that cannot be
@@ -2356,6 +2376,8 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("earlier.bin"), [0u8; 64]).unwrap();
+        std::fs::create_dir(dir.path().join("kept")).unwrap();
+        std::fs::write(dir.path().join("kept").join("earlier.bin"), [0u8; 8]).unwrap();
         let cancel = Arc::new(AtomicBool::new(false));
         let opts = |max| FetchOptions {
             download: bookclerk_source::DownloadOptions::default(),
@@ -2385,10 +2407,24 @@ mod tests {
         tokio::time::sleep(FETCH_STOP_POLL * 3).await;
         assert!(!stop.is_finished(), "an unbounded fetch runs on");
         std::fs::write(dir.path().join("partial.bin"), [0u8; 4]).unwrap();
+        std::fs::write(dir.path().join("kept").join("partial.bin"), [0u8; 4]).unwrap();
         cancel.store(true, Ordering::SeqCst);
         let cancelled = stop.await.unwrap();
         assert_eq!(cancelled.code, PluginErrorCode::Cancelled, "{cancelled}");
         assert!(!dir.path().join("partial.bin").exists());
+        assert!(!dir.path().join("kept").join("partial.bin").exists());
+        assert!(dir.path().join("kept").join("earlier.bin").exists());
         assert!(dir.path().join("earlier.bin").exists());
+
+        // A scratch that could not be listed when the call started is left
+        // as it is.
+        let missing = dir.path().join("missing");
+        let stop = tokio::spawn(FetchStop::new(&opts(None), missing.clone()).wait());
+        tokio::time::sleep(FETCH_STOP_POLL * 3).await;
+        std::fs::create_dir(&missing).unwrap();
+        std::fs::write(missing.join("unknown.bin"), [0u8; 4]).unwrap();
+        let cancelled = stop.await.unwrap();
+        assert_eq!(cancelled.code, PluginErrorCode::Cancelled, "{cancelled}");
+        assert!(missing.join("unknown.bin").exists());
     }
 }

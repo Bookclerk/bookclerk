@@ -716,7 +716,10 @@ storage key stays the main output's. No companion PDF is written for it.
 A convert of a copy the book already has does nothing, unless
 **Make it again if it exists** (`--force`) is ticked. A convert refuses
 `original` copies and the main output's own copy, which only an acquire
-makes, and a book that is not stored yet.
+makes, and a book that is not stored yet. A convert never writes over
+another file of the book: if a tight path limit would put the new copy
+where another copy, or audio a branch uploaded, already is, the convert
+fails.
 
 ## Upgrading to better files
 

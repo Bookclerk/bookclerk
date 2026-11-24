@@ -23,7 +23,8 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use bookclerk_library::{
-    AcquireWriter, AudioStream, FileOwner, FileProbe, FileRole, LibraryStore, RecordedFile,
+    AcquireWriter, AudioStream, CopyHolder, FileOwner, FileProbe, FileRole, LibraryStore,
+    RecordedFile, UnlabelledAudio,
 };
 use bookclerk_storage::{
     ByteRange, ListPage, ObjectInfo, ObjectMeta, ObjectProbe, PutStreamResult, StorageBackend,
@@ -50,6 +51,9 @@ pub(crate) struct AcquireRun {
     /// The library copies whose files, recorded by earlier runs, no copy
     /// of this run may replace: every copy the library makes.
     guarded: Vec<OutputCopy>,
+    /// Whether audio of the edition recorded with no copy holds its key
+    /// against this run's copies too.
+    unlabelled: UnlabelledAudio,
 }
 
 impl AcquireRun {
@@ -63,10 +67,23 @@ impl AcquireRun {
     /// where an earlier run recorded a file of another of the `guarded`
     /// copies ([`LibraryStore::key_held_by_another_copy`]).
     pub(crate) fn guarding(guarded: Vec<OutputCopy>) -> Arc<Self> {
+        Self::with_guard(guarded, UnlabelledAudio::Replaceable)
+    }
+
+    /// A run that adds a copy to a stored edition (a convert): as
+    /// [`Self::guarding`], and it never writes over the edition's audio
+    /// recorded with no copy either.
+    pub(crate) fn converting(guarded: Vec<OutputCopy>) -> Arc<Self> {
+        Self::with_guard(guarded, UnlabelledAudio::Guarded)
+    }
+
+    /// A new run with a writer id of its own and the given guard.
+    fn with_guard(guarded: Vec<OutputCopy>, unlabelled: UnlabelledAudio) -> Arc<Self> {
         Arc::new(Self {
             writer: AcquireWriter::for_run(),
             copy_keys: Mutex::default(),
             guarded,
+            unlabelled,
         })
     }
 
@@ -222,18 +239,26 @@ impl RecordingBackend {
     /// or copy's file is replaced by another's.
     async fn record(&self, key: &str) -> bookclerk_storage::Result<(FileRole, RecordedFile)> {
         if let Some(copy) = &self.copy {
-            if let Some(other) = self.run.claim_for_copy(key, copy) {
-                return Err(copy_collision(key, &other, copy));
-            }
+            // The record is read before the key is claimed in the run, so a
+            // write it refuses leaves the key to the copy that holds it.
             let earlier = self
                 .library
-                .key_held_by_another_copy(&self.owner, key, copy, &self.run.guarded)
+                .key_held_by_another_copy(
+                    &self.owner,
+                    key,
+                    copy,
+                    &self.run.guarded,
+                    self.run.unlabelled,
+                )
                 .await
                 .map_err(|err| {
                     StorageError::Other(anyhow::anyhow!("could not read a title's files: {err}"))
                 })?;
-            if let Some(other) = earlier {
-                return Err(copy_collision(key, &other, copy));
+            if let Some(holder) = earlier {
+                return Err(copy_collision(key, &holder, copy));
+            }
+            if let Some(other) = self.run.claim_for_copy(key, copy) {
+                return Err(copy_collision(key, &CopyHolder::Copy(other), copy));
             }
         }
         let role = self.role_of(key);
@@ -309,11 +334,10 @@ impl RecordingBackend {
     }
 }
 
-/// The refusal of a write of `key` by `copy` where the `other` copy's file
-/// is.
-fn copy_collision(key: &str, other: &OutputCopy, copy: &OutputCopy) -> StorageError {
+/// The refusal of a write of `key` by `copy` where `holder` is.
+fn copy_collision(key: &str, holder: &CopyHolder, copy: &OutputCopy) -> StorageError {
     StorageError::Other(anyhow::anyhow!(
-        "{key} is the {other} copy's file; the {copy} copy would replace it \
+        "{key} is {holder}; the {copy} copy would replace it \
          (give the destinations templates or path limits that keep each \
          copy's folder apart)"
     ))

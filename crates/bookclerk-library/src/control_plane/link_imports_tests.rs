@@ -4,6 +4,7 @@
 use super::*;
 use crate::models::UserRole;
 use crate::test_support::Profile;
+use crate::{CopyHolder, UnlabelledAudio};
 
 /// The plugin every test book is on.
 const PLUGIN: &str = "audible";
@@ -577,8 +578,18 @@ async fn a_key_is_held_only_by_another_copy_the_library_makes() {
             )
             .await
             .unwrap();
+        store
+            .record_edition_file("local", "T/upload.m4b", &owner, FileRole::Audio)
+            .await
+            .unwrap();
+        store
+            .record_edition_file("local", "T/upload.pdf", &owner, FileRole::Pdf)
+            .await
+            .unwrap();
         let guarded = [main.clone(), phone.clone()];
-        let held = |key: &'static str, writing: &bookclerk_config::OutputCopy| {
+        let held_as = |key: &'static str,
+                       writing: &bookclerk_config::OutputCopy,
+                       unlabelled: UnlabelledAudio| {
             let (store, owner, writing, guarded) = (
                 store.clone(),
                 owner.clone(),
@@ -587,21 +598,46 @@ async fn a_key_is_held_only_by_another_copy_the_library_makes() {
             );
             async move {
                 store
-                    .key_held_by_another_copy(&owner, key, &writing, &guarded)
+                    .key_held_by_another_copy(&owner, key, &writing, &guarded, unlabelled)
                     .await
                     .unwrap()
             }
         };
-        assert_eq!(held("T/T.m4b", &phone).await, Some(main.clone()), "{name}");
+        let held = |key: &'static str, writing: &bookclerk_config::OutputCopy| {
+            held_as(key, writing, UnlabelledAudio::Replaceable)
+        };
+        assert_eq!(
+            held("T/T.m4b", &phone).await,
+            Some(CopyHolder::Copy(main.clone())),
+            "{name}"
+        );
         assert_eq!(held("T/T.m4b", &main).await, None, "{name}");
         assert_eq!(held("T/old.mp3", &phone).await, None, "{name}");
         assert_eq!(held("T/theirs.mp3", &phone).await, None, "{name}");
         assert_eq!(held("T/free.mp3", &phone).await, None, "{name}");
         assert_eq!(
             store
-                .key_held_by_another_copy(&owner, "T/T.m4b", &phone, &[])
+                .key_held_by_another_copy(
+                    &owner,
+                    "T/T.m4b",
+                    &phone,
+                    &[],
+                    UnlabelledAudio::Replaceable
+                )
                 .await
                 .unwrap(),
+            None,
+            "{name}"
+        );
+        // Audio recorded with no copy holds its key only against a convert.
+        assert_eq!(held("T/upload.m4b", &phone).await, None, "{name}");
+        assert_eq!(
+            held_as("T/upload.m4b", &phone, UnlabelledAudio::Guarded).await,
+            Some(CopyHolder::Unlabelled),
+            "{name}"
+        );
+        assert_eq!(
+            held_as("T/upload.pdf", &phone, UnlabelledAudio::Guarded).await,
             None,
             "{name}"
         );

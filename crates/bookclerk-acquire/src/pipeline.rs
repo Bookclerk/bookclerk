@@ -8089,6 +8089,14 @@ mod tests {
             .await
             .expect_err("an earlier run recorded the chapter for the other copy");
         assert!(refused.to_string().contains(&low.to_string()), "{refused}");
+        // That refusal kept no claim on the key: the copy that holds it
+        // writes it again in the same run.
+        wrap(&low, &later_run)
+            .primary_destination()
+            .backend
+            .put_file(chapters[0], &src, ObjectMeta::default())
+            .await
+            .unwrap();
     }
 
     /// A later copy that no destination stores leaves the main output

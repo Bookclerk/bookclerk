@@ -34,6 +34,38 @@ use crate::entities::{
 use crate::error::{LibraryError, Result};
 use crate::models::AcquireStatus;
 
+/// Whether an audio file of an edition recorded with no library copy
+/// (a host upload's, or a destination sync's) holds its key against a copy
+/// ([`LibraryStore::key_held_by_another_copy`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnlabelledAudio {
+    /// A copy may write over it: an acquire's main output replaces the
+    /// edition's earlier file at its own key.
+    Replaceable,
+    /// No copy may write over it: a convert adds a copy beside the files
+    /// the edition has and never replaces one.
+    Guarded,
+}
+
+/// What already holds a key a copy is about to write
+/// ([`LibraryStore::key_held_by_another_copy`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CopyHolder {
+    /// Another library copy's file.
+    Copy(bookclerk_config::OutputCopy),
+    /// An audio file of the edition recorded with no copy.
+    Unlabelled,
+}
+
+impl std::fmt::Display for CopyHolder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Copy(copy) => write!(f, "the {copy} copy's file"),
+            Self::Unlabelled => f.write_str("an audio file of the edition with no copy named"),
+        }
+    }
+}
+
 /// The `writer` of a key an acquire on this node wrote without a run of
 /// its own (a branch's import of its owner's title), and the prefix of
 /// every acquire run's own writer ([`AcquireWriter`]).
@@ -1124,15 +1156,17 @@ impl LibraryStore {
         Ok(live.is_some())
     }
 
-    /// Which of the `guarded` library copies other than `copy` already has
-    /// a file of `owner` at `key`, on any destination; `None` when none
-    /// does.
+    /// Which other copy of `owner` already has a file at `key`, on any
+    /// destination; `None` when none does.
     ///
     /// The library finds a copy's files by key across destinations, so a
     /// copy written where another copy of the same edition sits would let
-    /// it take one copy's file for the other's. Only copies in `guarded`
-    /// (the ones the library still makes) count: a key a copy the library
-    /// no longer makes left behind may be written again.
+    /// it take one copy's file for the other's. The copies in `guarded`
+    /// other than `copy` count (the ones the library still makes): a key a
+    /// copy the library no longer makes left behind may be written again.
+    /// An audio file recorded with no copy (a host upload's, or a
+    /// destination sync's) counts only when `unlabelled` is
+    /// [`UnlabelledAudio::Guarded`].
     ///
     /// # Arguments
     ///
@@ -1140,6 +1174,7 @@ impl LibraryStore {
     /// * `key` - The storage key about to be written.
     /// * `copy` - The copy about to write it.
     /// * `guarded` - The copies whose files `copy` must not replace.
+    /// * `unlabelled` - Whether audio recorded with no copy is guarded too.
     ///
     /// # Errors
     ///
@@ -1150,38 +1185,58 @@ impl LibraryStore {
         key: &str,
         copy: &bookclerk_config::OutputCopy,
         guarded: &[bookclerk_config::OutputCopy],
-    ) -> Result<Option<bookclerk_config::OutputCopy>> {
+        unlabelled: UnlabelledAudio,
+    ) -> Result<Option<CopyHolder>> {
         let others: Vec<&bookclerk_config::OutputCopy> =
             guarded.iter().filter(|other| *other != copy).collect();
-        if others.is_empty() {
-            return Ok(None);
-        }
-        let mut labels = Condition::any();
+        let mut holders = Condition::any();
         for other in &others {
-            labels = labels.add(
+            holders = holders.add(
                 Condition::all()
                     .add(edition_files::Column::CopyFormat.eq(other.format.as_str()))
                     .add(edition_files::Column::CopyQuality.eq(other.quality.to_string())),
             );
         }
+        match unlabelled {
+            UnlabelledAudio::Replaceable => {
+                if others.is_empty() {
+                    return Ok(None);
+                }
+            }
+            UnlabelledAudio::Guarded => {
+                holders = holders.add(
+                    Condition::all()
+                        .add(edition_files::Column::CopyFormat.is_null())
+                        .add(edition_files::Column::Role.is_in([
+                            FileRole::Audio.as_str(),
+                            FileRole::Part.as_str(),
+                            FileRole::Chapter.as_str(),
+                        ])),
+                );
+            }
+        }
         let Some(row) = edition_files::Entity::find()
             .filter(edition_files::Column::StorageKey.eq(key))
             .filter(edition_files::Column::OwnerKind.eq(owner.kind()))
             .filter(edition_files::Column::OwnerId.eq(owner.id()))
-            .filter(labels)
+            .filter(holders)
             .one(self.db())
             .await
             .map_err(LibraryError::Orm)?
         else {
             return Ok(None);
         };
+        if row.copy_format.is_none() {
+            return Ok(Some(CopyHolder::Unlabelled));
+        }
         Ok(others
             .into_iter()
             .find(|other| {
                 row.copy_format.as_deref() == Some(other.format.as_str())
                     && row.copy_quality.as_deref() == Some(other.quality.to_string().as_str())
             })
-            .cloned())
+            .cloned()
+            .map(CopyHolder::Copy))
     }
 
     /// The edition a store's listing sells; `None` while the listing is

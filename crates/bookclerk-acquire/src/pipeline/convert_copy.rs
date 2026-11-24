@@ -163,13 +163,14 @@ pub async fn convert_copy(
     {
         req.library_copies.stored_from().set(store);
     }
-    // The new copy never writes where another copy of the edition is:
-    // every copy it already has, and the main output.
+    // The new copy never writes where another file of the edition is:
+    // every copy it already has, the main output, and audio recorded with
+    // no copy (a host upload's).
     let mut guarded: Vec<OutputCopy> = files.iter().filter_map(|file| file.copy.clone()).collect();
     guarded.extend(main.clone());
     guarded.sort();
     guarded.dedup();
-    let guard = crate::record::AcquireRun::guarding(guarded);
+    let guard = crate::record::AcquireRun::converting(guarded);
     let recorded = recording_copy_destinations(
         library,
         &target,
