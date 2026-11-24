@@ -649,6 +649,35 @@ mod tests {
         assert!(row.text_version.is_none());
     }
 
+    #[tokio::test]
+    async fn a_work_removed_while_its_texts_were_read_is_refused() {
+        let (store, work_id) = one_work(Profile::Minimum).await;
+        let piece = crate::control_plane::chunk_bytes(store.db_capabilities());
+        store
+            .set_work_enrichment(
+                &work_id,
+                &WorkEnrichment {
+                    description: Some(long_text(piece * 2)),
+                    ..WorkEnrichment::default()
+                },
+            )
+            .await
+            .unwrap();
+        let read = uncapped(works::Entity::find_by_id(work_id.clone()).one(store.db()))
+            .await
+            .unwrap()
+            .unwrap();
+        uncapped(work_text_parts::Entity::delete_many().exec(store.db()))
+            .await
+            .unwrap();
+        uncapped(works::Entity::delete_by_id(work_id.clone()).exec(store.db()))
+            .await
+            .unwrap();
+        let mut rows = [read];
+        let err = store.complete_work_texts(&mut rows).await.unwrap_err();
+        assert!(matches!(err, LibraryError::Unavailable(_)), "{err:?}");
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_work_that_keeps_changing_is_refused() {
         use sea_orm::sea_query::Expr;
