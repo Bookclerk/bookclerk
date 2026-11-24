@@ -1518,7 +1518,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         primary_key TEXT NOT NULL,
         manifest_json TEXT NOT NULL,
         received_json TEXT NOT NULL DEFAULT '[]',
-        state TEXT NOT NULL CHECK (state IN ('open', 'committed', 'aborted')),
+        state TEXT NOT NULL CHECK (state IN ('open', 'committed', 'aborted', 'discarding')),
         created_at TEXT NOT NULL,
         expires_at TEXT NOT NULL,
         committed_at TEXT
@@ -2011,6 +2011,30 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         UNIQUE (library_id, plugin_key, account_id, marketplace, product_id),
         FOREIGN KEY (plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
     )",
+    ),
+    // On a branch: the files a host job copied to this install's own
+    // destinations for a library it joined (`control_plane::link_copies`),
+    // one row per destination and key. A copy refuses a key another title
+    // holds instead of overwriting it, and a copy whose attempt never
+    // finished (`copying`, the daemon stopped mid-title) is removed on the
+    // next start. `title_ref` is the title's call number on that library
+    // (its edition), else its holding id there; `replaced` is 1 when the
+    // attempt took over a kept copy of the same title.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS link_copy_files (
+        destination TEXT NOT NULL,
+        storage_key TEXT NOT NULL,
+        library_id TEXT NOT NULL,
+        title_ref TEXT NOT NULL,
+        writer TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('copying', 'kept')),
+        replaced INTEGER NOT NULL DEFAULT 0,
+        written_at TEXT NOT NULL,
+        PRIMARY KEY (destination, storage_key)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_link_copy_files_writer ON link_copy_files(writer)",
     ),
     // On a branch: books a library it joined asked for through an
     // interlibrary request (`control_plane::branch_requests`), one row per

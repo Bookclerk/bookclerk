@@ -122,6 +122,7 @@ pub fn check(data: &[u8]) {
     if let Body::AcquireTargets {
         targets,
         destinations,
+        ..
     } = &frame.body
     {
         for target in targets {

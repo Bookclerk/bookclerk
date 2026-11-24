@@ -470,6 +470,45 @@ impl ClearStream for sea_orm::UpdateMany<edition_files::Entity> {
     }
 }
 
+/// Forgets what a record said of the copy at its key, for a new copy
+/// written there: its probe is stored once known.
+trait ForgetCopy {
+    /// The update with the probe, the [`AudioStream`] and the copy's
+    /// format and quality cleared.
+    fn forget_copy(self) -> Self;
+}
+
+impl ForgetCopy for sea_orm::UpdateMany<edition_files::Entity> {
+    fn forget_copy(self) -> Self {
+        self.col_expr(edition_files::Column::Lossless, Expr::value(0))
+            .col_expr(
+                edition_files::Column::BitrateKbps,
+                Expr::value(Option::<i64>::None),
+            )
+            .col_expr(
+                edition_files::Column::ContentType,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(
+                edition_files::Column::SourceStore,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(
+                edition_files::Column::ProbedAt,
+                Expr::value(Option::<String>::None),
+            )
+            .clear_stream()
+            .col_expr(
+                edition_files::Column::CopyFormat,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(
+                edition_files::Column::CopyQuality,
+                Expr::value(Option::<String>::None),
+            )
+    }
+}
+
 /// An edition's acquire state (`edition_acquisitions`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditionAcquisition {
@@ -856,6 +895,12 @@ impl LibraryStore {
     ///   catalog upload wrote (`catalog` false), as an acquire on this node
     ///   would replace a delivered copy with its own.
     /// * `catalog` - True for a catalog upload's claim.
+    /// * `upgrade` - True when the upload is a better copy of `owner`'s
+    ///   edition than the library holds: it takes over any key of that
+    ///   edition, whoever wrote it, though still never another edition's.
+    ///   An existing record keeps describing its file (only its writer
+    ///   changes), since the better copy is moved onto the key only at its
+    ///   commit ([`Self::describe_uploaded_file`]).
     ///
     /// # Errors
     ///
@@ -872,6 +917,7 @@ impl LibraryStore {
         expected: Option<&EditionFile>,
         title: &str,
         catalog: bool,
+        upgrade: bool,
     ) -> Result<bool> {
         let now = now_str();
         // Only a key read as unrecorded is inserted: a claim expecting a
@@ -960,48 +1006,36 @@ impl LibraryStore {
                 node_upload_sessions::Column::JobId.eq(bookclerk_node_proto::CATALOG_ITEM),
             )));
         }
+        if upgrade {
+            // A better copy of the edition replaces its files, whoever
+            // wrote them (`writer` is never null, so this takes any).
+            writers = writers.add(edition_files::Column::Writer.is_not_null());
+        }
         let mine = Condition::all()
             .add(edition_files::Column::OwnerKind.eq(owner.kind()))
             .add(edition_files::Column::OwnerId.eq(owner.id()))
             .add(writers);
-        let claimed = edition_files::Entity::update_many()
-            .col_expr(edition_files::Column::OwnerKind, Expr::value(owner.kind()))
-            .col_expr(edition_files::Column::OwnerId, Expr::value(owner.id()))
-            .col_expr(edition_files::Column::Role, Expr::value(role.as_str()))
-            .col_expr(
-                edition_files::Column::Sha256,
-                Expr::value(sha256.map(str::to_string)),
-            )
-            // The new copy's probe is stored after the claim; the old
-            // copy's says nothing about it.
-            .col_expr(edition_files::Column::Lossless, Expr::value(0))
-            .col_expr(
-                edition_files::Column::BitrateKbps,
-                Expr::value(Option::<i64>::None),
-            )
-            .col_expr(
-                edition_files::Column::ContentType,
-                Expr::value(Option::<String>::None),
-            )
-            .col_expr(
-                edition_files::Column::SourceStore,
-                Expr::value(Option::<String>::None),
-            )
-            .col_expr(
-                edition_files::Column::ProbedAt,
-                Expr::value(Option::<String>::None),
-            )
-            .clear_stream()
-            .col_expr(
-                edition_files::Column::CopyFormat,
-                Expr::value(Option::<String>::None),
-            )
-            .col_expr(
-                edition_files::Column::CopyQuality,
-                Expr::value(Option::<String>::None),
-            )
+        let claim = edition_files::Entity::update_many()
             .col_expr(edition_files::Column::Writer, Expr::value(writer))
-            .col_expr(edition_files::Column::WrittenAt, Expr::value(now))
+            .col_expr(edition_files::Column::WrittenAt, Expr::value(now));
+        // A better copy is staged beside the key and moved onto it only at
+        // its commit, so until then the record keeps describing the file
+        // still there; the commit describes the new one
+        // ([`Self::describe_uploaded_file`]).
+        let claim = if upgrade && expected.is_some() {
+            claim
+        } else {
+            claim
+                .col_expr(edition_files::Column::OwnerKind, Expr::value(owner.kind()))
+                .col_expr(edition_files::Column::OwnerId, Expr::value(owner.id()))
+                .col_expr(edition_files::Column::Role, Expr::value(role.as_str()))
+                .col_expr(
+                    edition_files::Column::Sha256,
+                    Expr::value(sha256.map(str::to_string)),
+                )
+                .forget_copy()
+        };
+        let claimed = claim
             .filter(edition_files::Column::Destination.eq(destination))
             .filter(edition_files::Column::StorageKey.eq(key))
             .filter(Condition::any().add(mine).add(live.not()))
@@ -1112,6 +1146,29 @@ impl LibraryStore {
         use sea_orm::PaginatorTrait as _;
         edition_files::Entity::find()
             .filter(edition_files::Column::Writer.eq(writer))
+            .count(self.db())
+            .await
+            .map_err(LibraryError::Orm)
+    }
+
+    /// How many keys `writer` (a host upload id) is recorded as the latest
+    /// writer of under `owner`: compared with
+    /// [`Self::count_edition_files_by`], it says whether every key the
+    /// upload holds is still filed under that owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the read fails.
+    pub async fn count_edition_files_by_owner(
+        &self,
+        writer: &str,
+        owner: &FileOwner,
+    ) -> Result<u64> {
+        use sea_orm::PaginatorTrait as _;
+        edition_files::Entity::find()
+            .filter(edition_files::Column::Writer.eq(writer))
+            .filter(edition_files::Column::OwnerKind.eq(owner.kind()))
+            .filter(edition_files::Column::OwnerId.eq(owner.id()))
             .count(self.db())
             .await
             .map_err(LibraryError::Orm)
@@ -1319,6 +1376,38 @@ impl LibraryStore {
             .add(edition_files::Column::OwnerKind.eq(owner.kind()))
             .add(edition_files::Column::OwnerId.eq(owner.id()));
         self.write_file_probe(destination, key, held, probe).await
+    }
+
+    /// Describes the file the committed upload `writer` moved onto `key` on
+    /// `destination` as a new copy: its digest is `sha256`, and what the
+    /// record said of the copy it replaced (probe, stream, format) is
+    /// cleared. A better copy of an edition claims its keys without
+    /// touching their records ([`Self::claim_edition_file`]), so the commit
+    /// calls this before storing the new probe.
+    ///
+    /// The row is changed only while `writer` is still the upload that
+    /// claimed the key last.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the write fails.
+    pub async fn describe_uploaded_file(
+        &self,
+        destination: &str,
+        key: &str,
+        writer: &str,
+        sha256: &str,
+    ) -> Result<()> {
+        edition_files::Entity::update_many()
+            .col_expr(edition_files::Column::Sha256, Expr::value(sha256))
+            .forget_copy()
+            .filter(edition_files::Column::Destination.eq(destination))
+            .filter(edition_files::Column::StorageKey.eq(key))
+            .filter(edition_files::Column::Writer.eq(writer))
+            .exec(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(())
     }
 
     /// Stores what a probe found in the file the upload `writer` wrote at

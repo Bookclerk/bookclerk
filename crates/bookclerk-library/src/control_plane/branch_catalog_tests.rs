@@ -227,7 +227,7 @@ async fn a_second_marketplace_copy_of_a_product_is_its_own_title() {
     wanted.sort();
     assert_eq!(wanted, vec![uk_ref.clone(), reference("p1")]);
     // The upload of the UK copy is checked against the UK manifest.
-    let destinations = vec!["local".to_string()];
+    let destinations = vec![GrantedDestination::new("local", 0)];
     let files = vec![UploadFile {
         copies: vec![FileCopy {
             destination: "local".into(),
@@ -689,12 +689,15 @@ async fn a_catalog_upload_commits_only_under_the_live_fence() {
     let (store, _member) = world(dir.path()).await;
     let session = open(&store, true, true).await;
     accepted(&store, session.fence, "c", false, &[title("p1", 3)]).await;
-    let destinations = vec!["local".to_string(), "s3".to_string()];
+    let destinations = vec![
+        GrantedDestination::new("local", 0),
+        GrantedDestination::new("s3", 0),
+    ];
     let file = |key: &str, size: u64| UploadFile {
         copies: destinations
             .iter()
             .map(|destination| FileCopy {
-                destination: destination.clone(),
+                destination: destination.id.clone(),
                 key: key.into(),
             })
             .collect(),
@@ -1017,7 +1020,7 @@ async fn a_catalog_upload_never_overwrites_another_titles_files() {
     ];
     let session = open(&store, true, true).await;
     accepted(&store, session.fence, "c", false, &titles).await;
-    let destinations = vec!["local".to_string()];
+    let destinations = vec![GrantedDestination::new("local", 0)];
     let grant = |branch: &'static str, fence: i64, product: &'static str, key: &'static str| {
         let store = store.clone();
         let destinations = destinations.clone();
@@ -1161,6 +1164,7 @@ async fn overlapping_grants_of_one_edition_grant_one() {
         id: "local".into(),
         title_folders: vec!["Author/free2".into()],
         title_names: None,
+        config_revision: 0,
     }];
     let request = UploadGrantRequest {
         holding_id: &row_c.id,
@@ -1177,7 +1181,7 @@ async fn overlapping_grants_of_one_edition_grant_one() {
         fence_c,
         "shared-node",
         &request,
-        Some(&digest),
+        super::super::uploads::OpenAs::Catalog { digest: &digest },
     )
     .await
     .unwrap();
@@ -1307,7 +1311,7 @@ async fn grant_branch_local(
         "shared-node",
         &reference(product),
         &local_files(keys),
-        &["local".to_string()],
+        &[GrantedDestination::new("local", 0)],
     )
     .await
     .unwrap()
@@ -1568,6 +1572,7 @@ async fn a_shared_titles_keys_stay_its_own() {
                     held.as_ref(),
                     title,
                     catalog,
+                    false,
                 )
                 .await
                 .unwrap(),
@@ -1586,6 +1591,7 @@ async fn a_shared_titles_keys_stay_its_own() {
                 None,
                 held.as_ref(),
                 same.as_str(),
+                false,
                 false,
             )
             .await
@@ -2292,7 +2298,7 @@ async fn a_catalog_upload_is_refused_once_its_listing_sells_another_edition() {
         &[title("p1", 3), title("p2", 3)],
     )
     .await;
-    let destinations = vec!["local".to_string()];
+    let destinations = vec![GrantedDestination::new("local", 0)];
     let files = [UploadFile {
         copies: vec![FileCopy {
             destination: "local".into(),
@@ -2393,7 +2399,7 @@ async fn a_delivered_title_whose_listing_moves_is_asked_for_again() {
         "shared-node",
         &reference("p1"),
         &files,
-        &["local".to_string()],
+        &[GrantedDestination::new("local", 0)],
     )
     .await
     .unwrap() else {

@@ -36,9 +36,9 @@ use crate::entities::{
     edition_identifiers, editions, embeddings, encrypted_secrets, event_deliveries,
     event_outbox_stats, expressions, holdings, ignored_titles, ingest_batches, ingest_members,
     intake_items, job_secret_handoffs, job_temp_paths, jobs, library_identity, library_links,
-    link_imports, link_requests, listening_progress, listing_offers, metadata_claims,
-    node_credentials, node_enrollment_links, node_upload_sessions, nodes, notifications,
-    notify_deliveries, notify_destinations, notify_inbox, notify_inbox_routes,
+    link_copy_files, link_imports, link_requests, listening_progress, listing_offers,
+    metadata_claims, node_credentials, node_enrollment_links, node_upload_sessions, nodes,
+    notifications, notify_deliveries, notify_destinations, notify_inbox, notify_inbox_routes,
     notify_patron_offers, notify_patron_prefs, notify_patron_targets, notify_route_revisions,
     notify_routes, oidc_auth_codes, oidc_clients, oidc_refresh_tokens, oidc_rp_states,
     operator_sessions, patron_controls, patron_scope_keys, patron_scopes, pending_joins,
@@ -297,6 +297,7 @@ macro_rules! copied_entities {
         $each!(library_links);
         $each!(clerk_links);
         $each!(pending_joins);
+        $each!(link_copy_files);
         $each!(link_imports);
         $each!(link_requests);
         $each!(catalog_listing_optouts);
