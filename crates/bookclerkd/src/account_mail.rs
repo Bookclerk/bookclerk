@@ -61,9 +61,19 @@ const INVITE_TYPE: &str = "account_invite";
 /// them in its own subject.
 const INVITED_BY_FIELD: &str = "Invited by";
 
-/// Longest inviter name an invite carries, in characters; a longer one is
-/// cut so the message stays within the notification limits.
-const MAX_INVITER_CHARS: usize = 64;
+/// Longest inviter name an invite carries, in UTF-8 bytes; a longer one is
+/// cut at a character boundary so the invite title stays within the
+/// notification title limit whatever script the name is in.
+const MAX_INVITER_BYTES: usize = 128;
+
+/// The invite title's wording around the inviter's name.
+const INVITE_TITLE_SUFFIX: &str = " has invited you to a Bookclerk library";
+
+// The longest inviter name plus the wording must fit a notification title.
+const _: () = assert!(
+    MAX_INVITER_BYTES + INVITE_TITLE_SUFFIX.len()
+        <= bookclerk_plugin_abi::MAX_NOTIFICATION_TITLE_BYTES as usize
+);
 
 /// Shortest wait between two verification messages a patron asks for.
 pub(crate) const VERIFY_RESEND_GAP: chrono::Duration = chrono::Duration::minutes(5);
@@ -658,13 +668,13 @@ const INVITE_TEXT: &str = "Set up your sign-in to browse the shelves and start l
 /// there is one.
 fn invite_title(inviter: Option<&str>) -> String {
     match inviter {
-        Some(name) => format!("{name} has invited you to a Bookclerk library"),
+        Some(name) => format!("{name}{INVITE_TITLE_SUFFIX}"),
         None => "You're invited to a Bookclerk library".into(),
     }
 }
 
 /// The name an invite gives its Administrator: their display name, else
-/// their sign-in name, cut to [`MAX_INVITER_CHARS`]; `None` when no one
+/// their sign-in name, cut to [`MAX_INVITER_BYTES`]; `None` when no one
 /// asked, that account is gone, or it has neither name.
 ///
 /// # Errors
@@ -685,7 +695,20 @@ async fn inviter_name(
         .flatten()
         .map(|name| name.split_whitespace().collect::<Vec<_>>().join(" "))
         .find(|name| !name.is_empty())
-        .map(|name| name.chars().take(MAX_INVITER_CHARS).collect()))
+        .map(|name| cut_to_bytes(&name, MAX_INVITER_BYTES).to_owned()))
+}
+
+/// The longest prefix of `text` within `max` UTF-8 bytes that ends on a
+/// character boundary.
+fn cut_to_bytes(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
 }
 
 /// Ends a send whose link mint changed nothing: the mail is dropped when

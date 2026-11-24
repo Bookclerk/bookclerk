@@ -303,8 +303,11 @@ Once it is ready:
   the newest one works: each send voids the user's other unused invites.
   Using an emailed invite verifies that address. The invite names the
   administrator who created the user or sent it, by display name (or
-  sign-in name), in its subject and in an `Invited by` field; one sent
-  with the operator token names no one. Invites go out as notification
+  sign-in name); one sent with the operator token names no one. The
+  notification carries that name in its title and in an `Invited by`
+  field. The email notifier drops the field from the message and names
+  the inviter in the subject instead, along with the library's From name
+  when that name is set and isn't just `Bookclerk`. Invites go out as notification
   type `account_invite` and the rest of account mail as `account_mail`,
   so a notifier can word them differently.
 - **Addresses are verified.** When a patron sets or changes their address,
