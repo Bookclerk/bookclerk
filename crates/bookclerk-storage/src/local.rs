@@ -2076,7 +2076,11 @@ mod tests {
             .await
             .unwrap();
         let read = b.head("a").await.unwrap().unwrap().etag.unwrap();
-        b.put("a", Bytes::from_static(b"two"), ObjectMeta::default())
+        // A different size, so the rewrite changes the etag on every file
+        // system: this test is about the move's check, and how finely the
+        // etag tells same-size rewrites apart is
+        // `the_etag_changes_when_the_file_is_rewritten_and_not_when_it_is_read`.
+        b.put("a", Bytes::from_static(b"second"), ObjectMeta::default())
             .await
             .unwrap();
         let stale = MoveOptions {
@@ -2090,7 +2094,7 @@ mod tests {
             ..MoveOptions::default()
         };
         b.move_object("a", "b", &current).await.unwrap();
-        assert_eq!(b.get("b").await.unwrap().as_ref(), b"two");
+        assert_eq!(b.get("b").await.unwrap().as_ref(), b"second");
     }
 
     #[tokio::test]
