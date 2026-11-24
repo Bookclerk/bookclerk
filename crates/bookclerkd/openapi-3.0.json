@@ -57280,7 +57280,7 @@
       },
       "ChapterEditEntry": {
         "type": "object",
-        "description": "One chapter of an edit, as JSON carries it.",
+        "description": "One chapter of an edit, as JSON carries it: an object, never an array.",
         "required": [
           "title",
           "start_ms"
