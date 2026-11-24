@@ -16,7 +16,7 @@
     "coverage": "vitest run --coverage"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "^1.8.3",
+    "@cloudflare/vitest-plugin": "^1.8.4",
     "@cloudflare/workers-types": "^5.20261117.1",
     "@types/node": "^26.6.6",
     "@vitest/coverage-v8": "^5.0.5",
