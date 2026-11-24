@@ -103,6 +103,14 @@ pub struct Recommendation {
     /// card. Used while ranking; never stored or sent.
     #[serde(skip)]
     pub expression_id: Option<String>,
+    /// Points of [`Self::score`] that come from the card's fit to the
+    /// subject's taste by meaning (its taste axes, or the seed centroid
+    /// without them); 0 when the card does not count as similar. The
+    /// "Similar to your books and wishes" shelf is ordered by it, so that
+    /// shelf shows what the taste is about and not who wrote or read it.
+    /// Kept only while a feed is built, not stored or served.
+    #[serde(skip)]
+    pub taste_points: f64,
     /// Display title as shown on the storefront or library card.
     #[schema(example = "The Left Hand of Darkness")]
     pub title: String,
@@ -705,13 +713,14 @@ pub(crate) async fn rank_candidates(
     let mut scored: HashMap<String, Recommendation> = HashMap::new();
 
     for (c, text) in candidates.into_iter().zip(&candidate_texts) {
+        let similar = similarity.boost(text);
         let (mut score, mut reasons, mut categories) = score_work_against_taste(
             c.authors.as_deref(),
             c.narrators.as_deref(),
             c.series.as_deref(),
             c.series_index.as_deref(),
             &profile,
-            similarity.boost(text),
+            similar,
         );
         // Origin / category / deals are candidate-specific (not on wishlist rows).
         reasons.insert(0, c.origin.clone());
@@ -778,6 +787,7 @@ pub(crate) async fn rank_candidates(
         let mut rec = Recommendation {
             work_id: c.work_id,
             expression_id: c.expression_id,
+            taste_points: similar.map_or(0.0, |similar| similar.score),
             title: c.title,
             authors: c.authors,
             narrators: c.narrators,
@@ -818,13 +828,14 @@ pub(crate) async fn rank_candidates(
         if library_owns_work(library, &entry).await? {
             continue;
         }
+        let similar = similarity.boost(text);
         let (taste_score, mut reasons, mut categories) = score_work_against_taste(
             entry.authors.as_deref(),
             None,
             None,
             None,
             &profile,
-            similarity.boost(text),
+            similar,
         );
         if entry.wish_count > 1 {
             reasons.push(format!("wishlisted by {} people", entry.wish_count));
@@ -857,6 +868,7 @@ pub(crate) async fn rank_candidates(
         let mut rec = Recommendation {
             work_id: Some(entry.work_id),
             expression_id: entry.expression_id,
+            taste_points: similar.map_or(0.0, |similar| similar.score),
             title: entry.title,
             authors: entry.authors,
             narrators: entry.narrators,

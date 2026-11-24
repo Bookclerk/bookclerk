@@ -322,13 +322,23 @@ pub fn build_discover_feed(
         );
     }
 
-    builder.push(
-        "similar_taste",
-        "Similar to your books and wishes",
-        Some("Embedding / taste overlap"),
-        |r| has_category(r, "similar_taste"),
-        SeriesRule::Cap,
-    );
+    // Ordered by how well a title fits the taste by meaning, not by its
+    // whole score: a liked author or narrator adds more points than a fit
+    // does, and would fill this shelf with that one person's books. Titles
+    // of equal fit keep the order they were given in.
+    if !shelf_is_disabled("similar_taste", disabled_shelves) {
+        let items = builder.take_by(
+            |r| has_category(r, "similar_taste"),
+            SeriesRule::Cap,
+            |r| r.taste_points,
+        );
+        builder.push_items(
+            "similar_taste",
+            "Similar to your books and wishes",
+            Some("Embedding / taste overlap"),
+            items,
+        );
+    }
 
     // Genres the stores were browsed by (the genres the taste leans to,
     // and the starter genres while it is thin): one shelf per genre, best
@@ -1434,6 +1444,31 @@ mod tests {
             .iter()
             .any(|s| s.id.starts_with("because:") && !s.items.is_empty()));
         assert!(!feed.shelf_kinds.is_empty());
+    }
+
+    #[test]
+    fn the_similar_shelf_is_ordered_by_fit_not_by_who_wrote_the_book() {
+        // A liked author's book outscores a closer fit by a stranger; the
+        // shelf of similar titles still opens with the closer fit.
+        let similar = |title: &str, score: f64, taste_points: f64| Recommendation {
+            taste_points,
+            series: None,
+            ..rec(title, score, &["similar_taste"])
+        };
+        let recs = vec![
+            similar("By a liked author", 20.0, 1.6),
+            similar("Closest", 7.0, 5.5),
+            similar("Close", 6.0, 3.0),
+            similar("Close too", 9.0, 3.0),
+        ];
+        let feed = build_discover_feed(&recs, &ShelfTaste::default(), 8, &[]);
+        assert_eq!(
+            titles(&feed, "similar_taste"),
+            ["Closest", "Close", "Close too", "By a liked author"]
+        );
+        let hidden = vec!["similar_taste".to_string()];
+        let feed = build_discover_feed(&recs, &ShelfTaste::default(), 8, &hidden);
+        assert!(titles(&feed, "similar_taste").is_empty());
     }
 
     #[test]

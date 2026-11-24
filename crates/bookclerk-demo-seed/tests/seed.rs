@@ -309,6 +309,8 @@ async fn writes_the_store_record_when_there_is_one() {
         CatalogHit {
             identifiers: ids(IdentifierScheme::Asin, "B0CJ6Q8CZ4"),
             cover_url: Some("https://m.media-amazon.com/images/I/james.jpg".into()),
+            description: Some("Huck's companion tells the journey himself.".into()),
+            categories: Some("Literature & Fiction; Literary Fiction".into()),
             ..hit("B0CJ6Q8CZ4", "James", "Percival Everett")
         },
     );
@@ -423,6 +425,17 @@ async fn writes_the_store_record_when_there_is_one() {
         james.cover_url.as_deref(),
         Some("https://m.media-amazon.com/images/I/james.jpg")
     );
+    // A wish keeps what its store record says of the book, so the wished
+    // work has more than a title to be placed in Sam's taste by.
+    assert_eq!(
+        james.description.as_deref(),
+        Some("Huck's companion tells the journey himself.")
+    );
+    assert_eq!(
+        james.genres.as_deref(),
+        Some("Literature & Fiction; Literary Fiction")
+    );
+    assert!(james.purchase_hints.iter().all(|h| h.price_cents.is_none()));
     // The bake lists the covers of the Library page's first rows, held
     // books and the branch's titles, in title order, which it shows once
     // the page index is built.

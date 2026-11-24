@@ -39,7 +39,8 @@ use bookclerk_library::control_plane::{
 use bookclerk_library::entities::{node_credentials, nodes};
 use bookclerk_library::EditionEnrichment;
 use bookclerk_library::{
-    AcquireStatus, LibraryStore, ListingDetail, NewBook, NewTitleRequest, RequestStatus, UserRole,
+    AcquireStatus, LibraryStore, ListingDetail, NewBook, NewTitleRequest, NewTitleRequestSource,
+    RequestStatus, UserRole,
 };
 use bookclerk_node_proto::{CatalogFile, CatalogMetadata, CatalogTitle};
 use bookclerk_resolve::ListingKey;
@@ -696,7 +697,7 @@ pub async fn seed(
 
     for wish in WISHLIST {
         let hit = records.get(wish.key);
-        store
+        let request = store
             .create_title_request(&NewTitleRequest {
                 uuid: None,
                 identity_id: Some(identity.id),
@@ -714,6 +715,12 @@ pub async fn seed(
             })
             .await
             .with_context(|| format!("wish for {}", wish.title))?;
+        if let Some(hit) = hit {
+            store
+                .upsert_title_request_sources(request.id, &[wish_source(hit)])
+                .await
+                .with_context(|| format!("store record of the wish for {}", wish.title))?;
+        }
     }
 
     let branch_titles = add_branch(store, library_id, user.id, plugin_keys, records, when).await?;
@@ -827,6 +834,36 @@ fn enrichment(store: &str, hit: &CatalogHit) -> EditionEnrichment {
         categories: present(hit.categories.as_ref()),
         source: store.to_owned(),
         confidence: 1.0,
+    }
+}
+
+/// What a wish made from a storefront's search result keeps of that
+/// result: the book's series, categories and synopsis, as the web app sends
+/// them when a person wishes for a title they found.
+///
+/// Without it a wished work is known by its title and author alone, which
+/// is too little for its place in Sam's taste. It carries no price: the
+/// storefront is asked for today's when the wishlist is shown.
+fn wish_source(hit: &CatalogHit) -> NewTitleRequestSource {
+    NewTitleRequestSource {
+        source: AUDIBLE.id.to_owned(),
+        product_id: hit.product_id.clone(),
+        title: Some(hit.title.clone()),
+        subtitle: present(hit.subtitle.as_ref()),
+        authors: present(hit.authors().as_ref()),
+        narrators: present(hit.narrators().as_ref()),
+        series: present(hit.series().as_ref()),
+        series_index: present(hit.series_index().as_ref()),
+        asin: present(hit.asin().as_ref()),
+        isbn: present(hit.isbn().as_ref()),
+        description: present(hit.description.as_ref()),
+        publisher: present(hit.publisher.as_ref()),
+        length_minutes: hit.length_minutes,
+        published_at: present(hit.published_at.as_ref()),
+        categories: present(hit.categories.as_ref()),
+        language: present(hit.language.as_ref()),
+        cover_url: present(hit.cover_url.as_ref()),
+        ..NewTitleRequestSource::default()
     }
 }
 
