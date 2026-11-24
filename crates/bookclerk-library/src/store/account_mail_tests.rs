@@ -721,6 +721,102 @@ async fn a_reset_link_works_once_for_a_verified_address_under_every_profile() {
 }
 
 #[tokio::test]
+async fn a_reset_survives_a_lost_reply_and_a_factor_enrolled_after_the_check_under_every_profile() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let kit = memory(profile).await;
+        let store = kit.store();
+        let user = member(store, "kai@example.com").await;
+        assert!(store
+            .verify_user_email_if(user, "kai@example.com")
+            .await
+            .unwrap());
+        let mint = || async {
+            let token = store
+                .mint_password_reset(user, "kai@example.com", None)
+                .await
+                .unwrap()
+                .expect("minted");
+            reset_token(token.expose())
+        };
+        let now = Utc::now();
+
+        // The account had no factor when the link was checked; an
+        // authenticator or a passkey enrolled before the finish commits
+        // stops it, changes nothing and leaves the link usable.
+        let token = mint().await;
+        let first = crate::hash_password(&fresh_password()).expect("hash");
+        store.set_user_totp_enabled(user, true).await.unwrap();
+        assert_eq!(
+            store
+                .redeem_password_reset(&token, user, PasswordResetFactor::None, &first, now)
+                .await
+                .unwrap(),
+            None,
+            "{name}: a reset skipped a newly enrolled authenticator"
+        );
+        store.set_user_totp_enabled(user, false).await.unwrap();
+        store
+            .insert_webauthn_credential(user, "cred-kai", "{}", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .redeem_password_reset(&token, user, PasswordResetFactor::None, &first, now)
+                .await
+                .unwrap(),
+            None,
+            "{name}: a reset skipped a newly enrolled passkey"
+        );
+        assert!(
+            store.get_user_password_hash(user).await.unwrap().is_none(),
+            "{name}: a refused redemption changed the password"
+        );
+        assert_eq!(
+            store.password_reset_user(&token, now).await.unwrap(),
+            Some(user),
+            "{name}: a refused redemption spent the link"
+        );
+
+        // A lost reply: the batch committed, the retry finds the link
+        // spent, and the stored hash shows the reset was this one.
+        kit.lose_next_replies(1);
+        assert_eq!(
+            store
+                .redeem_password_reset(&token, user, PasswordResetFactor::Passkey, &first, now)
+                .await
+                .unwrap(),
+            Some(0),
+            "{name}: a lost reply reported a committed reset as refused"
+        );
+        assert_eq!(
+            store.get_user_password_hash(user).await.unwrap().as_deref(),
+            Some(first.as_str()),
+            "{name}"
+        );
+        assert_eq!(store.password_reset_user(&token, now).await.unwrap(), None);
+
+        // Another attempt after the link is spent still finds nothing,
+        // even when its own reply is lost.
+        let second = crate::hash_password(&fresh_password()).expect("hash");
+        kit.lose_next_replies(1);
+        assert_eq!(
+            store
+                .redeem_password_reset(&token, user, PasswordResetFactor::Passkey, &second, now)
+                .await
+                .unwrap(),
+            None,
+            "{name}: a spent link worked again"
+        );
+        assert_eq!(
+            store.get_user_password_hash(user).await.unwrap().as_deref(),
+            Some(first.as_str()),
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_reset_link_stops_when_the_address_changes_under_every_profile() {
     for profile in Profile::ALL {
         let name = profile.name();

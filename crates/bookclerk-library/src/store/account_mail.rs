@@ -94,6 +94,12 @@ const STILL_ADDRESSED: &str = "EXISTS (SELECT 1 FROM users WHERE id = ? AND emai
 const STILL_VERIFIED: &str = "EXISTS (SELECT 1 FROM users WHERE id = ? AND email = ? \
                               AND email_verified_at IS NOT NULL)";
 
+/// The `expires_at` a reset link holds while one redemption batch has
+/// claimed it. No minted link expires then, and an expired link never
+/// passes the claim, so the marker names only a claim made inside the
+/// running batch (the same batch deletes the row before it commits).
+const RESET_CLAIM: &str = "1970-01-01T00:00:00+00:00";
+
 impl LibraryStore {
     /// The instance account mail goes through; `None` when none is chosen.
     ///
@@ -992,27 +998,38 @@ impl LibraryStore {
     /// Redeems a reset link: sets the new password, signs the account out
     /// everywhere and spends the link, all in one atomic batch.
     ///
-    /// Every write is guarded by the same predicate: the link is unexpired,
-    /// is for `user_id`, still names the account's verified address, the
-    /// account is not disabled, and its second factor is still `factor`.
-    /// The link is deleted last, so when the guard fails nothing changes.
-    /// Two redemptions of one link serialize, and only the first applies.
+    /// The first statement claims the link: it marks the row with
+    /// [`RESET_CLAIM`] only while the link is unexpired, is for `user_id`,
+    /// still names the account's verified address, the account is not
+    /// disabled, and its second factor is still `factor`. Every later
+    /// write is guarded only by that claim, and the claimed row is deleted
+    /// last, so the claim is never visible outside the batch. When the
+    /// claim matches nothing, nothing changes. A second redemption of the
+    /// same link waits on the claimed row's lock and then finds it gone, so
+    /// only one applies even under `READ COMMITTED`, and a factor enrolled
+    /// after the claim cannot strand a half-applied reset.
     ///
-    /// The operation id comes from the link, so a retry after a lost reply
-    /// resumes the same batch instead of finding the link spent.
+    /// The operation id comes from the link and the new hash, so a retry
+    /// after a lost reply resends the same batch, while a later attempt
+    /// with another password gets an id of its own. When the retry finds
+    /// the link already spent, the stored hash tells whether the lost
+    /// batch was this one.
     ///
     /// # Arguments
     ///
     /// * `token` - The link's token.
     /// * `user_id` - The account the link was checked for.
     /// * `factor` - The second factor the account required when checked.
-    /// * `password_hash` - The new Argon2id hash.
+    /// * `password_hash` - The new Argon2id hash. Its salt makes it unique
+    ///   to this attempt.
     /// * `now` - The current time.
     ///
     /// # Returns
     ///
-    /// The number of portal sessions signed out, or `None` when the link
-    /// no longer works for this account and factor (nothing was changed).
+    /// The number of portal sessions signed out (`0` when the reply was
+    /// lost and the retry found this reset already applied, since the
+    /// count went with the reply), or `None` when the link no longer works
+    /// for this account and factor (nothing was changed).
     ///
     /// # Errors
     ///
@@ -1038,67 +1055,82 @@ impl LibraryStore {
                  WHERE webauthn_credentials.user_id = users.id)"
             }
         };
+        let claimed = || {
+            (
+                "EXISTS (SELECT 1 FROM password_resets \
+                 WHERE password_resets.token_hash = ? AND password_resets.expires_at = ?)",
+                [batch::text(&token_hash), batch::text(RESET_CLAIM)],
+            )
+        };
+        let guarded = |sql: &str, mut leading: Vec<bookclerk_plugin_abi::DbValue>| {
+            let (claim_sql, claim_params) = claimed();
+            leading.extend(claim_params);
+            batch::exec(&format!("{sql} AND {claim_sql}"), leading)
+        };
         // `expires_at` is always written as UTC RFC 3339, so it compares
-        // as text.
-        let guard = format!(
-            "EXISTS (SELECT 1 FROM password_resets JOIN users \
-             ON users.id = password_resets.user_id \
-             WHERE password_resets.token_hash = ? AND password_resets.user_id = ? \
-             AND password_resets.expires_at > ? AND users.email = password_resets.email \
-             AND users.email_verified_at IS NOT NULL AND users.status <> 'disabled' \
-             AND {factor_sql})"
-        );
-        let guard_params = || {
-            vec![
-                batch::text(&token_hash),
-                batch::int(user_id),
-                batch::text(&now.to_rfc3339()),
-            ]
-        };
-        let with_guard = |mut leading: Vec<bookclerk_plugin_abi::DbValue>| {
-            leading.extend(guard_params());
-            leading
-        };
+        // as text, and the claim marker sorts before every real expiry.
         let statements = vec![
             batch::exec(
                 &format!(
-                    "UPDATE users SET password_hash = ?, \
-                     security_version = security_version + 1, updated_at = ? \
-                     WHERE id = ? AND {guard}"
+                    "UPDATE password_resets SET expires_at = ? \
+                     WHERE token_hash = ? AND user_id = ? AND expires_at > ? \
+                     AND EXISTS (SELECT 1 FROM users WHERE users.id = password_resets.user_id \
+                     AND users.email = password_resets.email \
+                     AND users.email_verified_at IS NOT NULL AND users.status <> 'disabled' \
+                     AND {factor_sql})"
                 ),
-                with_guard(vec![
+                vec![
+                    batch::text(RESET_CLAIM),
+                    batch::text(&token_hash),
+                    batch::int(user_id),
+                    batch::text(&now.to_rfc3339()),
+                ],
+            ),
+            guarded(
+                "UPDATE users SET password_hash = ?, \
+                 security_version = security_version + 1, updated_at = ? WHERE id = ?",
+                vec![
                     batch::text(password_hash),
                     batch::text(&now.to_rfc3339()),
                     batch::int(user_id),
-                ]),
+                ],
+            ),
+            guarded(
+                "DELETE FROM operator_sessions WHERE elevated_from_user_id = ?",
+                vec![batch::int(user_id)],
+            ),
+            guarded(
+                "DELETE FROM portal_sessions WHERE identity_id IN \
+                 (SELECT id FROM portal_identities WHERE user_id = ?)",
+                vec![batch::int(user_id)],
             ),
             batch::exec(
-                &format!(
-                    "DELETE FROM operator_sessions WHERE elevated_from_user_id = ? AND {guard}"
-                ),
-                with_guard(vec![batch::int(user_id)]),
-            ),
-            batch::exec(
-                &format!(
-                    "DELETE FROM portal_sessions WHERE identity_id IN \
-                     (SELECT id FROM portal_identities WHERE user_id = ?) AND {guard}"
-                ),
-                with_guard(vec![batch::int(user_id)]),
-            ),
-            batch::exec(
-                &format!("DELETE FROM password_resets WHERE token_hash = ? AND {guard}"),
-                with_guard(vec![batch::text(&token_hash)]),
+                "DELETE FROM password_resets WHERE token_hash = ? AND expires_at = ?",
+                vec![batch::text(&token_hash), batch::text(RESET_CLAIM)],
             ),
         ];
-        // A hash of the stored hash, so the id names the link without
-        // repeating a stored value in logs.
-        let operation_id = format!("password-reset-redeem-{}", &hash_token(&token_hash)[..32]);
+        // A hash of the stored hash and the new one, so the id names this
+        // attempt without repeating a stored value in logs.
+        let operation_id = format!(
+            "password-reset-redeem-{}",
+            &hash_token(&format!("{token_hash}:{password_hash}"))[..32]
+        );
         let request = batch::request(&operation_id, statements);
-        let reply = match self.execute_host_batch(request.clone()).await {
-            Err(LibraryError::Unavailable(_)) => self.execute_host_batch(request).await?,
-            other => other?,
-        };
-        Ok((batch::rows_affected(&reply, 3) == 1).then(|| batch::rows_affected(&reply, 2)))
+        let redeemed =
+            |reply: &bookclerk_plugin_abi::ExecuteReply| batch::rows_affected(reply, 4) == 1;
+        match self.execute_host_batch(request.clone()).await {
+            Ok(reply) => Ok(redeemed(&reply).then(|| batch::rows_affected(&reply, 3))),
+            Err(LibraryError::Unavailable(_)) => {
+                let reply = self.execute_host_batch(request).await?;
+                if redeemed(&reply) {
+                    return Ok(Some(batch::rows_affected(&reply, 3)));
+                }
+                let applied =
+                    self.get_user_password_hash(user_id).await?.as_deref() == Some(password_hash);
+                Ok(applied.then_some(0))
+            }
+            Err(err) => Err(err),
+        }
     }
 
     /// Deletes account-mail records older than
