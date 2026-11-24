@@ -33816,13 +33816,13 @@
         "tags": [
           "Discover"
         ],
-        "summary": "Finds a storefront's sample of a title.",
+        "summary": "Finds the sample a title's details can play: one cut from the held\nedition when this node can, else a storefront's.",
         "operationId": "post_title_sample",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/TitleMetaQuery"
+                "$ref": "#/components/schemas/TitleSampleQuery"
               }
             }
           },
@@ -33830,7 +33830,7 @@
         },
         "responses": {
           "200": {
-            "description": "The sample's same-origin path, or none when no listing store offers one.",
+            "description": "The path of the sample to play: the held edition's, else a store's; neither when no sample can be played here (no confined media worker, or no source offers one).",
             "content": {
               "application/json": {
                 "schema": {
@@ -33936,7 +33936,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "example": "Failed to deserialize the JSON body into the target type: title: invalid type: integer `1`, expected a string at line 1 column 10"
+                "example": "Failed to deserialize the JSON body into the target type: invalid type: null, expected a map at line 1 column 4"
               }
             }
           },
@@ -75370,17 +75370,47 @@
       },
       "TitleSampleJson": {
         "type": "object",
-        "description": "`POST /api/discover/title-sample` answer.",
+        "description": "`POST /api/discover/title-sample` answer. At most one path is given;\nnone means no sample can be played here, so the app shows no sample\ncontrol.",
         "properties": {
+          "edition_sample_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Same-origin path of a sample cut from the held edition\n(`GET /api/library/editions/{id}/sample`); present when the caller\nmay hear that edition and this node reaches its audio.",
+            "example": "/api/library/editions/5d2c8e1a-7b3f-4a6e-9c0d-1e2f3a4b5c6d/sample"
+          },
           "sample_path": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Same-origin path of a storefront's sample of the title, to play\nwith `GET`; absent when no store that lists it offers one.",
+            "description": "Same-origin path of a storefront's sample of the title, to play\nwith `GET`; absent when an edition sample is offered instead, or no\nstore that lists the title offers one.",
             "example": "/api/samples/aHR0cHM6Ly9zYW1wbGVzLmV4YW1wbGUvYS5tcDM.q2fW1n4bJm0Rg9xV3kTzPA"
           }
         }
+      },
+      "TitleSampleQuery": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TitleMetaQuery",
+            "description": "The title, its identifiers and the stores that list it."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "edition_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The library edition the caller would hear a sample of (an `id` in a\nwork's `editions`); the stores are asked only when this node cannot\ncut a sample from it.",
+                "example": "5d2c8e1a-7b3f-4a6e-9c0d-1e2f3a4b5c6d"
+              }
+            }
+          }
+        ],
+        "description": "`POST /api/discover/title-sample` request: the title as title-meta\nsees it, and the edition this library holds of it, when it holds one."
       },
       "TokenError": {
         "type": "object",

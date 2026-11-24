@@ -712,6 +712,13 @@ input_from = "store"
 side = "guest"
 artifacts = ["bookclerk"]
 
+[targets.chirp_catalog_detail]
+crate = "bookclerk-plugin-source-chirp"
+boundary = "Chirp title detail answers from its public GraphQL catalog"
+input_from = "store"
+side = "guest"
+artifacts = ["bookclerk"]
+
 [targets.node_frame]
 crate = "bookclerk-node-proto"
 boundary = "Node-to-node frames on the library socket"

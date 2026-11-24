@@ -38,8 +38,10 @@ need an interactive Desktop session or a TOTP seed.
 
 The plugin declares `detailByProductId`: `catalogDetail` answers an ASIN
 from Audible's public catalog, trying the US marketplace and then the
-others for 8 seconds at most, without an account. Its records carry the
-product's public `sample_url` as `sampleUrl` when it is an `https` URL, so
+others for 8 seconds at most, without an account. It asks for the
+`sample` response group (the only one that carries `sample_url`; `media`
+does not), and its records carry the product's public `sample_url` as
+`sampleUrl` when it is an `https` URL, so
 a title's details can play
 [Audible's sample](../../../../docs/adr/book-samples.md).
 

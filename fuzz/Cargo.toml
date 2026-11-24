@@ -46,6 +46,7 @@ bookclerk-intake = { path = "../crates/bookclerk-intake" }
 bookclerk-plugin-source-libro = { path = "../crates/bookclerk-plugins/optional/source-libro" }
 bookclerk-audible-catalog = { path = "../crates/bookclerk-audible-catalog" }
 bookclerk-plugin-source-graphicaudio = { path = "../crates/bookclerk-plugins/optional/source-graphicaudio" }
+bookclerk-plugin-source-chirp = { path = "../crates/bookclerk-plugins/optional/source-chirp" }
 bookclerk-plugin-notifier-email = { path = "../crates/bookclerk-plugins/optional/notifier-email" }
 # plan_authz drives the scan and acquire planners over an in-memory library.
 bookclerk-library = { path = "../crates/bookclerk-library" }
@@ -634,6 +635,13 @@ bench = false
 [[bin]]
 name = "graphicaudio_catalog"
 path = "fuzz_targets/graphicaudio_catalog.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "chirp_catalog_detail"
+path = "fuzz_targets/chirp_catalog_detail.rs"
 test = false
 doc = false
 bench = false

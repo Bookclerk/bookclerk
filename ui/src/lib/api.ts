@@ -5395,22 +5395,40 @@ export async function fetchTitleReviews(body: TitleReviewsQuery): Promise<TitleR
   return (await parseJson(res)) as TitleReviewsPage;
 }
 
-/** The answer of `POST /api/discover/title-sample`. */
+/** The body of `POST /api/discover/title-sample`. */
+export type TitleSampleQuery = TitleMetaQuery & {
+  /**
+   * The library edition the details show, when the library holds one; the
+   * stores are asked only when this node cannot cut a sample from it.
+   */
+  edition_id?: string | null;
+};
+
+/**
+ * The answer of `POST /api/discover/title-sample`: at most one path; none
+ * means no sample can be played here.
+ */
 export type TitleSample = {
   /**
+   * Same-origin path of a sample cut from the held edition, when the
+   * caller may hear it and this node reaches its audio.
+   */
+  edition_sample_path?: string | null;
+  /**
    * Same-origin path of a storefront's public sample, served through this
-   * daemon; absent when no store offers one.
+   * daemon; absent when an edition sample is offered or no store offers one.
    */
   sample_path?: string | null;
 };
 
 /**
- * Asks the storefronts that listed a title for their public audio sample.
+ * Asks the daemon which sample a title's details can play: one cut from
+ * the held edition, else a storefront's public sample, else none.
  *
- * @param body - The title, as sent to title-meta.
- * @returns The sample's same-origin path, or `null` when no store offers one.
+ * @param body - The title, as sent to title-meta, and the held edition.
+ * @returns The daemon's answer.
  */
-export async function fetchTitleSample(body: TitleMetaQuery): Promise<string | null> {
+export async function fetchTitleSample(body: TitleSampleQuery): Promise<TitleSample> {
   const res = await fetchWithTimeout(
     "/api/discover/title-sample",
     {
@@ -5422,8 +5440,7 @@ export async function fetchTitleSample(body: TitleMetaQuery): Promise<string | n
     20_000,
     "Title sample",
   );
-  const answer = (await parseJson(res)) as TitleSample;
-  return answer.sample_path?.trim() || null;
+  return (await parseJson(res)) as TitleSample;
 }
 
 /**

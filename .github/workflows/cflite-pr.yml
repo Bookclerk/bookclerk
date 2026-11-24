@@ -37,6 +37,7 @@ on:
       - "crates/bookclerk-plugins/optional/source-libro/**"
       - "crates/bookclerk-audible-catalog/**"
       - "crates/bookclerk-plugins/optional/source-graphicaudio/**"
+      - "crates/bookclerk-plugins/optional/source-chirp/**"
       - "crates/bookclerk-library/**"
       - "crates/bookclerk-plugins/platform/database-sqlite/**"
       - "crates/bookclerk-window-policy/**"

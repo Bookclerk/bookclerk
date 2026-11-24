@@ -32,7 +32,9 @@ Open any book, in **Library**, **Discover** or **Wishlist**, and press
 **Sample** to hear a few minutes of it. A book the library holds plays 5
 minutes from near its start (after a short opening chapter, when it has
 one). Otherwise Bookclerk plays the public sample a store that sells the
-book offers; when no store has one, the button says **No sample**.
+book offers: Audible, Libro.fm, Chirp and GraphicAudio publish one for
+most of their books. A book with no sample to play shows no **Sample**
+button.
 
 A sample is only a preview. It does not move your place in the book,
 does not mark anything finished and does not change what Discover
