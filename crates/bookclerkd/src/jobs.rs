@@ -163,6 +163,16 @@ async fn admit_into(
         )
         .await
         .map_err(requirements_error)?;
+        if spec.kind == JobKind::Acquire {
+            // Preferred only: a provider that fits nowhere is left out.
+            let providers = metadata_provider_keys(state).await;
+            spec.payload.requires = bookclerk_library::control_plane::prefer_metadata_providers(
+                library,
+                std::mem::take(&mut spec.payload.requires),
+                &providers,
+            )
+            .await?;
+        }
     }
     let outcome = library.enqueue_job(spec).await?;
     if matches!(outcome, EnqueueOutcome::Created { .. }) {
@@ -201,6 +211,53 @@ pub(crate) async fn node_bound_output_keys(
         .map(|instance| instance.plugin_key)
         .filter(|key| is_node_bound_key(key))
         .collect())
+}
+
+/// Plugin keys of the installed metadata providers (plugins that export
+/// the `metadata` entrypoint), which an acquire prefers to run beside
+/// (`bookclerk_library::control_plane::prefer_metadata_providers`).
+///
+/// Unlike [`node_bound_output_keys`], this reads this node's installed
+/// plugins: the instance list does not say which plugins export the
+/// entrypoint, and every node materializes the library's installs. A
+/// preference can safely differ between nodes, so a config without plugin
+/// directories or a failed discovery prefers none.
+async fn metadata_provider_keys(state: &AppState) -> std::collections::BTreeSet<String> {
+    let config = state.config.read().await.clone();
+    if config.paths.is_none() {
+        return std::collections::BTreeSet::new();
+    }
+    // Discovery walks and hashes every installed plugin: keep it off the
+    // async workers.
+    let discovered =
+        tokio::task::spawn_blocking(move || bookclerk_plugin_host::discover_plugins(&config)).await;
+    match discovered {
+        Ok(Ok(plugins)) => metadata_provider_keys_from(&plugins),
+        Ok(Err(err)) => {
+            warn!(error = %err, "plugin discovery failed; acquire prefers no metadata provider");
+            std::collections::BTreeSet::new()
+        }
+        Err(err) => {
+            warn!(error = %err, "plugin discovery task failed; acquire prefers no metadata provider");
+            std::collections::BTreeSet::new()
+        }
+    }
+}
+
+/// The keys of `plugins` that export the `metadata` entrypoint.
+fn metadata_provider_keys_from(
+    plugins: &[bookclerk_plugin_host::DiscoveredPlugin],
+) -> std::collections::BTreeSet<String> {
+    plugins
+        .iter()
+        .filter(|plugin| {
+            plugin
+                .manifest
+                .entrypoints
+                .contains(&bookclerk_plugin_host::Entrypoint::Metadata)
+        })
+        .map(|plugin| plugin.plugin_key().to_string())
+        .collect()
 }
 
 /// True when the stored plugin key `key` names a node-bound output (the

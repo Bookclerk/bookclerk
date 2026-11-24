@@ -244,7 +244,11 @@ book's ISBN. A provider that fails, or gives no answer within 30 seconds, is
 logged and skipped, and the next one is asked.
 
 The acquire overlay asks the providers deployed on the node that runs the
-download, so in a library deploy them wherever acquires run.
+download, so an acquire is routed to a node that runs a provider with the
+guest up, alongside the acquire's `local` outputs, whenever one does. When
+none does (the provider is down, or deployed only on other nodes than the
+outputs), the acquire still runs, without the overlay. In a library, deploy
+providers on the nodes that hold your `local` outputs.
 
 These plugins are optional, so they aren't installed by default. Install
 the plugin first, as [Installing plugins](plugins.md#installing-plugins)

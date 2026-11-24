@@ -701,6 +701,20 @@ node that runs it needs. At admission the daemon records
   `jobs::node_bound_output_keys`), not from the plugins installed on the
   admitting node, so admission runs no plugin discovery and every node
   admits the same requirements, whatever it has installed.
+- An acquire also prefers the metadata providers (plugins whose manifest
+  exports the `metadata` entrypoint, such as `audnexus`), because its
+  plain-audio overlay asks only the providers on the node that runs it
+  (`control_plane::prefer_metadata_providers`). Each deployed provider
+  instance is added when some node runs it, with the guest up, together
+  with everything already required. One that fits on no such node (it is
+  down, or deployed only where the outputs are not) is left out, and the
+  acquire runs without its overlay rather than waiting. Which plugins are
+  providers comes from the admitting node's installed plugins, since the
+  instance list does not record entrypoints; with a failed discovery no
+  provider is preferred. The requirements sweep resolves node-bound outputs
+  only, so it treats a preferred provider as a dropped requirement and
+  removes it once the grace period ends, while claims accept the extra
+  instances.
 - Everything else (unpinned scans, listen sync, integration scans,
   `plugin_copy`) has no requirements and is claimable on any node.
 
