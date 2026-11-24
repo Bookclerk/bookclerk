@@ -196,6 +196,10 @@ pub struct AppliedSharedBranch {
     pub database: DatabasePluginKind,
     /// True when `master.key` is wrapped with this install's password.
     pub wrapped: bool,
+    /// Where the library's D1 token went (this install's master key
+    /// store), or `None` when the library sent none or it could not be
+    /// kept (then `BOOKCLERK_D1_API_TOKEN` must be set).
+    pub database_credential: Option<bookclerk_config::KeyStoreKind>,
     /// The config file written.
     pub config_file: PathBuf,
 }
@@ -696,6 +700,18 @@ impl PendingSharedBranchJoin {
                 detail: failed.join("; "),
             });
         }
+        // The library's D1 token went in after the files (only an empty
+        // install joins, so there was none before): it goes too.
+        if let Some(files_dir) = self.marker.parent() {
+            if let Err(err) =
+                bookclerk_library::database_credential::remove_database_credential(files_dir)
+            {
+                tracing::warn!(
+                    error = %err,
+                    "the shared branch join was undone but the library's D1 token could not be deleted; delete database.credential"
+                );
+            }
+        }
         remove_if_present(&self.marker).map_err(|err| RevertFailed {
             started: true,
             detail: format!(
@@ -857,6 +873,8 @@ pub fn apply_shared_branch_bootstrap(
         Config::default()
     };
     let mut url: Option<Zeroizing<String>> = None;
+    let mut d1_credential: Option<bookclerk_library::database_credential::DatabaseCredential> =
+        None;
     let database = match &bootstrap.database {
         SharedBranchDatabase::Postgres { url: secret } => {
             let text = Zeroizing::new(
@@ -881,7 +899,20 @@ pub fn apply_shared_branch_bootstrap(
             account_id,
             database_id,
             api_base,
+            api_token,
+            api_token_id,
         } => {
+            if let Some(token) = api_token {
+                let text = std::str::from_utf8(token.expose())
+                    .map_err(|_| JoinError::Record("malformed D1 API token".into()))?;
+                let credential = bookclerk_library::database_credential::DatabaseCredential::new(
+                    text,
+                    api_token_id.as_deref(),
+                )
+                .map_err(|err| JoinError::Record(format!("unusable D1 API token: {err}")))?;
+                bookclerk_config::register_secret(credential.token());
+                d1_credential = Some(credential);
+            }
             cfg.database.plugin = DatabasePluginKind::D1.as_str().into();
             cfg.database.d1.account_id.clone_from(account_id);
             cfg.database.d1.database_id.clone_from(database_id);
@@ -958,6 +989,25 @@ pub fn apply_shared_branch_bootstrap(
             files_dir,
         ));
     }
+    // After `master.key` is published, so the token follows the key's store
+    // (file, keychain or systemd-creds). A failure here leaves the join
+    // applied: the node starts, and asks for `BOOKCLERK_D1_API_TOKEN`.
+    let database_credential = d1_credential.and_then(|credential| {
+        match bookclerk_library::database_credential::store_database_credential_for_dek(
+            files_dir,
+            bootstrap.dek.expose(),
+            &credential,
+        ) {
+            Ok(store) => Some(store),
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "could not keep the library's D1 token; set BOOKCLERK_D1_API_TOKEN on this server"
+                );
+                None
+            }
+        }
+    });
     tracing::info!(
         library_id = %bootstrap.library_id,
         node_id = %bootstrap.node_id,
@@ -968,6 +1018,7 @@ pub fn apply_shared_branch_bootstrap(
     Ok(AppliedSharedBranch {
         database,
         wrapped: password.is_some(),
+        database_credential,
         config_file: config_file.to_path_buf(),
     })
 }
@@ -1028,6 +1079,8 @@ mod tests {
                 account_id: "acct".into(),
                 database_id: "db-uuid".into(),
                 api_base: "https://api.cloudflare.com/client/v4".into(),
+                api_token: None,
+                api_token_id: None,
             }),
             None,
         )
@@ -1070,6 +1123,8 @@ mod tests {
                 account_id: "acct".into(),
                 database_id: "db-uuid".into(),
                 api_base: "https://api.cloudflare.com/client/v4".into(),
+                api_token: None,
+                api_token_id: None,
             }),
             None,
         )
@@ -1272,6 +1327,8 @@ mod tests {
                 account_id: "acct".into(),
                 database_id: "db-uuid".into(),
                 api_base: "https://api.cloudflare.com/client/v4".into(),
+                api_token: None,
+                api_token_id: None,
             }),
             None,
         )
@@ -1291,6 +1348,76 @@ mod tests {
         }
     }
 
+    /// The library's D1 token is kept in the joined install's master key
+    /// store, so it needs no `BOOKCLERK_D1_API_TOKEN`; undoing the join
+    /// deletes it again.
+    #[test]
+    fn a_d1_join_keeps_the_library_token_and_an_undo_removes_it() {
+        let files = tempfile::tempdir().unwrap();
+        let config = files.path().join("config.toml");
+        let applied = apply_shared_branch_bootstrap(
+            files.path(),
+            &config,
+            &bootstrap(SharedBranchDatabase::D1 {
+                account_id: "acct".into(),
+                database_id: "db-uuid".into(),
+                api_base: "https://api.cloudflare.com/client/v4".into(),
+                api_token: Some(SecretValue::new(b"library-token".to_vec())),
+                api_token_id: Some("tok_7".into()),
+            }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            applied.database_credential,
+            Some(bookclerk_config::KeyStoreKind::File)
+        );
+        let dek =
+            bookclerk_library::master_key::resolve_master_key_with(files.path(), None).unwrap();
+        assert_eq!(dek.as_bytes(), &[5u8; 32], "the library's key");
+        let credential =
+            bookclerk_library::database_credential::load_database_credential(files.path(), &dek)
+                .unwrap()
+                .unwrap();
+        assert_eq!(credential.token(), "library-token");
+        assert_eq!(credential.token_id(), Some("tok_7"));
+        let credential_file =
+            bookclerk_library::database_credential::database_credential_path(files.path());
+        let raw = std::fs::read(&credential_file).unwrap();
+        assert!(!raw.windows(13).any(|w| w == b"library-token"), "sealed");
+        bookclerk_library::uncache_master_key(&dek);
+
+        pending_shared_branch_join(files.path(), &config)
+            .unwrap()
+            .revert()
+            .unwrap();
+        assert!(!credential_file.exists());
+    }
+
+    /// A token the joined install can't store refuses the join before any
+    /// file is written.
+    #[test]
+    fn a_malformed_d1_token_refuses_the_join() {
+        let files = tempfile::tempdir().unwrap();
+        let config = files.path().join("config.toml");
+        let err = apply_shared_branch_bootstrap(
+            files.path(),
+            &config,
+            &bootstrap(SharedBranchDatabase::D1 {
+                account_id: "acct".into(),
+                database_id: "db-uuid".into(),
+                api_base: "https://api.cloudflare.com/client/v4".into(),
+                api_token: Some(SecretValue::new(b"has space".to_vec())),
+                api_token_id: None,
+            }),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("D1 API token"), "{err}");
+        assert!(!config.exists());
+        assert!(!bookclerk_library::master_key_path(files.path()).exists());
+    }
+
     #[test]
     fn a_d1_bootstrap_without_a_password_writes_an_unwrapped_key() {
         let files = tempfile::tempdir().unwrap();
@@ -1302,6 +1429,8 @@ mod tests {
                 account_id: "acct".into(),
                 database_id: "db-uuid".into(),
                 api_base: "https://api.cloudflare.com/client/v4".into(),
+                api_token: None,
+                api_token_id: None,
             }),
             None,
         )
@@ -1381,6 +1510,8 @@ mod tests {
                 account_id: "acct".into(),
                 database_id: "db-uuid".into(),
                 api_base: "https://api.cloudflare.com/client/v4".into(),
+                api_token: None,
+                api_token_id: None,
             }),
             None,
         )

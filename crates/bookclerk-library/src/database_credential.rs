@@ -3,7 +3,7 @@
 //!
 //! A hosted database (Cloudflare D1) needs an API token before the library
 //! can open, so it can't live in `encrypted_secrets` like a store login.
-//! `bookclerk database setup d1` mints one and keeps it here instead of in
+//! `bookclerk config database setup d1` mints one and keeps it here instead of in
 //! an environment variable:
 //!
 //! 1. The token is sealed with the data-encryption key (XChaCha20-Poly1305),
@@ -401,6 +401,31 @@ fn master_key_store(files_dir: &Path) -> Result<KeyStoreKind> {
         })
 }
 
+/// [`store_database_credential`] for a DEK given as raw bytes: what a
+/// joining shared branch received from its library with the token.
+///
+/// # Arguments
+///
+/// * `files_dir` - the files directory holding `master.key`.
+/// * `dek` - the library's 32-byte data-encryption key.
+/// * `credential` - the token to keep.
+///
+/// # Errors
+///
+/// [`LibraryError::Invalid`] when `dek` is not 32 bytes, and whatever
+/// [`store_database_credential`] returns.
+pub fn store_database_credential_for_dek(
+    files_dir: &Path,
+    dek: &[u8],
+    credential: &DatabaseCredential,
+) -> Result<KeyStoreKind> {
+    let bytes: [u8; 32] = dek
+        .try_into()
+        .map_err(|_| LibraryError::Invalid("a data-encryption key is 32 bytes".into()))?;
+    let key = MasterKey::from_bytes(bytes);
+    store_database_credential(files_dir, &key, credential)
+}
+
 /// Seals `credential` with `dek` and keeps it in the master key's store,
 /// replacing (and deleting the item of) any credential stored before.
 ///
@@ -499,7 +524,7 @@ pub fn load_database_credential(
     if record.fingerprint != fingerprint(dek) {
         return Err(LibraryError::Other(anyhow::anyhow!(
             "database credential {} was sealed under a different master key; run \
-             `bookclerk database setup d1` again",
+             `bookclerk config database setup d1` again",
             path.display()
         )));
     }
@@ -573,7 +598,7 @@ pub fn rehome_database_credential(files_dir: &Path, dek: &MasterKey) -> Result<(
 
 /// The Cloudflare D1 API token: `BOOKCLERK_D1_API_TOKEN` or
 /// `CLOUDFLARE_API_TOKEN` when set, else the credential
-/// `bookclerk database setup d1` stored. A stored token is registered for
+/// `bookclerk config database setup d1` stored. A stored token is registered for
 /// log redaction.
 ///
 /// The master key is loaded only when a stored credential exists, so a
@@ -597,6 +622,42 @@ pub fn resolve_d1_api_token(files_dir: &Path) -> Result<Zeroizing<String>> {
     resolve_d1_token_with(env, files_dir, None)
 }
 
+/// The D1 credential this install uses, for a shared branch joining it:
+/// the environment's token (with no id) when one is set, else the stored
+/// credential, else `None`.
+///
+/// # Arguments
+///
+/// * `files_dir` - the files directory holding `database.credential`.
+/// * `dek` - the library's data-encryption key.
+///
+/// # Errors
+///
+/// [`LibraryError`] when the environment's token is malformed or the stored
+/// credential can't be read.
+pub fn current_d1_credential(
+    files_dir: &Path,
+    dek: &MasterKey,
+) -> Result<Option<DatabaseCredential>> {
+    current_d1_credential_with(
+        bookclerk_config::resolve_d1_api_token().ok(),
+        files_dir,
+        dek,
+    )
+}
+
+/// [`current_d1_credential`] with the environment's token passed in.
+fn current_d1_credential_with(
+    env_token: Option<String>,
+    files_dir: &Path,
+    dek: &MasterKey,
+) -> Result<Option<DatabaseCredential>> {
+    match env_token {
+        Some(token) => DatabaseCredential::new(&token, None).map(Some),
+        None => load_database_credential(files_dir, dek),
+    }
+}
+
 /// [`resolve_d1_api_token`] with the environment's token passed in.
 fn resolve_d1_token_with(
     env_token: Option<String>,
@@ -616,7 +677,7 @@ fn resolve_d1_token_with(
             Ok(Zeroizing::new(credential.token().to_string()))
         }
         None => Err(LibraryError::Invalid(
-            "D1 API token not configured: run `bookclerk database setup d1`, or set \
+            "D1 API token not configured: run `bookclerk config database setup d1`, or set \
              BOOKCLERK_D1_API_TOKEN or CLOUDFLARE_API_TOKEN (see docs/server/database.md)"
                 .into(),
         )),

@@ -1450,6 +1450,7 @@ Options:
 - `--account-id <ACCOUNT_ID>`: Cloudflare account id; found from the token when it sees only one
 - `--database-name <DATABASE_NAME>`: D1 database name (default `bookclerk`); created when missing
 - `--jurisdiction <JURISDICTION>`: Where a new database keeps its data: `default`, `eu` or `fedramp`
+- `--rotate-token`: Mint a new D1 token and delete the one an earlier setup created (a re-run keeps it by default). Shared branches hold a copy of the earlier token, so each needs to join again
 
 ## `bookclerk export`
 

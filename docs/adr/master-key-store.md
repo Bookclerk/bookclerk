@@ -164,6 +164,10 @@ in the same store as the key, even though it is already sealed:
 - `config master-key move` takes the credential along. Reading fails
   closed, like the key: a missing item or a token sealed under another key
   is an error. `BOOKCLERK_D1_API_TOKEN` still overrides it.
+- A shared branch receives the library's token in its sealed bootstrap,
+  beside the key, and stores it the same way in its own store. A later
+  setup keeps that token unless told to replace it, so shared branches
+  aren't cut off.
 
 ## Consequences
 

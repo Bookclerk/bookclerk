@@ -28,7 +28,7 @@ token_permissions = [
     "Account > D1 > Edit",
     "Account > Account API Tokens > Edit",
 ]
-inputs = ["account_id", "database_name", "jurisdiction"]
+inputs = ["account_id", "database_name", "jurisdiction", "rotate_token"]
 outputs = ["account_id", "database_id", "database_name", "jurisdiction", "api_token_id", "api_token"]
 deprovision = false
 
@@ -59,6 +59,13 @@ description = "Where a new database keeps its data."
 key = "database_id"
 label = "Database ID"
 type = "string"
+
+[[settings]]
+key = "rotate_token"
+label = "Replace the API token"
+type = "bool"
+default = false
+description = "Mint a new token and delete the one an earlier setup created. Shared branches hold a copy of the earlier token, so each needs to join again."
 
 [[settings]]
 key = "api_token_id"

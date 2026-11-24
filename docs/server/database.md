@@ -90,14 +90,16 @@ on a keychain or `systemd-creds` install, with `database.credential` then
 holding only a pointer. `bookclerk config master-key move` takes the
 credential along with the key.
 
-Running the setup again mints a fresh token and deletes the one the
-previous run minted. It never deletes the database.
+Running the setup again keeps the token the previous run minted, because
+shared branches of the library hold a copy of it. It only updates the
+database ids. To replace the token, pass `--rotate-token`: the setup mints
+a new one and deletes the old one. Each shared branch then needs to join
+again. Choosing a different account always mints a new token. The setup
+never deletes the database.
 
-> [!NOTE]
-> The stored credential is sealed under this install's key. A shared
-> branch that joins a D1 library installs the library's key, so it sets
-> `BOOKCLERK_D1_API_TOKEN` instead (see
-> [Shared branches](branches.md)), or runs the setup again after joining.
+A shared branch that joins a D1 library gets the library's token with the
+library's key, and keeps it in its own master key store, so it needs no
+environment variable (see [Shared branches](branches.md)).
 
 These environment variables override the file:
 

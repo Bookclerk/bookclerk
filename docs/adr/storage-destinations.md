@@ -114,7 +114,9 @@ back (`outputs`), and whether it can remove what it created
   summary, then stores the settings and inputs as one revision. A grant
   the plugin does not return as a credential is dropped.
 - A run sees what an earlier run stored, so a second run updates and
-  rotates rather than duplicating.
+  rotates rather than duplicating. The D1 database's setup is the
+  exception: it keeps its token unless asked to rotate, since shared
+  branches hold a copy.
 - The host seals the credentials before writing the revision that names
   them. A running instance picks up the new revision, and with it the new
   credentials, as it does any configuration change.

@@ -13,9 +13,11 @@
 //! joining node's X25519 box key with the H-4 sealed box
 //! ([`crate::seal`]: X25519, HKDF-SHA256, XChaCha20-Poly1305), bound to the
 //! library and node ids ([`shared_branch_bootstrap_aad`]). It holds the library's
-//! `[database]` connection and the DEK itself, never the passphrase-wrapped
-//! `master.key` file. Only the daemon that generated the box key can open
-//! it; the browser never sees it.
+//! `[database]` connection (for D1, with the library's API token) and the
+//! DEK itself, never the passphrase-wrapped `master.key` file. Only the
+//! daemon that generated the box key can open it; the browser never sees
+//! it. [`parse_shared_branch_bootstrap`] reads the opened plaintext, sans
+//! IO, and is what the `shared_branch_bootstrap` fuzz target drives.
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -41,6 +43,15 @@ pub const SHARED_BRANCH_BOOTSTRAP_VERSION: u32 = 1;
 
 /// Length of the data-encryption key.
 pub const DEK_LEN: usize = 32;
+
+/// The longest opened bootstrap accepted, in bytes.
+pub const MAX_SHARED_BRANCH_BOOTSTRAP_BYTES: usize = 64 * 1024;
+
+/// The longest D1 API token a bootstrap may carry, in bytes.
+pub const MAX_BOOTSTRAP_D1_TOKEN_BYTES: usize = 1024;
+
+/// The longest D1 API token id a bootstrap may carry, in bytes.
+pub const MAX_BOOTSTRAP_D1_TOKEN_ID_BYTES: usize = 128;
 
 /// How a joining install connects to a library.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, utoipa::ToSchema)]
@@ -99,8 +110,7 @@ pub enum SharedBranchDatabase {
         /// `postgres://user:password@host/db`.
         url: SecretValue,
     },
-    /// Cloudflare D1: the database's ids. The API token stays
-    /// environment-only bootstrap on each node and is never sent.
+    /// Cloudflare D1: the database's ids and the library's API token.
     D1 {
         /// Cloudflare account id.
         account_id: String,
@@ -108,6 +118,15 @@ pub enum SharedBranchDatabase {
         database_id: String,
         /// Cloudflare API base.
         api_base: String,
+        /// The library's D1 API token, which the shared branch keeps in its
+        /// own master key store. Left out by a library that predates it;
+        /// that shared branch then needs `BOOKCLERK_D1_API_TOKEN`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_token: Option<SecretValue>,
+        /// Cloudflare's id for `api_token`, when the guided setup minted it
+        /// (so a later setup on the shared branch can replace it).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        api_token_id: Option<String>,
     },
 }
 
@@ -133,11 +152,15 @@ impl std::fmt::Debug for SharedBranchDatabase {
                 account_id,
                 database_id,
                 api_base,
+                api_token,
+                api_token_id,
             } => f
                 .debug_struct("D1")
                 .field("account_id", account_id)
                 .field("database_id", database_id)
                 .field("api_base", api_base)
+                .field("api_token", &api_token.as_ref().map(|_| "<redacted>"))
+                .field("api_token_id", api_token_id)
                 .finish(),
         }
     }
@@ -232,8 +255,36 @@ pub fn open_shared_branch_bootstrap(
         &shared_branch_bootstrap_aad(library_id, node_id),
         &raw,
     )?;
+    parse_shared_branch_bootstrap(&plaintext, library_id, node_id)
+}
+
+/// Reads an opened bootstrap for `library_id` and `node_id`.
+///
+/// # Arguments
+///
+/// * `plaintext` - the bootstrap JSON, as [`open_shared_branch_bootstrap`]
+///   opened it.
+/// * `library_id`, `node_id` - the ids the redeem answered.
+///
+/// # Errors
+///
+/// [`SealError::Bundle`] for bytes over [`MAX_SHARED_BRANCH_BOOTSTRAP_BYTES`],
+/// bytes that are not a bootstrap, another version, a DEK that is not 32
+/// bytes, other ids, or a D1 token that is empty, longer than
+/// [`MAX_BOOTSTRAP_D1_TOKEN_BYTES`] or holds whitespace or control
+/// characters, a token id longer than [`MAX_BOOTSTRAP_D1_TOKEN_ID_BYTES`]
+/// or holding anything but ASCII letters, digits, `-` and `_`, or a token
+/// id without a token.
+pub fn parse_shared_branch_bootstrap(
+    plaintext: &[u8],
+    library_id: &str,
+    node_id: &str,
+) -> Result<SharedBranchBootstrap, SealError> {
+    if plaintext.len() > MAX_SHARED_BRANCH_BOOTSTRAP_BYTES {
+        return Err(SealError::Bundle);
+    }
     let bootstrap: SharedBranchBootstrap =
-        serde_json::from_slice(&plaintext).map_err(|_| SealError::Bundle)?;
+        serde_json::from_slice(plaintext).map_err(|_| SealError::Bundle)?;
     if bootstrap.v != SHARED_BRANCH_BOOTSTRAP_VERSION
         || bootstrap.dek.len() != DEK_LEN
         || bootstrap.library_id != library_id
@@ -241,7 +292,48 @@ pub fn open_shared_branch_bootstrap(
     {
         return Err(SealError::Bundle);
     }
+    match &bootstrap.database {
+        SharedBranchDatabase::Postgres { .. } => {}
+        SharedBranchDatabase::D1 {
+            api_token,
+            api_token_id,
+            ..
+        } => {
+            if let Some(token) = api_token {
+                if !valid_d1_token(token.expose()) {
+                    return Err(SealError::Bundle);
+                }
+            }
+            if let Some(id) = api_token_id {
+                if api_token.is_none() || !valid_d1_token_id(id) {
+                    return Err(SealError::Bundle);
+                }
+            }
+        }
+    }
     Ok(bootstrap)
+}
+
+/// True for a D1 token a shared branch can store: 1 to
+/// [`MAX_BOOTSTRAP_D1_TOKEN_BYTES`] bytes of UTF-8 with no whitespace or
+/// control character.
+fn valid_d1_token(token: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(token) else {
+        return false;
+    };
+    !text.is_empty()
+        && text.len() <= MAX_BOOTSTRAP_D1_TOKEN_BYTES
+        && !text.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// True for a token id of 1 to [`MAX_BOOTSTRAP_D1_TOKEN_ID_BYTES`] ASCII
+/// letters, digits, `-` and `_`.
+fn valid_d1_token_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_BOOTSTRAP_D1_TOKEN_ID_BYTES
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 #[cfg(test)]
@@ -304,6 +396,47 @@ mod tests {
         short.dek = SecretValue::new(vec![1u8; 16]);
         assert_eq!(
             seal_shared_branch_bootstrap(&box_public_key(&[3u8; 32]), &[9u8; 32], &short),
+            Err(SealError::Bundle)
+        );
+    }
+
+    /// A D1 bootstrap carries the library's token, and a bad token, a bad
+    /// id or an id without a token is refused.
+    #[test]
+    fn a_d1_bootstrap_carries_a_checked_token() {
+        let d1 = |token: Option<&[u8]>, id: Option<&str>| SharedBranchBootstrap {
+            database: SharedBranchDatabase::D1 {
+                account_id: "acct".into(),
+                database_id: "db".into(),
+                api_base: "https://api.cloudflare.com/client/v4".into(),
+                api_token: token.map(|t| SecretValue::new(t.to_vec())),
+                api_token_id: id.map(str::to_string),
+            },
+            ..bootstrap()
+        };
+        let parse = |b: &SharedBranchBootstrap| {
+            parse_shared_branch_bootstrap(&serde_json::to_vec(b).unwrap(), "library-1", "node-1")
+        };
+        let good = d1(Some(b"d1-token"), Some("tok_1"));
+        assert_eq!(parse(&good).unwrap(), good);
+        let printed = format!("{good:?}");
+        assert!(!printed.contains("d1-token"), "{printed}");
+        // A library that predates the token sends none.
+        assert!(parse(&d1(None, None)).is_ok());
+        for bad in [
+            d1(Some(b""), None),
+            d1(Some(b"has space"), None),
+            d1(Some(&[0xff, 0xfe]), None),
+            d1(Some(&[b'x'; MAX_BOOTSTRAP_D1_TOKEN_BYTES + 1]), None),
+            d1(Some(b"tok"), Some("bad id")),
+            d1(Some(b"tok"), Some("")),
+            d1(None, Some("tok_1")),
+        ] {
+            assert_eq!(parse(&bad), Err(SealError::Bundle), "{bad:?}");
+        }
+        let huge = vec![b' '; MAX_SHARED_BRANCH_BOOTSTRAP_BYTES + 1];
+        assert_eq!(
+            parse_shared_branch_bootstrap(&huge, "library-1", "node-1"),
             Err(SealError::Bundle)
         );
     }

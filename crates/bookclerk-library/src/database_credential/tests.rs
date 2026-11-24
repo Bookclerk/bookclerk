@@ -294,3 +294,42 @@ fn the_d1_token_comes_from_the_environment_or_the_stored_credential() {
     );
     assert!(resolve_d1_token_with(None, dir.path(), None).is_err());
 }
+
+#[test]
+fn a_joining_shared_branch_gets_the_token_in_use() {
+    let _lock = master_key_test_lock();
+    let _stores = Stores::install();
+    let dir = tempdir().unwrap();
+    write_master_key(dir.path(), KeyStoreKind::File);
+    let key = dek();
+    assert!(current_d1_credential_with(None, dir.path(), &key)
+        .unwrap()
+        .is_none());
+    store_database_credential(dir.path(), &key, &credential("stored-token")).unwrap();
+    let stored = current_d1_credential_with(None, dir.path(), &key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.token(), "stored-token");
+    assert_eq!(stored.token_id(), Some("tok_123"));
+    let env = current_d1_credential_with(Some("env-token".into()), dir.path(), &key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(env.token(), "env-token");
+    assert_eq!(env.token_id(), None, "the environment's token has no id");
+    assert!(current_d1_credential_with(Some("has space".into()), dir.path(), &key).is_err());
+}
+
+#[test]
+fn a_joining_node_stores_the_token_under_the_received_key() {
+    let _lock = master_key_test_lock();
+    let _stores = Stores::install();
+    let dir = tempdir().unwrap();
+    write_master_key(dir.path(), KeyStoreKind::File);
+    let key = dek();
+    let kind = store_database_credential_for_dek(dir.path(), key.as_bytes(), &credential("joined"))
+        .unwrap();
+    assert_eq!(kind, KeyStoreKind::File);
+    let back = load_database_credential(dir.path(), &key).unwrap().unwrap();
+    assert_eq!(back.token(), "joined");
+    assert!(store_database_credential_for_dek(dir.path(), &[1u8; 16], &credential("x")).is_err());
+}

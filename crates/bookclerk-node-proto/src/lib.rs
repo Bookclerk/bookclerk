@@ -182,10 +182,11 @@ pub use sealed::{
     SECRETS_AAD_DOMAIN, SECRET_UPDATE_AAD_DOMAIN, UPLOAD_TOKEN_AAD_DOMAIN,
 };
 pub use shared_branch::{
-    open_shared_branch_bootstrap, seal_shared_branch_bootstrap, shared_branch_bootstrap_aad,
-    ConnectionType, SharedBranchBootstrap, SharedBranchDatabase, DEK_LEN,
-    SHARED_BRANCH_BOOTSTRAP_AAD_DOMAIN, SHARED_BRANCH_BOOTSTRAP_VERSION,
-    SHARED_BRANCH_GRANTED_SCOPE, SHARED_BRANCH_OFFER_PARAM,
+    open_shared_branch_bootstrap, parse_shared_branch_bootstrap, seal_shared_branch_bootstrap,
+    shared_branch_bootstrap_aad, ConnectionType, SharedBranchBootstrap, SharedBranchDatabase,
+    DEK_LEN, MAX_BOOTSTRAP_D1_TOKEN_BYTES, MAX_BOOTSTRAP_D1_TOKEN_ID_BYTES,
+    MAX_SHARED_BRANCH_BOOTSTRAP_BYTES, SHARED_BRANCH_BOOTSTRAP_AAD_DOMAIN,
+    SHARED_BRANCH_BOOTSTRAP_VERSION, SHARED_BRANCH_GRANTED_SCOPE, SHARED_BRANCH_OFFER_PARAM,
 };
 pub use signature::{
     artifact_transcript, auth_transcript, canonical_origin, decode_nonce, encode_nonce,

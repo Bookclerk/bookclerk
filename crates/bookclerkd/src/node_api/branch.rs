@@ -97,8 +97,8 @@ pub(crate) fn library_name(origin: &str) -> String {
 
 /// This library's database as a shared branch would connect to it, or why it
 /// cannot be shared: only PostgreSQL and Cloudflare D1 can be opened by
-/// more than one server. The D1 API token is never included (it is
-/// environment-only bootstrap on every node).
+/// more than one server. The D1 API token is not filled in here: the redeem
+/// answer adds it ([`with_d1_credential`]) once it holds the DEK.
 ///
 /// # Errors
 ///
@@ -120,6 +120,8 @@ pub(crate) fn shared_database(
                     account_id: cfg.database.d1.account_id.clone(),
                     database_id: cfg.database.d1.database_id.clone(),
                     api_base,
+                    api_token: None,
+                    api_token_id: None,
                 })
                 .map_err(|_| {
                     "This library's Cloudflare D1 API origin is not https://api.cloudflare.com, \
@@ -133,6 +135,44 @@ pub(crate) fn shared_database(
             .into()),
         None => Err("This library's database plugin cannot be shared with another server.".into()),
     }
+}
+
+/// `database` with this library's D1 credential added, so the shared branch
+/// keeps it in its own master key store instead of needing it set by hand.
+/// A credential that can't be read is left out (the shared branch then
+/// needs `BOOKCLERK_D1_API_TOKEN`); a PostgreSQL database is unchanged.
+///
+/// # Arguments
+///
+/// * `database` - what [`shared_database`] answered.
+/// * `files_dir` - this install's files directory.
+/// * `dek` - this library's data-encryption key.
+pub(crate) fn with_d1_credential(
+    mut database: SharedBranchDatabase,
+    files_dir: &std::path::Path,
+    dek: &bookclerk_library::MasterKey,
+) -> SharedBranchDatabase {
+    match &mut database {
+        SharedBranchDatabase::Postgres { .. } => {}
+        SharedBranchDatabase::D1 {
+            api_token,
+            api_token_id,
+            ..
+        } => match bookclerk_library::database_credential::current_d1_credential(files_dir, dek) {
+            Ok(Some(credential)) => {
+                *api_token = Some(SecretValue::new(credential.token().as_bytes().to_vec()));
+                *api_token_id = credential.token_id().map(str::to_string);
+            }
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "shared branch enrollment: this library's D1 token could not be read, so the shared branch needs BOOKCLERK_D1_API_TOKEN"
+                );
+            }
+        },
+    }
+    database
 }
 
 /// What `info` and Settings → Branches report.
@@ -726,7 +766,7 @@ async fn shared_branch_answer(
         v: SHARED_BRANCH_BOOTSTRAP_VERSION,
         library_id: enrolled.library_id.clone(),
         node_id: enrolled.node_id.clone(),
-        database,
+        database: with_d1_credential(database, &files_dir, &dek),
         dek: SecretValue::new(dek.as_bytes().to_vec()),
     };
     drop(dek);

@@ -1201,7 +1201,7 @@ pub fn move_master_key(
     if let Err(err) = crate::database_credential::rehome_database_credential(files_dir, &key) {
         tracing::warn!(
             "the master key moved, but the database credential could not follow it ({err}); \
-             run `bookclerk database setup d1` again"
+             run `bookclerk config database setup d1` again"
         );
     }
     Ok(format)

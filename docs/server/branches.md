@@ -483,17 +483,16 @@ The second choice is shown but disabled, with the reason, when:
 The Join wizard shows **Offer to join as a shared branch** only on an empty
 install. That means no users, store accounts, books or joined libraries of
 its own, and no `BOOKCLERK_DATABASE_*` or `BOOKCLERK_D1_*` environment
-override of the database settings. (`BOOKCLERK_D1_API_TOKEN` isn't one: it
-stays this server's own.)
+override of the database settings. (`BOOKCLERK_D1_API_TOKEN` isn't one:
+when set, it overrides the token the library sends.)
 
 Ticking it asks you to confirm that the server's own database settings and
 keys are replaced. The daemon checks again when the sign-in starts and
 when it comes back.
 
 > [!NOTE]
-> For a D1 library, set this server's own `BOOKCLERK_D1_API_TOKEN` (the
-> token is never sent between servers). For any branch on the library's
-> database, install the library's database plugin (`postgres` or `d1`) first.
+> For any branch on the library's database, install the library's database
+> plugin (`postgres` or `d1`) first.
 
 ### Approving
 
@@ -505,8 +504,9 @@ with both ends on one machine), as for a branch.
 
 ### What is handed over
 
-In its redeem answer the library sends the `[database]` connection and the
-data-encryption key, sealed to the joining daemon's own X25519 node key.
+In its redeem answer the library sends the `[database]` connection (for
+D1, with the API token the library uses) and the data-encryption key,
+sealed to the joining daemon's own X25519 node key.
 It never sends the passphrase-wrapped `master.key` file. The browser never
 sees either, and neither is logged.
 
@@ -521,6 +521,11 @@ The joining daemon writes them as its own bootstrap:
   server keeps its key in the OS keychain or `systemd-creds`
   (`[auth].key_store`, or the desktop window's default), the key goes
   into a new item there and `master.key` only names it.
+- For D1, the library's API token, sealed with the key and kept in the
+  same store (`database.credential`, or an item in the OS keychain or
+  `systemd-creds` that it names), as `bookclerk config database setup d1`
+  keeps it. Nothing needs setting by hand. Undoing a failed join deletes
+  it again.
 
 Then `bookclerkd` restarts itself cleanly. It stops its listeners as on
 SIGTERM and re-executes the same binary with the same arguments and

@@ -78,6 +78,7 @@ boundary extends it.
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
 | `node_frame` | Node-to-node frames on the library socket, including the public origin a branch reports in its heartbeat | `bookclerk-node-proto::Frame`, `BranchOrigin::parse` |
 | `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, a branch offers its library (`accounts.add`), and a sign-in a keeping branch pushes there (`accounts.update`) or the library answers its first push with (`reconcile`) | `bookclerk-node-proto::parse_account_bundle` |
+| `shared_branch_bootstrap` | The bootstrap a library sends a joining shared branch: its `[database]` connection (for D1, with the library's API token) and the data-encryption key, which the shared branch writes as its own and keeps in its master key store | `bookclerk-node-proto::parse_shared_branch_bootstrap` |
 | `destination_filter` | A storage destination's filter: the body of `PUT /api/config/plugin-instances/{id}/filter` and the stored `core.destination` document | `bookclerk-config::parse_destination_filter` |
 | `intake_settings` | A drop folder's settings: the body of `PUT /api/config/plugin-instances/{id}/intake` and the stored `core.intake` document | `bookclerk-config::parse_intake_settings` |
 | `intake_items` | A drop folder's listing: object keys, sizes and change signatures grouped into items and settled | `bookclerk-intake::ItemGrouper`, `step` |
@@ -833,6 +834,15 @@ only that. The others check:
   bundle serializes and parses back to an equal bundle. The shared oracle
   is `fuzz/oracles/node_account_bundle.rs`, replayed from
   `bookclerk-node-proto`.
+- **`shared_branch_bootstrap`**: an accepted bootstrap is within the size
+  limit, has the bootstrap version, names the library and node it was
+  opened for, and carries a 32-byte DEK. A D1 token is 1 byte to its limit
+  of UTF-8 with no whitespace or control character, and a token id is 1
+  byte to its limit of ASCII letters, digits, `-` and `_` and never comes
+  without a token, checked in the oracle rather than through the parser's
+  own rule. An accepted bootstrap serializes and parses back to an equal
+  one. The shared oracle is `fuzz/oracles/shared_branch_bootstrap.rs`,
+  replayed from `bookclerk-node-proto`.
 - **`plan_authz`**: decodes a small library (store accounts on two plugins
   whose ids and labels collide, who each is linked to, library rows and
   plugin instances) and one Member's scan or acquire request into an

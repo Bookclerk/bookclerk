@@ -8,6 +8,10 @@
 //! (`bookclerk_library::database_credential`), and writes the account and
 //! database ids to `[database.d1]` in config.toml. The pasted token is used
 //! for this run only.
+//!
+//! A re-run keeps the token an earlier run minted, since shared branches
+//! of the library hold a copy of it; `--rotate-token`, or a different
+//! account, mints a new one and deletes the old.
 
 use std::collections::BTreeMap;
 
@@ -41,12 +45,18 @@ pub struct SetupChoices {
     pub database_name: Option<String>,
     /// `default`, `eu` or `fedramp`.
     pub jurisdiction: Option<String>,
+    /// Mint a new token even when an earlier run minted one.
+    pub rotate_token: bool,
 }
 
 impl SetupChoices {
-    /// The choices as the plugin's `[provisioning] inputs`.
-    fn inputs(&self) -> BTreeMap<String, Value> {
-        [
+    /// The choices as the plugin's `[provisioning] inputs`, for a library
+    /// whose `[database.d1]` names `configured_account` (empty when none).
+    ///
+    /// A different account always rotates: the earlier token is limited to
+    /// the account it was minted in.
+    fn inputs(&self, configured_account: &str) -> BTreeMap<String, Value> {
+        let mut inputs: BTreeMap<String, Value> = [
             ("account_id", &self.account_id),
             ("database_name", &self.database_name),
             ("jurisdiction", &self.jurisdiction),
@@ -59,7 +69,18 @@ impl SetupChoices {
                 .filter(|value| !value.is_empty())
                 .map(|value| (key.to_string(), Value::from(value)))
         })
-        .collect()
+        .collect();
+        let configured = configured_account.trim();
+        let other_account = inputs
+            .get("account_id")
+            .and_then(Value::as_str)
+            .is_some_and(|chosen| {
+                !configured.is_empty() && !chosen.eq_ignore_ascii_case(configured)
+            });
+        if self.rotate_token || other_account {
+            inputs.insert("rotate_token".into(), Value::Bool(true));
+        }
+        inputs
     }
 }
 
@@ -72,8 +93,9 @@ struct D1Outputs {
     database_id: String,
     /// The database's name, for the summary.
     database_name: String,
-    /// The minted token and its id.
-    credential: DatabaseCredential,
+    /// The newly minted token and its id, or `None` when the setup kept
+    /// the earlier one.
+    credential: Option<DatabaseCredential>,
     /// Lines for the operator.
     summary: Vec<String>,
 }
@@ -94,16 +116,17 @@ fn d1_outputs(checked: &CheckedProvision) -> anyhow::Result<D1Outputs> {
             .map(str::to_string)
             .ok_or_else(|| anyhow::anyhow!("the D1 setup returned no `{key}`"))
     };
-    let token = checked
+    let token_id = text("api_token_id").ok();
+    let credential = checked
         .secrets
         .get("api_token")
-        .ok_or_else(|| anyhow::anyhow!("the D1 setup returned no API token"))?;
-    let token_id = text("api_token_id").ok();
+        .map(|token| DatabaseCredential::new(token.expose(), token_id.as_deref()))
+        .transpose()?;
     Ok(D1Outputs {
         account_id: text("account_id")?,
         database_id: text("database_id")?,
         database_name: text("database_name").unwrap_or_default(),
-        credential: DatabaseCredential::new(token.expose(), token_id.as_deref())?,
+        credential,
         summary: checked.summary.clone(),
     })
 }
@@ -111,28 +134,42 @@ fn d1_outputs(checked: &CheckedProvision) -> anyhow::Result<D1Outputs> {
 /// What [`apply_d1_setup`] wrote.
 #[derive(Debug)]
 struct Applied {
-    /// The store the sealed token went to.
-    store: KeyStoreKind,
+    /// The store a newly minted token went to, or `None` when the earlier
+    /// token was kept.
+    store: Option<KeyStoreKind>,
     /// The config.toml written.
     config_file: std::path::PathBuf,
 }
 
-/// Keeps the minted token and writes `[database.d1]`.
+/// Keeps a newly minted token and writes `[database.d1]`.
 ///
 /// The credential is stored first, so config.toml never names a database
-/// this install holds no token for.
+/// this install holds no token for. A setup that kept the earlier token
+/// needs this install to hold one already.
 ///
 /// # Errors
 ///
-/// Returns an error when the credential can't be stored or the config
-/// can't be written.
+/// Returns an error when the credential can't be stored, the earlier token
+/// is kept but this install has none, or the config can't be written.
 fn apply_d1_setup(
     config: &Config,
     dek: &MasterKey,
     outputs: &D1Outputs,
 ) -> anyhow::Result<Applied> {
     let files_dir = &config.paths().files_dir;
-    let store = store_database_credential(files_dir, dek, &outputs.credential)?;
+    let store = match &outputs.credential {
+        Some(credential) => Some(store_database_credential(files_dir, dek, credential)?),
+        None => {
+            if load_database_credential(files_dir, dek)?.is_none()
+                && bookclerk_config::resolve_d1_api_token().is_err()
+            {
+                anyhow::bail!(
+                    "the D1 setup kept the earlier token, but this server holds none; run it again with --rotate-token"
+                );
+            }
+            None
+        }
+    };
     let mut cfg = config.clone();
     cfg.database.d1.account_id.clone_from(&outputs.account_id);
     cfg.database.d1.database_id.clone_from(&outputs.database_id);
@@ -142,8 +179,8 @@ fn apply_d1_setup(
 }
 
 /// The settings the plugin starts from: what config.toml and the stored
-/// credential already say, so a re-run reuses the account and rotates the
-/// earlier token.
+/// credential already say, so a re-run reuses the account and keeps (or,
+/// when asked, replaces) the earlier token.
 fn current_settings(config: &Config, dek: &MasterKey) -> serde_json::Map<String, Value> {
     let mut settings = serde_json::Map::new();
     let d1 = &config.database.d1;
@@ -153,7 +190,8 @@ fn current_settings(config: &Config, dek: &MasterKey) -> serde_json::Map<String,
     if !d1.database_id.trim().is_empty() {
         settings.insert("database_id".into(), Value::from(d1.database_id.trim()));
     }
-    // An unreadable earlier credential only means its token isn't rotated.
+    // An unreadable earlier credential only means a new token is minted and
+    // the old one is left for the operator to delete.
     if let Ok(Some(previous)) = load_database_credential(&config.paths().files_dir, dek) {
         if let Some(id) = previous.token_id() {
             settings.insert("api_token_id".into(), Value::from(id));
@@ -198,9 +236,15 @@ pub async fn run(
     let dek =
         bookclerk_library::configure_master_key_with(files_dir, config.auth_password().as_deref())?;
     let settings = current_settings(config, &dek);
-    let checked = provision_bootstrap(config, plugin, &settings, &token, &choices.inputs())
-        .await
-        .map_err(|err| anyhow::anyhow!("the D1 setup failed: {err}"))?;
+    let checked = provision_bootstrap(
+        config,
+        plugin,
+        &settings,
+        &token,
+        &choices.inputs(&config.database.d1.account_id),
+    )
+    .await
+    .map_err(|err| anyhow::anyhow!("the D1 setup failed: {err}"))?;
     let outputs = d1_outputs(&checked)?;
     let applied = apply_d1_setup(config, &dek, &outputs)?;
     let active = config.database.plugin.trim() == D1_PLUGIN;
@@ -208,7 +252,8 @@ pub async fn run(
         "account_id": outputs.account_id,
         "database_id": outputs.database_id,
         "database_name": outputs.database_name,
-        "credential_store": applied.store.as_str(),
+        "credential_store": applied.store.map(KeyStoreKind::as_str),
+        "rotated": applied.store.is_some(),
         "config": applied.config_file.display().to_string(),
         "active": active,
         "summary": outputs.summary,
@@ -217,10 +262,13 @@ pub async fn run(
         for line in &outputs.summary {
             println!("{line}");
         }
-        println!(
-            "kept the D1 token in the {}, sealed with the library's key",
-            store_label(applied.store)
-        );
+        match applied.store {
+            Some(store) => println!(
+                "kept the D1 token in the {}, sealed with the library's key",
+                store_label(store)
+            ),
+            None => println!("kept the D1 token this server already holds"),
+        }
         println!(
             "set database.d1.account_id and database.d1.database_id={} in {}",
             outputs.database_id,
@@ -246,15 +294,24 @@ mod tests {
 
     #[test]
     fn choices_become_inputs_without_blanks() {
-        let inputs = SetupChoices {
+        let choices = SetupChoices {
             account_id: Some(" 3f4b ".into()),
             database_name: Some("   ".into()),
             jurisdiction: None,
-        }
-        .inputs();
+            rotate_token: false,
+        };
+        let inputs = choices.inputs("3F4B");
         assert_eq!(inputs.len(), 1);
         assert_eq!(inputs["account_id"], "3f4b");
-        assert!(SetupChoices::default().inputs().is_empty());
+        assert!(SetupChoices::default().inputs("").is_empty());
+        assert!(!choices.inputs("").contains_key("rotate_token"));
+        // Another account, or asking, rotates the token.
+        assert_eq!(choices.inputs("aaaa")["rotate_token"], true);
+        let asked = SetupChoices {
+            rotate_token: true,
+            ..SetupChoices::default()
+        };
+        assert_eq!(asked.inputs("aaaa")["rotate_token"], true);
     }
 
     #[test]
@@ -266,11 +323,11 @@ mod tests {
             account_id: "3f4b7e3dcab231cbfdaa90a6a28bd548".into(),
             database_id: "0c3a1d2e-4b5f-4a6b-8c7d-9e0f1a2b3c4d".into(),
             database_name: "bookclerk".into(),
-            credential: DatabaseCredential::new("minted", Some("tok_1")).unwrap(),
+            credential: Some(DatabaseCredential::new("minted", Some("tok_1")).unwrap()),
             summary: vec![],
         };
         let applied = apply_d1_setup(&config, &dek, &outputs).unwrap();
-        assert_eq!(applied.store, KeyStoreKind::File);
+        assert_eq!(applied.store, Some(KeyStoreKind::File));
         let written = Config::load(Some(dir.path().to_path_buf()), None).unwrap();
         assert_eq!(written.database.d1.account_id, outputs.account_id);
         assert_eq!(written.database.d1.database_id, outputs.database_id);
@@ -283,6 +340,30 @@ mod tests {
         assert_eq!(settings["database_id"], outputs.database_id.as_str());
         assert_eq!(settings["api_token_id"], "tok_1");
         assert!(current_settings(&config, &dek).get("account_id").is_none());
+
+        // A re-run that kept the earlier token writes the ids and leaves
+        // the stored token as it was.
+        let kept = D1Outputs {
+            credential: None,
+            database_id: "1d4b2e3f-5c6a-4b7c-9d8e-0f1a2b3c4d5e".into(),
+            ..outputs
+        };
+        let applied = apply_d1_setup(&written, &dek, &kept).unwrap();
+        assert_eq!(applied.store, None);
+        let rewritten = Config::load(Some(dir.path().to_path_buf()), None).unwrap();
+        assert_eq!(rewritten.database.d1.database_id, kept.database_id);
+        let still = load_database_credential(dir.path(), &dek).unwrap().unwrap();
+        assert_eq!(still.token(), "minted");
+
+        // Kept, but this server holds no token: refused.
+        let fresh = tempfile::tempdir().unwrap();
+        let fresh_config = Config::load(Some(fresh.path().to_path_buf()), None).unwrap();
+        let fresh_dek =
+            bookclerk_library::master_key::resolve_master_key_with(fresh.path(), None).unwrap();
+        if bookclerk_config::resolve_d1_api_token().is_err() {
+            let err = apply_d1_setup(&fresh_config, &fresh_dek, &kept).unwrap_err();
+            assert!(err.to_string().contains("--rotate-token"), "{err}");
+        }
         for store in [
             KeyStoreKind::File,
             KeyStoreKind::Keychain,

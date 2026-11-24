@@ -2887,7 +2887,7 @@ pub fn database_connect_bindings(
 }
 
 /// The D1 API token: from the environment, or the credential
-/// `bookclerk database setup d1` sealed beside `master.key`.
+/// `bookclerk config database setup d1` sealed beside `master.key`.
 ///
 /// # Errors
 ///

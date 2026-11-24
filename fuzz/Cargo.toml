@@ -317,6 +317,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "shared_branch_bootstrap"
+path = "fuzz_targets/shared_branch_bootstrap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "cover_process"
 path = "fuzz_targets/cover_process.rs"
 test = false
