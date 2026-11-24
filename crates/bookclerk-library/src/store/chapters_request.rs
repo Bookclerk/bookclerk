@@ -23,8 +23,10 @@ pub const MAX_CHAPTER_PIN_BYTES: usize = 1024;
 /// Longest `source_id` a pin names, in bytes; a PluginKey is far shorter.
 pub const MAX_CHAPTER_SOURCE_ID_BYTES: usize = 256;
 
-/// One chapter of an edit, as JSON carries it.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+/// One chapter of an edit, as JSON carries it: an object, never an array.
+#[derive(Debug, utoipa::ToSchema)]
+// Read by the schema only (no unknown fields); `ChapterEditEntryFields`
+// enforces it.
 #[serde(deny_unknown_fields)]
 pub struct ChapterEditEntry {
     /// Chapter title: 1 to 512 bytes, no control characters, no leading or
@@ -40,6 +42,37 @@ pub struct ChapterEditEntry {
     #[serde(default)]
     #[schema(example = 0)]
     depth: u32,
+}
+
+/// [`ChapterEditEntry`]'s fields as JSON carries them; read only from a
+/// JSON object, never from an array.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChapterEditEntryFields {
+    /// See [`ChapterEditEntry::title`].
+    title: String,
+    /// See [`ChapterEditEntry::start_ms`].
+    start_ms: u64,
+    /// See [`ChapterEditEntry::depth`].
+    #[serde(default)]
+    depth: u32,
+}
+
+impl<'de> Deserialize<'de> for ChapterEditEntry {
+    /// Reads one chapter from a JSON object only.
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let fields: ChapterEditEntryFields = crate::control_plane::from_object(
+            deserializer,
+            "a JSON object with title and start_ms",
+        )?;
+        Ok(Self {
+            title: fields.title,
+            start_ms: fields.start_ms,
+            depth: fields.depth,
+        })
+    }
 }
 
 /// `PUT /api/library/editions/{id}/chapters` body: the edition's chapters
@@ -229,6 +262,9 @@ mod tests {
             br#"{"chapters":[{"title":"x","start_ms":0,"extra":1}]}"#,
             br#"{"chapters":[{"title":"x\u0007","start_ms":0}]}"#,
             br#"{"chapters":[],"more":1}"#,
+            // A chapter is an object, never an array of its fields.
+            br#"{"chapters":[["x",0]]}"#,
+            br#"{"chapters":[["x",0,0]]}"#,
         ] {
             assert!(parse_chapter_edit_request(refused).is_err());
         }
