@@ -361,6 +361,11 @@ class DestinationTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("commitToken", head)
         self.assertEqual(head["contentType"], "audio/mp4")
         await self._rejects(lambda: dest.put("k", _Body("x"), {"sha256": bytes(3)}), "internal")
+        refused = _Body("x")
+        await self._rejects(lambda: dest.put("k", refused, {"stageOnly": True}), "invalid_params")
+        self.assertTrue(refused.cancelled)
+        plain = await dest.put("p", _Body("x"), {"commitToken": ""})
+        self.assertEqual(plain["etag"], "")
 
     async def test_conditional_writes(self) -> None:
         """The backend's own condition, or a probe first, keeps the rule."""
@@ -529,6 +534,15 @@ class QueueFeedTest(unittest.IsolatedAsyncioTestCase):
             queue=webhook_queue(hooks, "changes"), parse=_parse, kv=kv, state_key="f1"
         )
         self.assertTrue((await again.changes(after["cursor"], 0))["complete"])
+
+    async def test_an_unreadable_state_starts_over(self) -> None:
+        """A saved state that is not JSON starts a fresh feed instead of failing."""
+        hooks, kv = TestWebhooks(), TestKv()
+        await kv.put("f3", "{not json")
+        feed = QueueFeed(queue=webhook_queue(hooks, "changes"), parse=_parse, kv=kv, state_key="f3")
+        page = await feed.changes("q1.gone.4", 0)
+        self.assertFalse(page["complete"])
+        self.assertTrue(page["cursor"].endswith(".1"))
 
     async def test_page_limits_and_a_failed_save(self) -> None:
         """Overflow is released, one oversized message is cut, a KV failure fails the call."""

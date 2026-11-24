@@ -16775,10 +16775,17 @@ var ObjectStoreDestination = class {
    * @returns What was written; the etag is the commit token when one is set.
    */
   async put(key, body, options = {}) {
-    const condition = writeCondition(options);
-    const target = options.stageOnly === true ? stageKey(options.commitToken, key) : key;
-    if (options.sha256 !== void 0 && options.sha256.length !== 0 && options.sha256.length !== 32) {
-      throw PluginError.fromWire("internal", `integrity: sha256 must be 32 bytes, got ${options.sha256.length}`);
+    let condition;
+    let target;
+    try {
+      condition = writeCondition(options);
+      target = options.stageOnly === true ? stageKey(options.commitToken, key) : key;
+      if (options.sha256 !== void 0 && options.sha256.length !== 0 && options.sha256.length !== 32) {
+        throw PluginError.fromWire("internal", `integrity: sha256 must be 32 bytes, got ${options.sha256.length}`);
+      }
+    } catch (err) {
+      await body.cancel().catch(() => void 0);
+      throw err;
     }
     const write = {};
     if (options.contentType !== void 0)
@@ -16808,7 +16815,7 @@ var ObjectStoreDestination = class {
    * @returns What was written.
    */
   async putConditional(key, body, write, condition) {
-    if (this.store.putConditional !== void 0) {
+    if (this.store.conditionalWrites !== void 0 && this.store.putConditional !== void 0) {
       return this.store.putConditional(key, body, write, condition);
     }
     const current = await this.store.head(key);
@@ -17212,7 +17219,15 @@ var QueueFeed = class {
    * @returns The state.
    */
   async #load() {
-    const stored = await this.#options.kv.get(this.#options.stateKey, "json");
+    const text = await this.#options.kv.get(this.#options.stateKey);
+    let stored = null;
+    if (text !== null) {
+      try {
+        stored = JSON.parse(text);
+      } catch {
+        stored = null;
+      }
+    }
     return readState(stored) ?? freshState();
   }
   /**

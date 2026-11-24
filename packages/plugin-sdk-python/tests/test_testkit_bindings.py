@@ -63,6 +63,12 @@ class TestKvTest(_Case):
         self.assertEqual(rest, {"keys": [{"name": "j"}], "list_complete": True})
         self.assertEqual((await kv.list(prefix="f"))["keys"], [{"name": "four"}])
         await self._rejects(lambda: kv.list(limit=257), "invalid_params")
+        order = TestKv()
+        await order.put("a\U0001f600", "1")
+        await order.put("a\ufffd", "2")
+        self.assertEqual(
+            [k["name"] for k in (await order.list())["keys"]], ["a\ufffd", "a\U0001f600"]
+        )
         await kv.delete("j")
         await kv.delete("j")
         self.assertEqual(list(kv.snapshot()), ["a", "four"])
@@ -111,6 +117,13 @@ class TestWebhooksTest(_Case):
         await self._rejects(lambda: hooks.pull("changes", batch_size=101), "invalid_params")
         await self._rejects(
             lambda: hooks.pull("changes", visibility_timeout_ms=43_200_001), "invalid_params"
+        )
+        await self._rejects(lambda: hooks.pull("Changes"), "invalid_params")
+        await self._rejects(lambda: hooks.url("bad name"), "invalid_params")
+        await self._rejects(lambda: hooks.ack("changes", acks=["bad lease!"]), "invalid_params")
+        await self._rejects(lambda: hooks.ack("changes", acks=["l"] * 101), "invalid_params")
+        await self._rejects(
+            lambda: hooks.ack("changes", acks=["l1"], retries=["l1"]), "invalid_params"
         )
 
 

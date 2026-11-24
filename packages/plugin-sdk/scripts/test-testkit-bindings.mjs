@@ -61,6 +61,14 @@ async function rejectsWith(run, code) {
   assert.deepEqual(rest, { keys: [{ name: "j" }], list_complete: true });
   assert.deepEqual((await kv.list({ prefix: "f" })).keys, [{ name: "four" }]);
   await rejectsWith(() => kv.list({ limit: 257 }), "invalid_params");
+  // Keys page in UTF-8 byte order, as the host's store and the Python testkit do.
+  const order = createTestKv();
+  await order.put("a\u{1F600}", "1");
+  await order.put("a\uFFFD", "2");
+  assert.deepEqual(
+    (await order.list()).keys.map((k) => k.name),
+    ["a\uFFFD", "a\u{1F600}"],
+  );
   await kv.delete("j");
   await kv.delete("j");
   assert.deepEqual([...kv.snapshot().keys()], ["a", "four"]);
@@ -106,6 +114,15 @@ async function rejectsWith(run, code) {
   await rejectsWith(() => hooks.pull("changes", { batchSize: 101 }), "invalid_params");
   await rejectsWith(
     () => hooks.pull("changes", { visibilityTimeoutMs: 43_200_001 }),
+    "invalid_params",
+  );
+  // Names and leases are checked as the real binding checks them.
+  await rejectsWith(() => hooks.pull("Changes"), "invalid_params");
+  await rejectsWith(() => hooks.url("bad name"), "invalid_params");
+  await rejectsWith(() => hooks.ack("changes", { acks: ["bad lease!"] }), "invalid_params");
+  await rejectsWith(() => hooks.ack("changes", { acks: Array(101).fill("l") }), "invalid_params");
+  await rejectsWith(
+    () => hooks.ack("changes", { acks: ["l1"], retries: ["l1"] }),
     "invalid_params",
   );
 }

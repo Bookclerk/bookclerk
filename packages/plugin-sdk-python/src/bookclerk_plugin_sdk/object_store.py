@@ -133,7 +133,12 @@ class ObjectStore(Protocol):
         ...
 
     async def copy(self, source: str, target: str) -> int:
-        """Copy ``source`` to ``target``; return the bytes copied."""
+        """Copy ``source`` to ``target``; return the bytes copied.
+
+        The copy keeps the source's content type, checksum and commit token:
+        a commit publishes a stage with this call, and a repeated commit after
+        the stage is gone recognizes the published object by its token.
+        """
         ...
 
     async def delete(self, key: str) -> None:
@@ -577,13 +582,18 @@ class ObjectStoreDestination:
             PluginError: ``internal`` for a SHA-256 that is not 32 bytes.
         """
         opts = options or {}
-        condition = write_condition(opts)
-        target = stage_key(opts.get("commitToken"), key) if opts.get("stageOnly") else key
         sha = opts.get("sha256")
-        if sha is not None and len(sha) not in (0, 32):
-            raise PluginError.from_wire(
-                "internal", f"integrity: sha256 must be 32 bytes, got {len(sha)}"
-            )
+        try:
+            condition = write_condition(opts)
+            target = stage_key(opts.get("commitToken"), key) if opts.get("stageOnly") else key
+            if sha is not None and len(sha) not in (0, 32):
+                raise PluginError.from_wire(
+                    "internal", f"integrity: sha256 must be 32 bytes, got {len(sha)}"
+                )
+        except BaseException:
+            # A refused write never reads its body; release it for the host.
+            await _cancel(body)
+            raise
         write: dict[str, Any] = {}
         for name in ("contentType", "contentLength", "commitToken"):
             if opts.get(name) is not None:
@@ -595,7 +605,8 @@ class ObjectStoreDestination:
         else:
             written = await self._put_conditional(target, body, write, condition)
         out: dict[str, Any] = {"key": key, "bytesWritten": written["bytesWritten"]}
-        etag = opts.get("commitToken") or written.get("etag")
+        token = opts.get("commitToken")
+        etag = token if token is not None else written.get("etag")
         if etag is not None:
             out["etag"] = etag
         if written.get("sha256") is not None:
@@ -605,8 +616,11 @@ class ObjectStoreDestination:
     async def _put_conditional(
         self, key: str, body: Any, write: dict[str, Any], condition: WriteCondition
     ) -> dict[str, Any]:
-        if getattr(self.store, "conditional_writes", None) is not None:
-            result: dict[str, Any] = await self.store.put_conditional(key, body, write, condition)
+        put_conditional = getattr(self.store, "put_conditional", None)
+        if getattr(self.store, "conditional_writes", None) is not None and callable(
+            put_conditional
+        ):
+            result: dict[str, Any] = await put_conditional(key, body, write, condition)
             return result
         current = await self.store.head(key)
         if condition.kind == "ifNoneMatch" and current is not None:
@@ -1121,7 +1135,15 @@ class QueueFeed:
         self._state_key = state_key
 
     async def _load(self) -> _FeedState:
-        stored = await self._kv.get(self._state_key, "json")
+        # Parse here: an unreadable state starts a fresh feed instead of
+        # failing every call.
+        text = await self._kv.get(self._state_key)
+        stored: Any = None
+        if text is not None:
+            try:
+                stored = json.loads(text)
+            except ValueError:
+                stored = None
         return _read_state(stored) or _FeedState(feed=uuid.uuid4().hex)
 
     async def _persist(self, state: _FeedState) -> None:

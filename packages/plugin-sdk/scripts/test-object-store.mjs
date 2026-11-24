@@ -234,6 +234,15 @@ function memoryStore(options = {}) {
   assert.equal(head.commitToken, undefined);
   assert.equal(head.contentType, "audio/mp4");
   await rejectsWith(() => dest.put("k", streamOf("x"), { sha256: new Uint8Array(3) }), "internal");
+  // A refused write releases its body.
+  let cancelled = false;
+  const body = new ReadableStream({
+    cancel() {
+      cancelled = true;
+    },
+  });
+  await rejectsWith(() => dest.put("k", body, { stageOnly: true }), "invalid_params");
+  assert.ok(cancelled);
 }
 
 // Conditional writes: the backend's own, or a probe first.
@@ -503,6 +512,21 @@ function parse(body) {
   hooks.deliver("changes", "q");
   kv.failNext("put", PluginError.fromWire("internal", "kv down"));
   await rejectsWith(() => feed.changes(cut.cursor, 3), "internal");
+}
+{
+  // An unreadable saved state starts a fresh feed instead of failing.
+  const hooks = createTestWebhooks();
+  const kv = createTestKv();
+  await kv.put("feed:3", "{not json");
+  const feed = new QueueFeed({
+    queue: webhookQueue(hooks, "changes"),
+    parse,
+    kv,
+    stateKey: "feed:3",
+  });
+  const page = await feed.changes("q1.gone.4", 0);
+  assert.equal(page.complete, false);
+  assert.match(page.cursor, /^q1\.[0-9a-f-]+\.1$/);
 }
 
 console.log("object-store: ok");

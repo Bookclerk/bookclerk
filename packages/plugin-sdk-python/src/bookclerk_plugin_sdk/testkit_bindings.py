@@ -37,6 +37,8 @@ from .workerd import (
     PluginError,
     WebhookMessage,
     WebhookPullResult,
+    _check_webhook_leases,
+    _check_webhook_name,
 )
 
 TestKvOperation = Literal["get", "put", "delete", "list"]
@@ -416,6 +418,7 @@ class TestWebhooks:
         Returns:
             The URL, or ``None`` for an unreachable library.
         """
+        _check_webhook_name(name)
         return None if self._base_url is None else f"{self._base_url}{quote(name, safe='')}"
 
     async def pull(
@@ -438,6 +441,7 @@ class TestWebhooks:
         Raises:
             PluginError: ``invalid_params`` for an out-of-range option.
         """
+        _check_webhook_name(name)
         if not _is_whole(batch_size) or not 1 <= batch_size <= MAX_WEBHOOK_PULL_BATCH:
             raise PluginError.from_wire(
                 "invalid_params", f"batch_size must be 1 to {MAX_WEBHOOK_PULL_BATCH}"
@@ -480,14 +484,21 @@ class TestWebhooks:
             acks: Lease ids handled.
             retries: Lease ids to offer again.
         """
+        _check_webhook_name(name)
+        ack_ids = _check_webhook_leases(acks)
+        retry_ids = _check_webhook_leases(retries)
+        if set(ack_ids) & set(retry_ids):
+            raise PluginError.from_wire(
+                "invalid_params", "a webhook lease is both acknowledged and retried"
+            )
         row = self._row(name)
-        for lease_id in acks or []:
+        for lease_id in ack_ids:
             lease = self._leases.get(lease_id)
             if lease is not None and lease[0] == name:
                 del self._leases[lease_id]
                 row.acked.append(lease_id)
         back = []
-        for lease_id in retries or []:
+        for lease_id in retry_ids:
             lease = self._leases.get(lease_id)
             if lease is not None and lease[0] == name:
                 del self._leases[lease_id]

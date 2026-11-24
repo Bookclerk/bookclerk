@@ -131,6 +131,10 @@ export interface ObjectStore {
   /**
    * Copies `from` to `to` (on the server when {@link ObjectStore.serverCopy}).
    *
+   * The copy keeps the source's content type, checksum and commit token:
+   * a commit publishes a stage with this call, and a repeated commit after
+   * the stage is gone recognizes the published object by its token.
+   *
    * @param from - Source key.
    * @param to - Target key.
    * @returns Bytes copied.
@@ -702,17 +706,25 @@ export class ObjectStoreDestination {
     body: ReadableStream<Uint8Array>,
     options: WriteOptions = {},
   ): Promise<PutResult> {
-    const condition = writeCondition(options);
-    const target = options.stageOnly === true ? stageKey(options.commitToken, key) : key;
-    if (
-      options.sha256 !== undefined &&
-      options.sha256.length !== 0 &&
-      options.sha256.length !== 32
-    ) {
-      throw PluginError.fromWire(
-        "internal",
-        `integrity: sha256 must be 32 bytes, got ${options.sha256.length}`,
-      );
+    let condition: WriteCondition | null;
+    let target: string;
+    try {
+      condition = writeCondition(options);
+      target = options.stageOnly === true ? stageKey(options.commitToken, key) : key;
+      if (
+        options.sha256 !== undefined &&
+        options.sha256.length !== 0 &&
+        options.sha256.length !== 32
+      ) {
+        throw PluginError.fromWire(
+          "internal",
+          `integrity: sha256 must be 32 bytes, got ${options.sha256.length}`,
+        );
+      }
+    } catch (err) {
+      // A refused write never reads its body; release it for the host.
+      await body.cancel().catch(() => undefined);
+      throw err;
     }
     const write: ObjectWrite = {};
     if (options.contentType !== undefined) write.contentType = options.contentType;
@@ -745,7 +757,7 @@ export class ObjectStoreDestination {
     write: ObjectWrite,
     condition: WriteCondition,
   ): Promise<WrittenObject> {
-    if (this.store.putConditional !== undefined) {
+    if (this.store.conditionalWrites !== undefined && this.store.putConditional !== undefined) {
       return this.store.putConditional(key, body, write, condition);
     }
     const current = await this.store.head(key);

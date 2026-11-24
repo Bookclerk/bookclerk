@@ -30,6 +30,7 @@ import type {
   WebhooksBinding,
 } from "./env.js";
 import { PluginError } from "./errors.js";
+import { checkLeases, checkWebhookName } from "./webhooks.js";
 import {
   MAX_KV_KEY_BYTES,
   MAX_KV_METADATA_BYTES,
@@ -125,6 +126,24 @@ function decode(bytes: Uint8Array, type: string): unknown {
   if (type === "arrayBuffer") return bytes.slice().buffer;
   const text = new TextDecoder().decode(bytes);
   return type === "json" ? (JSON.parse(text) as unknown) : text;
+}
+
+/**
+ * Orders two keys by their UTF-8 bytes, as the host's store does.
+ *
+ * @param a - One key.
+ * @param b - The other.
+ * @returns Negative, zero or positive.
+ */
+function byteOrder(a: string, b: string): number {
+  const x = new TextEncoder().encode(a);
+  const y = new TextEncoder().encode(b);
+  const n = Math.min(x.length, y.length);
+  for (let i = 0; i < n; i += 1) {
+    const d = (x[i] as number) - (y[i] as number);
+    if (d !== 0) return d;
+  }
+  return x.length - y.length;
 }
 
 /**
@@ -238,8 +257,11 @@ export function createTestKv(options: TestKvOptions = {}): TestKv {
       const prefix = listOptions.prefix ?? "";
       const after = listOptions.cursor ?? "";
       const names = [...entries.keys()]
-        .filter((name) => name.startsWith(prefix) && name > after && live(name) !== undefined)
-        .sort();
+        .filter(
+          (name) =>
+            name.startsWith(prefix) && byteOrder(name, after) > 0 && live(name) !== undefined,
+        )
+        .sort(byteOrder);
       const page = names.slice(0, limit === 0 ? MAX_LIST_PAGE : limit);
       const keys = page.map((name) => {
         const entry = entries.get(name) as KvEntry;
@@ -257,7 +279,7 @@ export function createTestKv(options: TestKvOptions = {}): TestKv {
     },
     snapshot(): Map<string, string> {
       const out = new Map<string, string>();
-      for (const name of [...entries.keys()].sort()) {
+      for (const name of [...entries.keys()].sort(byteOrder)) {
         const entry = live(name);
         if (entry !== undefined) out.set(name, new TextDecoder().decode(entry.value));
       }
@@ -364,9 +386,11 @@ export function createTestWebhooks(options: TestWebhooksOptions = {}): TestWebho
 
   return {
     async url(name: string): Promise<string | null> {
+      checkWebhookName(name);
       return base === null ? null : `${base}${encodeURIComponent(name)}`;
     },
     async pull(name: string, pullOptions: WebhookPullOptions = {}): Promise<WebhookPullResult> {
+      checkWebhookName(name);
       const size = pullOptions.batchSize ?? DEFAULT_PULL_BATCH;
       if (!Number.isSafeInteger(size) || size < 1 || size > MAX_WEBHOOK_PULL_BATCH) {
         throw PluginError.fromWire(
@@ -404,14 +428,23 @@ export function createTestWebhooks(options: TestWebhooksOptions = {}): TestWebho
       return { messages, missed: wasMissed };
     },
     async ack(name: string, settled: { acks?: string[]; retries?: string[] }): Promise<void> {
-      for (const id of settled.acks ?? []) {
+      checkWebhookName(name);
+      const ackIds = checkLeases(settled.acks);
+      const retryIds = checkLeases(settled.retries);
+      if (retryIds.some((id) => ackIds.includes(id))) {
+        throw PluginError.fromWire(
+          "invalid_params",
+          "a webhook lease is both acknowledged and retried",
+        );
+      }
+      for (const id of ackIds) {
         if (leases.get(id)?.name === name) {
           leases.delete(id);
           log(acks, name).push(id);
         }
       }
       const back: TestRequest[] = [];
-      for (const id of settled.retries ?? []) {
+      for (const id of retryIds) {
         const lease = leases.get(id);
         if (lease?.name === name) {
           leases.delete(id);

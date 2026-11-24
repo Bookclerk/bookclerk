@@ -318,7 +318,17 @@ export class QueueFeed implements ChangeFeed {
    * @returns The state.
    */
   async #load(): Promise<FeedState> {
-    const stored = await this.#options.kv.get(this.#options.stateKey, "json");
+    // Read text and parse here: an unreadable state starts a fresh feed
+    // (the host's next page is incomplete) instead of failing every call.
+    const text = await this.#options.kv.get(this.#options.stateKey);
+    let stored: unknown = null;
+    if (text !== null) {
+      try {
+        stored = JSON.parse(text) as unknown;
+      } catch {
+        stored = null;
+      }
+    }
     return readState(stored) ?? freshState();
   }
 
