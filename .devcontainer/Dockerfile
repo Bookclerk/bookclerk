@@ -22,7 +22,7 @@ FROM node:26-trixie-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df
 # `python_sdk` CI check and `generate-api-docs.sh --python`). The tag is the
 # `uv` pin in /.tool-versions; tool-versions-bump.yml moves both together, so
 # Dependabot leaves this image alone.
-FROM ghcr.io/astral-sh/uv:0.13.8@sha256:5cc1805e2426484abca4ad46ea783bab281fdb225fd82d8ce6d66a81254bac85 AS uv
+FROM ghcr.io/astral-sh/uv:0.13.9@sha256:d3b601f0c7b118bc1753febf7c41cc80981df678445e0254284eecf84db79a7d AS uv
 
 FROM rust:1-trixie@sha256:931c2c0531a8b143e044f0f3914dfe802f15bb3d1955f0b657e9359327ac2ffc
 
