@@ -126,7 +126,9 @@ impl LibraryStore {
     /// Returns the database error, or [`LibraryError::Unavailable`] when
     /// concurrent writes kept replacing a work's texts while it was read.
     pub(crate) async fn complete_work_texts(&self, rows: &mut [works::Model]) -> Result<()> {
-        for _ in 0..ATTEMPTS {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
             let pieced: Vec<usize> = (0..rows.len())
                 .filter(|&at| rows[at].text_version.is_some())
                 .collect();
@@ -152,6 +154,12 @@ impl LibraryStore {
             if stale.is_empty() {
                 return Ok(());
             }
+            if attempt >= ATTEMPTS {
+                return Err(LibraryError::Unavailable(format!(
+                    "the texts of work {} kept changing while they were read",
+                    rows[stale[0]].id
+                )));
+            }
             // A later write replaced these texts: read the rows again.
             let ids: Vec<String> = stale.iter().map(|&at| rows[at].id.clone()).collect();
             let fresh: BTreeMap<String, works::Model> =
@@ -168,13 +176,6 @@ impl LibraryStore {
                 }
             }
         }
-        if let Some(row) = rows.iter().find(|row| row.text_version.is_some()) {
-            return Err(LibraryError::Unavailable(format!(
-                "the texts of work {} kept changing while they were read",
-                row.id
-            )));
-        }
-        Ok(())
     }
 
     /// Every stored piece of the works `ids`, in key order.
@@ -329,12 +330,11 @@ impl LibraryStore {
         .map(|value| value.len())
         .sum::<usize>()
         .saturating_add(2 * 64 + ROW_OVERHEAD);
-        let mut budget = match caps.max_result_bytes {
-            0 => usize::MAX,
-            bytes => usize::try_from(bytes)
-                .unwrap_or(usize::MAX)
-                .saturating_sub(fixed),
-        };
+        // The host refuses a plugin whose result limit is below its minimum,
+        // so the limit is never zero.
+        let mut budget = usize::try_from(caps.max_result_bytes)
+            .unwrap_or(usize::MAX)
+            .saturating_sub(fixed);
         // The narrowest texts are kept inline first, so as many as fit stay
         // in the row.
         let mut order = TextField::ALL;
@@ -597,6 +597,89 @@ mod tests {
             .update_work_texts("no-such-work", |_| None)
             .await
             .unwrap());
+    }
+
+    #[tokio::test]
+    async fn long_categories_are_stored_in_pieces_and_read_back() {
+        let (store, work_id) = one_work(Profile::Minimum).await;
+        let piece = crate::control_plane::chunk_bytes(store.db_capabilities());
+        let categories = long_text(piece * 2);
+        store
+            .set_work_enrichment(
+                &work_id,
+                &WorkEnrichment {
+                    categories: Some(categories.clone()),
+                    ..WorkEnrichment::default()
+                },
+            )
+            .await
+            .unwrap();
+        let stored = pieces(&store).await;
+        assert!(!stored.is_empty());
+        assert!(stored.iter().all(|p| p.field == "categories"));
+        let work = store.get_work(&work_id).await.unwrap().unwrap();
+        assert_eq!(work.categories.as_deref(), Some(categories.as_str()));
+    }
+
+    #[tokio::test]
+    async fn a_row_read_before_its_texts_were_replaced_is_read_again() {
+        let (store, work_id) = one_work(Profile::Minimum).await;
+        let piece = crate::control_plane::chunk_bytes(store.db_capabilities());
+        let enrich = |description: String| WorkEnrichment {
+            description: Some(description),
+            ..WorkEnrichment::default()
+        };
+        store
+            .set_work_enrichment(&work_id, &enrich(long_text(piece * 2)))
+            .await
+            .unwrap();
+        let stale = uncapped(works::Entity::find_by_id(work_id.clone()).one(store.db()))
+            .await
+            .unwrap()
+            .unwrap();
+        let replacement = format!("{} Arrakis.", long_text(piece * 2));
+        store
+            .set_work_enrichment(&work_id, &enrich(replacement.clone()))
+            .await
+            .unwrap();
+        let mut rows = [stale];
+        store.complete_work_texts(&mut rows).await.unwrap();
+        let [row] = rows;
+        assert_eq!(row.description.as_deref(), Some(replacement.as_str()));
+        assert!(row.text_version.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_work_that_keeps_changing_is_refused() {
+        use sea_orm::sea_query::Expr;
+
+        let (store, work_id) = one_work(Profile::Minimum).await;
+        let db = store.db().clone();
+        let err = store
+            .update_work_texts(&work_id, |row| {
+                // Another write changes the row after every read.
+                let bumped = format!("{}+", row.updated_at);
+                let id = row.id.clone();
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        works::Entity::update_many()
+                            .col_expr(works::Column::UpdatedAt, Expr::value(bumped))
+                            .filter(works::Column::Id.eq(id))
+                            .exec(&db)
+                            .await
+                            .unwrap();
+                    });
+                });
+                Some(WorkTexts {
+                    description: Some("Spice.".into()),
+                    ..WorkTexts::default()
+                })
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LibraryError::Conflict(_)), "{err:?}");
+        let work = store.get_work(&work_id).await.unwrap().unwrap();
+        assert_ne!(work.description.as_deref(), Some("Spice."));
     }
 
     #[tokio::test]

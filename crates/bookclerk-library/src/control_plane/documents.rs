@@ -361,10 +361,9 @@ async fn read_parts(
 ) -> Result<Option<String>> {
     let caps = store.db_capabilities();
     let width = super::chunk_bytes(caps).saturating_add(PART_ROW_OVERHEAD);
-    let by_bytes = match caps.max_result_bytes {
-        0 => u64::MAX,
-        bytes => u64::from(bytes) / u64::try_from(width).unwrap_or(u64::MAX),
-    };
+    // The host refuses a plugin whose result limit is below its minimum, so
+    // the limit is never zero.
+    let by_bytes = u64::from(caps.max_result_bytes) / u64::try_from(width).unwrap_or(u64::MAX);
     let mut page = crate::store::keyset::result_page(store)
         .min(by_bytes)
         .max(1);
