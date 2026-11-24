@@ -53,6 +53,7 @@ database_id = "your-d1-database-uuid"
 # prefer url_file or BOOKCLERK_DATABASE_POSTGRES_URL (registered for redaction).
 # url = "postgres://user:password@localhost:5432/bookclerk"
 # url_file = "/run/secrets/postgres_url"   # path to a file containing the URL
+# stored_credential = true   # the URL is sealed in database.credential (set by a shared branch join)
 ```
 
 The Cloudflare API token comes from `BOOKCLERK_D1_API_TOKEN` (falling
@@ -90,14 +91,28 @@ on a keychain or `systemd-creds` install, with `database.credential` then
 holding only a pointer. `bookclerk config master-key move` takes the
 credential along with the key.
 
-Running the setup again mints a fresh token and deletes the one the
-previous run minted. It never deletes the database.
+Running the setup again keeps the token the previous run minted, because
+shared branches of the library hold a copy of it. It only updates the
+database ids. To replace the token, pass `--rotate-token`: the setup mints
+a new one and deletes the old one. Each shared branch then needs to join
+again. Choosing a different account always mints a new token. The setup
+never deletes the database.
 
-> [!NOTE]
-> The stored credential is sealed under this install's key. A shared
-> branch that joins a D1 library installs the library's key, so it sets
-> `BOOKCLERK_D1_API_TOKEN` instead (see
-> [Shared branches](branches.md)), or runs the setup again after joining.
+### Database credentials on a shared branch
+
+The database plugin's credential is the one secret that can't live in the
+library database, because the library needs it to open that database.
+Storage plugins' keys and store logins are sealed in the database itself,
+so a shared branch has them as soon as it opens it.
+
+A shared branch that joins a library gets the database credential along
+with the library's key: the PostgreSQL URL, or the D1 token the library
+uses. It keeps that credential in `database.credential`, sealed with the
+key and in the same store as `master.key`, tagged with the plugin it
+belongs to. A PostgreSQL branch's `config.toml` then says
+`stored_credential = true` instead of naming a URL or a file, and a D1
+branch's token comes from there. Either way, nothing needs setting by
+hand (see [Shared branches](branches.md)).
 
 These environment variables override the file:
 
@@ -169,8 +184,9 @@ sqlx-postgres driver inside SeaORM. Connecting fails closed when
 `server_version_num < 160000` or when `server_encoding` isn't UTF8.
 
 The connection URL is standard libpq style:
-`postgres://user:password@host:5432/dbname`. At least one of `url` or
-`url_file` is required:
+`postgres://user:password@host:5432/dbname`. One of `url`, `url_file` or
+`stored_credential` is required (`url_file`, then `url`, wins when more
+than one is set):
 
 ```toml
 [database]

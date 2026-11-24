@@ -435,9 +435,14 @@ pub async fn join_with_sign_in(
                     joined.node_id
                 );
             }
-            if kind == DatabasePluginKind::D1 && bookclerk_config::resolve_d1_api_token().is_err() {
+            // A library that holds its D1 token only in its own environment
+            // sends none; this server then needs one of its own.
+            if kind == DatabasePluginKind::D1
+                && joined.bootstrap.database_credential.is_none()
+                && bookclerk_config::resolve_d1_api_token().is_err()
+            {
                 anyhow::bail!(
-                    "the library's database is Cloudflare D1: set BOOKCLERK_D1_API_TOKEN here (the token is never sent between servers), ask the library's owner to remove node {}, and join again",
+                    "the library's database is Cloudflare D1 and it sent no API token: set BOOKCLERK_D1_API_TOKEN here, ask the library's owner to remove node {}, and join again",
                     joined.node_id
                 );
             }

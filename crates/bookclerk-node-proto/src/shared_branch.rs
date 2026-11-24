@@ -13,9 +13,12 @@
 //! joining node's X25519 box key with the H-4 sealed box
 //! ([`crate::seal`]: X25519, HKDF-SHA256, XChaCha20-Poly1305), bound to the
 //! library and node ids ([`shared_branch_bootstrap_aad`]). It holds the library's
-//! `[database]` connection and the DEK itself, never the passphrase-wrapped
-//! `master.key` file. Only the daemon that generated the box key can open
-//! it; the browser never sees it.
+//! `[database]` connection, the database plugin's own credential when the
+//! connection settings don't carry it ([`SharedBranchCredential`]: D1's API
+//! token), and the DEK itself, never the passphrase-wrapped `master.key` file. Only the
+//! daemon that generated the box key can open it; the browser never sees
+//! it. [`parse_shared_branch_bootstrap`] reads the opened plaintext, sans
+//! IO, and is what the `shared_branch_bootstrap` fuzz target drives.
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -41,6 +44,17 @@ pub const SHARED_BRANCH_BOOTSTRAP_VERSION: u32 = 1;
 
 /// Length of the data-encryption key.
 pub const DEK_LEN: usize = 32;
+
+/// The longest opened bootstrap accepted, in bytes.
+pub const MAX_SHARED_BRANCH_BOOTSTRAP_BYTES: usize = 64 * 1024;
+
+/// The longest database credential (a Postgres URL, a D1 API token) a
+/// bootstrap may carry, in bytes.
+pub const MAX_BOOTSTRAP_CREDENTIAL_BYTES: usize = 4096;
+
+/// The longest provider id for a database credential a bootstrap may carry,
+/// in bytes.
+pub const MAX_BOOTSTRAP_CREDENTIAL_ID_BYTES: usize = 128;
 
 /// How a joining install connects to a library.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, utoipa::ToSchema)]
@@ -99,8 +113,8 @@ pub enum SharedBranchDatabase {
         /// `postgres://user:password@host/db`.
         url: SecretValue,
     },
-    /// Cloudflare D1: the database's ids. The API token stays
-    /// environment-only bootstrap on each node and is never sent.
+    /// Cloudflare D1: the database's ids. Its API token travels as the
+    /// bootstrap's [`SharedBranchCredential`].
     D1 {
         /// Cloudflare account id.
         account_id: String,
@@ -143,6 +157,34 @@ impl std::fmt::Debug for SharedBranchDatabase {
     }
 }
 
+/// The database plugin's own credential, for a plugin whose connection
+/// settings don't carry it (D1's API token; a Postgres URL carries its
+/// own). Whatever the plugin, the shared branch keeps it sealed with the DEK
+/// in its master key store (file, OS keychain or `systemd-creds`), tagged
+/// with the plugin it belongs to. `Debug` prints no secret.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SharedBranchCredential {
+    /// The secret: 1 to [`MAX_BOOTSTRAP_CREDENTIAL_BYTES`] bytes of UTF-8
+    /// with no whitespace or control character.
+    pub secret: SecretValue,
+    /// The provider's id for the secret, when the guided setup minted it
+    /// (so a later setup on the shared branch can replace it): 1 to
+    /// [`MAX_BOOTSTRAP_CREDENTIAL_ID_BYTES`] ASCII letters, digits, `-` and
+    /// `_`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_id: Option<String>,
+}
+
+impl std::fmt::Debug for SharedBranchCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedBranchCredential")
+            .field("secret", &"<redacted>")
+            .field("secret_id", &self.secret_id)
+            .finish()
+    }
+}
+
 /// What a shared branch receives at redeem: the `[database]` bootstrap and the DEK,
 /// for the node id the library recorded (`kind = shared`). `Debug` prints no
 /// secret.
@@ -157,6 +199,12 @@ pub struct SharedBranchBootstrap {
     pub node_id: String,
     /// How to reach the library's database.
     pub database: SharedBranchDatabase,
+    /// The database plugin's own credential, when `database` doesn't carry
+    /// it. Never sent with a Postgres `database`, whose URL is its
+    /// credential; left out when the library has none to give (a D1
+    /// library whose token is configured only where it runs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database_credential: Option<SharedBranchCredential>,
     /// The library's 32-byte data-encryption key.
     pub dek: SecretValue,
 }
@@ -168,6 +216,7 @@ impl std::fmt::Debug for SharedBranchBootstrap {
             .field("library_id", &self.library_id)
             .field("node_id", &self.node_id)
             .field("database", &self.database)
+            .field("database_credential", &self.database_credential)
             .finish_non_exhaustive()
     }
 }
@@ -232,8 +281,37 @@ pub fn open_shared_branch_bootstrap(
         &shared_branch_bootstrap_aad(library_id, node_id),
         &raw,
     )?;
+    parse_shared_branch_bootstrap(&plaintext, library_id, node_id)
+}
+
+/// Reads an opened bootstrap for `library_id` and `node_id`.
+///
+/// # Arguments
+///
+/// * `plaintext` - the bootstrap JSON, as [`open_shared_branch_bootstrap`]
+///   opened it.
+/// * `library_id`, `node_id` - the ids the redeem answered.
+///
+/// # Errors
+///
+/// [`SealError::Bundle`] for bytes over [`MAX_SHARED_BRANCH_BOOTSTRAP_BYTES`],
+/// bytes that are not a bootstrap, another version, a DEK that is not 32
+/// bytes, other ids, a Postgres URL or credential secret that is empty,
+/// longer than [`MAX_BOOTSTRAP_CREDENTIAL_BYTES`] or holds anything but
+/// UTF-8 without whitespace or control characters, a credential id longer than
+/// [`MAX_BOOTSTRAP_CREDENTIAL_ID_BYTES`] or holding anything but ASCII
+/// letters, digits, `-` and `_`, or a credential sent with a Postgres
+/// database.
+pub fn parse_shared_branch_bootstrap(
+    plaintext: &[u8],
+    library_id: &str,
+    node_id: &str,
+) -> Result<SharedBranchBootstrap, SealError> {
+    if plaintext.len() > MAX_SHARED_BRANCH_BOOTSTRAP_BYTES {
+        return Err(SealError::Bundle);
+    }
     let bootstrap: SharedBranchBootstrap =
-        serde_json::from_slice(&plaintext).map_err(|_| SealError::Bundle)?;
+        serde_json::from_slice(plaintext).map_err(|_| SealError::Bundle)?;
     if bootstrap.v != SHARED_BRANCH_BOOTSTRAP_VERSION
         || bootstrap.dek.len() != DEK_LEN
         || bootstrap.library_id != library_id
@@ -241,7 +319,46 @@ pub fn open_shared_branch_bootstrap(
     {
         return Err(SealError::Bundle);
     }
+    match &bootstrap.database {
+        SharedBranchDatabase::Postgres { url } => {
+            if bootstrap.database_credential.is_some() || !valid_credential_secret(url.expose()) {
+                return Err(SealError::Bundle);
+            }
+        }
+        SharedBranchDatabase::D1 { .. } => {}
+    }
+    if let Some(credential) = &bootstrap.database_credential {
+        let id_ok = credential
+            .secret_id
+            .as_deref()
+            .is_none_or(valid_credential_id);
+        if !valid_credential_secret(credential.secret.expose()) || !id_ok {
+            return Err(SealError::Bundle);
+        }
+    }
     Ok(bootstrap)
+}
+
+/// True for a credential a shared branch can store: 1 to
+/// [`MAX_BOOTSTRAP_CREDENTIAL_BYTES`] bytes of UTF-8 with no whitespace or
+/// control character.
+fn valid_credential_secret(secret: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(secret) else {
+        return false;
+    };
+    !text.is_empty()
+        && text.len() <= MAX_BOOTSTRAP_CREDENTIAL_BYTES
+        && !text.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// True for a credential id of 1 to [`MAX_BOOTSTRAP_CREDENTIAL_ID_BYTES`]
+/// ASCII letters, digits, `-` and `_`.
+fn valid_credential_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_BOOTSTRAP_CREDENTIAL_ID_BYTES
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 #[cfg(test)]
@@ -257,6 +374,7 @@ mod tests {
             database: SharedBranchDatabase::Postgres {
                 url: SecretValue::new(b"postgres://u:hunter2@db/lib".to_vec()),
             },
+            database_credential: None,
             dek: SecretValue::new(vec![7u8; DEK_LEN]),
         }
     }
@@ -304,6 +422,58 @@ mod tests {
         short.dek = SecretValue::new(vec![1u8; 16]);
         assert_eq!(
             seal_shared_branch_bootstrap(&box_public_key(&[3u8; 32]), &[9u8; 32], &short),
+            Err(SealError::Bundle)
+        );
+    }
+
+    /// A D1 bootstrap carries the library's token as the database
+    /// credential; a bad secret or id, or a credential beside a Postgres
+    /// URL, is refused.
+    #[test]
+    fn a_bootstrap_carries_a_checked_database_credential() {
+        let d1 = |secret: Option<&[u8]>, id: Option<&str>| SharedBranchBootstrap {
+            database: SharedBranchDatabase::D1 {
+                account_id: "acct".into(),
+                database_id: "db".into(),
+                api_base: "https://api.cloudflare.com/client/v4".into(),
+            },
+            database_credential: secret.map(|s| SharedBranchCredential {
+                secret: SecretValue::new(s.to_vec()),
+                secret_id: id.map(str::to_string),
+            }),
+            ..bootstrap()
+        };
+        let parse = |b: &SharedBranchBootstrap| {
+            parse_shared_branch_bootstrap(&serde_json::to_vec(b).unwrap(), "library-1", "node-1")
+        };
+        let good = d1(Some(b"d1-token"), Some("tok_1"));
+        assert_eq!(parse(&good).unwrap(), good);
+        let printed = format!("{good:?}");
+        assert!(!printed.contains("d1-token"), "{printed}");
+        // A library with no token to give sends none.
+        assert!(parse(&d1(None, None)).is_ok());
+        assert!(parse(&bootstrap()).is_ok());
+        let mut postgres_with_credential = bootstrap();
+        postgres_with_credential.database_credential = good.database_credential.clone();
+        let mut postgres_bad_url = bootstrap();
+        postgres_bad_url.database = SharedBranchDatabase::Postgres {
+            url: SecretValue::new(b"postgres://u:p@db/lib two".to_vec()),
+        };
+        for bad in [
+            d1(Some(b""), None),
+            d1(Some(b"has space"), None),
+            d1(Some(&[0xff, 0xfe]), None),
+            d1(Some(&[b'x'; MAX_BOOTSTRAP_CREDENTIAL_BYTES + 1]), None),
+            d1(Some(b"tok"), Some("bad id")),
+            d1(Some(b"tok"), Some("")),
+            postgres_with_credential,
+            postgres_bad_url,
+        ] {
+            assert_eq!(parse(&bad), Err(SealError::Bundle), "{bad:?}");
+        }
+        let huge = vec![b' '; MAX_SHARED_BRANCH_BOOTSTRAP_BYTES + 1];
+        assert_eq!(
+            parse_shared_branch_bootstrap(&huge, "library-1", "node-1"),
             Err(SealError::Bundle)
         );
     }

@@ -770,6 +770,13 @@ input_from = "the operator's mail server; any signed-in patron (address)"
 side = "guest"
 artifacts = ["bookclerk"]
 
+[targets.shared_branch_bootstrap]
+crate = "bookclerk-node-proto"
+boundary = "The opened shared-branch bootstrap a joining node reads from its library: the [database] section, the database credential and its id, and the data key"
+input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.checker_answers]
 crate = "bookclerk-plugin-notifier-email"
 boundary = "What the email notifier's deliverability check reads from Postmark's spam check, Cloudflare's DNS-over-HTTPS resolver and mail-tester.com"

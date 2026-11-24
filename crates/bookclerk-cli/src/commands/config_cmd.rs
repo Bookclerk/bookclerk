@@ -110,6 +110,11 @@ pub enum DatabaseCommand {
         /// Where a new database keeps its data: `default`, `eu` or `fedramp`.
         #[arg(long)]
         jurisdiction: Option<String>,
+        /// Mint a new D1 token and delete the one an earlier setup created
+        /// (a re-run keeps it by default). Shared branches hold a copy of
+        /// the earlier token, so each needs to join again.
+        #[arg(long)]
+        rotate_token: bool,
     },
 }
 
@@ -736,6 +741,7 @@ async fn run_database(
             account_id,
             database_name,
             jurisdiction,
+            rotate_token,
         } => {
             let token = crate::secret_input::read_secret_stdin("Cloudflare API token: ")?;
             crate::commands::database_setup::run(
@@ -747,6 +753,7 @@ async fn run_database(
                     account_id,
                     database_name,
                     jurisdiction,
+                    rotate_token,
                 },
             )
             .await

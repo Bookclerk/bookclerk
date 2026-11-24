@@ -50,6 +50,13 @@ label = "Database ID"
 type = "string"
 
 [[settings]]
+key = "rotate_token"
+label = "Replace the API token"
+type = "bool"
+default = false
+description = "Mint a new token and delete the one an earlier setup created. Shared branches hold a copy of the earlier token, so each needs to join again."
+
+[[settings]]
 key = "api_token_id"
 label = "API token ID"
 type = "string"
@@ -75,6 +82,7 @@ inputs = [
     "account_id",
     "database_name",
     "jurisdiction",
+    "rotate_token",
 ]
 outputs = [
     "account_id",
