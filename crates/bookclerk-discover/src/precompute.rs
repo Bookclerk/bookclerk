@@ -2502,6 +2502,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_book_nothing_is_known_of_is_a_seed_but_joins_no_axis() {
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        library
+            .upsert_account("audible", "acct", "us", Some("Main"), true, "audible")
+            .await
+            .unwrap();
+        let space = bookclerk_library::VectorSpace {
+            model: "@embedder/topics".into(),
+            revision: "r1".into(),
+            packs: String::new(),
+        };
+        let subject = DiscoverSubject::Operator;
+        let opts = RecommendOptions {
+            vectors: crate::embed::VectorSource::new(space.clone(), None),
+            ..RecommendOptions::default()
+        };
+        // Two books with only a title: nothing else to go by, so they
+        // still make an axis.
+        let mut bare = Vec::new();
+        for (at, title) in ["Dragon Tales", "Dragon Songs"].iter().enumerate() {
+            let book =
+                bookclerk_library::NewBook::minimal(format!("B00BARE{at}"), "acct", "us", *title);
+            let book = library.upsert_book(&book).await.unwrap();
+            bare.push(work_of(&library, &book.holding_id).await);
+        }
+        crate::embed::embed_dirty_works(&library, &mut ThreeTopics(space.clone()), None)
+            .await
+            .unwrap();
+        let (_, taste) = ranking_taste(&library, &subject, &opts).await.unwrap();
+        let members: Vec<&str> = taste
+            .scores
+            .axes
+            .iter()
+            .flat_map(|axis| &axis.members)
+            .map(|member| member.work_id.as_str())
+            .collect();
+        assert_eq!(members.len(), 2, "{:?}", taste.scores.axes);
+
+        // Among four books with a genre they are the lesser part: seeds
+        // of the taste still, members of no axis.
+        for (at, (title, genre)) in [
+            ("Dragon Hoard", "Fantasy"),
+            ("Dragon Flight", "Fantasy"),
+            ("The Ledger", "Business"),
+            ("Ledger Lines", "Business"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let mut book =
+                bookclerk_library::NewBook::minimal(format!("B00000{at}"), "acct", "us", *title);
+            book.categories = Some((*genre).into());
+            library.upsert_book(&book).await.unwrap();
+        }
+        crate::embed::embed_dirty_works(&library, &mut ThreeTopics(space), None)
+            .await
+            .unwrap();
+        refresh_subject_taste(&library, &subject, &opts)
+            .await
+            .unwrap();
+        let (_, taste) = ranking_taste(&library, &subject, &opts).await.unwrap();
+        let members: Vec<&str> = taste
+            .scores
+            .axes
+            .iter()
+            .flat_map(|axis| &axis.members)
+            .map(|member| member.work_id.as_str())
+            .collect();
+        assert_eq!(members.len(), 4, "{:?}", taste.scores.axes);
+        for work in &bare {
+            assert!(taste.scores.seed_work_ids.contains(work));
+            assert!(!members.contains(&work.as_str()));
+        }
+    }
+
+    #[tokio::test]
     async fn axes_are_measured_against_the_candidates_once_those_have_vectors() {
         let library = bookclerk_plugin_database_sqlite::open_store_memory()
             .await
@@ -2678,6 +2756,20 @@ mod tests {
                 resolved_edition_id: None,
                 cover_url: None,
             })
+            .await
+            .unwrap();
+        // The store's record of the wished book: a wish nothing is known
+        // of beyond its title would be left out of the grouping.
+        library
+            .upsert_title_request_sources(
+                wish.id,
+                &[bookclerk_library::NewTitleRequestSource {
+                    source: "audible".into(),
+                    product_id: "B0WISH0001".into(),
+                    categories: Some("Fantasy".into()),
+                    ..Default::default()
+                }],
+            )
             .await
             .unwrap();
         let space = bookclerk_library::VectorSpace {

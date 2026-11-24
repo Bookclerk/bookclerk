@@ -58,6 +58,10 @@ pub const WISH_SEED_WEIGHT: f64 = 1.5;
 /// still move.
 const CLUSTER_ROUNDS: usize = 25;
 
+/// The least a split of the seed works must hold together ([`cohesion`])
+/// to be used: under it the works are one group.
+const GROUPING_MIN_COHESION: f64 = 0.05;
+
 /// Share of an axis's works (numerator, denominator) that must carry a
 /// genre or series for it to name the axis.
 const LABEL_MIN_SHARE: (usize, usize) = (1, 3);
@@ -483,43 +487,6 @@ pub struct AxisSeed {
     pub vector: Vec<f32>,
 }
 
-/// How many groups `seeds` works are first split into: the square root of
-/// their number, at least [`RADAR_MIN_AXES`] and at most
-/// [`MAX_TASTE_AXES`], so a dozen works are not cut into six pairs; fewer
-/// when there are not [`AXIS_MIN_WORKS`] works for each, down to
-/// [`MIN_TASTE_AXES`].
-fn group_count(seeds: usize) -> usize {
-    let mut k = RADAR_MIN_AXES;
-    while k < MAX_TASTE_AXES && (k + 1) * (k + 1) <= seeds {
-        k += 1;
-    }
-    k.min(seeds / AXIS_MIN_WORKS).max(MIN_TASTE_AXES)
-}
-
-/// The work among `points` least like every centre in `centres` (the
-/// first such when several are), leaving out those in `barred`; `None`
-/// when every work is barred.
-fn farthest_point(
-    points: &[(usize, Vec<f32>)],
-    centres: impl Iterator<Item = impl AsRef<[f32]>> + Clone,
-    barred: &[bool],
-) -> Option<usize> {
-    let mut farthest: Option<(usize, f32)> = None;
-    for (at, (_, vector)) in points.iter().enumerate() {
-        if barred.get(at).copied().unwrap_or(false) {
-            continue;
-        }
-        let nearest = centres
-            .clone()
-            .map(|centre| dot(centre.as_ref(), vector))
-            .fold(f32::NEG_INFINITY, f32::max);
-        if farthest.is_none_or(|(_, least)| nearest < least) {
-            farthest = Some((at, nearest));
-        }
-    }
-    farthest.map(|(at, _)| at)
-}
-
 /// The works' unit vectors with what they all share taken out: each less
 /// their plain mean, scaled to length 1 again, and how far each sat from
 /// that mean.
@@ -563,6 +530,198 @@ fn apart(points: &[(usize, Vec<f32>)], dims: usize) -> Option<Vec<(Vec<f32>, f64
         .collect()
 }
 
+/// The works of each group of `assigned` (a group number per work), in
+/// the order of the lowest work of each.
+fn groups_of(assigned: &[usize]) -> Vec<Vec<usize>> {
+    let mut numbers: Vec<usize> = Vec::new();
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for (at, number) in assigned.iter().enumerate() {
+        match numbers.iter().position(|seen| seen == number) {
+            Some(group) => groups[group].push(at),
+            None => {
+                numbers.push(*number);
+                groups.push(vec![at]);
+            }
+        }
+    }
+    groups
+}
+
+/// Ways to split works into groups, by joining the two most alike groups
+/// again and again (two groups are as alike as their works are on
+/// average), from every work on its own down to two groups.
+///
+/// # Arguments
+///
+/// * `likeness` - How alike each two works are, a square table.
+/// * `most` - The most groups a split may have.
+///
+/// # Returns
+///
+/// A group number per work for each split of two to `most` groups, the
+/// split with the fewest groups first. Empty for fewer than two works.
+fn splits(likeness: &[Vec<f64>], most: usize) -> Vec<Vec<usize>> {
+    let n = likeness.len();
+    // Each live group's works, and the summed likeness between groups.
+    let mut members: Vec<Option<Vec<usize>>> = (0..n).map(|at| Some(vec![at])).collect();
+    let mut between: Vec<Vec<f64>> = likeness.to_vec();
+    let mut live = n;
+    let mut found: Vec<Vec<usize>> = Vec::new();
+    while live >= 2 {
+        if live <= most {
+            let mut assigned = vec![0_usize; n];
+            for (group, works) in members.iter().enumerate() {
+                for at in works.iter().flatten() {
+                    assigned[*at] = group;
+                }
+            }
+            found.push(assigned);
+        }
+        if live == 2 {
+            break;
+        }
+        // The two most alike groups: the first such when several are.
+        let mut closest: Option<(usize, usize, f64)> = None;
+        for a in 0..n {
+            let Some(of_a) = &members[a] else { continue };
+            for b in (a + 1)..n {
+                let Some(of_b) = &members[b] else { continue };
+                let alike = between[a][b] / (count(of_a.len()) * count(of_b.len()));
+                if closest.is_none_or(|(_, _, most_alike)| alike > most_alike) {
+                    closest = Some((a, b, alike));
+                }
+            }
+        }
+        let Some((a, b, _)) = closest else { break };
+        let moved = members[b].take().unwrap_or_default();
+        if let Some(of_a) = &mut members[a] {
+            of_a.extend(moved);
+        }
+        for other in 0..n {
+            let add = between[b][other];
+            between[a][other] += add;
+            between[other][a] = between[a][other];
+        }
+        live -= 1;
+    }
+    found.reverse();
+    found
+}
+
+/// Settles a split: each work moves to the group whose centre it is most
+/// like, until none moves. A group left with fewer than
+/// [`AXIS_MIN_WORKS`] works is dissolved into the others while another
+/// group remains: its work is a book apart, not a leaning.
+///
+/// # Arguments
+///
+/// * `points` - The works' unit vectors.
+/// * `assigned` - A group number per work, below `points.len()`.
+///
+/// # Returns
+///
+/// The settled group number per work.
+fn settle(points: &[&[f32]], mut assigned: Vec<usize>) -> Vec<usize> {
+    let dims = points.first().map_or(0, |point| point.len());
+    for _ in 0..CLUSTER_ROUNDS {
+        let mut sizes = vec![0_usize; points.len()];
+        for group in &assigned {
+            sizes[*group] += 1;
+        }
+        let live = sizes.iter().filter(|size| **size > 0).count();
+        // The smallest group that is too small goes, when another stays.
+        let dissolved = (0..sizes.len())
+            .filter(|group| sizes[*group] > 0 && sizes[*group] < AXIS_MIN_WORKS)
+            .min_by_key(|group| sizes[*group])
+            .filter(|_| live > 1);
+        let centres: Vec<Option<Vec<f32>>> = (0..sizes.len())
+            .map(|group| {
+                if sizes[group] == 0 || dissolved == Some(group) {
+                    return None;
+                }
+                let mut sum = vec![0.0_f64; dims];
+                for (at, point) in points.iter().enumerate() {
+                    if assigned[at] == group {
+                        for (into, x) in sum.iter_mut().zip(*point) {
+                            *into += f64::from(*x);
+                        }
+                    }
+                }
+                // Narrowing sums of at most a few hundred numbers within
+                // -1..=1.
+                #[allow(clippy::cast_possible_truncation)]
+                let mean: Vec<f32> = sum.into_iter().map(|x| x as f32).collect();
+                unit(&mean)
+            })
+            .collect();
+        let mut moved = false;
+        for (at, point) in points.iter().enumerate() {
+            let mut best: Option<(usize, f32)> = None;
+            for (group, centre) in centres.iter().enumerate() {
+                let Some(centre) = centre else { continue };
+                let alike = dot(centre, point);
+                if best.is_none_or(|(_, most)| alike > most) {
+                    best = Some((group, alike));
+                }
+            }
+            if let Some((group, _)) = best {
+                if assigned[at] != group {
+                    assigned[at] = group;
+                    moved = true;
+                }
+            }
+        }
+        if !moved && dissolved.is_none() {
+            break;
+        }
+    }
+    assigned
+}
+
+/// How well a split holds together, from -1 to 1: for each work, how much
+/// closer it sits to the works of its own group than to those of the
+/// nearest other group (the silhouette), averaged over the works. 0 for
+/// one group, and for a work alone in its group.
+fn cohesion(likeness: &[Vec<f64>], groups: &[Vec<usize>]) -> f64 {
+    if groups.len() < 2 {
+        return 0.0;
+    }
+    let apart = |at: usize, others: &[usize]| {
+        let far: f64 = others
+            .iter()
+            .filter(|other| **other != at)
+            .map(|other| 1.0 - likeness[at][*other])
+            .sum();
+        let n = others.iter().filter(|other| **other != at).count();
+        (n > 0).then(|| far / count(n))
+    };
+    let mut total = 0.0_f64;
+    let mut works = 0_usize;
+    for (number, group) in groups.iter().enumerate() {
+        for at in group {
+            works += 1;
+            let Some(own) = apart(*at, group) else {
+                continue;
+            };
+            let nearest = groups
+                .iter()
+                .enumerate()
+                .filter(|(other, _)| *other != number)
+                .filter_map(|(_, other)| apart(*at, other))
+                .fold(f64::INFINITY, f64::min);
+            let widest = own.max(nearest);
+            if nearest.is_finite() && widest > 0.0 {
+                total += (nearest - own) / widest;
+            }
+        }
+    }
+    if works == 0 {
+        0.0
+    } else {
+        total / count(works)
+    }
+}
+
 /// Splits the seed works of a taste into groups that sit together in the
 /// embedding space.
 ///
@@ -573,14 +732,21 @@ fn apart(points: &[(usize, Vec<f32>)], dims: usize) -> Option<Vec<(Vec<f32>, f64
 /// works all share is taken out first (their plain mean), so themes sit
 /// apart.
 ///
-/// Spherical k-means with nothing left to chance, so the same taste gives
-/// the same groups: the first centre is the work least like the rest,
-/// each next centre the work least like the centres so far, and works
-/// move to the centre they are most like until none moves. A group left
-/// with fewer than [`AXIS_MIN_WORKS`] works is dissolved into the others:
-/// its work is a book apart, not a leaning. Its place is given once to
-/// the work then least like the remaining centres, so one stray book does
-/// not cost the taste an axis.
+/// Nothing is left to chance, so the same taste gives the same groups,
+/// and a taste whose vectors move a little keeps them:
+///
+/// 1. The two most alike groups are joined again and again, from every
+///    work on its own (`splits`). That gives one way to split the works
+///    into each number of groups from two to [`MAX_TASTE_AXES`] (fewer
+///    when there are not [`AXIS_MIN_WORKS`] works for each).
+/// 2. Each split is settled: works move to the group they are most like,
+///    and a group left with one work is dissolved (`settle`).
+/// 3. The split whose groups hold together best is kept (`cohesion`);
+///    of two that hold as well, the one with fewer groups. A small taste
+///    with one clear leaning is two groups, not three made up to fill a
+///    chart. Works that do not split at all (under
+///    `GROUPING_MIN_COHESION`), or fewer than four of them, are one
+///    group.
 ///
 /// # Arguments
 ///
@@ -613,139 +779,40 @@ pub fn cluster(seeds: &[AxisSeed]) -> Vec<Vec<usize>> {
     if points.len() < MIN_TASTE_AXES * AXIS_MIN_WORKS {
         return Vec::new();
     }
-    let k = group_count(points.len());
     // Grouped without what the works all share, when they differ at all.
-    let mut first = 0_usize;
-    let points: Vec<(usize, Vec<f32>)> = match apart(&points, dims) {
-        Some(parted) => {
-            // The work least like the rest: furthest from their mean (the
-            // heaviest such when several are).
-            let mut furthest = f64::NEG_INFINITY;
-            for (at, (_, off)) in parted.iter().enumerate() {
-                if *off > furthest + 1e-9 {
-                    furthest = *off;
-                    first = at;
-                }
-            }
-            points
-                .iter()
-                .zip(parted)
-                .map(|((position, _), (vector, _))| (*position, vector))
-                .collect()
-        }
-        None => points,
+    let parted: Vec<Vec<f32>> = match apart(&points, dims) {
+        Some(parted) => parted.into_iter().map(|(vector, _)| vector).collect(),
+        None => points.iter().map(|(_, vector)| vector.clone()).collect(),
     };
-    // Works that started a group which then dissolved: not started from
-    // again.
-    let mut barred: Vec<bool> = vec![false; points.len()];
-    // Farthest-point start: the work least like the rest, then the work
-    // least like every centre so far (the first such when several are).
-    let mut centres: Vec<Vec<f32>> = vec![points[first].1.clone()];
-    let mut started: Vec<usize> = vec![first];
-    while centres.len() < k {
-        let Some(farthest) = farthest_point(&points, centres.iter(), &barred) else {
-            break;
-        };
-        centres.push(points[farthest].1.clone());
-        started.push(farthest);
-    }
-    // Each dissolved group's place is offered to another work once.
-    let mut restarts = k;
-    let nearest_centre = |centres: &[Option<Vec<f32>>], vector: &[f32]| {
-        let mut best = (0_usize, f32::NEG_INFINITY);
-        for (at, centre) in centres.iter().enumerate() {
-            let Some(centre) = centre else { continue };
-            let likeness = dot(centre, vector);
-            if likeness > best.1 {
-                best = (at, likeness);
-            }
-        }
-        best.0
-    };
-    let mut centres: Vec<Option<Vec<f32>>> = centres.into_iter().map(Some).collect();
-    let mut assigned: Vec<usize> = vec![usize::MAX; points.len()];
-    loop {
-        for _ in 0..CLUSTER_ROUNDS {
-            let mut moved = false;
-            for (at, (_, vector)) in points.iter().enumerate() {
-                let to = nearest_centre(&centres, vector);
-                if assigned[at] != to {
-                    assigned[at] = to;
-                    moved = true;
-                }
-            }
-            for (group, centre) in centres.iter_mut().enumerate() {
-                if centre.is_none() {
-                    continue;
-                }
-                let mut sum = vec![0.0_f64; dims];
-                for (at, (_, vector)) in points.iter().enumerate() {
-                    if assigned[at] == group {
-                        for (into, x) in sum.iter_mut().zip(vector) {
-                            *into += f64::from(*x);
-                        }
-                    }
-                }
-                // Narrowing sums of at most a few hundred numbers within
-                // -1..=1.
-                #[allow(clippy::cast_possible_truncation)]
-                let mean: Vec<f32> = sum.into_iter().map(|x| x as f32).collect();
-                // A group whose works cancel out keeps its centre.
-                if let Some(mean) = unit(&mean) {
-                    *centre = Some(mean);
-                }
-            }
-            if !moved {
-                break;
-            }
-        }
-        // Dissolve the smallest group that is too small, then settle again.
-        let sizes: Vec<usize> = (0..centres.len())
-            .map(|group| assigned.iter().filter(|to| **to == group).count())
+    let vectors: Vec<&[f32]> = parted.iter().map(Vec::as_slice).collect();
+    let likeness: Vec<Vec<f64>> = vectors
+        .iter()
+        .map(|a| vectors.iter().map(|b| f64::from(dot(a, b))).collect())
+        .collect();
+    let most = MAX_TASTE_AXES.min(vectors.len() / AXIS_MIN_WORKS);
+    let mut kept: Vec<Vec<usize>> = vec![(0..vectors.len()).collect()];
+    let mut best = GROUPING_MIN_COHESION;
+    for split in splits(&likeness, most) {
+        let groups: Vec<Vec<usize>> = groups_of(&settle(&vectors, split))
+            .into_iter()
+            .filter(|group| group.len() >= AXIS_MIN_WORKS)
             .collect();
-        let too_small = (0..centres.len())
-            .filter(|group| centres[*group].is_some() && sizes[*group] < AXIS_MIN_WORKS)
-            .min_by_key(|group| sizes[*group]);
-        let Some(group) = too_small else { break };
-        centres[group] = None;
-        for (at, to) in assigned.iter().enumerate() {
-            if *to == group {
-                barred[at] = true;
-            }
-        }
-        if let Some(at) = started.get(group) {
-            barred[*at] = true;
-        }
-        if restarts > 0 {
-            restarts -= 1;
-            if let Some(next) = farthest_point(&points, centres.iter().flatten(), &barred) {
-                centres[group] = Some(points[next].1.clone());
-                started[group] = next;
-                // The work that starts a group is not started from twice.
-                barred[next] = true;
-            }
-        }
-        if centres.iter().flatten().count() == 0 {
-            return Vec::new();
+        let held = cohesion(&likeness, &groups);
+        // Fewer groups come first: more must hold together better.
+        if held > best + 1e-6 {
+            best = held;
+            kept = groups;
         }
     }
-    let mut groups: Vec<(f64, Vec<usize>)> = (0..centres.len())
-        .filter(|group| centres[*group].is_some())
+    let mut groups: Vec<(f64, Vec<usize>)> = kept
+        .into_iter()
         .map(|group| {
-            let members: Vec<usize> = points
-                .iter()
-                .enumerate()
-                .filter(|(at, _)| assigned[*at] == group)
-                .map(|(_, (position, _))| *position)
-                .collect();
+            let members: Vec<usize> = group.into_iter().map(|at| points[at].0).collect();
             let weight = members.iter().map(|m| seeds[*m].weight.max(0.0)).sum();
             (weight, members)
         })
         .collect();
-    if groups.len() < MIN_TASTE_AXES {
-        return Vec::new();
-    }
-    // A stable sort: equal weights keep the order of their centres.
+    // A stable sort: equal weights keep the order of their first works.
     groups.sort_by(|a, b| b.0.total_cmp(&a.0));
     groups.into_iter().map(|(_, members)| members).collect()
 }
@@ -768,6 +835,17 @@ pub struct AxisBook {
 }
 
 impl AxisBook {
+    /// Whether anything is known of what the work is about: a genre, a
+    /// series or a description. A work with none is embedded from its
+    /// title and author alone.
+    #[must_use]
+    pub fn says_something(&self) -> bool {
+        let filled = |text: &Option<String>| text.as_deref().is_some_and(|t| !t.trim().is_empty());
+        filled(&self.genres)
+            || filled(&self.description)
+            || self.series.iter().any(|series| !series.trim().is_empty())
+    }
+
     /// What naming reads of a library work that counts 1.
     #[must_use]
     pub fn of(work: &WorkRecord) -> Self {
@@ -1168,16 +1246,8 @@ pub(crate) async fn build_axes(
         })
         .collect();
     let settled = seeds.len() * 2 >= wanted;
-    let groups = cluster(&seeds);
-    if groups.is_empty() {
-        return Ok((Vec::new(), settled));
-    }
-    let grouped: Vec<String> = groups
-        .iter()
-        .flatten()
-        .map(|position| seeds[*position].work_id.clone())
-        .collect();
-    let works = library.works_by_ids(&grouped).await?;
+    let with_vector: Vec<String> = seeds.iter().map(|seed| seed.work_id.clone()).collect();
+    let works = library.works_by_ids(&with_vector).await?;
     // A wished work is named from what its wish knows of the book.
     let wished: HashMap<String, crate::embed::WishText> = library
         .list_global_request_queue()
@@ -1194,6 +1264,27 @@ pub(crate) async fn build_axes(
                 .unwrap_or_default()
         })
         .collect();
+    // A work nothing is known of is embedded from its title and author
+    // alone. Such works sit together whatever they are about, so they
+    // are left out while the works something is known of are at least
+    // half of the taste.
+    let known: Vec<bool> = books.iter().map(AxisBook::says_something).collect();
+    let (seeds, books): (Vec<AxisSeed>, Vec<AxisBook>) =
+        if known.iter().filter(|known| **known).count() * 2 >= seeds.len() {
+            seeds
+                .into_iter()
+                .zip(books)
+                .zip(known)
+                .filter(|(_, known)| *known)
+                .map(|(pair, _)| pair)
+                .unzip()
+        } else {
+            (seeds, books)
+        };
+    let groups = cluster(&seeds);
+    if groups.is_empty() {
+        return Ok((Vec::new(), settled));
+    }
     // A group is named after its first work when nothing else stands
     // out: put the work nearest where the group points first.
     let groups: Vec<Vec<usize>> = groups
@@ -1328,10 +1419,9 @@ mod tests {
 
     #[test]
     fn a_stray_work_joins_a_group_and_does_not_cost_an_axis() {
-        // Three bunches and a loner between two of them. The loner is the
-        // work least like the first centres, so it starts a group, ends
-        // alone and is dissolved; its place goes to another work and the
-        // three bunches still come out.
+        // Three bunches and a loner between two of them. A split that
+        // leaves the loner a group of its own dissolves that group, and
+        // the three bunches still come out.
         let mut seeds = three_bunches();
         seeds.push(seed("loner", 0.1, [-1.0, -1.0, 0.2]));
         let groups = ids(&seeds, &cluster(&seeds));
@@ -1398,17 +1488,168 @@ mod tests {
     }
 
     #[test]
-    fn a_dozen_works_are_not_cut_into_six_pairs() {
-        assert_eq!(group_count(2), 1);
-        assert_eq!(group_count(3), 1);
-        assert_eq!(group_count(4), 2);
-        assert_eq!(group_count(5), 2);
-        assert_eq!(group_count(6), 3);
-        assert_eq!(group_count(15), 3);
-        assert_eq!(group_count(16), 4);
-        assert_eq!(group_count(25), 5);
-        assert_eq!(group_count(36), 6);
-        assert_eq!(group_count(4000), 6);
+    fn a_taste_with_one_leaning_is_two_groups_not_three() {
+        // A tight bunch and works that share nothing with each other:
+        // the split that holds together best sets the bunch against the
+        // rest. Cutting the rest up to reach three groups holds worse.
+        let seeds = vec![
+            seed("x1", 2.0, [1.0, 0.05, 0.0]),
+            seed("x2", 2.0, [1.0, 0.0, 0.05]),
+            seed("x3", 2.0, [0.9, 0.1, 0.0]),
+            seed("x4", 2.0, [1.0, 0.05, 0.05]),
+            seed("a", 1.0, [-0.2, 1.0, 0.1]),
+            seed("b", 1.0, [-0.2, 0.6, 0.8]),
+            seed("c", 1.0, [-0.2, 0.1, 1.0]),
+            seed("d", 1.0, [-0.2, 0.9, 0.5]),
+        ];
+        assert_eq!(
+            ids(&seeds, &cluster(&seeds)),
+            [vec!["x1", "x2", "x3", "x4"], vec!["a", "b", "c", "d"]]
+        );
+    }
+
+    /// Seeds from the real model's vectors of the demo library and of two
+    /// people's wishes (see the file's note): the works at `positions`,
+    /// the first `light` of them library books and the rest wishes.
+    fn real_seeds(positions: &[usize], light: usize) -> Vec<AxisSeed> {
+        let file: serde_json::Value =
+            serde_json::from_str(include_str!("testdata/taste_axes_real_vectors.json")).unwrap();
+        let works = file["works"].as_array().unwrap();
+        positions
+            .iter()
+            .enumerate()
+            .map(|(at, position)| AxisSeed {
+                work_id: works[*position]["title"].as_str().unwrap().to_string(),
+                weight: if at < light { 0.5 } else { WISH_SEED_WEIGHT },
+                vector: serde_json::from_value(works[*position]["vector"].clone()).unwrap(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_real_small_taste_splits_into_its_one_leaning_and_the_rest() {
+        // Ten library books and four wishes, as the model sees them. The
+        // fantasy books and both fantasy wishes are one group; nothing
+        // else in the taste holds together well enough to be cut up.
+        let library = [1, 4, 5, 6, 7, 9, 10, 11, 12, 13];
+        let mut positions = library.to_vec();
+        positions.extend([14, 15, 16, 17]);
+        let seeds = real_seeds(&positions, library.len());
+        let groups = ids(&seeds, &cluster(&seeds));
+        assert_eq!(groups.len(), 2, "{groups:?}");
+        assert_eq!(
+            groups[1],
+            [
+                "Iron Flame",
+                "Mistborn 1: The Final Empire 1 of 3",
+                "Mistborn 1: The Final Empire 2 of 3",
+                "The Way of Kings",
+                "Wind and Truth",
+            ]
+        );
+        assert_eq!(groups[0].len(), 9);
+        // The library alone splits the same way.
+        let seeds = real_seeds(&library, library.len());
+        let groups = ids(&seeds, &cluster(&seeds));
+        assert_eq!(groups.len(), 2, "{groups:?}");
+        assert_eq!(groups[1].len(), 3, "the Sanderson books: {groups:?}");
+    }
+
+    #[test]
+    fn a_real_taste_of_three_wished_themes_keeps_each_theme_whole() {
+        // The same library with twelve wishes: three space operas, three
+        // mysteries and six histories of the Second World War.
+        let library = [1, 4, 5, 6, 7, 9, 10, 11, 12, 13];
+        let mut positions = library.to_vec();
+        positions.extend(18..30);
+        let seeds = real_seeds(&positions, library.len());
+        let groups = ids(&seeds, &cluster(&seeds));
+        assert_eq!(groups.len(), 4, "{groups:?}");
+        let group_of = |title: &str| {
+            groups
+                .iter()
+                .position(|group| group.iter().any(|id| id == title))
+                .unwrap()
+        };
+        let war = group_of("D-Day");
+        assert_eq!(
+            groups[war],
+            [
+                "Band of Brothers",
+                "Citizen Soldiers",
+                "D-Day",
+                "The Rise and Fall of the Third Reich",
+                "The Splendid and the Vile",
+                "Unbroken",
+            ],
+            "the six histories and no passenger"
+        );
+        let space = group_of("Leviathan Wakes");
+        for title in ["Hyperion", "Red Rising", "Dune", "Project Hail Mary"] {
+            assert_eq!(group_of(title), space, "{title}");
+        }
+        let mysteries = group_of("The Thursday Murder Club");
+        for title in [
+            "Murder on the Orient Express",
+            "The No. 1 Ladies' Detective Agency",
+        ] {
+            assert_eq!(group_of(title), mysteries, "{title}");
+        }
+        assert_eq!(
+            group_of("The Way of Kings"),
+            group_of("Mistborn 1: The Final Empire 1 of 3")
+        );
+        assert_eq!(
+            [war, space, mysteries]
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    fn splits_join_the_most_alike_first_and_cohesion_scores_them() {
+        // Works 0 and 1 are alike, 2 and 3 are alike, the pairs are not.
+        let likeness = vec![
+            vec![1.0, 0.9, 0.1, 0.0],
+            vec![0.9, 1.0, 0.0, 0.1],
+            vec![0.1, 0.0, 1.0, 0.8],
+            vec![0.0, 0.1, 0.8, 1.0],
+        ];
+        let found = splits(&likeness, 3);
+        assert_eq!(found.len(), 2, "two groups, then three");
+        assert_eq!(groups_of(&found[0]), [vec![0, 1], vec![2, 3]]);
+        assert_eq!(groups_of(&found[1]), [vec![0, 1], vec![2], vec![3]]);
+        assert!(splits(&likeness[..1], 3).is_empty());
+        // No split is offered above the most groups asked for.
+        assert_eq!(splits(&likeness, 2).len(), 1);
+
+        let pairs = cohesion(&likeness, &groups_of(&found[0]));
+        let crossed = cohesion(&likeness, &[vec![0, 2], vec![1, 3]]);
+        assert!(pairs > 0.8, "{pairs}");
+        assert!(crossed < 0.0, "{crossed}");
+        assert!(cohesion(&likeness, &[vec![0, 1, 2, 3]]).abs() < 1e-12);
+        // A work alone in its group counts for nothing.
+        let with_loner = cohesion(&likeness, &groups_of(&found[1]));
+        assert!(with_loner > 0.0 && with_loner < pairs, "{with_loner}");
+    }
+
+    #[test]
+    fn settling_moves_a_misplaced_work_and_dissolves_a_lone_one() {
+        let x1 = [1.0_f32, 0.0];
+        let x2 = [0.99_f32, 0.14];
+        let y1 = [0.0_f32, 1.0];
+        let y2 = [0.14_f32, 0.99];
+        let stray = [0.6_f32, 0.8];
+        let points: Vec<&[f32]> = vec![&x1, &x2, &y1, &y2, &stray];
+        // x2 starts with the y's and moves back; the stray's own group
+        // dissolves and it joins the y's, which it is more like.
+        let settled = settle(&points, vec![0, 2, 2, 2, 4]);
+        assert_eq!(groups_of(&settled), [vec![0, 1], vec![2, 3, 4]]);
+        // One group of one work has nowhere to dissolve into.
+        let alone: Vec<&[f32]> = vec![&x1];
+        assert_eq!(settle(&alone, vec![0]), [0]);
     }
 
     #[test]

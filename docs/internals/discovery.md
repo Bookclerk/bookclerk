@@ -573,10 +573,22 @@ library and weighs less than a book the person finished or rated well.
 A member's taste takes their own wishes; the household's taste takes
 everyone's.
 
-**Grouping.** The 400 heaviest seed works with a vector are grouped by
-spherical k-means, with nothing left to chance so the same taste gives
-the same axes: the first centre is the work least like the rest, each
-next centre the work least like the centres so far.
+**Grouping.** The 400 heaviest seed works with a vector are grouped, with
+nothing left to chance, so the same taste gives the same axes:
+
+1. The two most alike groups are joined again and again, starting from
+   every work on its own. Two groups are as alike as their works are on
+   average. This gives one way to split the works into each number of
+   groups from two to six.
+2. Each split is settled: every work moves to the group whose centre it
+   is most like, until none moves.
+3. The split whose groups hold together best is kept. A split holds
+   together when its works sit closer to the works of their own group
+   than to those of the nearest other group (the mean silhouette).
+
+The number of axes so follows from the books, not from how many there
+are. A small taste with one clear leaning has two axes, the leaning and
+the rest, and not three made up to fill a chart.
 
 Works are grouped by meaning alone. A model's vectors all point roughly
 the same way, which hides what tells one theme from another, so the
@@ -585,13 +597,24 @@ are grouped. A work's weight does not decide which group it joins: it
 decides where the axis then points and how much the axis counts. A few
 heavy wishes therefore do not pull unlike wishes into one group.
 
+A work nothing is known of (no genre, series or description) is embedded
+from its title and author alone. Such works sit together whatever they
+are about, so they are left out of the grouping while the works
+something is known of are at least half of the taste. They stay seeds of
+the taste's one centroid.
+
 | Rule | Value |
 | --- | --- |
-| Groups tried | The square root of the seed count, within 3 to 6; fewer when there are not 2 works for each (4 works: 2 groups, 2 works: 1) |
+| Groups tried | 2 to 6; fewer when there are not 2 works for each (4 works: 2 groups) |
+| Of two splits that hold together as well | The one with fewer groups |
+| Works that do not split (best score under 0.05), or fewer than 4 works | One group |
 | Works a group needs | 2; a smaller group is dissolved into the others |
-| A dissolved group's place | Given once to the work then least like the remaining centres, so a stray book does not cost an axis |
 | Fewer than 2 seed works with a vector | No axes; the ranking uses the one centroid |
 | Order | The group with the most weight first |
+
+Measured on the default model with the demo library, this grouping kept
+the same groups in 34 of 40 trials when every vector was moved by about
+0.01 in cosine; fixed-count k-means, used before, kept them in 8.
 
 A taste can so have one or two axes. They rank the same way; the
 [radar](#the-taste-radar) shows them as rows, since it takes three to
