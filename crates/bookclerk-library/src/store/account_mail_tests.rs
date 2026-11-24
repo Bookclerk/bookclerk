@@ -791,6 +791,8 @@ async fn a_reset_survives_a_lost_reply_and_a_factor_enrolled_after_the_check_und
             .insert_portal_session("kai-session", identity.id, now + Duration::hours(1))
             .await
             .unwrap();
+        // A new attempt hashes afresh, so its operation id is its own.
+        let first = crate::hash_password(&fresh_password()).expect("hash");
         kit.lose_next_replies(1);
         assert_eq!(
             store
