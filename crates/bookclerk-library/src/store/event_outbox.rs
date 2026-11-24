@@ -12,7 +12,7 @@ use sea_orm::{
     ActiveModelTrait,
     ActiveValue::{NotSet, Set},
     ColumnTrait, Condition, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
-    QuerySelect, StreamTrait, TransactionTrait,
+    QuerySelect, QueryTrait, StreamTrait, TransactionTrait,
 };
 use uuid::Uuid;
 
@@ -3109,6 +3109,12 @@ impl<'a> AcquireEventTitle<'a> {
 ///
 /// `edition_id` is the title's edition (`editionId` in the payload, `null`
 /// when the title has no edition yet).
+///
+/// The spec's dedup key is new for every call
+/// (`book_acquired:{title id}:{edition id}:{stamp}`), so a title acquired again after a
+/// reset or a failure publishes again. A write that only repeats an acquire
+/// already announced reuses that event's key instead, through
+/// [`acquired_event_key`], and is dropped as a duplicate.
 pub(crate) fn book_acquired_spec(
     title: AcquireEventTitle<'_>,
     storage_key: Option<&str>,
@@ -3137,11 +3143,97 @@ pub(crate) fn book_acquired_spec(
         source: title.source.to_string(),
         correlation_id: title.title_id.to_string(),
         causation_id: String::new(),
-        dedup_key: format!("book_acquired:{}", title.title_id),
+        dedup_key: format!(
+            "{}{}-{}",
+            book_acquired_key_prefix(title.title_id, edition_id.unwrap_or_default()),
+            now_str(),
+            Uuid::new_v4().simple()
+        ),
         payload: serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into()),
         ordering_key: title.title_id.to_string(),
         ..PublishDomainEventSpec::default()
     }
+}
+
+/// The dedup key prefix every `book_acquired` of `title_id` naming
+/// edition `edition_id` shares.
+fn book_acquired_key_prefix(title_id: &str, edition_id: &str) -> String {
+    format!("book_acquired:{title_id}:{edition_id}:")
+}
+
+/// The dedup key the `book_acquired` of `title`'s edition `edition_id`
+/// should carry, or `None` for a new acquire (the key
+/// [`book_acquired_spec`] made stays).
+///
+/// A write is a repeat of an acquire already announced when the title's
+/// newest `book_acquired` of this edition still in the outbox is newer
+/// than every `edition_acquire_changed` of the edition (published through
+/// any of its holdings): nothing reset, queued or failed the edition in
+/// between. An acquire of an edition the title never announced is new. A repeat reuses
+/// that event's key, so a retried acquire is dropped as a duplicate while
+/// an acquire after a reset publishes again. Both reads are key-prefix
+/// range reads: the `book_acquired` one through the outbox's unique key
+/// (`queue_name, account_id, source, event_type, dedup_key`), the
+/// `edition_acquire_changed` one, which spans every holding's account and
+/// source, through `idx_domain_events_type_key`.
+///
+/// Two writers that race past this read both publish; consumers already
+/// take an event more than once.
+///
+/// # Errors
+///
+/// Returns [`LibraryError::Orm`] when a read fails.
+pub(crate) async fn acquired_event_key<C: ConnectionTrait>(
+    db: &C,
+    title: AcquireEventTitle<'_>,
+    edition_id: &str,
+) -> Result<Option<String>> {
+    // `holding` narrows the read to the acquiring holding (its account,
+    // source and ordering key); without it every holding's rows count.
+    let newest = |event_type: &str, prefix: String, holding: bool| {
+        // The prefix's range: every key that starts with it sorts at or
+        // after it and before the prefix with its last byte (`:`) raised.
+        let mut end = prefix.clone();
+        end.pop();
+        end.push(';');
+        domain_events::Entity::find()
+            .filter(domain_events::Column::QueueName.eq(CORE_EVENTS_QUEUE))
+            .filter(domain_events::Column::EventType.eq(event_type))
+            .filter(domain_events::Column::DedupKey.gte(prefix))
+            .filter(domain_events::Column::DedupKey.lt(end))
+            .apply_if(holding.then_some(title), |q, title| {
+                q.filter(domain_events::Column::AccountId.eq(title.account_id))
+                    .filter(domain_events::Column::Source.eq(title.source))
+                    .filter(domain_events::Column::OrderingKey.eq(title.title_id))
+            })
+            .order_by_desc(domain_events::Column::CreatedAt)
+            .order_by_desc(domain_events::Column::Id)
+    };
+    let Some(acquired) = newest(
+        "book_acquired",
+        book_acquired_key_prefix(title.title_id, edition_id),
+        true,
+    )
+    .one(db)
+    .await
+    .map_err(LibraryError::Orm)?
+    else {
+        return Ok(None);
+    };
+    let changed = newest(
+        crate::EDITION_ACQUIRE_CHANGED,
+        // A reset through any holding of the edition counts.
+        format!("{}:{edition_id}:", crate::EDITION_ACQUIRE_CHANGED),
+        false,
+    )
+    .one(db)
+    .await
+    .map_err(LibraryError::Orm)?;
+    let repeat = changed.is_none_or(|changed| {
+        (changed.created_at.as_str(), changed.id.as_str())
+            < (acquired.created_at.as_str(), acquired.id.as_str())
+    });
+    Ok(repeat.then_some(acquired.dedup_key))
 }
 
 /// Build the `edition_acquire_changed` outbox spec for a title's edition.
@@ -3236,12 +3328,17 @@ pub(crate) async fn set_acquire_status_on<C: ConnectionTrait>(
             holding.holding_id.as_str(),
         ));
     }
-    let spec = acquire_status_event(
+    let mut spec = acquire_status_event(
         write.title,
         &holding.edition_id,
         write.status,
         write.storage_key,
     )?;
+    if write.status == AcquireStatus::Acquired {
+        if let Some(key) = acquired_event_key(db, write.title, &holding.edition_id).await? {
+            spec.dedup_key = key;
+        }
+    }
     let changed = update_edition_acquisition_on(
         db,
         &holding.edition_id,

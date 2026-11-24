@@ -208,49 +208,143 @@ async fn changed_work(
     }
 }
 
-/// Handles one claimed delivery for the page index consumer: refresh the
-/// work the event touched, then ack; retry a failed refresh; dead-letter a
-/// body this consumer cannot read.
+/// Most deliveries the page index consumer handles together: the claimed
+/// one and up to this many minus one more it claims while they are ready.
+const DRAIN_BATCH: u32 = 64;
+
+/// Lease length of the deliveries the consumer claims for a batch, as the
+/// delivery workers lease theirs.
+const DRAIN_LEASE_SECS: u64 = 60;
+
+/// Handles a claimed delivery for the page index consumer, together with
+/// the consumer's other deliveries that are ready now (up to
+/// [`DRAIN_BATCH`]): refreshes every work they touched once, then acks
+/// them; retries them all when the refresh fails; dead-letters a body this
+/// consumer cannot read.
+///
+/// A scan of a podcast with N episodes publishes about N events for one
+/// show, and a refresh reads every episode, so refreshing per event cost
+/// O(N²) reads. Deliveries that queue up while a refresh runs are claimed
+/// and folded into the next one, so the show is read about once per batch
+/// (#989). Rows derive from the model as the refresh reads it, so the
+/// order of the events does not matter.
 ///
 /// # Arguments
 ///
 /// * `library` - Open library store.
-/// * `event` - The delivered event.
+/// * `node_id` - This node's catalog id, for claiming more deliveries.
+/// * `event` - The claimed delivery's event.
 /// * `delivery` - The claimed delivery.
-pub async fn run_library_index_delivery(
+pub async fn run_library_index_deliveries(
     library: &LibraryStore,
-    event: &DomainEventRecord,
-    delivery: &EventDeliveryRecord,
+    node_id: &str,
+    event: DomainEventRecord,
+    delivery: EventDeliveryRecord,
 ) {
-    let fence = delivery.fence();
-    let change = match parse_change(event) {
-        Ok(change) => change,
-        Err(reason) => {
-            warn!(event_id = %event.id, %reason, "library index consumer refused an event");
-            let _ = library.dead_letter_event_delivery(&fence, &reason).await;
-            return;
+    let mut batch = vec![(event, delivery)];
+    let owner = format!("library-index-{}", uuid::Uuid::new_v4());
+    let consumer = [LIBRARY_INDEX_CONSUMER_ID.to_string()];
+    while batch.len() < usize::try_from(DRAIN_BATCH).unwrap_or(usize::MAX) {
+        let claimed = library
+            .lease_next_event_delivery(
+                &owner,
+                DRAIN_LEASE_SECS,
+                &uuid::Uuid::new_v4().to_string(),
+                &consumer,
+                DRAIN_BATCH,
+                node_id,
+            )
+            .await;
+        let delivery = match claimed {
+            Ok(Some(delivery)) => delivery,
+            Ok(None) => break,
+            Err(err) => {
+                debug!(error = %err, "library index consumer stopped claiming more deliveries");
+                break;
+            }
+        };
+        match library.get_domain_event(&delivery.event_id).await {
+            Ok(Some(event)) => batch.push((event, delivery)),
+            Ok(None) => {
+                let _ = library
+                    .dead_letter_event_delivery(&delivery.fence(), "parent event missing")
+                    .await;
+            }
+            Err(err) => {
+                // Let the lease lapse; the delivery comes back.
+                warn!(delivery_id = %delivery.id, error = %err, "could not read a delivery's event");
+                break;
+            }
         }
-    };
-    let outcome = match changed_work(library, &change).await {
-        Ok(Some(work_id)) => library
-            .refresh_library_works(std::slice::from_ref(&work_id))
-            .await
-            .map(|written| (Some(work_id), written)),
-        Ok(None) => Ok((None, 0)),
-        Err(err) => Err(err),
-    };
-    let result = match outcome {
-        Ok((work_id, written)) => {
-            debug!(event_id = %event.id, ?change, ?work_id, written, "library index refreshed");
-            library.ack_event_delivery(&fence).await
+    }
+    handle_library_index_batch(library, &batch).await;
+}
+
+/// Refreshes the works a batch of claimed deliveries touched, then acks,
+/// retries or dead-letters each delivery.
+///
+/// # Arguments
+///
+/// * `library` - Open library store.
+/// * `batch` - Claimed deliveries with their events.
+pub(crate) async fn handle_library_index_batch(
+    library: &LibraryStore,
+    batch: &[(DomainEventRecord, EventDeliveryRecord)],
+) {
+    let mut readable = Vec::with_capacity(batch.len());
+    for (event, delivery) in batch {
+        match parse_change(event) {
+            Ok(change) => readable.push((event, delivery, change)),
+            Err(reason) => {
+                warn!(event_id = %event.id, %reason, "library index consumer refused an event");
+                let _ = library
+                    .dead_letter_event_delivery(&delivery.fence(), &reason)
+                    .await;
+            }
         }
-        Err(err) => {
-            warn!(event_id = %event.id, error = %err, "library index refresh failed");
-            library.fail_event_delivery(&fence, &err.to_string()).await
+    }
+    if readable.is_empty() {
+        return;
+    }
+    // Each delivery's lookup stands alone: one that fails is retried by
+    // itself and does not hold back the works the others found.
+    let mut works = std::collections::BTreeSet::new();
+    let mut looked_up = Vec::with_capacity(readable.len());
+    for (event, delivery, change) in readable {
+        let lookup = changed_work(library, &change).await;
+        if let Ok(Some(work_id)) = &lookup {
+            works.insert(work_id.clone());
         }
+        // `Ok(true)`: the delivery found a work, so the refresh decides it.
+        looked_up.push((event, delivery, change, lookup.map(|work| work.is_some())));
+    }
+    let works: Vec<String> = works.into_iter().collect();
+    let refreshed = if works.is_empty() {
+        Ok(0)
+    } else {
+        library.refresh_library_works(&works).await
     };
-    if let Err(err) = result {
-        warn!(delivery_id = %delivery.id, error = %err, "library index delivery update failed");
+    for (event, delivery, change, lookup) in &looked_up {
+        let fence = delivery.fence();
+        // A delivery that found no work has nothing the refresh could
+        // fail for it.
+        let failure = match (lookup, &refreshed) {
+            (Err(err), _) | (Ok(true), Err(err)) => Some(err),
+            (Ok(true), Ok(_)) | (Ok(false), _) => None,
+        };
+        let result = match failure {
+            None => {
+                debug!(event_id = %event.id, ?change, works = works.len(), "library index refreshed");
+                library.ack_event_delivery(&fence).await
+            }
+            Some(err) => {
+                warn!(event_id = %event.id, error = %err, "library index refresh failed");
+                library.fail_event_delivery(&fence, &err.to_string()).await
+            }
+        };
+        if let Err(err) = result {
+            warn!(delivery_id = %delivery.id, error = %err, "library index delivery update failed");
+        }
     }
 }
 
@@ -495,7 +589,7 @@ mod tests {
                 .await
                 .expect("claim")
                 .expect("a delivery");
-            run_library_index_delivery(library, &event, &delivery).await;
+            handle_library_index_batch(library, &[(event.clone(), delivery.clone())]).await;
             let after = library
                 .get_event_delivery(&delivery.id)
                 .await
@@ -583,6 +677,83 @@ mod tests {
         assert!(titles(&library).await.is_empty());
         // Events alone do not make a built index.
         assert!(!library.library_index_built().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn ready_deliveries_are_handled_in_one_batch() {
+        let files = tempfile::tempdir().expect("tempdir");
+        let (_state, library) = crate::node_api::tests::test_state(&files).await;
+        let node = "node-a";
+        upsert_catalog_row(&library, node).await;
+        library
+            .upsert_account("audible", "acct", "us", None, true, "audible")
+            .await
+            .expect("account");
+        for (asin, title) in [("B0BATCH1", "First"), ("B0BATCH2", "Second")] {
+            library
+                .upsert_book(&NewBook::minimal(asin, "acct", "us", title))
+                .await
+                .expect("book");
+        }
+        // Dispatch every event to the consumer without handling any.
+        let consumer = LIBRARY_INDEX_CONSUMER_ID.to_string();
+        let mut dispatched = 0;
+        while let Some(event) = library.next_undispatched_event().await.expect("next") {
+            let catalog = library
+                .list_live_event_subscribers()
+                .await
+                .expect("catalog");
+            let subscribers = catalog_subscribers_for_event(&catalog, &event)
+                .into_iter()
+                .filter(|s| s.plugin_id == consumer)
+                .collect::<Vec<_>>();
+            dispatched += subscribers.len();
+            library
+                .dispatch_event_deliveries(
+                    &event.id,
+                    &subscribers,
+                    &uuid::Uuid::new_v4().to_string(),
+                )
+                .await
+                .expect("dispatch");
+        }
+        assert!(dispatched > 2, "each title publishes several events");
+        let claim = || async {
+            library
+                .lease_next_event_delivery(
+                    "test-owner",
+                    60,
+                    &uuid::Uuid::new_v4().to_string(),
+                    std::slice::from_ref(&consumer),
+                    DRAIN_BATCH,
+                    node,
+                )
+                .await
+        };
+        let first = claim().await.expect("claim").expect("a delivery");
+        let event = library
+            .get_domain_event(&first.event_id)
+            .await
+            .expect("read")
+            .expect("event");
+        run_library_index_deliveries(&library, node, event, first).await;
+        assert!(
+            claim().await.expect("claim").is_none(),
+            "the one claim took every ready delivery"
+        );
+        let ours = library
+            .list_event_deliveries(None, 1000)
+            .await
+            .expect("deliveries")
+            .into_iter()
+            .filter(|d| d.plugin_id == consumer)
+            .collect::<Vec<_>>();
+        assert_eq!(ours.len(), dispatched);
+        assert!(
+            ours.iter().all(|d| d.state == "acked"),
+            "every delivery the drain took is acked: {ours:?}"
+        );
+        assert_eq!(titles(&library).await, ["First", "Second"]);
     }
 
     #[tokio::test]

@@ -414,9 +414,9 @@ mod tests {
         ] {
             assert!(err.to_string().contains("does not provide metadata"));
         }
-        assert!(!plain.supports_covers());
+        assert!(!plain.supports_media_download());
         let err = plain
-            .fetch_covers(bookclerk_plugin_abi::CoverFetchParams {
+            .download_media(bookclerk_plugin_abi::MediaDownloadParams {
                 urls: vec!["https://a.example/1.jpg".into()],
                 max_bytes: 1,
                 conditions: Vec::new(),
@@ -424,6 +424,6 @@ mod tests {
             })
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("does not fetch covers"), "{err}");
+        assert!(err.to_string().contains("does not download media"), "{err}");
     }
 }

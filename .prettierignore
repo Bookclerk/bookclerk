@@ -26,8 +26,8 @@ crates/bookclerk-plugin-manifest/schema/
 packages/plugin-sdk/scripts/egress_bridge_vectors.json
 examples/plugins-echo-workerd-rust/modules/pkg/
 examples/plugins-echo-workerd-ts/modules/
-crates/bookclerk-plugins/optional/covers/modules/
 crates/bookclerk-plugins/optional/destination-b2/modules/
+crates/bookclerk-plugins/optional/media-download/modules/
 crates/bookclerk-plugins/optional/ingress-cloudflare/modules/
 crates/bookclerk-plugins/optional/ingress-cloudflare-dns/modules/
 crates/bookclerk-plugins/optional/ingress-cloudflare-tunnel/modules/

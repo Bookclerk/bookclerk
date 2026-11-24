@@ -985,7 +985,8 @@ library holds as works, expressions and editions:
   they are stored when it commits. `probed_at` is empty for a file that
   was never probed (it is not audio, the media worker was unavailable, or
   it was stored before probes were recorded), and the other four columns
-  are then empty too. See [What a stored file's row
+  are then empty too, until the daily `file_probe` job of a node that
+  runs the destination probes it. See [What a stored file's row
   says](media.md#what-a-stored-files-row-says). An audio file an acquire
   writes also names the library copy it belongs to (`copy_format`, such
   as `m4b` or `mp3`, and `copy_quality`, such as `original` or

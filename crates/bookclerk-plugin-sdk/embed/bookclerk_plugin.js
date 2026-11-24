@@ -5087,7 +5087,7 @@ var MetadataChaptersReplyCodec = {
     }
   }
 };
-var CoverFetchParamsCodec = {
+var MediaDownloadParamsCodec = {
   dataWords: 1,
   pointerCount: 2,
   write(s, v, caps) {
@@ -5097,7 +5097,7 @@ var CoverFetchParamsCodec = {
       const list = v.conditions ?? [];
       const items = s.initStructList(1, list.length, 0, 2);
       for (let i = 0; i < items.length; i++) {
-        CoverConditionCodec.write(items[i], list[i], caps);
+        DownloadConditionCodec.write(items[i], list[i], caps);
       }
     }
     s.setUint16(2, ord(REMOTE_MEDIAS, v.media ?? REMOTE_MEDIAS[0], "RemoteMedia"));
@@ -5106,12 +5106,12 @@ var CoverFetchParamsCodec = {
     return {
       urls: s.getTextList(0),
       maxBytes: s.getUint32(0),
-      conditions: s.getStructList(1, 0, 2).map((item) => CoverConditionCodec.read(item, caps)),
+      conditions: s.getStructList(1, 0, 2).map((item) => DownloadConditionCodec.read(item, caps)),
       media: fromOrd(REMOTE_MEDIAS, s.getUint16(2), "RemoteMedia")
     };
   }
 };
-var CoverConditionCodec = {
+var DownloadConditionCodec = {
   dataWords: 0,
   pointerCount: 2,
   write(s, v, caps) {
@@ -5137,7 +5137,7 @@ var CoverConditionCodec = {
     return out;
   }
 };
-var CoverImageCodec = {
+var DownloadResultCodec = {
   dataWords: 1,
   pointerCount: 9,
   write(s, v, caps) {
@@ -5212,25 +5212,25 @@ var CoverImageCodec = {
     return out;
   }
 };
-var CoverImagesCodec = {
+var DownloadResultsCodec = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
     {
-      const list = v.images ?? [];
+      const list = v.downloads ?? [];
       const items = s.initStructList(0, list.length, 1, 9);
       for (let i = 0; i < items.length; i++) {
-        CoverImageCodec.write(items[i], list[i], caps);
+        DownloadResultCodec.write(items[i], list[i], caps);
       }
     }
   },
   read(s, caps) {
     return {
-      images: s.getStructList(0, 1, 9).map((item) => CoverImageCodec.read(item, caps))
+      downloads: s.getStructList(0, 1, 9).map((item) => DownloadResultCodec.read(item, caps))
     };
   }
 };
-var CoverImagesReplyCodec = {
+var DownloadResultsReplyCodec = {
   dataWords: 1,
   pointerCount: 1,
   write(s, v, caps) {
@@ -5238,7 +5238,7 @@ var CoverImagesReplyCodec = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          CoverImagesCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+          DownloadResultsCodec.write(s.initStruct(0, 0, 1), v.value, caps);
         }
         break;
       case "err":
@@ -5248,18 +5248,18 @@ var CoverImagesReplyCodec = {
         }
         break;
       default:
-        throw unknownUnion("CoverImagesReply", v.kind);
+        throw unknownUnion("DownloadResultsReply", v.kind);
     }
   },
   read(s, caps) {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: CoverImagesCodec.read(s.getStruct(0, 0, 1), caps) };
+        return { kind: "ok", value: DownloadResultsCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
-        throw unknownUnion("CoverImagesReply", disc);
+        throw unknownUnion("DownloadResultsReply", disc);
     }
   }
 };
@@ -9222,7 +9222,7 @@ var MetadataProviderChaptersResultsCodec = {
     };
   }
 };
-var CoverFetcherHealthParamsCodec = {
+var MediaDownloaderHealthParamsCodec = {
   dataWords: 0,
   pointerCount: 0,
   write(s, v, caps) {
@@ -9236,7 +9236,7 @@ var CoverFetcherHealthParamsCodec = {
     return {};
   }
 };
-var CoverFetcherHealthResultsCodec = {
+var MediaDownloaderHealthResultsCodec = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
@@ -9250,12 +9250,12 @@ var CoverFetcherHealthResultsCodec = {
     };
   }
 };
-var CoverFetcherFetchCoversParamsCodec = {
+var MediaDownloaderDownloadMediaParamsCodec = {
   dataWords: 0,
   pointerCount: 2,
   write(s, v, caps) {
     if (v.params != null) {
-      CoverFetchParamsCodec.write(s.initStruct(0, 1, 2), v.params, caps);
+      MediaDownloadParamsCodec.write(s.initStruct(0, 1, 2), v.params, caps);
     }
     if (v.sink != null) {
       s.setCap(1, caps.exportCap(v.sink));
@@ -9263,7 +9263,7 @@ var CoverFetcherFetchCoversParamsCodec = {
   },
   read(s, caps) {
     const out = {
-      params: CoverFetchParamsCodec.read(s.getStruct(0, 1, 2), caps)
+      params: MediaDownloadParamsCodec.read(s.getStruct(0, 1, 2), caps)
     };
     const sinkValue = caps.importCap(s.getCapIndex(1));
     if (!(sinkValue == null)) {
@@ -9272,17 +9272,17 @@ var CoverFetcherFetchCoversParamsCodec = {
     return out;
   }
 };
-var CoverFetcherFetchCoversResultsCodec = {
+var MediaDownloaderDownloadMediaResultsCodec = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
     if (v.result != null) {
-      CoverImagesReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+      DownloadResultsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
     }
   },
   read(s, caps) {
     return {
-      result: CoverImagesReplyCodec.read(s.getStruct(0, 1, 1), caps)
+      result: DownloadResultsReplyCodec.read(s.getStruct(0, 1, 1), caps)
     };
   }
 };
@@ -11581,11 +11581,11 @@ var okRecords = (value) => {
   }
   return okValue({ records: value });
 };
-var okCoverImages = (value) => {
+var okDownloadResults = (value) => {
   if (!Array.isArray(value)) {
-    throw PluginError.fromWire("internal", "cover fetcher must return a CoverImage[]");
+    throw PluginError.fromWire("internal", "media downloader must return a DownloadResult[]");
   }
-  return okValue({ images: value });
+  return okValue({ downloads: value });
 };
 var okFileRecord = (value) => {
   if (value === null || typeof value !== "object" || !Array.isArray(value.present)) {
@@ -12070,19 +12070,19 @@ var METHODS = {
     search: withParams("metadata", "search", MetadataProviderSearchParamsCodec, MetadataProviderSearchResultsCodec, okRecords),
     chapters: withParams("metadata", "chapters", MetadataProviderChaptersParamsCodec, MetadataProviderChaptersResultsCodec, okPass)
   },
-  CoverFetcher: {
-    health: withoutParams("covers", "health", CoverFetcherHealthParamsCodec, CoverFetcherHealthResultsCodec, okHealth),
-    fetchCovers: spec({
-      params: CoverFetcherFetchCoversParamsCodec,
-      results: CoverFetcherFetchCoversResultsCodec,
-      stub: "covers",
+  MediaDownloader: {
+    health: withoutParams("mediaDownload", "health", MediaDownloaderHealthParamsCodec, MediaDownloaderHealthResultsCodec, okHealth),
+    downloadMedia: spec({
+      params: MediaDownloaderDownloadMediaParamsCodec,
+      results: MediaDownloaderDownloadMediaResultsCodec,
+      stub: "mediaDownload",
       call: (s, p, cx) => {
         if (!p.sink) {
-          throw PluginError.fromWire("invalid_params", "fetchCovers needs a sink");
+          throw PluginError.fromWire("invalid_params", "downloadMedia needs a sink");
         }
-        return named(s, cx.host.bindContext(cx.ctx), "fetchCovers", [p.params, p.sink]);
+        return named(s, cx.host.bindContext(cx.ctx), "downloadMedia", [p.params, p.sink]);
       },
-      ok: okCoverImages
+      ok: okDownloadResults
     })
   },
   AiModels: {
@@ -14639,8 +14639,8 @@ var MetadataEntrypoint = class extends NamedEntrypoint {
     return Promise.reject(unsupported("chapters"));
   }
 };
-var CoverEntrypoint = class extends NamedEntrypoint {
-  static bookclerkMethods = Object.freeze(["health", "fetchCovers"]);
+var MediaDownloadEntrypoint = class extends NamedEntrypoint {
+  static bookclerkMethods = Object.freeze(["health", "downloadMedia"]);
   /**
    * Reports whether the fetcher can answer.
    *
@@ -14656,8 +14656,8 @@ var CoverEntrypoint = class extends NamedEntrypoint {
    * @param _sink - Host destination; accepts `put` for keys `0..urls.length`.
    * @returns One entry per URL, in request order.
    */
-  fetchCovers(_params, _sink) {
-    return Promise.reject(unsupported("fetchCovers"));
+  downloadMedia(_params, _sink) {
+    return Promise.reject(unsupported("downloadMedia"));
   }
 };
 var MetadataFilesEntrypoint = class extends NamedEntrypoint {
@@ -14852,7 +14852,7 @@ var ENTRYPOINT_BINDINGS = Object.freeze({
   cli: "PLUGIN_CLI",
   oidc: "PLUGIN_OIDC",
   metadata: "PLUGIN_METADATA",
-  covers: "PLUGIN_COVERS",
+  mediaDownload: "PLUGIN_MEDIA_DOWNLOAD",
   metadataFiles: "PLUGIN_METADATA_FILES",
   notifier: "PLUGIN_NOTIFIER",
   ingress: "PLUGIN_INGRESS",
@@ -14867,7 +14867,7 @@ var ENTRYPOINT_CLASSES = Object.freeze({
   cli: "Cli",
   oidc: "Oidc",
   metadata: "Metadata",
-  covers: "Covers",
+  mediaDownload: "MediaDownload",
   metadataFiles: "MetadataFiles",
   notifier: "Notifier",
   ingress: "Ingress",
@@ -17607,7 +17607,6 @@ export {
   AiEntrypoint,
   BookclerkEntrypoint,
   CliEntrypoint,
-  CoverEntrypoint,
   DatabaseAdapterEntrypoint,
   Destination,
   ENTRYPOINT_BINDINGS,
@@ -17648,6 +17647,7 @@ export {
   MAX_SCALAR_BYTES,
   MAX_STREAM_WINDOW_BYTES,
   MAX_WRITE_KEY_BYTES,
+  MediaDownloadEntrypoint,
   MetadataEntrypoint,
   MetadataFilesEntrypoint,
   NO_FEED_CURSOR,

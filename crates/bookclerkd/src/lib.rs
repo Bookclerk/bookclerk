@@ -38,6 +38,7 @@ mod discover_jobs;
 mod download_requests;
 mod embedding;
 mod event_worker;
+mod file_probes;
 mod heartbeat;
 mod http_error;
 mod ingress;

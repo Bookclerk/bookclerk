@@ -1,8 +1,8 @@
 {
-  "name": "bookclerk-plugin-covers",
+  "name": "bookclerk-plugin-media-download",
   "version": "0.1.0",
   "private": true,
-  "description": "Cover image fetcher for Bookclerk (workerd guest)",
+  "description": "Public media downloader (cover images, store samples) for Bookclerk (workerd guest)",
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",

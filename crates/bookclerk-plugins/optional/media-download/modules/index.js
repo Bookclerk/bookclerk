@@ -1,17 +1,17 @@
 /**
- * Cover image fetcher (workerd guest).
+ * Public media downloader (workerd guest).
  *
- * Exports the `covers` entrypoint `plugin.toml` declares. The work happens in
+ * Exports the `mediaDownload` entrypoint `plugin.toml` declares. The work happens in
  * `fetcher.ts`; this module only adapts a malformed request to `PluginError`.
  */
-import { BookclerkEntrypoint, CoverEntrypoint, PluginError, } from "@bookclerk/plugin-sdk/workerd";
-import { CoverFailure, fetchCovers } from "./fetcher.js";
+import { BookclerkEntrypoint, MediaDownloadEntrypoint, PluginError, } from "@bookclerk/plugin-sdk/workerd";
+import { DownloadFailure, downloadMedia } from "./fetcher.js";
 import { VERSION } from "./version.js";
 /**
- * `covers` entrypoint: downloads cover images, or a store's audio samples,
- * into the host's sink.
+ * `mediaDownload` entrypoint: downloads cover images, or a store's audio
+ * samples, into the host's sink.
  */
-export class Covers extends CoverEntrypoint {
+export class MediaDownload extends MediaDownloadEntrypoint {
     /**
      * Reports ready without a request.
      *
@@ -28,25 +28,25 @@ export class Covers extends CoverEntrypoint {
      * @returns One answer per URL, in request order.
      * @throws {PluginError} `invalid_params` when the request is malformed.
      */
-    async fetchCovers(params, sink) {
+    async downloadMedia(params, sink) {
         try {
-            return await fetchCovers({ fetch: (url, init) => fetch(url, init), version: VERSION }, params, sink);
+            return await downloadMedia({ fetch: (url, init) => fetch(url, init), version: VERSION }, params, sink);
         }
         catch (err) {
-            if (err instanceof CoverFailure)
+            if (err instanceof DownloadFailure)
                 throw PluginError.fromWire(err.code, err.message);
             throw err;
         }
     }
 }
 /** Identity the host merges over `plugin.toml`. */
-export default class CoversPlugin extends BookclerkEntrypoint {
+export default class MediaDownloadPlugin extends BookclerkEntrypoint {
     /**
      * Describes the plugin.
      *
      * @returns Display name.
      */
     async describe() {
-        return { displayName: "Cover images" };
+        return { displayName: "Media downloads" };
     }
 }

@@ -38,7 +38,7 @@ pub const OPTIONAL_PLUGINS: &[&str] = &[
     "d1",
     "postgres",
     "metadata_files",
-    "covers",
+    "media_download",
     "audnexus",
     "openlibrary",
     "cloudflare_relay",

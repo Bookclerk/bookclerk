@@ -7,15 +7,15 @@ use tokio::io::AsyncRead;
 
 use crate::generated::{
     AiModelList, AiRunOk, AiRunParams, AuthenticateUserParams, CatalogDetailParams, CatalogHit,
-    CliInvokeParams, CliInvokeResult, CliSchema, CoverFetchParams, CoverImage,
-    DatabaseAdapterConfig, DeprovisionRequest, EventAckParams, EventPollParams,
-    ExpandCandidatesParams, ExternalUser, FetchTitleParams, IngressHealth, Invocation,
-    ListDealsParams, ListeningProgress, LoginCompleteParams, LoginParams, LoginResult,
-    LoginStartResult, MetadataChapters, MetadataChaptersParams, MetadataFileParseParams,
-    MetadataFileParsed, MetadataFileRenderParams, MetadataFileRendered, MetadataLookupParams,
-    MetadataRecord, MetadataSearchParams, NotifyRaiseParams, NotifyRaised, NotifySendParams,
-    NotifySent, NotifyValidateParams, NotifyValidated, OriginHeader, PlainFetch, PluginEvent,
-    ProvisionRequest, Provisioned, PublishOk, PurchaseHint, PurchaseHintParams, PurchaseHintResult,
+    CliInvokeParams, CliInvokeResult, CliSchema, DatabaseAdapterConfig, DeprovisionRequest,
+    DownloadResult, EventAckParams, EventPollParams, ExpandCandidatesParams, ExternalUser,
+    FetchTitleParams, IngressHealth, Invocation, ListDealsParams, ListeningProgress,
+    LoginCompleteParams, LoginParams, LoginResult, LoginStartResult, MediaDownloadParams,
+    MetadataChapters, MetadataChaptersParams, MetadataFileParseParams, MetadataFileParsed,
+    MetadataFileRenderParams, MetadataFileRendered, MetadataLookupParams, MetadataRecord,
+    MetadataSearchParams, NotifyRaiseParams, NotifyRaised, NotifySendParams, NotifySent,
+    NotifyValidateParams, NotifyValidated, OriginHeader, PlainFetch, PluginEvent, ProvisionRequest,
+    Provisioned, PublishOk, PurchaseHint, PurchaseHintParams, PurchaseHintResult,
     PurchaseHintsParams, QualityOffersParams, QualityOffersResult, RevokeAccountParams,
     ScanLibraryParams, ScanPage, ScanParams, SearchCatalogParams, SocketClosed,
     SocketConnectRequest, SocketFrame, SocketInfo, SocketMessage, SocketMessageOk, SourceAccount,
@@ -953,13 +953,13 @@ pub trait MetadataProvider {
     }
 }
 
-/// `covers` entrypoint: downloads cover images on the host's behalf.
+/// `mediaDownload` entrypoint: downloads cover images on the host's behalf.
 ///
 /// The fetcher only transports bytes. Each body goes into `sink` under its
 /// index in `params.urls` (`"0"`, `"1"`, ...), and the host sniffs, decodes and
 /// re-encodes it before anything stores or serves it.
 #[async_trait::async_trait(?Send)]
-pub trait CoverFetcher {
+pub trait MediaDownloader {
     /// Liveness / readiness probe.
     async fn health(&self) -> Result<crate::rpc_types::HealthOk> {
         Ok(crate::rpc_types::HealthOk {
@@ -969,15 +969,15 @@ pub trait CoverFetcher {
     }
 
     /// Fetches every URL in `params.urls` and puts each body into `sink` under
-    /// its index. Returns one [`CoverImage`] per URL, in request order; a URL
+    /// its index. Returns one [`DownloadResult`] per URL, in request order; a URL
     /// that failed carries `error` and `stored = false` rather than failing the
     /// whole call.
-    async fn fetch_covers(
+    async fn download_media(
         &self,
-        _params: CoverFetchParams,
+        _params: MediaDownloadParams,
         _sink: Box<dyn Destination>,
-    ) -> Result<Vec<CoverImage>> {
-        Err(PluginError::unsupported("fetchCovers"))
+    ) -> Result<Vec<DownloadResult>> {
+        Err(PluginError::unsupported("downloadMedia"))
     }
 }
 
@@ -1431,8 +1431,8 @@ pub struct Entrypoints {
     pub scheduled_handler: Option<Box<dyn ScheduledHandler>>,
     /// `metadata` entrypoint.
     pub metadata: Option<Box<dyn MetadataProvider>>,
-    /// `covers` entrypoint.
-    pub covers: Option<Box<dyn CoverFetcher>>,
+    /// `mediaDownload` entrypoint.
+    pub media_download: Option<Box<dyn MediaDownloader>>,
     /// `[sockets]` handler.
     pub socket_handler: Option<Box<dyn SocketHandler>>,
     /// `[[webhooks]]` handler.

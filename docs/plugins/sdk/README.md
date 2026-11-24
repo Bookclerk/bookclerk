@@ -39,7 +39,7 @@ native, or workerd when compiled to Wasm with the SDK's `workerd` glue.
 - The entrypoint base classes: `BookclerkEntrypoint` for the default
   export, and one `*Entrypoint` base per named entrypoint
   (`Storefront`, `Storage`, `RemoteLibrary`, `DatabaseAdapter`, `Cli`,
-  `Oidc`, `Metadata`, `Covers`).
+  `Oidc`, `Metadata`, `MediaDownload`).
 - The ABI types, generated from
   [`plugin.capnp`](../../../crates/bookclerk-plugin-abi/schema/plugin.capnp)
   so all three SDKs speak the same wire.

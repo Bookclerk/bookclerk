@@ -59,6 +59,10 @@ pub struct Model {
     /// this row is in place, 0 while they are being replaced. A patron
     /// scope admits only rows at 1.
     pub facets_ready: i64,
+    /// How many held editions an acquire would still queue: neither
+    /// acquired nor queued nor downloading. The list offers Acquire while
+    /// it is above 0, even when [`Self::acquire_status`] reads `acquired`.
+    pub acquirable_editions: i64,
 }
 
 /// Declared SeaORM relations (none unless FK edges are modeled).

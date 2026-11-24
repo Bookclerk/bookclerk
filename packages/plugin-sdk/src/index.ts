@@ -30,7 +30,7 @@ export {
   QueueBatch,
   QueueMessage,
   JobController,
-  CoverEntrypoint,
+  MediaDownloadEntrypoint,
   IngressEntrypoint,
   ProvisioningEntrypoint,
   provisioned,

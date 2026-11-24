@@ -227,17 +227,21 @@ listening (see [Book samples](../adr/book-samples.md)). The same `pcm`
 worker cuts it: a `Sample` request names the file's size, a start and a
 length (at most 10 minutes). The worker reads the ranges it needs as
 above, folds the audio to mono, and encodes MP3 at 64 kbit/s itself, so
-it sends `Encoded` frames of at most 128 KiB instead of samples. The host
-stops it after 2 minutes or 16 MiB of MP3.
+it sends `Encoded` frames of at most 128 KiB instead of samples, as it
+encodes them. The host passes each frame on to the listener as it
+arrives, so playback starts within a second rather than after the whole
+cut, and stops the worker after 2 minutes or 16 MiB of MP3.
 
 - **An edition's sample** is read from the destination that holds its
   first file. It starts at the second chapter when the first is shorter
   than 3 minutes (single-file editions only) and runs 5 minutes.
-- **A store's sample** is downloaded through the `covers` plugin first,
-  then cut from the downloaded bytes the same way.
+- **A store's sample** is downloaded through the `media_download` plugin
+  first (at most 32 MiB), then cut from the downloaded bytes the same way.
 
 Samples are cut the first time someone asks and kept in
-`cache/samples/`. The least recently served are removed once the folder
+`cache/samples/`, even when that listener stops before the end. While a
+sample is being cut its answer has no length and ignores `Range`; once
+kept, it is served whole or by range. The least recently served are removed once the folder
 passes 256 MiB.
 
 Playback never decodes in-process: with `media.isolation = "off"` the
@@ -263,9 +267,32 @@ file's row in the database (`edition_files`):
 | Duration | The running time a player sees, in milliseconds: an MP4's movie duration (which edit lists shape), an Opus stream's samples past its pre-skip, an MP3's frame count. Empty when the file states none, never 0 |
 
 Nothing is decoded to find these values. The codec, profile, channels,
-sample rate and duration are stored only for files an acquire on this
-node probed; an upload's row carries the sender's media type, bitrate,
+sample rate and duration are stored only for files a node probed itself
+(an acquire on that node, or the daily `file_probe` job described next);
+an upload's row carries the sender's media type, bitrate,
 lossless flag and store, and the rest stays empty.
+
+A file stored before probes were recorded, or one whose probe failed (no
+media worker, or a file the tag reader could not parse), has no probe.
+Each node looks for such files on its own destinations once a day and,
+when it finds one, queues a `file_probe` job pinned to itself. The job
+reads each file's tags through the destination's ranged reads (the file
+is not downloaded whole), stores the probe and the stream values in one
+write, and takes the source store from the edition's holdings when they
+are all through one store. It leaves a row written in the last hour for
+a later job, since an acquire records a key before it writes the file and
+probes the file itself. It reads each file while no acquire is running on
+the node (it waits for the one that is), and a file written again since
+the job read its row keeps no probe from the old one. An acquire's own
+probe, taken once its write is done, replaces whatever a job on another
+node sharing the destination stored meanwhile; when that probe fails, the
+acquire clears the row's probe instead and stamps the row as written
+again, so a job that read the old file before the clear stores nothing
+after it, and the next job reads the new file. If the database takes
+neither the probe nor the clear, the write fails and the acquire's retry
+records the file again, which drops any probe of the old one. A file it still cannot read is tried again by the
+next day's job; until then, comparing copies treats it as unknown
+quality.
 
 The row answers "what copy do we hold?" without opening the file again,
 so comparing two copies of one edition, or telling another install what
@@ -283,10 +310,6 @@ upload commits, so an upload that is aborted or never finishes describes
 nothing. The values are the sender's word about its own file. They come
 from a node the library already trusts with the title, and they are only
 used to choose between two copies of the same edition.
-
-> [!NOTE]
-> Files stored before probes were recorded have unprobed rows. They are
-> not probed again by this change.
 
 ### Chapters an acquire records
 

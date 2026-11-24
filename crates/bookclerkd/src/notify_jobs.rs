@@ -982,6 +982,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_invite_names_the_administrator_who_asked_for_it() {
+        use bookclerk_library::notifications::AccountMailKind;
+        let (state, fake, instance, _files) =
+            mail_daemon(vec![Ok(NotifySent { provider_id: None })]).await;
+        state.config.write().await.integrations.public_origin =
+            Some("https://library.example".into());
+        let library = state.library_snapshot().await;
+        let admin = library
+            .create_user_with_profile(
+                bookclerk_library::UserRole::Administrator,
+                Some("  Alex   Rivera "),
+                None,
+                Some("alex@example.com"),
+                None,
+            )
+            .await
+            .expect("admin")
+            .id;
+        let user = library
+            .create_user_with_profile(
+                bookclerk_library::UserRole::Member,
+                Some("Sam"),
+                None,
+                Some("sam@example.com"),
+                None,
+            )
+            .await
+            .expect("user")
+            .id;
+        let id = library
+            .queue_account_mail_unless_since(
+                bookclerk_library::notifications::AccountMailRequest {
+                    kind: AccountMailKind::Invite,
+                    user_id: user,
+                    address: "sam@example.com",
+                    requested_by: Some(admin),
+                },
+                &instance,
+                NotifyQueueLimits {
+                    max_pending: 1_000,
+                    max_attempts: 3,
+                },
+                None,
+            )
+            .await
+            .expect("queued")
+            .expect("recorded");
+        let payload = JobPayload {
+            account_mail: Some(id),
+            ..JobPayload::default()
+        };
+        run_notify_send(&state, &payload, None).await.expect("sent");
+        let sent = fake.sent.lock().unwrap()[0].clone();
+        assert_eq!(
+            sent.message.title,
+            "Alex Rivera has invited you to a Bookclerk library"
+        );
+        assert_eq!(sent.message.fields.len(), 1);
+        assert_eq!(sent.message.fields[0].name, "Invited by");
+        assert_eq!(sent.message.fields[0].value, "Alex Rivera");
+    }
+
+    #[tokio::test]
     async fn an_invite_mints_its_ticket_at_send_and_only_the_newest_works() {
         use bookclerk_library::notifications::AccountMailKind;
         let (state, fake, instance, _files) = mail_daemon(vec![
@@ -1011,6 +1074,18 @@ mod tests {
         assert_eq!(sent.len(), 2);
         for params in &sent {
             assert!(params.message.sensitive);
+            // No one asked for this one, so it names no inviter.
+            assert_eq!(params.message.notification_type, "account_invite");
+            assert_eq!(
+                params.message.title,
+                "You're invited to a Bookclerk library"
+            );
+            assert!(params.message.fields.is_empty());
+            assert!(params.message.text.starts_with("Set up your sign-in"));
+            assert_eq!(
+                params.message.library_origin.as_deref(),
+                Some("https://library.example/")
+            );
             assert_eq!(
                 params.destination.kind,
                 bookclerk_plugin_abi::NotifyDestinationKind::Personal

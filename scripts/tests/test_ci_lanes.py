@@ -118,8 +118,8 @@ def oracle_loads(raw: bytes) -> dict[int, int] | None:
         if len(tail) == 2 and tail[0] == "0":
             continue
         lane = int(tail)
-        # 30 base lanes and 24 lent ones (GitHub Team, 60 runners).
-        if lane < 54:
+        # 26 base lanes and 24 lent ones (GitHub Team, 60 runners).
+        if lane < 50:
             loads[lane] = loads.get(lane, 0) + 1
     return loads
 
@@ -440,8 +440,8 @@ class FuzzTests(unittest.TestCase):
 
     VALUES: list[object] = [
         None, True, False, 0, 1, -1, 1.5, "", "x", "pending", "queued", "in_progress", "completed",
-        "merge_group", "pull_request", "push", ".github/workflows/ci.yml", "t · lane 3", "t · lane 53",
-        "t · lane 54", "t · lane 07", "t (windows-latest, 1/3, report only)", {"full_name": REPO}, REPO, [], {}, [1], {"a": 1},
+        "merge_group", "pull_request", "push", ".github/workflows/ci.yml", "t · lane 3", "t · lane 49",
+        "t · lane 50", "t · lane 07", "t (windows-latest, 1/3, report only)", {"full_name": REPO}, REPO, [], {}, [1], {"a": 1},
     ]  # fmt: skip
 
     def mutate_json(self, rng: random.Random, node: object) -> object:

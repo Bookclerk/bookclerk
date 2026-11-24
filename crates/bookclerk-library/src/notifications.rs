@@ -210,6 +210,20 @@ pub struct AccountMailSettings {
     pub tested_at: Option<DateTime<Utc>>,
 }
 
+/// A message to queue: what it says, who it is for and who asked for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccountMailRequest<'a> {
+    /// What it says.
+    pub kind: AccountMailKind,
+    /// The user it is for.
+    pub user_id: i64,
+    /// The address it goes to.
+    pub address: &'a str,
+    /// The Administrator who asked for it, recorded so an invite can name
+    /// them; `None` when the library sends it on its own.
+    pub requested_by: Option<i64>,
+}
+
 /// One account-mail message and where its delivery stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountMail {
@@ -227,6 +241,9 @@ pub struct AccountMail {
     pub state: DeliveryState,
     /// Send attempts made.
     pub attempts: i64,
+    /// The Administrator who asked for an invite, named in its subject;
+    /// `None` when the library sent it on its own or that user is gone.
+    pub requested_by: Option<i64>,
 }
 
 /// The link token an account-mail send mints: the raw value goes into the

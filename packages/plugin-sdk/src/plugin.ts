@@ -128,8 +128,8 @@ import type {
   LoginParams,
   LoginResult,
   LoginStartResult,
-  CoverFetchParams,
-  CoverImage,
+  MediaDownloadParams,
+  DownloadResult,
   MetadataChapters,
   MetadataChaptersParams,
   MetadataFileParseParams,
@@ -219,9 +219,9 @@ export type {
   CliInvokeParams,
   CliInvokeResult,
   CliSchema,
-  CoverFetchParams,
-  CoverImage,
-  CoverImages,
+  MediaDownloadParams,
+  DownloadResult,
+  DownloadResults,
   DomainEvent,
   ExtensibleConfig,
   HealthOk,
@@ -3203,14 +3203,16 @@ export class MetadataEntrypoint<
 }
 
 /**
- * `covers` entrypoint (`CoverFetcher`): downloads cover images for the host.
+ * `mediaDownload` entrypoint (`MediaDownloader`): downloads cover images for the host.
  * The host passes a `sink` {@link Destination}; put the body for `urls[i]`
- * under the key `String(i)` and return one {@link CoverImage} per URL, in
+ * under the key `String(i)` and return one {@link DownloadResult} per URL, in
  * request order. The host sniffs, decodes and re-encodes every body, so the
- * bytes stay untrusted. Export it as `export class Covers extends CoverEntrypoint`.
+ * bytes stay untrusted. Export it as `export class MediaDownload extends MediaDownloadEntrypoint`.
  */
-export class CoverEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extends NamedEntrypoint<Env> {
-  static override bookclerkMethods = Object.freeze(["health", "fetchCovers"]);
+export class MediaDownloadEntrypoint<
+  Env extends BookclerkEnv = BookclerkEnv,
+> extends NamedEntrypoint<Env> {
+  static override bookclerkMethods = Object.freeze(["health", "downloadMedia"]);
 
   /**
    * Reports whether the fetcher can answer.
@@ -3227,8 +3229,8 @@ export class CoverEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extends Na
    * @param _sink - Host destination; accepts `put` for keys `0..urls.length`.
    * @returns One entry per URL, in request order.
    */
-  fetchCovers(_params: CoverFetchParams, _sink: Destination): Promise<CoverImage[]> {
-    return Promise.reject(unsupported("fetchCovers"));
+  downloadMedia(_params: MediaDownloadParams, _sink: Destination): Promise<DownloadResult[]> {
+    return Promise.reject(unsupported("downloadMedia"));
   }
 }
 
@@ -3499,7 +3501,7 @@ export type EntrypointName =
   | "cli"
   | "oidc"
   | "metadata"
-  | "covers"
+  | "mediaDownload"
   | "metadataFiles"
   | "notifier"
   | "ingress"
@@ -3515,7 +3517,7 @@ export const ENTRYPOINT_BINDINGS: Readonly<Record<EntrypointName, string>> = Obj
   cli: "PLUGIN_CLI",
   oidc: "PLUGIN_OIDC",
   metadata: "PLUGIN_METADATA",
-  covers: "PLUGIN_COVERS",
+  mediaDownload: "PLUGIN_MEDIA_DOWNLOAD",
   metadataFiles: "PLUGIN_METADATA_FILES",
   notifier: "PLUGIN_NOTIFIER",
   ingress: "PLUGIN_INGRESS",
@@ -3532,7 +3534,7 @@ export const ENTRYPOINT_CLASSES: Readonly<Record<EntrypointName, string>> = Obje
   cli: "Cli",
   oidc: "Oidc",
   metadata: "Metadata",
-  covers: "Covers",
+  mediaDownload: "MediaDownload",
   metadataFiles: "MetadataFiles",
   notifier: "Notifier",
   ingress: "Ingress",

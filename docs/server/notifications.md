@@ -197,8 +197,11 @@ is `Bookclerk`). The mark travels inside the message as an inline image,
 so nothing is fetched when the mail is opened. The footer links your
 library's home page (from its public origin) and bookclerk.app. Invites
 also carry a short introduction to Bookclerk, for recipients who have not
-heard of it. When the HTML a notification brings cannot be laid out, the
-plugin sends a plain HTML document instead.
+heard of it. When the From name is set and isn't just `Bookclerk`, an
+invite's subject names the library by it ("Alex has invited you to
+Riverside Library"); otherwise the subject stays "Alex has invited you
+to a Bookclerk library". When the HTML a notification brings cannot be
+laid out, the plugin sends a plain HTML document instead.
 
 To set up a channel:
 
@@ -300,7 +303,15 @@ Once it is ready:
   them the invite instead of handing you a link. **Email invite** on a
   user sends a new one. An invite works once and for 7 days, and only
   the newest one works: each send voids the user's other unused invites.
-  Using an emailed invite verifies that address.
+  Using an emailed invite verifies that address. The invite names the
+  administrator who created the user or sent it, by display name (or
+  sign-in name); one sent with the operator token names no one. The
+  notification carries that name in its title and in an `Invited by`
+  field. The email notifier drops the field from the message and names
+  the inviter in the subject instead, along with the library's From name
+  when that name is set and isn't just `Bookclerk`. Invites go out as notification
+  type `account_invite` and the rest of account mail as `account_mail`,
+  so a notifier can word them differently.
 - **Addresses are verified.** When a patron sets or changes their address,
   or an administrator changes it, the library mails a link that verifies
   it. The link works once, for 24 hours, and only while the patron still

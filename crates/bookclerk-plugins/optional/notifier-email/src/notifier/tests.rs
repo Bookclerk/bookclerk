@@ -16,7 +16,9 @@ use tokio::io::{duplex, AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream}
 use super::*;
 use crate::checkers::Checkers;
 use crate::client::BoxIo;
-use crate::compose::{html_body, link_host, link_label, plain_body, simple_html};
+use crate::compose::{
+    html_body, link_host, link_label, plain_body, simple_html, worded_for, INVITED_BY_FIELD,
+};
 
 /// A grant whose `server` setting is in `state` at `destination`.
 fn grant(state: SettingGrantState, destination: &str) -> NetworkGrant {
@@ -232,6 +234,37 @@ fn only_invites_introduce_bookclerk() {
     assert!(text.contains("multiple audiobook storefronts"), "{text}");
     let (html, _) = html_body(&invite, "x");
     assert!(html.contains("New to Bookclerk?"), "{html}");
+}
+
+#[test]
+fn invites_name_the_inviter_and_library_in_the_subject() {
+    let mut invite = message();
+    invite.notification_type = "account_invite".into();
+    invite.title = "Alex has invited you to a Bookclerk library".into();
+    invite.fields.push(NotificationField {
+        name: INVITED_BY_FIELD.into(),
+        value: " Alex ".into(),
+    });
+    let worded = worded_for(&invite, " Riverside Library ");
+    assert_eq!(worded.title, "Alex has invited you to Riverside Library");
+    // The subject names them, so the field is not repeated; others stay.
+    assert!(worded.fields.iter().all(|f| f.name != INVITED_BY_FIELD));
+    assert_eq!(worded.fields.len(), 1);
+    // Without a library name the host's own subject stands.
+    let generic = worded_for(&invite, "Bookclerk");
+    assert_eq!(generic.title, invite.title);
+    assert!(generic.fields.iter().all(|f| f.name != INVITED_BY_FIELD));
+    // An invite no one asked for still names the library.
+    let mut own = message();
+    own.notification_type = "account_invite".into();
+    assert_eq!(
+        worded_for(&own, "Riverside Library").title,
+        "You're invited to Riverside Library"
+    );
+    // Other messages are untouched, fields included.
+    let mut other = invite.clone();
+    other.notification_type = "account_mail".into();
+    assert_eq!(worded_for(&other, "Riverside Library"), other);
 }
 
 #[test]

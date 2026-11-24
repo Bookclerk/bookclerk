@@ -30,11 +30,12 @@ export const STOREFRONTS = ["audible", "libro", "chirp", "graphicaudio"];
 
 /**
  * Plugins a session enables after the storefronts, without which the demo
- * still works: `covers` downloads the images the web app shows (covers,
- * store icons, avatars) so they load from the demo's own origin. When one
- * can't be enabled, the app shows its fallback images.
+ * still works: `media_download` downloads the images the web app shows
+ * (covers, store icons, avatars) and the stores' book samples, so they load
+ * from the demo's own origin. When one can't be enabled, the app shows its
+ * fallback images and offers no samples.
  */
-export const OPTIONAL_PLUGINS = ["covers"];
+export const OPTIONAL_PLUGINS = ["media_download"];
 
 /**
  * The demo Owner's password, shown in the banner (public/_demo/banner.js)

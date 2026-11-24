@@ -52,9 +52,13 @@ class Entrypoint {
 }
 
 mock.module("@bookclerk/plugin-sdk/workerd", {
-  namedExports: { BookclerkEntrypoint: Entrypoint, CoverEntrypoint: Entrypoint, PluginError },
+  namedExports: {
+    BookclerkEntrypoint: Entrypoint,
+    MediaDownloadEntrypoint: Entrypoint,
+    PluginError,
+  },
 });
-const { Covers, default: Plugin } = await import("../src/index.ts");
+const { MediaDownload, default: Plugin } = await import("../src/index.ts");
 
 /** URLs the stubbed global `fetch` saw. */
 const seen: string[] = [];
@@ -65,7 +69,7 @@ globalThis.fetch = (input: string | URL | Request) => {
   );
 };
 
-const covers = new Covers({} as never, {} as never);
+const covers = new MediaDownload({} as never, {} as never);
 
 /** A sink that drains each body. */
 const sink = {
@@ -84,7 +88,7 @@ const sink = {
 
 test("describe names the plugin", async () => {
   assert.deepEqual(await new Plugin({} as never, {} as never).describe(), {
-    displayName: "Cover images",
+    displayName: "Media downloads",
   });
 });
 
@@ -94,9 +98,9 @@ test("health answers without a request", async () => {
   assert.equal(seen.length, 0);
 });
 
-test("fetchCovers goes through global fetch", async () => {
+test("downloadMedia goes through global fetch", async () => {
   seen.length = 0;
-  const images = await covers.fetchCovers(
+  const images = await covers.downloadMedia(
     { urls: ["https://a.example/1.jpg"], maxBytes: 16, conditions: [], media: "image" },
     sink as never,
   );
@@ -108,7 +112,7 @@ test("fetchCovers goes through global fetch", async () => {
 
 test("a malformed request becomes invalid_params", async () => {
   await assert.rejects(
-    covers.fetchCovers({ urls: [], maxBytes: 1, conditions: [], media: "image" }, sink as never),
+    covers.downloadMedia({ urls: [], maxBytes: 1, conditions: [], media: "image" }, sink as never),
     (err: unknown) => {
       assert.ok(err instanceof PluginError);
       assert.equal(err.code, "invalid_params");
@@ -123,5 +127,5 @@ test("other errors pass through unchanged", async () => {
       throw new RangeError("unexpected");
     },
   };
-  await assert.rejects(covers.fetchCovers(sneaky as never, sink as never), RangeError);
+  await assert.rejects(covers.downloadMedia(sneaky as never, sink as never), RangeError);
 });

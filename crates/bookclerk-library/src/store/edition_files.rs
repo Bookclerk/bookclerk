@@ -25,14 +25,34 @@
 //! files are that edition's like any other.
 
 use sea_orm::sea_query::{Expr, OnConflict, Query};
-use sea_orm::{ActiveValue::Set, ColumnTrait, Condition, EntityTrait, QueryFilter};
+use sea_orm::{
+    ActiveValue::Set, ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
+};
 
+use super::keyset::read_keyset;
 use super::{now_str, LibraryStore};
 use crate::entities::{
-    edition_acquisitions, edition_files, editions, holdings, node_upload_sessions, store_listings,
+    accounts, edition_acquisitions, edition_files, editions, holdings, node_upload_sessions,
+    store_listings,
 };
 use crate::error::{LibraryError, Result};
 use crate::models::AcquireStatus;
+
+/// An audio file that was never probed, from
+/// [`LibraryStore::unprobed_audio_files`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnprobedFile {
+    /// Output destination id.
+    pub destination: String,
+    /// Storage key on that destination.
+    pub storage_key: String,
+    /// The edition the file belongs to.
+    pub owner: FileOwner,
+    /// When the file at the key was last written (RFC 3339). A probe is
+    /// stored only while the row still carries this stamp, so a probe of
+    /// a file an acquire replaced meanwhile describes nothing.
+    pub written_at: String,
+}
 
 /// Whether an audio file of an edition recorded with no library copy
 /// (a host upload's, or a destination sync's) holds its key against a copy
@@ -1350,6 +1370,60 @@ impl LibraryStore {
         }))
     }
 
+    /// Clears any probe and stream values on `owner`'s row of `key` on
+    /// `destination` and stamps its `written_at` anew, leaving it for the
+    /// next `file_probe` walk.
+    ///
+    /// An acquire whose own probe of a file it just wrote failed calls this:
+    /// a walk on another node sharing the destination may have stored a
+    /// probe of the bytes the write replaced, and only a probe taken after
+    /// the write may stand.
+    ///
+    /// # Returns
+    ///
+    /// `true` when the row was `owner`'s.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the write fails.
+    pub async fn clear_edition_file_probe(
+        &self,
+        destination: &str,
+        key: &str,
+        owner: &FileOwner,
+    ) -> Result<bool> {
+        let updated = edition_files::Entity::update_many()
+            .col_expr(edition_files::Column::Lossless, Expr::value(0))
+            .col_expr(
+                edition_files::Column::BitrateKbps,
+                Expr::value(Option::<i64>::None),
+            )
+            .col_expr(
+                edition_files::Column::ContentType,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(
+                edition_files::Column::SourceStore,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(
+                edition_files::Column::ProbedAt,
+                Expr::value(Option::<String>::None),
+            )
+            .clear_stream()
+            // A new `written_at`, so a walk that read the row before the
+            // clear cannot store its probe of the old bytes after it.
+            .col_expr(edition_files::Column::WrittenAt, Expr::value(now_str()))
+            .filter(edition_files::Column::Destination.eq(destination))
+            .filter(edition_files::Column::StorageKey.eq(key))
+            .filter(edition_files::Column::OwnerKind.eq(owner.kind()))
+            .filter(edition_files::Column::OwnerId.eq(owner.id()))
+            .exec(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(updated.rows_affected > 0)
+    }
+
     /// Stores what a probe found in `owner`'s file at `key` on
     /// `destination`, stamped with the time of the write.
     ///
@@ -1451,24 +1525,7 @@ impl LibraryStore {
                 "a file probe has a malformed media type, store or bitrate".to_string(),
             ));
         }
-        let updated = edition_files::Entity::update_many()
-            .col_expr(
-                edition_files::Column::ContentType,
-                Expr::value(probe.content_type.clone()),
-            )
-            .col_expr(
-                edition_files::Column::BitrateKbps,
-                Expr::value(probe.bitrate_kbps.map(i64::from)),
-            )
-            .col_expr(
-                edition_files::Column::Lossless,
-                Expr::value(i64::from(probe.lossless)),
-            )
-            .col_expr(
-                edition_files::Column::SourceStore,
-                Expr::value(probe.source_store.clone()),
-            )
-            .col_expr(edition_files::Column::ProbedAt, Expr::value(now_str()))
+        let updated = probe_columns(edition_files::Entity::update_many(), probe)
             .filter(edition_files::Column::Destination.eq(destination))
             .filter(edition_files::Column::StorageKey.eq(key))
             .filter(holder)
@@ -1505,32 +1562,7 @@ impl LibraryStore {
                 "an audio stream has a zero or out-of-range value".to_string(),
             ));
         }
-        let updated = edition_files::Entity::update_many()
-            .col_expr(
-                edition_files::Column::Codec,
-                Expr::value(stream.codec.map(|codec| codec.as_str().to_owned())),
-            )
-            .col_expr(
-                edition_files::Column::AacProfile,
-                Expr::value(
-                    stream
-                        .format
-                        .aac_profile
-                        .map(|profile| profile.as_str().to_owned()),
-                ),
-            )
-            .col_expr(
-                edition_files::Column::Channels,
-                Expr::value(stream.format.channels.map(i64::from)),
-            )
-            .col_expr(
-                edition_files::Column::SampleRateHz,
-                Expr::value(stream.format.sample_rate_hz.map(i64::from)),
-            )
-            .col_expr(
-                edition_files::Column::DurationMs,
-                Expr::value(stream.duration_ms.and_then(|ms| i64::try_from(ms).ok())),
-            )
+        let updated = stream_columns(edition_files::Entity::update_many(), stream)
             .filter(edition_files::Column::Destination.eq(destination))
             .filter(edition_files::Column::StorageKey.eq(key))
             .filter(edition_files::Column::OwnerKind.eq(owner.kind()))
@@ -1567,6 +1599,177 @@ impl LibraryStore {
         )
         .await?;
         Ok(rows.into_iter().map(probed_audio_file).collect())
+    }
+
+    /// One page of audio files (primary, parts and chapters) on
+    /// `destinations` that were never probed (`probed_at` is empty): files
+    /// stored before probes were recorded, or whose probe failed. In
+    /// `(destination, storage_key)` order, after `after`.
+    ///
+    /// # Arguments
+    ///
+    /// * `destinations` - Destination ids whose files the caller can read.
+    /// * `written_before` - Only rows last written before this RFC 3339
+    ///   time: an acquire records a key before it writes the file, so a
+    ///   row written moments ago may still name bytes about to change.
+    /// * `after` - The last `(destination, storage_key)` of the previous
+    ///   page; `None` to start.
+    /// * `limit` - Most rows to return, further capped at the database's
+    ///   result-row limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the read fails.
+    pub async fn unprobed_audio_files(
+        &self,
+        destinations: &[String],
+        written_before: &str,
+        after: Option<(&str, &str)>,
+        limit: u64,
+    ) -> Result<Vec<UnprobedFile>> {
+        if destinations.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut query = edition_files::Entity::find()
+            .filter(edition_files::Column::Destination.is_in(destinations.iter().cloned()))
+            .filter(edition_files::Column::ProbedAt.is_null())
+            .filter(edition_files::Column::WrittenAt.lt(written_before))
+            .filter(edition_files::Column::Role.is_in([
+                FileRole::Audio.as_str(),
+                FileRole::Part.as_str(),
+                FileRole::Chapter.as_str(),
+            ]))
+            .order_by_asc(edition_files::Column::Destination)
+            .order_by_asc(edition_files::Column::StorageKey)
+            .limit(limit.max(1).min(self.result_row_cap()));
+        if let Some((destination, key)) = after {
+            query = query.filter(
+                Condition::any()
+                    .add(edition_files::Column::Destination.gt(destination))
+                    .add(
+                        Condition::all()
+                            .add(edition_files::Column::Destination.eq(destination))
+                            .add(edition_files::Column::StorageKey.gt(key)),
+                    ),
+            );
+        }
+        Ok(query
+            .all(self.db())
+            .await
+            .map_err(LibraryError::Orm)?
+            .into_iter()
+            .filter_map(|row| {
+                Some(UnprobedFile {
+                    owner: FileOwner::from_row(&row.owner_kind, row.owner_id)?,
+                    destination: row.destination,
+                    storage_key: row.storage_key,
+                    written_at: row.written_at,
+                })
+            })
+            .collect())
+    }
+
+    /// Stores what a probe of `file` found, its probe and its audio
+    /// stream, in one update.
+    ///
+    /// The row is changed only while it is still unprobed, `file`'s owner
+    /// still holds the key and the file is the one that was written at
+    /// `file.written_at`, so a file replaced while it was read keeps no
+    /// stale probe. Both results land together: a failed write leaves the
+    /// row unprobed for the next walk.
+    ///
+    /// # Returns
+    ///
+    /// `true` when the row matched and now carries `probe` and `stream`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `probe` or `stream` is not well formed or the
+    /// write fails.
+    pub async fn set_backfilled_file_probe(
+        &self,
+        file: &UnprobedFile,
+        probe: &FileProbe,
+        stream: &AudioStream,
+    ) -> Result<bool> {
+        if !probe.is_well_formed() {
+            return Err(LibraryError::Invalid(
+                "a file probe has a malformed media type, store or bitrate".to_string(),
+            ));
+        }
+        if !stream.is_well_formed() {
+            return Err(LibraryError::Invalid(
+                "an audio stream has a zero or out-of-range value".to_string(),
+            ));
+        }
+        let update = stream_columns(
+            probe_columns(edition_files::Entity::update_many(), probe),
+            stream,
+        );
+        let updated = update
+            .filter(edition_files::Column::Destination.eq(file.destination.as_str()))
+            .filter(edition_files::Column::StorageKey.eq(file.storage_key.as_str()))
+            .filter(edition_files::Column::OwnerKind.eq(file.owner.kind()))
+            .filter(edition_files::Column::OwnerId.eq(file.owner.id()))
+            .filter(edition_files::Column::WrittenAt.eq(file.written_at.as_str()))
+            .filter(edition_files::Column::ProbedAt.is_null())
+            .exec(self.db())
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(updated.rows_affected > 0)
+    }
+
+    /// The one storefront that holds `edition_id`: the plain store id
+    /// (the plugin's alias, `audible`) of its held listings when every
+    /// holding is through the same plugin, else `None` (two plugins, none,
+    /// or no plain id for the one plugin). A probe of a file stored before
+    /// probes were recorded takes its source store from here, since the
+    /// file does not say.
+    ///
+    /// Listings name their plugin by its provenance-qualified key; the
+    /// plain id is the alias the plugin's accounts carry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a read fails.
+    pub async fn sole_store_of_edition(&self, edition_id: &str) -> Result<Option<String>> {
+        let held = store_listings::Entity::find()
+            .filter(store_listings::Column::EditionId.eq(edition_id))
+            .filter(
+                store_listings::Column::Id.in_subquery(
+                    Query::select()
+                        .column(holdings::Column::ListingId)
+                        .from(holdings::Entity)
+                        .to_owned(),
+                ),
+            );
+        let plugins: std::collections::BTreeSet<String> =
+            read_keyset(self, held, &[store_listings::Column::Id])
+                .await?
+                .into_iter()
+                .map(|l| l.plugin_key)
+                .collect();
+        let mut plugins = plugins.into_iter();
+        let (Some(plugin), None) = (plugins.next(), plugins.next()) else {
+            return Ok(None);
+        };
+        let of_plugin = accounts::Entity::find().filter(accounts::Column::PluginKey.eq(plugin));
+        let aliases: std::collections::BTreeSet<String> =
+            read_keyset(self, of_plugin, &[accounts::Column::Id])
+                .await?
+                .into_iter()
+                .map(|a| a.source)
+                .collect();
+        let mut aliases = aliases.into_iter();
+        let (Some(store), None) = (aliases.next(), aliases.next()) else {
+            return Ok(None);
+        };
+        let plain = !store.is_empty()
+            && store.len() <= FileProbe::MAX_CONTENT_TYPE_BYTES
+            && store
+                .bytes()
+                .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-' | b'.'));
+        Ok(plain.then_some(store))
     }
 
     /// What the last probe found in the file at `key` on `destination`;
@@ -1719,6 +1922,64 @@ pub(crate) fn like_escaped(text: &str) -> String {
         escaped.push(c);
     }
     escaped
+}
+
+/// `update` with the columns of `probe` set and `probed_at` stamped now.
+fn probe_columns(
+    update: sea_orm::UpdateMany<edition_files::Entity>,
+    probe: &FileProbe,
+) -> sea_orm::UpdateMany<edition_files::Entity> {
+    update
+        .col_expr(
+            edition_files::Column::ContentType,
+            Expr::value(probe.content_type.clone()),
+        )
+        .col_expr(
+            edition_files::Column::BitrateKbps,
+            Expr::value(probe.bitrate_kbps.map(i64::from)),
+        )
+        .col_expr(
+            edition_files::Column::Lossless,
+            Expr::value(i64::from(probe.lossless)),
+        )
+        .col_expr(
+            edition_files::Column::SourceStore,
+            Expr::value(probe.source_store.clone()),
+        )
+        .col_expr(edition_files::Column::ProbedAt, Expr::value(now_str()))
+}
+
+/// `update` with the columns of `stream` set.
+fn stream_columns(
+    update: sea_orm::UpdateMany<edition_files::Entity>,
+    stream: &AudioStream,
+) -> sea_orm::UpdateMany<edition_files::Entity> {
+    update
+        .col_expr(
+            edition_files::Column::Codec,
+            Expr::value(stream.codec.map(|codec| codec.as_str().to_owned())),
+        )
+        .col_expr(
+            edition_files::Column::AacProfile,
+            Expr::value(
+                stream
+                    .format
+                    .aac_profile
+                    .map(|profile| profile.as_str().to_owned()),
+            ),
+        )
+        .col_expr(
+            edition_files::Column::Channels,
+            Expr::value(stream.format.channels.map(i64::from)),
+        )
+        .col_expr(
+            edition_files::Column::SampleRateHz,
+            Expr::value(stream.format.sample_rate_hz.map(i64::from)),
+        )
+        .col_expr(
+            edition_files::Column::DurationMs,
+            Expr::value(stream.duration_ms.and_then(|ms| i64::try_from(ms).ok())),
+        )
 }
 
 #[cfg(test)]

@@ -280,10 +280,10 @@ async fn staged_first_party_plugins_describe() {
                 .await
                 .ok()
                 .and_then(Result::ok)
-            } else if session.has_entrypoint(Entrypoint::Covers) {
+            } else if session.has_entrypoint(Entrypoint::MediaDownload) {
                 tokio::time::timeout(
                     STAGED_RPC_TIMEOUT,
-                    session.covers(|stub| async move { stub.health().await }),
+                    session.media_download(|stub| async move { stub.health().await }),
                 )
                 .await
                 .ok()

@@ -29,7 +29,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { test } from "node:test";
 
 import {
-  CoverFailure,
+  DownloadFailure,
   MAX_HEADER_BYTES,
   MAX_REDIRECTS,
   checkParams,
@@ -39,7 +39,7 @@ import {
   maybeAudio,
   maybeImage,
   passHeaders,
-  type CoverSink,
+  type DownloadSink,
   type Fetch,
 } from "../src/fetcher.ts";
 import { VERSION } from "../src/version.ts";
@@ -250,7 +250,7 @@ test("checkUrl agrees with the oracle on mutated URLs", () => {
 });
 
 /** A sink that drains and keeps every body. */
-function sink(): { sink: CoverSink; keys: string[] } {
+function sink(): { sink: DownloadSink; keys: string[] } {
   const keys: string[] = [];
   return {
     keys,
@@ -336,7 +336,7 @@ const HEADER_FRAGMENTS: readonly string[] = [
 
 /**
  * The header oracle: whether a value may cross the RPC, written from the
- * ABI's `maxCoverHeaderBytes` and the visible-ASCII subset of RFC 9110's
+ * ABI's `maxDownloadHeaderBytes` and the visible-ASCII subset of RFC 9110's
  * `field-value` (`VCHAR`, space and tab).
  *
  * @param value - The candidate value.
@@ -390,7 +390,7 @@ function checkHeader(value: string, where: string): void {
     const got = checkParams(params).conditions[0]?.ifNoneMatch;
     assert.equal(got, value === "" ? undefined : value, label);
   } else {
-    assert.throws(() => checkParams(params), CoverFailure, label);
+    assert.throws(() => checkParams(params), DownloadFailure, label);
   }
   let headers: Headers;
   try {
@@ -561,7 +561,7 @@ test("media accepts only the kinds the ABI names", () => {
     if (media === undefined || media === null || media === "image" || media === "audio") {
       assert.equal(checkParams(params).media, media ?? "image", where);
     } else {
-      assert.throws(() => checkParams(params), CoverFailure, where);
+      assert.throws(() => checkParams(params), DownloadFailure, where);
     }
   }
 });

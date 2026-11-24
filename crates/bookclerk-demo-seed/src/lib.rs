@@ -93,7 +93,7 @@ pub const STOREFRONTS: [Storefront; 4] = [AUDIBLE, LIBRO, CHIRP, GRAPHIC_AUDIO];
 /// demo Worker enables as optional (`OPTIONAL_PLUGINS` in
 /// `tools/demo/src/lifecycle.ts`). The seed enables them too, so a baked
 /// image already has them, and one missing from the image is skipped.
-pub const EXTRA_PLUGINS: [&str; 1] = ["covers"];
+pub const EXTRA_PLUGINS: [&str; 1] = ["media_download"];
 
 /// Account id of each of Sam's store accounts. `example.com` is reserved, so
 /// it names no real person.

@@ -2103,7 +2103,7 @@ id = "workerd_covers"
 name = "Workerd covers"
 version = "0.1.0"
 runtime = "workerd"
-entrypoints = ["covers"]
+entrypoints = ["mediaDownload"]
 
 [workerd]
 compatibility_date = "2026-08-01"
@@ -2145,7 +2145,7 @@ name = "Native with no binary"
 version = "0.1.0"
 runtime = "native"
 command = "guest"
-entrypoints = ["covers"]
+entrypoints = ["mediaDownload"]
 
 [capabilities.network]
 mode = "deny"

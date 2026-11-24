@@ -10,18 +10,34 @@
  * spending its budget on answers that cannot be covers (or, for a request
  * with `media = "audio"`, samples).
  */
-/** Most URLs one call may ask for (the ABI's `maxCoverUrls`). */
+/** Most URLs one call may ask for (the ABI's `maxDownloadUrls`). */
 export const MAX_URLS = 32;
-/** Largest per-image cap the host may ask for (the ABI's `maxCoverBytes`). */
-export const MAX_BYTES = 10 * 1024 * 1024;
+/** Largest per-image cap the host may ask for (the ABI's `maxImageBytes`). */
+export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+/** Largest per-sample cap the host may ask for (the ABI's `maxAudioBytes`). */
+export const MAX_AUDIO_BYTES = 32 * 1024 * 1024;
+/**
+ * Largest cap the host may ask for one body of `media`.
+ *
+ * @param media - What the URLs name.
+ * @returns `MAX_IMAGE_BYTES` or `MAX_AUDIO_BYTES`.
+ */
+export function maxBytesFor(media) {
+    return media === "audio" ? MAX_AUDIO_BYTES : MAX_IMAGE_BYTES;
+}
 /** Longest URL accepted, in bytes. */
 export const MAX_URL_BYTES = 4096;
 /** Requests in flight at once; keeps one call's buffered chunks small. */
 export const CONCURRENCY = 4;
 /** Longest one image may take, headers and body, in milliseconds. */
 export const REQUEST_TIMEOUT_MS = 15_000;
+/**
+ * Longest one audio sample may take, headers and body, in milliseconds:
+ * `MAX_AUDIO_BYTES` at about 5 Mbit/s.
+ */
+export const AUDIO_TIMEOUT_MS = 60_000;
 /** A failure with the `PluginError` code it maps to. */
-export class CoverFailure extends Error {
+export class DownloadFailure extends Error {
     /** `PluginError` wire code. */
     code;
     /**
@@ -34,7 +50,7 @@ export class CoverFailure extends Error {
         this.code = "invalid_params";
     }
 }
-/** Longest validator or response header value passed on, in bytes (the ABI's `maxCoverHeaderBytes`). */
+/** Longest validator or response header value passed on, in bytes (the ABI's `maxDownloadHeaderBytes`). */
 export const MAX_HEADER_BYTES = 1024;
 /**
  * Whether `value` may be sent as a header value: at most `MAX_HEADER_BYTES`
@@ -49,9 +65,9 @@ export function headerValueOk(value) {
 /**
  * Reads one condition from the params.
  *
- * @param raw - One `CoverCondition` as received.
+ * @param raw - One `DownloadCondition` as received.
  * @returns The condition, without empty values.
- * @throws {CoverFailure} When a value is not a string, is too long, or holds
+ * @throws {DownloadFailure} When a value is not a string, is too long, or holds
  *   bytes a header may not carry.
  */
 function checkCondition(raw) {
@@ -62,7 +78,7 @@ function checkCondition(raw) {
         if (value === undefined || value === null || value === "")
             continue;
         if (typeof value !== "string" || !headerValueOk(value)) {
-            throw new CoverFailure(`${key} must be a header value of at most ${MAX_HEADER_BYTES} bytes`);
+            throw new DownloadFailure(`${key} must be a header value of at most ${MAX_HEADER_BYTES} bytes`);
         }
         out[key] = value;
     }
@@ -72,34 +88,37 @@ function checkCondition(raw) {
  * Checks the host's params. The host has checked them already; this keeps a
  * malformed call from reaching the network.
  *
- * @param params - `CoverFetchParams` as received.
+ * @param params - `MediaDownloadParams` as received.
  * @returns The request.
- * @throws {CoverFailure} When `urls` is not 1 to `MAX_URLS` strings or
- *   `maxBytes` is not a whole number from 1 to `MAX_BYTES`.
+ * @throws {DownloadFailure} When `urls` is not 1 to `MAX_URLS` strings,
+ *   `media` is not `"image"` or `"audio"`, or `maxBytes` is not a whole
+ *   number from 1 to that media's cap (`MAX_IMAGE_BYTES` or
+ *   `MAX_AUDIO_BYTES`).
  */
 export function checkParams(params) {
     const p = (params ?? {});
     const urls = p.urls;
     if (!Array.isArray(urls) || urls.length === 0 || urls.length > MAX_URLS) {
-        throw new CoverFailure(`urls must hold 1 to ${MAX_URLS} entries`);
+        throw new DownloadFailure(`urls must hold 1 to ${MAX_URLS} entries`);
     }
     if (!urls.every((u) => typeof u === "string")) {
-        throw new CoverFailure("every url must be a string");
-    }
-    const maxBytes = p.maxBytes;
-    if (typeof maxBytes !== "number" ||
-        !Number.isInteger(maxBytes) ||
-        maxBytes < 1 ||
-        maxBytes > MAX_BYTES) {
-        throw new CoverFailure(`maxBytes must be a whole number from 1 to ${MAX_BYTES}`);
-    }
-    const rawConditions = p.conditions ?? [];
-    if (!Array.isArray(rawConditions) || rawConditions.length > urls.length) {
-        throw new CoverFailure("conditions must hold at most one entry per url");
+        throw new DownloadFailure("every url must be a string");
     }
     const media = p.media ?? "image";
     if (media !== "image" && media !== "audio") {
-        throw new CoverFailure('media must be "image" or "audio"');
+        throw new DownloadFailure('media must be "image" or "audio"');
+    }
+    const maxBytes = p.maxBytes;
+    const cap = maxBytesFor(media);
+    if (typeof maxBytes !== "number" ||
+        !Number.isInteger(maxBytes) ||
+        maxBytes < 1 ||
+        maxBytes > cap) {
+        throw new DownloadFailure(`maxBytes must be a whole number from 1 to ${cap}`);
+    }
+    const rawConditions = p.conditions ?? [];
+    if (!Array.isArray(rawConditions) || rawConditions.length > urls.length) {
+        throw new DownloadFailure("conditions must hold at most one entry per url");
     }
     return { urls, media, maxBytes, conditions: rawConditions.map(checkCondition) };
 }
@@ -250,7 +269,7 @@ function reason(err) {
 }
 /** Most redirects followed for one URL. */
 export const MAX_REDIRECTS = 5;
-/** Response headers passed on to the host, by `CoverImage` field. */
+/** Response headers passed on to the host, by `DownloadResult` field. */
 const PASSED_HEADERS = [
     ["etag", "etag"],
     ["lastModified", "last-modified"],
@@ -299,11 +318,11 @@ export async function fetchOne(options, url, index, maxBytes, sink, condition = 
     if (target === undefined)
         return failed("not an https URL on a public hostname");
     let response;
-    const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+    const signal = AbortSignal.timeout(media === "audio" ? AUDIO_TIMEOUT_MS : REQUEST_TIMEOUT_MS);
     let current = target;
     const headers = {
         accept: media === "audio" ? "audio/*" : "image/*",
-        "user-agent": `Bookclerk-Covers/${options.version} (+https://bookclerk.app)`,
+        "user-agent": `Bookclerk-Media/${options.version} (+https://bookclerk.app)`,
     };
     if (condition.ifNoneMatch !== undefined)
         headers["if-none-match"] = condition.ifNoneMatch;
@@ -383,16 +402,16 @@ export async function fetchOne(options, url, index, maxBytes, sink, condition = 
     return image;
 }
 /**
- * Answers `CoverFetcher.fetchCovers`: fetches every URL, `CONCURRENCY` at a
+ * Answers `MediaDownloader.downloadMedia`: fetches every URL, `CONCURRENCY` at a
  * time, and returns one answer per URL in request order.
  *
  * @param options - How to reach the network.
- * @param params - `CoverFetchParams` from the host.
+ * @param params - `MediaDownloadParams` from the host.
  * @param sink - The host's destination.
- * @returns One `CoverImage` per URL.
- * @throws {CoverFailure} When the params are malformed.
+ * @returns One `DownloadResult` per URL.
+ * @throws {DownloadFailure} When the params are malformed.
  */
-export async function fetchCovers(options, params, sink) {
+export async function downloadMedia(options, params, sink) {
     const { urls, media, maxBytes, conditions } = checkParams(params);
     const out = new Array(urls.length);
     let next = 0;

@@ -1550,9 +1550,9 @@ async fn health_check_installed(config: &Config, id: &str) -> anyhow::Result<Str
         }
         probed = true;
     }
-    if session.has_entrypoint(Entrypoint::Covers) {
+    if session.has_entrypoint(Entrypoint::MediaDownload) {
         let health = session
-            .covers(|fetcher| async move { fetcher.health().await })
+            .media_download(|fetcher| async move { fetcher.health().await })
             .await?;
         if !health.ok {
             anyhow::bail!("covers health failed: {}", health.detail);

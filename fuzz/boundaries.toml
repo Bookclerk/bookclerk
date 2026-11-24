@@ -126,9 +126,9 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk", "rust-sdk"]
 
-[targets.cover_sink_key]
+[targets.download_sink_key]
 crate = "bookclerk-plugin-abi"
-boundary = "CoverFetcher.fetchCovers sink keys (guest-chosen put key to URL index)"
+boundary = "MediaDownloader.downloadMedia sink keys (guest-chosen put key to URL index)"
 input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]

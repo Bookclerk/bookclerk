@@ -81,8 +81,8 @@ type RemoteLibraryCall = Box<
 /// Typed metadata call against the opened `metadata` entrypoint.
 type MetadataCall = EntrypointCall<dyn bookclerk_plugin_sdk::MetadataProvider>;
 
-/// Typed cover-fetch call against the opened `covers` entrypoint.
-type CoversCall = EntrypointCall<dyn bookclerk_plugin_sdk::CoverFetcher>;
+/// Typed media download call against the opened `mediaDownload` entrypoint.
+type CoversCall = EntrypointCall<dyn bookclerk_plugin_sdk::MediaDownloader>;
 
 /// Typed call against the opened `metadataFiles` entrypoint.
 type MetadataFilesCall = EntrypointCall<dyn bookclerk_plugin_sdk::MetadataFiles>;
@@ -206,7 +206,7 @@ enum Work {
         call: MetadataCall,
     },
     /// One typed `covers` method on the opened primary entrypoints.
-    Covers {
+    MediaDownload {
         /// Typed call; replies through the sender it captured.
         call: CoversCall,
     },
@@ -1481,14 +1481,14 @@ impl PluginSession {
     ///
     /// Returns a plugin error when the guest did not export `covers` or the
     /// method fails.
-    pub async fn covers<T, F, Fut>(&self, call: F) -> Result<T>
+    pub async fn media_download<T, F, Fut>(&self, call: F) -> Result<T>
     where
         T: Send + 'static,
-        F: FnOnce(Box<dyn bookclerk_plugin_sdk::CoverFetcher>) -> Fut + Send + 'static,
+        F: FnOnce(Box<dyn bookclerk_plugin_sdk::MediaDownloader>) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = std::result::Result<T, bookclerk_plugin_sdk::PluginError>>
             + 'static,
     {
-        self.entrypoint_call(call, |call| Work::Covers { call })
+        self.entrypoint_call(call, |call| Work::MediaDownload { call })
             .await
     }
 
@@ -3715,15 +3715,15 @@ fn vat_thread(
                             let _ = with_session(&session_cancel, &mut child, &mut guest, open)
                                 .await;
                         }
-                        Work::Covers { call } => {
+                        Work::MediaDownload { call } => {
                             let open = run_entrypoint_call(
                                 &client,
                                 &account_id,
                                 &mut primary,
-                                "covers",
+                                "mediaDownload",
                                 |eps| {
-                                    eps.covers.clone().map(|stub| {
-                                        Box::new(stub) as Box<dyn bookclerk_plugin_sdk::CoverFetcher>
+                                    eps.media_download.clone().map(|stub| {
+                                        Box::new(stub) as Box<dyn bookclerk_plugin_sdk::MediaDownloader>
                                     })
                                 },
                                 call,

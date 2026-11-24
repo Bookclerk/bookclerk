@@ -5,8 +5,7 @@
 //!
 //! Invariants, checked against the answer read as plain JSON:
 //!
-//! - an answer whose `data.audiobook` is missing or null names no record,
-//!   and one whose audiobook has a blank `id` is refused;
+//! - an answer whose `data.audiobook` is missing or null names no record;
 //! - a record keeps the audiobook's `id` as its product id and has a
 //!   non-blank title;
 //! - a record has a sample only when `sampleUrl` is a string, and then it
@@ -64,6 +63,7 @@ pub fn check(data: &[u8]) {
         book.get("id").and_then(Value::as_str),
         "product id differs from the audiobook's id"
     );
+    assert!(!hit.product_id.trim().is_empty(), "blank product id");
     assert!(!hit.title.is_empty(), "blank title");
     let raw = book.get("sampleUrl").and_then(Value::as_str);
     match (&hit.sample_url, raw) {

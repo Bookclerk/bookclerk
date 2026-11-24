@@ -241,12 +241,12 @@ impl IntegrationRegistry {
             .collect()
     }
 
-    /// Integrations that export the `covers` entrypoint, in registration order.
+    /// Integrations that export the `mediaDownload` entrypoint, in registration order.
     #[must_use]
-    pub fn cover_fetchers(&self) -> Vec<Arc<dyn Integration>> {
+    pub fn media_downloaders(&self) -> Vec<Arc<dyn Integration>> {
         self.integrations
             .iter()
-            .filter(|i| i.supports_covers())
+            .filter(|i| i.supports_media_download())
             .cloned()
             .collect()
     }
@@ -331,8 +331,8 @@ mod tests {
             self.instance
         }
 
-        fn supports_covers(&self) -> bool {
-            self.instance == Some("covers")
+        fn supports_media_download(&self) -> bool {
+            self.instance == Some("media_download")
         }
 
         async fn start(&self, _ctx: IntegrationContext) -> crate::error::Result<()> {
@@ -374,14 +374,14 @@ mod tests {
     }
 
     #[test]
-    fn cover_fetchers_lists_only_covers_exporters() {
+    fn media_downloaders_lists_only_media_download_exporters() {
         let mut registry = IntegrationRegistry::new();
         registry.register(Arc::new(Stub { instance: None }));
         registry.register(Arc::new(Stub {
-            instance: Some("covers"),
+            instance: Some("media_download"),
         }));
-        let fetchers = registry.cover_fetchers();
+        let fetchers = registry.media_downloaders();
         assert_eq!(fetchers.len(), 1);
-        assert_eq!(fetchers[0].plugin_instance_id(), Some("covers"));
+        assert_eq!(fetchers[0].plugin_instance_id(), Some("media_download"));
     }
 }

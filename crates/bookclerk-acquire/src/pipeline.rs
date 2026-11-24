@@ -116,7 +116,7 @@ pub struct AcquireRequest {
 /// Turns a cover URL a metadata provider named into an image the acquire can
 /// embed, without the acquire itself requesting the URL.
 ///
-/// The daemon implements this with its cover service: a `covers` plugin
+/// The daemon implements this with its cover service: a `media_download` plugin
 /// downloads the image and the confined media worker re-encodes it, so what
 /// reaches the tagger is a JPEG the host produced.
 #[async_trait::async_trait]
@@ -4144,7 +4144,7 @@ fn release_year(date: &str) -> Option<String> {
 /// into the work directory.
 ///
 /// The URL is plugin output, so the host never requests it: `covers` has a
-/// `covers` plugin download it and the confined media worker turn it into a
+/// `media_download` plugin download it and the confined media worker turn it into a
 /// JPEG.
 ///
 /// # Arguments

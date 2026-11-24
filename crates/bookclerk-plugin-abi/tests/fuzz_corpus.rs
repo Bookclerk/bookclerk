@@ -1,5 +1,5 @@
 //! Replays the checked-in `sql_parse`, `abi_decode`, `abi_roundtrip`,
-//! `cover_sink_key`, `db_stream`, `scan_page`, `quality_offers`, `plain_fetch`, `metadata_file_record`, `notifier_reply`, `notify_address_body`, `notify_raise`, `ai_run_reply`, `ai_run`, `event_read`, `socket_request`, `webhook_message`, `storage_reply`, `origin_request` and `provision_reply` fuzz corpora in PR CI
+//! `download_sink_key`, `db_stream`, `scan_page`, `quality_offers`, `plain_fetch`, `metadata_file_record`, `notifier_reply`, `notify_address_body`, `notify_raise`, `ai_run_reply`, `ai_run`, `event_read`, `socket_request`, `webhook_message`, `storage_reply`, `origin_request` and `provision_reply` fuzz corpora in PR CI
 //! (no libFuzzer required), so an input that once crashed a decoder stays
 //! fixed (`docs/adr/untrusted-input-fuzzing.md`).
 // Test code: a failed assertion or a missing corpus file is the test failing,
@@ -344,14 +344,14 @@ fn structured_metadata_chapters() -> bookclerk_plugin_abi::MetadataChapters {
 }
 
 /// A cover request for two URLs, the first conditional on a cached copy.
-fn structured_cover_fetch_params() -> bookclerk_plugin_abi::CoverFetchParams {
-    bookclerk_plugin_abi::CoverFetchParams {
+fn structured_cover_fetch_params() -> bookclerk_plugin_abi::MediaDownloadParams {
+    bookclerk_plugin_abi::MediaDownloadParams {
         urls: vec![
             "https://covers.openlibrary.org/b/id/8231856-L.jpg".into(),
             "https://m.media-amazon.com/images/I/51x.jpg".into(),
         ],
         max_bytes: 10_485_760,
-        conditions: vec![bookclerk_plugin_abi::CoverCondition {
+        conditions: vec![bookclerk_plugin_abi::DownloadCondition {
             if_none_match: Some("\"5f2b\"".into()),
             if_modified_since: Some("Wed, 21 Oct 2026 07:28:00 GMT".into()),
         }],
@@ -360,32 +360,32 @@ fn structured_cover_fetch_params() -> bookclerk_plugin_abi::CoverFetchParams {
 }
 
 /// One stored, one failed and one unchanged cover answer.
-fn structured_cover_images() -> bookclerk_plugin_abi::CoverImages {
-    use bookclerk_plugin_abi::{CoverImage, CoverImages};
-    CoverImages {
-        images: vec![
-            CoverImage {
+fn structured_cover_images() -> bookclerk_plugin_abi::DownloadResults {
+    use bookclerk_plugin_abi::{DownloadResult, DownloadResults};
+    DownloadResults {
+        downloads: vec![
+            DownloadResult {
                 url: "https://covers.openlibrary.org/b/id/8231856-L.jpg".into(),
                 stored: true,
                 content_type: Some("image/jpeg".into()),
                 etag: Some("\"5f2c\"".into()),
                 cache_control: Some("public, max-age=86400".into()),
                 date: Some("Thu, 05 Nov 2026 22:00:00 GMT".into()),
-                ..CoverImage::default()
+                ..DownloadResult::default()
             },
-            CoverImage {
+            DownloadResult {
                 url: "https://m.media-amazon.com/images/I/51x.jpg".into(),
                 error: Some("HTTP 404".into()),
-                ..CoverImage::default()
+                ..DownloadResult::default()
             },
-            CoverImage {
+            DownloadResult {
                 url: "https://www.gravatar.com/avatar/00?d=404&s=128".into(),
                 not_modified: true,
                 etag: Some("W/\"a1\"".into()),
                 last_modified: Some("Wed, 21 Oct 2026 07:28:00 GMT".into()),
                 expires: Some("Thu, 05 Nov 2026 22:05:00 GMT".into()),
                 age: Some("12".into()),
-                ..CoverImage::default()
+                ..DownloadResult::default()
             },
         ],
     }
@@ -412,7 +412,7 @@ where
 #[test]
 fn structured_book_record_seeds_are_current() {
     use bookclerk_plugin_abi::{
-        plugin_capnp, write_catalog_hits, write_cover_fetch_params, write_cover_images,
+        plugin_capnp, write_catalog_hits, write_download_results, write_media_download_params,
         write_metadata_chapters, write_metadata_records, write_scan_page,
     };
 
@@ -445,15 +445,15 @@ fn structured_book_record_seeds_are_current() {
         .expect("write metadata chapters");
     });
     let cover_params = message_bytes(|m| {
-        write_cover_fetch_params(
-            m.init_root::<plugin_capnp::cover_fetch_params::Builder<'_>>(),
+        write_media_download_params(
+            m.init_root::<plugin_capnp::media_download_params::Builder<'_>>(),
             &structured_cover_fetch_params(),
         )
         .expect("write cover params");
     });
-    let cover_images = message_bytes(|m| {
-        write_cover_images(
-            m.init_root::<plugin_capnp::cover_images::Builder<'_>>(),
+    let download_results = message_bytes(|m| {
+        write_download_results(
+            m.init_root::<plugin_capnp::download_results::Builder<'_>>(),
             &structured_cover_images(),
         )
         .expect("write cover images");
@@ -507,19 +507,19 @@ fn structured_book_record_seeds_are_current() {
     );
     let params_message = reader(&cover_params);
     assert_eq!(
-        bookclerk_plugin_abi::read_cover_fetch_params(
+        bookclerk_plugin_abi::read_media_download_params(
             params_message
-                .get_root::<plugin_capnp::cover_fetch_params::Reader<'_>>()
+                .get_root::<plugin_capnp::media_download_params::Reader<'_>>()
                 .expect("cover params root")
         )
         .expect("decode cover params"),
         structured_cover_fetch_params()
     );
-    let images_message = reader(&cover_images);
+    let images_message = reader(&download_results);
     assert_eq!(
-        bookclerk_plugin_abi::read_cover_images(
+        bookclerk_plugin_abi::read_download_results(
             images_message
-                .get_root::<plugin_capnp::cover_images::Reader<'_>>()
+                .get_root::<plugin_capnp::download_results::Reader<'_>>()
                 .expect("cover images root")
         )
         .expect("decode cover images"),
@@ -547,7 +547,7 @@ fn structured_book_record_seeds_are_current() {
         (
             "structured_cover_images.bin",
             COVER_IMAGES_SELECTOR,
-            &cover_images,
+            &download_results,
         ),
     ] {
         bookclerk_plugin_abi::roundtrip_any_message(selector, bytes)
@@ -573,20 +573,20 @@ fn structured_book_record_seeds_are_current() {
     }
 }
 
-#[path = "../../../fuzz/oracles/cover_sink_key.rs"]
-mod cover_sink_key_oracle;
+#[path = "../../../fuzz/oracles/download_sink_key.rs"]
+mod download_sink_key_oracle;
 
-/// Mirrors `fuzz/fuzz_targets/cover_sink_key.rs` with the shared oracle.
+/// Mirrors `fuzz/fuzz_targets/download_sink_key.rs` with the shared oracle.
 // Test code: a missing corpus file is the test failing.
 #[allow(clippy::expect_used)]
 #[test]
-fn fuzz_corpus_cover_sink_key_holds_invariants() {
+fn fuzz_corpus_download_sink_key_holds_invariants() {
     let mut checked = 0;
-    for path in corpus_files("cover_sink_key") {
-        cover_sink_key_oracle::check(&std::fs::read(&path).expect("read"));
+    for path in corpus_files("download_sink_key") {
+        download_sink_key_oracle::check(&std::fs::read(&path).expect("read"));
         checked += 1;
     }
-    assert!(checked > 0, "no cover_sink_key seed");
+    assert!(checked > 0, "no download_sink_key seed");
 }
 
 /// Seeds for the hand-written decoders that carry a typed `limit_exceeded`

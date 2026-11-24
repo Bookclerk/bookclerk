@@ -94,9 +94,12 @@ async fn account_and_book_roundtrip() {
     let pending = next_event_of(&store, "book_acquired").await;
     assert_eq!(pending.event_type, "book_acquired");
     assert_eq!(pending.ordering_key, title.holding_id);
-    assert_eq!(
-        pending.dedup_key,
-        format!("book_acquired:{}", title.holding_id)
+    assert!(
+        pending
+            .dedup_key
+            .starts_with(&format!("book_acquired:{}:", title.holding_id)),
+        "{}",
+        pending.dedup_key
     );
     let payload: serde_json::Value = serde_json::from_str(&pending.payload).unwrap();
     let edition = store.edition_of_holding(&updated.holding_id).await.unwrap();
@@ -156,6 +159,291 @@ async fn a_status_other_than_acquired_publishes_its_edition_change() {
                 .await
                 .unwrap();
         }
+    }
+}
+
+#[tokio::test]
+async fn credits_written_after_a_link_publish_an_edition_update() {
+    use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
+    for store in [kit_store().await, in_process_store().await] {
+        store
+            .upsert_account("audible", "user-1", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let updates = |edition: String| {
+            let store = &store;
+            async move {
+                crate::entities::domain_events::Entity::find()
+                    .filter(crate::entities::domain_events::Column::EventType.eq("edition_updated"))
+                    .filter(crate::entities::domain_events::Column::OrderingKey.eq(edition))
+                    .count(store.db())
+                    .await
+                    .unwrap()
+            }
+        };
+        let mut credited = NewBook::minimal("B00C", "user-1", "us", "Credited");
+        credited.authors = Some("An Author".into());
+        let credited = store.upsert_book(&credited).await.unwrap();
+        let edition = store
+            .edition_of_holding(&credited.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            updates(edition.clone()).await,
+            1,
+            "the credits announce themselves"
+        );
+        // A rescan that finds the credits stored writes none and says nothing.
+        let mut again = NewBook::minimal("B00C", "user-1", "us", "Credited");
+        again.authors = Some("An Author".into());
+        store.upsert_book(&again).await.unwrap();
+        assert_eq!(updates(edition).await, 1);
+        // A title with no credits has nothing to announce.
+        let bare = store
+            .upsert_book(&NewBook::minimal("B00N", "user-1", "us", "Bare"))
+            .await
+            .unwrap();
+        let edition = store
+            .edition_of_holding(&bare.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updates(edition).await, 0);
+    }
+}
+
+/// The probe backfill finds unprobed audio rows page by page and stores a
+/// probe only on the row it read: unchanged since, still unprobed.
+#[tokio::test]
+async fn the_probe_backfill_writes_only_the_row_it_read() {
+    /// A cutoff after every row the test writes.
+    const LATER: &str = "9999-01-01T00:00:00Z";
+    let store = kit_store().await;
+    let owner = crate::FileOwner::Edition("ed-backfill".into());
+    for key in ["A/A.m4b", "B/B.mp3"] {
+        assert!(store
+            .record_edition_file("local", key, &owner, crate::FileRole::Audio)
+            .await
+            .unwrap());
+    }
+    let destinations = ["local".to_string()];
+    let first = store
+        .unprobed_audio_files(&destinations, LATER, None, 1)
+        .await
+        .unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].storage_key, "A/A.m4b");
+    let next = store
+        .unprobed_audio_files(&destinations, LATER, Some(("local", "A/A.m4b")), 10)
+        .await
+        .unwrap();
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].storage_key, "B/B.mp3");
+    // A row written after the cutoff is still settling and is left alone.
+    assert!(store
+        .unprobed_audio_files(&destinations, "2000-01-01T00:00:00Z", None, 10)
+        .await
+        .unwrap()
+        .is_empty());
+    let probe = crate::FileProbe {
+        content_type: "audio/mp4".into(),
+        bitrate_kbps: Some(128),
+        lossless: false,
+        source_store: Some("audible".into()),
+    };
+    let stream = crate::AudioStream {
+        duration_ms: Some(60_000),
+        ..crate::AudioStream::default()
+    };
+    let stale = crate::UnprobedFile {
+        written_at: "2000-01-01T00:00:00Z".into(),
+        ..first[0].clone()
+    };
+    assert!(!store
+        .set_backfilled_file_probe(&stale, &probe, &stream)
+        .await
+        .unwrap());
+    assert!(store
+        .set_backfilled_file_probe(&first[0], &probe, &stream)
+        .await
+        .unwrap());
+    // A probed row is not probed twice, and drops out of the walk.
+    assert!(!store
+        .set_backfilled_file_probe(&first[0], &probe, &stream)
+        .await
+        .unwrap());
+    let left = store
+        .unprobed_audio_files(&destinations, LATER, None, 10)
+        .await
+        .unwrap();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].storage_key, "B/B.mp3");
+    assert_eq!(
+        store.edition_file_probe("local", "A/A.m4b").await.unwrap(),
+        Some(probe)
+    );
+}
+
+/// A probe a walk stored while a write was still under way is cleared
+/// when the writer's own probe fails, and the row goes back to the walk.
+#[tokio::test]
+async fn a_cleared_probe_returns_the_row_to_the_walk() {
+    const LATER: &str = "9999-01-01T00:00:00Z";
+    let store = kit_store().await;
+    let owner = crate::FileOwner::Edition("ed-cleared".into());
+    assert!(store
+        .record_edition_file("local", "C/C.m4b", &owner, crate::FileRole::Audio)
+        .await
+        .unwrap());
+    let destinations = ["local".to_string()];
+    let row = store
+        .unprobed_audio_files(&destinations, LATER, None, 10)
+        .await
+        .unwrap()
+        .remove(0);
+    let probe = crate::FileProbe {
+        content_type: "audio/mp4".to_string(),
+        bitrate_kbps: Some(64),
+        lossless: false,
+        source_store: None,
+    };
+    assert!(store
+        .set_backfilled_file_probe(&row, &probe, &crate::AudioStream::default())
+        .await
+        .unwrap());
+    assert!(store
+        .clear_edition_file_probe("local", "C/C.m4b", &owner)
+        .await
+        .unwrap());
+    assert_eq!(
+        store.edition_file_probe("local", "C/C.m4b").await.unwrap(),
+        None
+    );
+    let left = store
+        .unprobed_audio_files(&destinations, LATER, None, 10)
+        .await
+        .unwrap();
+    assert_eq!(left.len(), 1);
+    // A walk that read the row before a clear stores nothing after it.
+    assert!(store
+        .clear_edition_file_probe("local", "C/C.m4b", &owner)
+        .await
+        .unwrap());
+    assert!(!store
+        .set_backfilled_file_probe(&left[0], &probe, &crate::AudioStream::default())
+        .await
+        .unwrap());
+    assert_eq!(
+        store.edition_file_probe("local", "C/C.m4b").await.unwrap(),
+        None
+    );
+    // Another owner's clear changes nothing.
+    assert!(!store
+        .clear_edition_file_probe(
+            "local",
+            "C/C.m4b",
+            &crate::FileOwner::Edition("other".into())
+        )
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+async fn a_title_acquired_again_after_a_reset_publishes_again() {
+    use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
+    for store in [kit_store().await, in_process_store().await] {
+        store
+            .upsert_account("audible", "user-1", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let book = store
+            .upsert_book(&NewBook::minimal("B00R", "user-1", "us", "Again"))
+            .await
+            .unwrap();
+        let acquired = || async {
+            crate::entities::domain_events::Entity::find()
+                .filter(crate::entities::domain_events::Column::EventType.eq("book_acquired"))
+                .filter(crate::entities::domain_events::Column::OrderingKey.eq(&book.holding_id))
+                .count(store.db())
+                .await
+                .unwrap()
+        };
+        let write = |status| {
+            store.set_acquire_status("B00R", "user-1", status, Some("A/Again/a.m4b"), None)
+        };
+        write(AcquireStatus::Acquired).await.unwrap();
+        assert_eq!(acquired().await, 1);
+        // A repeat of the same acquire is the same event.
+        write(AcquireStatus::Acquired).await.unwrap();
+        assert_eq!(acquired().await, 1, "a repeated acquire publishes once");
+        // A reset, then a new acquire, is a new event.
+        write(AcquireStatus::NotAcquired).await.unwrap();
+        write(AcquireStatus::Queued).await.unwrap();
+        write(AcquireStatus::Acquired).await.unwrap();
+        assert_eq!(
+            acquired().await,
+            2,
+            "an acquire after a reset publishes again"
+        );
+        write(AcquireStatus::Acquired).await.unwrap();
+        assert_eq!(acquired().await, 2);
+    }
+}
+
+/// A reset written through another holding of the edition also makes the
+/// next acquire a new `book_acquired`.
+#[tokio::test]
+async fn a_reset_through_another_holding_lets_the_next_acquire_publish() {
+    use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
+    for store in [kit_store().await, in_process_store().await] {
+        let mut titles = Vec::new();
+        for account in ["user-1", "user-2"] {
+            store
+                .upsert_account("audible", account, "us", None, true, "audible")
+                .await
+                .unwrap();
+            let book = store
+                .upsert_book(&NewBook::minimal("B00S", account, "us", "Shared"))
+                .await
+                .unwrap();
+            titles.push(
+                store
+                    .acquire_title_of_holding(&book.holding_id)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+        let (first, second) = (&titles[0], &titles[1]);
+        assert_eq!(first.edition_id, second.edition_id, "one shared edition");
+        let acquired = || async {
+            crate::entities::domain_events::Entity::find()
+                .filter(crate::entities::domain_events::Column::EventType.eq("book_acquired"))
+                .filter(crate::entities::domain_events::Column::OrderingKey.eq(&first.holding_id))
+                .count(store.db())
+                .await
+                .unwrap()
+        };
+        let write = |holding: &str, status| {
+            let holding = holding.to_string();
+            let store = &store;
+            async move {
+                store
+                    .set_holding_acquire_status(&holding, status, Some("Shared/Shared.m4b"), None)
+                    .await
+                    .unwrap();
+            }
+        };
+        write(&first.holding_id, AcquireStatus::Acquired).await;
+        assert_eq!(acquired().await, 1);
+        write(&second.holding_id, AcquireStatus::NotAcquired).await;
+        write(&first.holding_id, AcquireStatus::Acquired).await;
+        assert_eq!(
+            acquired().await,
+            2,
+            "a reset through the other holding counts"
+        );
     }
 }
 

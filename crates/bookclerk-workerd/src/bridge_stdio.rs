@@ -31,18 +31,18 @@ use bookclerk_plugin_abi::{
 };
 use bookclerk_plugin_abi::{
     serve_plugin_stdio, Bindings, ByteRange, Cancellation, ContentSource, ContentSourceClient,
-    CopyResult, CoverFetchParams, CoverFetcher, CoverFetcherClient, CoverImage, Database,
-    DatabaseClient, Destination, DestinationClient, Entrypoint, Entrypoints, EventConsumer,
-    EventConsumerClient, ExtensibleConfig, GuestDatabase, HealthOk, HostBindings, Ingress,
-    IngressClient, Invocation, JobController, JobOutcome, JobRunner, JobRunnerClient, ListOptions,
-    ListPage, MetadataFiles, MetadataFilesClient, MetadataProvider, MetadataProviderClient,
-    Notifier, NotifierClient, ObjectMetadata, Oidc, OidcClient, OpenedEntrypoints,
-    PluginCapabilities, PluginCli, PluginCliClient, PluginClient, PluginDescribe, PluginMigration,
-    PluginWorker, Provisioning, ProvisioningClient, PutResult, QueueConsumer, QueueConsumerClient,
-    ReadResult, RemoteLibrary, RemoteLibraryClient, ScheduledController, ScheduledHandler,
-    ScheduledHandlerClient, SocketHandler, SocketHandlerClient, WebhookHandler,
-    WebhookHandlerClient, WriteOptions, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES,
-    PRODUCT_API_VERSION,
+    CopyResult, Database, DatabaseClient, Destination, DestinationClient, DownloadResult,
+    Entrypoint, Entrypoints, EventConsumer, EventConsumerClient, ExtensibleConfig, GuestDatabase,
+    HealthOk, HostBindings, Ingress, IngressClient, Invocation, JobController, JobOutcome,
+    JobRunner, JobRunnerClient, ListOptions, ListPage, MediaDownloadParams, MediaDownloader,
+    MediaDownloaderClient, MetadataFiles, MetadataFilesClient, MetadataProvider,
+    MetadataProviderClient, Notifier, NotifierClient, ObjectMetadata, Oidc, OidcClient,
+    OpenedEntrypoints, PluginCapabilities, PluginCli, PluginCliClient, PluginClient,
+    PluginDescribe, PluginMigration, PluginWorker, Provisioning, ProvisioningClient, PutResult,
+    QueueConsumer, QueueConsumerClient, ReadResult, RemoteLibrary, RemoteLibraryClient,
+    ScheduledController, ScheduledHandler, ScheduledHandlerClient, SocketHandler,
+    SocketHandlerClient, WebhookHandler, WebhookHandlerClient, WriteOptions, MAX_SCALAR_BYTES,
+    MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -557,9 +557,9 @@ impl WorkerdRoot {
         if self.capabilities.webhooks {
             exported.webhook_handler = Some(Box::new(WebhookHandlerClient::new(invoke.typed())));
         }
-        if self.exports(Entrypoint::Covers) {
-            exported.covers = Some(Box::new(InvokeCoverFetcher {
-                typed: CoverFetcherClient::new(invoke.typed(), MAX_STREAM_WINDOW_BYTES),
+        if self.exports(Entrypoint::MediaDownload) {
+            exported.media_download = Some(Box::new(InvokeMediaDownloader {
+                typed: MediaDownloaderClient::new(invoke.typed(), MAX_STREAM_WINDOW_BYTES),
                 table: Rc::clone(&self.table),
             }));
         }
@@ -591,7 +591,7 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         queue_consumer,
         scheduled_handler,
         metadata,
-        covers,
+        media_download,
         socket_handler,
         webhook_handler,
         metadata_files,
@@ -634,9 +634,9 @@ fn native_entrypoints(opened: OpenedEntrypoints, allowed: &[&str]) -> Entrypoint
         metadata: metadata
             .filter(|_| allow(Entrypoint::Metadata.wire_name()))
             .map(|c| Box::new(c) as Box<dyn MetadataProvider>),
-        covers: covers
-            .filter(|_| allow(Entrypoint::Covers.wire_name()))
-            .map(|c| Box::new(c) as Box<dyn CoverFetcher>),
+        media_download: media_download
+            .filter(|_| allow(Entrypoint::MediaDownload.wire_name()))
+            .map(|c| Box::new(c) as Box<dyn MediaDownloader>),
         socket_handler: socket_handler
             .filter(|_| allow(FAMILY_SOCKET_HANDLER))
             .map(|c| Box::new(c) as Box<dyn SocketHandler>),
@@ -1066,28 +1066,28 @@ impl ScheduledHandler for InvokeScheduledHandler {
     }
 }
 
-/// `covers` entrypoint of an author isolate. Each `fetchCovers` call mints
+/// `mediaDownload` entrypoint of an author isolate. Each `downloadMedia` call mints
 /// one put-only grant token for the host sink, which travels in the
-/// `fetchCovers$Params` capability table as a [`GrantCap`] descriptor; the
+/// `downloadMedia$Params` capability table as a [`GrantCap`] descriptor; the
 /// isolate streams each body to the granted `PUT /put` route.
-struct InvokeCoverFetcher {
+struct InvokeMediaDownloader {
     /// Typed client over `/invoke`.
-    typed: CoverFetcherClient,
+    typed: MediaDownloaderClient,
     /// Granted-channel table the sink grant lives in.
     table: GrantedTable,
 }
 
 #[async_trait(?Send)]
-impl CoverFetcher for InvokeCoverFetcher {
+impl MediaDownloader for InvokeMediaDownloader {
     async fn health(&self) -> AbiResult<HealthOk> {
         self.typed.health().await
     }
 
-    async fn fetch_covers(
+    async fn download_media(
         &self,
-        params: CoverFetchParams,
+        params: MediaDownloadParams,
         sink: Box<dyn Destination>,
-    ) -> AbiResult<Vec<CoverImage>> {
+    ) -> AbiResult<Vec<DownloadResult>> {
         let grant = format!("{:032x}", rand::random::<u128>());
         self.table.borrow_mut().insert(
             grant.clone(),
@@ -1101,7 +1101,7 @@ impl CoverFetcher for InvokeCoverFetcher {
             grant: grant.clone(),
         };
         self.typed
-            .fetch_covers_with_sink(
+            .download_media_with_sink(
                 params,
                 GrantCap::client(CapDescriptor::Destination { token: grant }),
             )
