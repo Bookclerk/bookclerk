@@ -67199,8 +67199,7 @@
         "type": "object",
         "description": "The answer to a finished reset.",
         "required": [
-          "ok",
-          "revoked_sessions"
+          "ok"
         ],
         "properties": {
           "ok": {
@@ -67209,9 +67208,12 @@
             "example": true
           },
           "revoked_sessions": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64",
-            "description": "Sessions of the account that were signed out.",
+            "description": "Sessions of the account that were signed out. Every session is\nsigned out either way; the count is `null` in the rare case the\ndatabase's reply was lost and a retry found the reset already done.",
             "example": 2,
             "minimum": 0
           }

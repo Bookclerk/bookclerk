@@ -28,8 +28,8 @@ use crate::models::{
 };
 use crate::notifications::{
     AccountMail, AccountMailKind, AccountMailSettings, DeliveryState, FailedAttempt, MintedToken,
-    PasswordResetFactor, PasswordResetToken, VerifyEmailToken, ACCOUNT_MAIL_RETENTION_DAYS,
-    EMAIL_VERIFICATION_HOURS, INVITE_DAYS, PASSWORD_RESET_MINUTES,
+    PasswordResetFactor, PasswordResetToken, RedeemedReset, VerifyEmailToken,
+    ACCOUNT_MAIL_RETENTION_DAYS, EMAIL_VERIFICATION_HOURS, INVITE_DAYS, PASSWORD_RESET_MINUTES,
 };
 use crate::token_hash::hash_token;
 use crate::NotifyQueueLimits;
@@ -1026,10 +1026,11 @@ impl LibraryStore {
     ///
     /// # Returns
     ///
-    /// The number of portal sessions signed out (`0` when the reply was
-    /// lost and the retry found this reset already applied, since the
-    /// count went with the reply), or `None` when the link no longer works
-    /// for this account and factor (nothing was changed).
+    /// The redeemed reset, with how many portal sessions were signed out
+    /// (unknown when the reply was lost and the retry found this reset
+    /// already applied, since the count went with the reply), or `None`
+    /// when the link no longer works for this account and factor (nothing
+    /// was changed).
     ///
     /// # Errors
     ///
@@ -1042,7 +1043,7 @@ impl LibraryStore {
         factor: PasswordResetFactor,
         password_hash: &str,
         now: DateTime<Utc>,
-    ) -> Result<Option<u64>> {
+    ) -> Result<Option<RedeemedReset>> {
         let token_hash = hash_token(token.expose());
         let factor_sql = match factor {
             PasswordResetFactor::None => {
@@ -1116,18 +1117,23 @@ impl LibraryStore {
             &hash_token(&format!("{token_hash}:{password_hash}"))[..32]
         );
         let request = batch::request(&operation_id, statements);
-        let redeemed =
-            |reply: &bookclerk_plugin_abi::ExecuteReply| batch::rows_affected(reply, 4) == 1;
+        let redeemed = |reply: &bookclerk_plugin_abi::ExecuteReply| {
+            (batch::rows_affected(reply, 4) == 1).then(|| RedeemedReset {
+                revoked_sessions: Some(batch::rows_affected(reply, 3)),
+            })
+        };
         match self.execute_host_batch(request.clone()).await {
-            Ok(reply) => Ok(redeemed(&reply).then(|| batch::rows_affected(&reply, 3))),
+            Ok(reply) => Ok(redeemed(&reply)),
             Err(LibraryError::Unavailable(_)) => {
                 let reply = self.execute_host_batch(request).await?;
-                if redeemed(&reply) {
-                    return Ok(Some(batch::rows_affected(&reply, 3)));
+                if let Some(done) = redeemed(&reply) {
+                    return Ok(Some(done));
                 }
                 let applied =
                     self.get_user_password_hash(user_id).await?.as_deref() == Some(password_hash);
-                Ok(applied.then_some(0))
+                Ok(applied.then_some(RedeemedReset {
+                    revoked_sessions: None,
+                }))
             }
             Err(err) => Err(err),
         }

@@ -419,6 +419,16 @@ fn is_link_token(token: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// A reset link that was redeemed: the password is set and every session
+/// of the account is signed out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RedeemedReset {
+    /// How many portal sessions were signed out, or `None` when the
+    /// database's reply was lost and the retry found this reset already
+    /// applied: the count left with the lost reply.
+    pub revoked_sessions: Option<u64>,
+}
+
 /// The second factor an account required when its reset was checked.
 ///
 /// Redeeming a link repeats the check inside the same atomic write, so a

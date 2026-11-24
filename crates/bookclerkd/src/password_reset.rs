@@ -110,9 +110,11 @@ pub(crate) struct PasswordResetDone {
     /// Always true.
     #[schema(example = true)]
     ok: bool,
-    /// Sessions of the account that were signed out.
+    /// Sessions of the account that were signed out. Every session is
+    /// signed out either way; the count is `null` in the rare case the
+    /// database's reply was lost and a retry found the reset already done.
     #[schema(example = 2)]
-    revoked_sessions: u64,
+    revoked_sessions: Option<u64>,
 }
 
 /// The body of `POST /api/auth/password-reset`.
@@ -595,7 +597,7 @@ pub(crate) async fn post_password_reset_finish(
         .redeem_password_reset(&finish.token, user.id, required.stored(), &hash, Utc::now())
         .await
     {
-        Ok(Some(revoked)) => revoked,
+        Ok(Some(done)) => done.revoked_sessions,
         Ok(None) => {
             let _ = auth.record_login_failure(&key).await;
             return invalid_link();
@@ -608,7 +610,7 @@ pub(crate) async fn post_password_reset_finish(
         .insert_security_audit_event(
             &format!("user:{}", user.id),
             "password_reset_self",
-            Some(&format!(r#"{{"revoked_sessions":{revoked}}}"#)),
+            Some(&serde_json::json!({ "revoked_sessions": revoked }).to_string()),
         )
         .await;
     if let Some(address) = user.email.as_deref() {

@@ -5843,7 +5843,7 @@ export async function finishPasswordReset(body: {
   password: string;
   totp_code?: string;
   passkey?: { challenge_id: string; credential: Record<string, unknown> };
-}): Promise<{ revoked_sessions: number }> {
+}): Promise<{ revoked_sessions: number | null }> {
   const res = await fetch("/api/auth/password-reset/finish", {
     method: "POST",
     credentials: "include",

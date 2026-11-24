@@ -12,7 +12,7 @@ use crate::hash_token;
 use crate::models::UserRole;
 use crate::notifications::{
     parse_account_mail_settings, parse_verify_email_request, AccountMailKind, DeliveryState,
-    FailedAttempt, PasswordResetFactor,
+    FailedAttempt, PasswordResetFactor, RedeemedReset,
 };
 use crate::test_support::{sqlite::memory, Profile};
 
@@ -702,7 +702,9 @@ async fn a_reset_link_works_once_for_a_verified_address_under_every_profile() {
         );
         assert_eq!(
             redeem(&new, user, PasswordResetFactor::None, now).await,
-            Some(0),
+            Some(RedeemedReset {
+                revoked_sessions: Some(0)
+            }),
             "{name}"
         );
         let stored = store
@@ -779,15 +781,34 @@ async fn a_reset_survives_a_lost_reply_and_a_factor_enrolled_after_the_check_und
         );
 
         // A lost reply: the batch committed, the retry finds the link
-        // spent, and the stored hash shows the reset was this one.
+        // spent, and the stored hash shows the reset was this one. The
+        // session is signed out; how many went with the lost reply.
+        let identity = store
+            .ensure_local_portal_identity(user, Some("Kai"))
+            .await
+            .unwrap();
+        store
+            .insert_portal_session("kai-session", identity.id, now + Duration::hours(1))
+            .await
+            .unwrap();
         kit.lose_next_replies(1);
         assert_eq!(
             store
                 .redeem_password_reset(&token, user, PasswordResetFactor::Passkey, &first, now)
                 .await
                 .unwrap(),
-            Some(0),
+            Some(RedeemedReset {
+                revoked_sessions: None
+            }),
             "{name}: a lost reply reported a committed reset as refused"
+        );
+        assert!(
+            store
+                .get_portal_session_identity("kai-session")
+                .await
+                .unwrap()
+                .is_none(),
+            "{name}: a session outlived a reset whose reply was lost"
         );
         assert_eq!(
             store.get_user_password_hash(user).await.unwrap().as_deref(),
