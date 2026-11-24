@@ -1295,7 +1295,7 @@ async fn an_isbn_alone_does_not_place_a_window_book() {
 
 /// Stands in for an adapter that refuses a read whose rows carry more than
 /// `cap` bytes of text, the way a plugin refuses a reply past its
-/// `maxResultBytes` (the profile kit does not size ORM reads).
+/// `maxResultBytes`, at a cap the test picks.
 #[derive(Debug)]
 struct TextCapped {
     /// The engine every statement goes to.

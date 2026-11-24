@@ -325,7 +325,13 @@ reads would shift the later rows, and the next offset would skip one.
 A value wider than one cell or statement is stored in pieces: a new
 version's pieces go in first, then the owning row names that version, so a
 reader never sees a version whose pieces are not all in. Plugin artifacts,
-window books and the stored Discover feed are kept this way.
+window books, the stored Discover feed and configuration documents are kept
+this way. A work's description, subjects and categories go to pieces only
+when one is wider than a piece or would make the work's row wider than one
+reply; the row then names the pieces' version and holds an empty string for
+each such text, and readers join them again
+(`LibraryStore::complete_work_texts`). Titles, subtitles and cover URLs stay
+in their rows.
 
 A host write of many statements is cut into batches no larger than the
 plugin's `maxStatements` and request size (`store::write_batches`). When
@@ -368,14 +374,14 @@ assert_eq!(db.refused_begins(), 0);
   fallback a store without a database plugin uses, so a named operation
   the adapter would refuse fails in the test too.
 - **Plain reads held to the result caps.** A read outside a batch is held
-  to the profile's `maxResultRows` and `maxResultBytes` (the streamed
-  budget when the profile streams), the way the plugin host's proxy holds
-  it, so a listing that returns more rows than one reply allows fails in
-  the test with the adapter's `limit_exceeded`. Page such reads by key
-  (see [Paging reads in host code](#paging-reads-in-host-code)). A test's
-  own look at the tables, which no plugin serves in production, goes
-  through `uncapped(...)`. Cells are not held on plain reads yet, since
-  some configuration documents are still stored wider than one cell.
+  to the profile's `maxResultRows`, `maxResultBytes` (the streamed budget
+  when the profile streams) and `maxCellBytes`, the way the plugin host's
+  proxy holds it, so a listing that returns more rows than one reply
+  allows, or a value stored wider than one cell, fails in the test with
+  the adapter's `limit_exceeded`. Page such reads by key (see
+  [Paging reads in host code](#paging-reads-in-host-code)) and store such
+  values in pieces. A test's own look at the tables, which no plugin
+  serves in production, goes through `uncapped(...)`.
 - **Every cap applied.** Each host batch is admitted against the profile
   (`maxStatements`, `maxBinds`, `maxPayloadBytes`, `maxRequestBytes`), run
   as one transaction under its result caps and its reply checked, so a
