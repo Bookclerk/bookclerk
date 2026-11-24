@@ -116,9 +116,35 @@ struct Placed {
     inserts: Vec<TypedDbStatement>,
 }
 
-/// Bytes `value` takes in a row.
+/// The swap that names a work's new texts, only over the row the write
+/// read.
+const PUBLISH_SQL: &str = "UPDATE works SET description = ?, subjects = ?, categories = ?, \
+     cover_url = ?, text_version = ?, updated_at = ? \
+     WHERE id = ? AND updated_at = ? AND COALESCE(text_version, '') = ?";
+
+/// Room in the publication batch for the statement that drops unnamed
+/// versions: its SQL and its binds.
+const DROP_ROOM: usize = 512;
+
+/// Bytes `value` takes in a cell, unescaped.
 fn width(value: Option<&str>) -> usize {
     value.map_or(0, str::len)
+}
+
+/// Bytes `value` takes in a reply, where a read counts each text as an
+/// escaped JSON string: a quote or backslash costs two bytes and a control
+/// character up to six.
+fn encoded_width(value: Option<&str>) -> usize {
+    value.map_or(0, |text| {
+        text.chars()
+            .map(|c| match c {
+                '"' | '\\' | '\n' | '\r' | '\t' | '\u{08}' | '\u{0c}' => 2,
+                c if u32::from(c) < 0x20 => 6,
+                c => c.len_utf8(),
+            })
+            .sum::<usize>()
+            .saturating_add(2)
+    })
 }
 
 impl LibraryStore {
@@ -319,9 +345,7 @@ impl LibraryStore {
         };
         let operation_id = format!("work-texts-{}", uuid::Uuid::new_v4());
         let mut statements = vec![batch::exec(
-            "UPDATE works SET description = ?, subjects = ?, categories = ?, \
-                         cover_url = ?, text_version = ?, updated_at = ? \
-                         WHERE id = ? AND updated_at = ? AND COALESCE(text_version, '') = ?",
+            PUBLISH_SQL,
             vec![
                 column(TextField::Description),
                 column(TextField::Subjects),
@@ -380,7 +404,8 @@ impl LibraryStore {
     }
 
     /// Places `texts` for `row`: inline while each fits one piece and the
-    /// row still fits one reply, the rest in pieces under a new version.
+    /// row, with its texts escaped as a reply carries them, still fits one
+    /// reply; the rest in pieces under a new version.
     fn place_work_texts(&self, row: &works::Model, texts: &WorkTexts) -> Placed {
         let caps = self.db_capabilities();
         let piece = crate::control_plane::chunk_bytes(caps);
@@ -397,25 +422,39 @@ impl LibraryStore {
             row.updated_at.as_str(),
         ]
         .iter()
-        .map(|value| value.len())
+        .map(|value| encoded_width(Some(value)))
         .sum::<usize>()
         .saturating_add(2 * 64 + ROW_OVERHEAD);
-        // The host refuses a plugin whose result limit is below its minimum,
-        // so the limit is never zero.
-        let mut budget = usize::try_from(caps.max_result_bytes)
-            .unwrap_or(usize::MAX)
-            .saturating_sub(fixed);
+        // The inline texts travel escaped twice: in the swap statement,
+        // under the payload and request caps, and in every later read of
+        // the row, under the result cap. The host refuses a plugin whose
+        // caps are below its minimums, so none is zero.
+        let cap = |limit: u32, used: usize| {
+            usize::try_from(limit)
+                .unwrap_or(usize::MAX)
+                .saturating_sub(used)
+        };
+        let mut budget = [
+            cap(caps.max_result_bytes, 0),
+            cap(caps.max_payload_bytes, PUBLISH_SQL.len()),
+            cap(caps.max_request_bytes, PUBLISH_SQL.len() + DROP_ROOM),
+        ]
+        .into_iter()
+        .fold(usize::MAX, usize::min)
+        .saturating_sub(fixed);
         // The narrowest texts are kept inline first, so as many as fit stay
         // in the row.
         let mut order = TextField::ALL;
-        order.sort_by_key(|&field| width(texts.field(field).as_deref()));
+        order.sort_by_key(|&field| encoded_width(texts.field(field).as_deref()));
         let mut columns = BTreeMap::new();
         let mut pieced = Vec::new();
         for field in order {
             let value = texts.field(field);
-            let len = width(value.as_deref());
-            if len <= piece && len <= budget {
-                budget -= len;
+            // The cell cap counts the text as stored; the reply cap counts
+            // it escaped.
+            let encoded = encoded_width(value.as_deref());
+            if width(value.as_deref()) <= piece && encoded <= budget {
+                budget -= encoded;
                 columns.insert(field, value.clone());
             } else {
                 columns.insert(field, Some(String::new()));
@@ -823,6 +862,38 @@ mod tests {
         assert!(pieces(store).await.is_empty());
         let work = store.get_work(&work_id).await.unwrap().unwrap();
         assert!(work.description.is_none());
+    }
+
+    #[tokio::test]
+    async fn texts_that_escape_wider_still_fit_one_reply_under_every_profile() {
+        for profile in Profile::ALL {
+            let name = format!("{profile:?}");
+            let (store, work_id) = one_work(profile).await;
+            let piece = crate::control_plane::chunk_bytes(store.db_capabilities());
+            // Each text fits one cell as stored but takes twice its bytes,
+            // or more, once a reply escapes it.
+            let escaped = |fill: &str| {
+                let mut text = String::from("\u{1}\"");
+                while text.len() < piece.min(1_500) {
+                    text.push_str(fill);
+                }
+                text.truncate(piece.min(1_500));
+                text
+            };
+            let texts = WorkEnrichment {
+                description: Some(escaped("\\")),
+                subjects: Some(escaped("\"")),
+                categories: Some(escaped("\n")),
+                cover_url: None,
+            };
+            store.set_work_enrichment(&work_id, &texts).await.unwrap();
+            let work = store.get_work(&work_id).await.unwrap().unwrap();
+            assert_eq!(work.description, texts.description, "{name}");
+            assert_eq!(work.subjects, texts.subjects, "{name}");
+            assert_eq!(work.categories, texts.categories, "{name}");
+            let listed = store.list_works_page(None, 10).await.unwrap();
+            assert_eq!(listed.len(), 1, "{name}");
+        }
     }
 
     #[tokio::test]

@@ -491,18 +491,34 @@ async fn write_parts(store: &LibraryStore, key: &DocumentKey, body: StoredBody) 
             batch::execute_host_batch(store, request(&format!("{parts_id}:{part}"), statements))
                 .await
         {
-            if let Some(drop) = drop_unnamed_parts(key, &[parts_id.as_str()]) {
-                // A failed clean-up leaves only unnamed pieces.
-                let _ = batch::execute_host_batch(
-                    store,
-                    request(&format!("{parts_id}:drop"), vec![drop]),
-                )
-                .await;
-            }
+            drop_staged_parts(store, key, Some(&parts_id)).await;
             return Err(err);
         }
     }
     Ok(())
+}
+
+/// Drops the pieces a write staged under `parts_id` unless the row now
+/// names them, on a best-effort basis.
+///
+/// Runs when a staging or publication batch failed: a publication that
+/// never applied leaves its set unnamed and it goes, one that applied with
+/// its reply lost names its set and it stays. A failed clean-up leaves only
+/// unnamed pieces, which are never read.
+///
+/// # Arguments
+///
+/// * `store` - The store the write went to.
+/// * `key` - The document the write targeted.
+/// * `parts_id` - The set the write staged, `None` for an inline body.
+async fn drop_staged_parts(store: &LibraryStore, key: &DocumentKey, parts_id: Option<&str>) {
+    let Some(parts_id) = parts_id else {
+        return;
+    };
+    if let Some(drop) = drop_unnamed_parts(key, &[parts_id]) {
+        let _ = batch::execute_host_batch(store, request(&format!("{parts_id}:drop"), vec![drop]))
+            .await;
+    }
 }
 
 /// Drops the pieces of `key`'s document in the sets `parts_ids` that its
@@ -654,7 +670,10 @@ pub async fn import_if_absent(
         key,
         &parts_id.iter().map(String::as_str).collect::<Vec<_>>(),
     ));
-    batch::execute_host_batch(store, request(operation_id, statements)).await?;
+    if let Err(err) = batch::execute_host_batch(store, request(operation_id, statements)).await {
+        drop_staged_parts(store, key, parts_id.as_deref()).await;
+        return Err(err);
+    }
     load_document(store, key)
         .await?
         .ok_or_else(|| LibraryError::not_found(EntityKind::Configuration, &key.namespace))
@@ -869,7 +888,13 @@ pub async fn replace_document(
         .flatten()
         .collect();
     statements.extend(drop_unnamed_parts(key, &stale));
-    let reply = batch::execute_host_batch(store, request(operation_id, statements)).await?;
+    let reply = match batch::execute_host_batch(store, request(operation_id, statements)).await {
+        Ok(reply) => reply,
+        Err(err) => {
+            drop_staged_parts(store, key, parts_id.as_deref()).await;
+            return Err(err);
+        }
+    };
 
     let rows = batch::rows(&reply, 8);
     let Some(row) = rows.first() else {
@@ -1438,6 +1463,81 @@ mod tests {
         assert!(matches!(err, LibraryError::Unavailable(_)), "{err:?}");
         assert!(pieces(store, &key).await.is_empty());
         assert!(load_document(store, &key).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_failed_publication_keeps_only_the_named_pieces_under_every_profile() {
+        for profile in Profile::ALL {
+            for lost_reply in [false, true] {
+                let name = format!("{profile:?} lost_reply={lost_reply}");
+                let kit = sqlite::memory(profile).await;
+                let store = kit.store();
+                let key = DocumentKey::library("test.wide");
+                let width = super::super::chunk_bytes(store.db_capabilities());
+                let first = wide_document(width.saturating_mul(3).min(8_000));
+                let second = wide_document(width.saturating_mul(3).min(8_000) + 11);
+                let fail_next = |prefix: &str| {
+                    kit.aim_faults_at(Some(prefix));
+                    if lost_reply {
+                        kit.lose_next_replies(1);
+                    } else {
+                        kit.lock_next_requests(1);
+                    }
+                };
+                // Only the import's own batch fails; its pieces were staged.
+                fail_next("INSERT OR IGNORE INTO configuration_documents");
+                let err = import_if_absent(store, &operator(), &key, 1, &first, "op-import")
+                    .await
+                    .unwrap_err();
+                kit.aim_faults_at(None);
+                assert!(
+                    matches!(err, LibraryError::Unavailable(_)),
+                    "{name}: {err:?}"
+                );
+                let loaded = load_document(store, &key).await.unwrap();
+                if lost_reply {
+                    assert_eq!(loaded.unwrap().document_json, first, "{name}");
+                } else {
+                    assert!(loaded.is_none(), "{name}");
+                    assert!(pieces(store, &key).await.is_empty(), "{name}");
+                    import_if_absent(store, &operator(), &key, 1, &first, "op-import")
+                        .await
+                        .unwrap();
+                }
+                // Only the replacement's swap fails.
+                fail_next("INSERT OR IGNORE INTO bookclerk_slots");
+                let err = replace_document(store, &operator(), &key, 1, 1, &second, "op-second")
+                    .await
+                    .unwrap_err();
+                kit.aim_faults_at(None);
+                assert!(
+                    matches!(err, LibraryError::Unavailable(_)),
+                    "{name}: {err:?}"
+                );
+                let loaded = load_document(store, &key).await.unwrap().unwrap();
+                let (revision, body, set) = if lost_reply {
+                    (2, &second, "op-second:")
+                } else {
+                    (1, &first, "op-import:")
+                };
+                assert_eq!(loaded.revision, revision, "{name}");
+                assert_eq!(&loaded.document_json, body, "{name}");
+                let sets: std::collections::BTreeSet<String> = pieces(store, &key)
+                    .await
+                    .into_iter()
+                    .map(|piece| piece.parts_id)
+                    .collect();
+                if body.len() > width {
+                    assert_eq!(sets.len(), 1, "{name}: {sets:?}");
+                    assert!(
+                        sets.iter().all(|id| id.starts_with(set)),
+                        "{name}: {sets:?}"
+                    );
+                } else {
+                    assert!(sets.is_empty(), "{name}: {sets:?}");
+                }
+            }
+        }
     }
 
     #[tokio::test]
