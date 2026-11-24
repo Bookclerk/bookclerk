@@ -1477,34 +1477,63 @@ mod tests {
             control.cpu_rate,
             crate::windows_job_cpu_rate(10, crate::node_logical_cpus())
         );
-        // Startup runs before the gate, so Job accounting does not include it.
-        // The burn itself is 2s of wall time after the process is in the Job.
-        let gate = std::env::temp_dir().join(format!(
-            "bookclerk-cpu-gate-{}-{}",
+        // PowerShell startup takes about a second of CPU. Under a 10% cap that
+        // stretches to many seconds of wall time, so the test keeps startup out
+        // of the measured window: the burner signals `ready`, is assigned to
+        // the Job only then, and starts burning when the test opens `gate`.
+        let stamp = format!(
+            "{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|elapsed| elapsed.as_nanos())
                 .unwrap_or(0)
-        ));
+        );
+        let ready = std::env::temp_dir().join(format!("bookclerk-cpu-ready-{stamp}"));
+        let gate = std::env::temp_dir().join(format!("bookclerk-cpu-gate-{stamp}"));
+        let quote = |path: &std::path::Path| path.display().to_string().replace('\'', "''");
         let script = format!(
-            "$gate='{}'; while(-not (Test-Path -LiteralPath $gate)){{ Start-Sleep -Milliseconds 20 }}; $sw=[Diagnostics.Stopwatch]::StartNew(); while($sw.ElapsedMilliseconds -lt 2000){{}}",
-            gate.display().to_string().replace('\'', "''")
+            "$ready='{}'; $gate='{}'; [IO.File]::WriteAllText($ready, 'up'); while(-not (Test-Path -LiteralPath $gate)){{ Start-Sleep -Milliseconds 20 }}; $sw=[Diagnostics.Stopwatch]::StartNew(); while($sw.ElapsedMilliseconds -lt 2000){{}}",
+            quote(&ready),
+            quote(&gate)
         );
         let mut child = std::process::Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", &script])
             .spawn()
             .expect("powershell");
+        let started = std::time::Instant::now();
+        while !ready.exists() {
+            if let Some(status) = child.try_wait().expect("poll burner") {
+                panic!("burner exited before it was ready: {status}");
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(120),
+                "burner never signalled ready"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         job.assign(child.as_raw_handle()).expect("assign burner");
+        // Whether or not Job accounting carries time charged before the
+        // assignment, the baseline removes it from the measurement.
+        let baseline = job.cpu_time().expect("baseline cpu time");
+        let window = std::time::Instant::now();
         std::fs::write(&gate, b"go").expect("open gate");
         let _ = child.wait().expect("wait burner");
+        let wall = window.elapsed();
         let _ = std::fs::remove_file(&gate);
-        let cpu = job.cpu_time().expect("cpu time");
-        // 10% of one core for 2s is ~200ms. The Job interval can burst; an
-        // uncapped burn is ~2s, so 1.2s still shows the hard cap engaged.
+        let _ = std::fs::remove_file(&ready);
+        let cpu = job.cpu_time().expect("cpu time").saturating_sub(baseline);
         assert!(
-            cpu < std::time::Duration::from_millis(1200),
-            "10% of one core over ~2s wall exceeded tolerance: {cpu:?}"
+            wall >= std::time::Duration::from_millis(2000),
+            "burn ended early: {wall:?}"
+        );
+        // The cap allows 10% of one core over the measured wall time; an
+        // uncapped single-threaded burn uses close to all of it. Half the wall
+        // time leaves room for interval bursts and process exit while still
+        // failing when the cap is not enforced.
+        assert!(
+            cpu < wall / 2,
+            "10% of one core over {wall:?} wall exceeded half a core: {cpu:?}"
         );
         assert!(
             cpu > std::time::Duration::from_millis(15),
