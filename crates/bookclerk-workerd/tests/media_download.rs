@@ -108,7 +108,7 @@ impl Destination for MemSink {
 async fn workerd_media_downloader_streams_bodies_into_the_host_sink() {
     let Some(workerd) = find_workerd() else {
         if skip_workerd_allowed() {
-            eprintln!("skipping workerd covers contract (BOOKCLERK_SKIP_WORKERD=1)");
+            eprintln!("skipping workerd media download contract (BOOKCLERK_SKIP_WORKERD=1)");
             return;
         }
         panic!(
@@ -116,7 +116,7 @@ async fn workerd_media_downloader_streams_bodies_into_the_host_sink() {
              Local native-only skip: BOOKCLERK_SKIP_WORKERD=1"
         );
     };
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/media_download");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/media-download");
     let tmp = tempfile::tempdir().expect("tmpdir");
     let local = tokio::task::LocalSet::new();
     local
@@ -139,7 +139,7 @@ async fn workerd_media_downloader_streams_bodies_into_the_host_sink() {
                 .await
                 .expect("describe timed out")
                 .expect("describe");
-            let covers = client
+            let downloader = client
                 .open(
                     &Invocation {
                         id: "media_download".into(),
@@ -150,9 +150,9 @@ async fn workerd_media_downloader_streams_bodies_into_the_host_sink() {
                 .await
                 .expect("open")
                 .media_download
-                .expect("guest exports `covers`");
+                .expect("guest exports `mediaDownload`");
 
-            let health = covers.health().await.expect("health");
+            let health = downloader.health().await.expect("health");
             assert!(health.ok);
 
             let puts = Rc::new(RefCell::new(BTreeMap::new()));
@@ -169,7 +169,7 @@ async fn workerd_media_downloader_streams_bodies_into_the_host_sink() {
             .collect();
             let images = tokio::time::timeout(
                 Duration::from_secs(30),
-                covers.download_media(
+                downloader.download_media(
                     MediaDownloadParams {
                         urls: urls.clone(),
                         max_bytes: 64,
