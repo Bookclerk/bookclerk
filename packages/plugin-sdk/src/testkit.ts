@@ -63,6 +63,16 @@ import { PluginError, parseLimitExceeded } from "./errors.js";
 import type { DbCapabilities, PluginMigration } from "./generated.js";
 import { requirePluginMigrationRegistration } from "./plugin-migrations.js";
 
+export {
+  createTestKv,
+  createTestWebhooks,
+  type TestKv,
+  type TestKvOperation,
+  type TestKvOptions,
+  type TestWebhooks,
+  type TestWebhooksOptions,
+} from "./testkit-bindings.js";
+
 /** The capability profiles the kit enforces, in the order conformance runs report them. */
 export const TEST_DATABASE_PROFILES = ["first-party", "d1", "minimum"] as const;
 
