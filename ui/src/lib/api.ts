@@ -39,6 +39,8 @@ export interface AuthMeUser {
   status?: string;
   email?: string | null;
   has_password?: boolean;
+  /** True when the email address was proven by a link mailed to it. */
+  email_verified?: boolean;
   /** True when a profile picture file is stored for this user. */
   has_avatar?: boolean;
   /** `auto`, `monogram`, `gravatar`, `upload`, or `sso:{id}`. */
@@ -1414,6 +1416,8 @@ export interface ListedUser {
   login_name: string | null;
   email?: string | null;
   has_password: boolean;
+  /** True when the email address was proven by a link mailed to it. */
+  email_verified?: boolean;
   /** Non-expired portal session present (`true` even when idle). */
   online?: boolean;
   /** Most recent unexpired portal session activity (RFC 3339). Active vs idle is ~5 minutes. */
@@ -1521,6 +1525,8 @@ export interface UserMutationResponse {
   claim_ticket?: string | null;
   /** Magic-link URL for `/invite?ticket=…` when an invite was minted. */
   invite_url?: string | null;
+  /** True when the invite was mailed to the user instead of returned. */
+  invite_emailed?: boolean;
 }
 
 /**
@@ -5652,4 +5658,128 @@ export async function markInboxRead(notificationId: string | null): Promise<numb
   });
   const body = await parseJson<{ marked?: unknown }>(res);
   return typeof body.marked === "number" ? body.marked : 0;
+}
+
+/** Why account mail cannot be sent yet. */
+export type AccountMailNotReady = "not_configured" | "notifier_missing" | "no_public_origin";
+
+/** Account mail's settings and whether it can be sent. */
+export interface AccountMailStatus {
+  /** The notifier instance that sends account mail, or `null`. */
+  plugin_instance_id: string | null;
+  /** Whether invites and verification messages are sent. */
+  ready: boolean;
+  /** Why not, when not ready. */
+  not_ready: AccountMailNotReady | null;
+  /** When a test message last arrived (RFC 3339), or `null`. */
+  tested_at: string | null;
+}
+
+/** A notifier instance from the notifications catalog. */
+export interface NotifierOption {
+  /** Plugin instance id. */
+  plugin_instance_id: string;
+  /** Name shown in pickers. */
+  name: string;
+  /** Whether it can send account mail. */
+  account_mail: boolean;
+}
+
+/**
+ * Lists the installed notifier instances (`GET /api/notifications/catalog`).
+ *
+ * @returns The notifiers, in the server's order.
+ */
+export async function listNotifiers(): Promise<NotifierOption[]> {
+  const res = await fetch("/api/notifications/catalog", { credentials: "include" });
+  const body = await parseJson<{ notifiers?: NotifierOption[] }>(res);
+  return body.notifiers ?? [];
+}
+
+/**
+ * Reads account mail's settings and status.
+ *
+ * @returns The status.
+ */
+export async function getAccountMail(): Promise<AccountMailStatus> {
+  const res = await fetch("/api/notifications/account-mail", { credentials: "include" });
+  return parseJson(res);
+}
+
+/**
+ * Chooses the notifier instance that sends account mail.
+ *
+ * @param pluginInstanceId - The instance, or `null` to turn account mail off.
+ * @returns The status after the change.
+ */
+export async function putAccountMail(pluginInstanceId: string | null): Promise<AccountMailStatus> {
+  const res = await fetch("/api/notifications/account-mail", {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ plugin_instance_id: pluginInstanceId }),
+  });
+  return parseJson(res);
+}
+
+/**
+ * Mails a test message to the caller's own address.
+ *
+ * @returns The queued message's id.
+ */
+export async function sendAccountMailTest(): Promise<{ mail_id: string }> {
+  const res = await fetch("/api/notifications/account-mail/test", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  return parseJson(res);
+}
+
+/**
+ * Mails a user a new invite.
+ *
+ * @param id - User id.
+ * @returns The queued message's id.
+ */
+export async function emailUserInvite(id: number): Promise<{ mail_id: string }> {
+  const res = await fetch(`/api/users/${encodeURIComponent(String(id))}/invite-email`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  return parseJson(res);
+}
+
+/**
+ * Asks for a new link that verifies the caller's email address.
+ *
+ * @returns The queued message's id.
+ */
+export async function requestEmailVerification(): Promise<{ mail_id: string }> {
+  const res = await fetch("/api/auth/profile/email/verification", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  return parseJson(res);
+}
+
+/**
+ * Uses a mailed verification link. Needs no sign-in.
+ *
+ * @param token - The token from the link.
+ * @returns Whether the address was verified.
+ */
+export async function verifyEmail(token: string): Promise<{ verified: boolean }> {
+  const res = await fetch("/api/auth/verify-email", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  return parseJson(res);
 }

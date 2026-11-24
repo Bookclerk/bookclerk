@@ -705,6 +705,101 @@ impl LibraryStore {
         Ok(RecordedListings { ids, unresolved })
     }
 
+    /// Records `listing` on stored edition `edition_id`, chosen by the
+    /// caller, without the resolver: no work, expression or edition is
+    /// created, and no identifier is added to the edition.
+    ///
+    /// This is the guarded path for a branch's catalog answer that names an
+    /// edition by ISBN only, matched to the one edition of the asked work
+    /// that carries that ISBN (`control_plane::catalog_lookup`). The listing
+    /// row is inserted only while the edition exists and no listing of the
+    /// same store, marketplace and product id is stored; a stored one is
+    /// reused only when it already sells `edition_id`, and is never moved.
+    ///
+    /// # Returns
+    ///
+    /// The listing id, or `None` when the draft is not a valid listing or a
+    /// listing of that product already sells another edition.
+    ///
+    /// # Errors
+    ///
+    /// Returns the database error.
+    pub async fn record_catalog_listing_on_edition(
+        &self,
+        listing: &CatalogListing,
+        edition_id: &str,
+    ) -> Result<Option<String>> {
+        let Ok(parsed) = resolve::Listing::from_draft(&listing.draft) else {
+            return Ok(None);
+        };
+        let key = &parsed.key;
+        let find = || {
+            store_listings::Entity::find()
+                .filter(store_listings::Column::PluginKey.eq(key.plugin_key.as_str()))
+                .filter(store_listings::Column::Marketplace.eq(key.marketplace.as_str()))
+                .filter(store_listings::Column::ProductId.eq(key.product_id.as_str()))
+        };
+        let now_text = now_str();
+        let mut statements = Vec::new();
+        if find()
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .is_none()
+        {
+            statements.push(batch::exec(
+                "INSERT OR IGNORE INTO store_listings \
+                 (id, plugin_key, marketplace, product_id, edition_id, title, observed_at, \
+                  created_at, updated_at) \
+                 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? \
+                 WHERE EXISTS (SELECT 1 FROM editions WHERE id = ?)",
+                vec![
+                    batch::text(&uuid::Uuid::new_v4().to_string()),
+                    batch::text(&key.plugin_key),
+                    batch::text(&key.marketplace),
+                    batch::text(&key.product_id),
+                    batch::text(edition_id),
+                    batch::text(&parsed.title),
+                    batch::text(&now_text),
+                    batch::text(&now_text),
+                    batch::text(&now_text),
+                    batch::text(edition_id),
+                ],
+            ));
+            self.run_catalog_batch(statements).await?;
+            statements = Vec::new();
+        }
+        let Some(row) = find().one(&self.db).await.map_err(LibraryError::Orm)? else {
+            return Ok(None);
+        };
+        if row.edition_id != edition_id {
+            return Ok(None);
+        }
+        // The listing is marked observed in the same batch as its detail, so
+        // the catalog prune can't remove it in between; a listing removed
+        // or moved since the read writes nothing and is not reported.
+        statements.push(batch::exec(
+            "UPDATE store_listings SET observed_at = ?, updated_at = ? \
+              WHERE id = ? AND edition_id = ?",
+            vec![
+                batch::text(&now_text),
+                batch::text(&now_text),
+                batch::text(&row.id),
+                batch::text(edition_id),
+            ],
+        ));
+        let observed = statements.len() - 1;
+        statements.extend(detail_writes(&row.id, &listing.detail, &now_text));
+        for offer in listing.offers.iter().filter(|o| !o.is_empty()) {
+            statements.extend(offer_upsert(&row.id, offer));
+        }
+        let operation_id = format!("catalog-listings-{}", uuid::Uuid::new_v4());
+        let reply = self
+            .execute_host_batch(batch::request(&operation_id, statements))
+            .await?;
+        Ok((batch::rows_affected(&reply, observed) == 1).then_some(row.id))
+    }
+
     /// Stores prices a store quoted for listings already in the pool.
     ///
     /// # Arguments

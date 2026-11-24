@@ -14,6 +14,7 @@
     clippy::expect_used
 )]
 
+mod account_mail;
 mod admin_controls;
 mod api;
 mod auth;

@@ -84,11 +84,15 @@ pub enum RecordPruneStep {
     /// [`crate::notifications::NOTIFICATION_RETENTION_DAYS`], with their
     /// inbox entries and delivery-log rows.
     Notifications,
+    /// Account-mail records older than
+    /// [`crate::notifications::ACCOUNT_MAIL_RETENTION_DAYS`] that are no
+    /// longer pending, and expired email-verification links.
+    AccountMail,
 }
 
 impl RecordPruneStep {
     /// Every step, in the order a maintenance pass runs them.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::OidcAuthCodes,
         Self::OidcRefreshTokens,
         Self::PortalSessions,
@@ -102,6 +106,7 @@ impl RecordPruneStep {
         Self::ConfigurationAudit,
         Self::ConfigurationChanges,
         Self::Notifications,
+        Self::AccountMail,
     ];
 }
 
@@ -234,6 +239,7 @@ impl LibraryStore {
                     .await
             }
             RecordPruneStep::Notifications => return self.prune_notifications(now).await,
+            RecordPruneStep::AccountMail => return self.prune_account_mail(now).await,
         };
         Ok(deleted.map_err(LibraryError::Orm)?.rows_affected)
     }
@@ -400,6 +406,22 @@ mod tests {
                 at(-31),
                 at(-29)
             ),
+            // Account mail: an old finished record goes; a recent one and an
+            // old pending one stay. An expired verification link goes.
+            format!(
+                "INSERT INTO account_mail (id, kind, user_id, address, plugin_instance_id, \
+                 state, created_at, updated_at) VALUES \
+                 ('m-old', 'test', 1, 'a@example.com', 'email', 'delivered', '{0}', '{0}'), \
+                 ('m-pending', 'test', 1, 'a@example.com', 'email', 'pending', '{0}', '{0}'), \
+                 ('m-recent', 'test', 1, 'a@example.com', 'email', 'failed', '{1}', '{1}')",
+                at(-31),
+                at(-1)
+            ),
+            format!(
+                "INSERT INTO email_verifications (token_hash, user_id, email, expires_at, \
+                 created_at) VALUES ('v-old', 1, 'a@example.com', '{}', '{t}')",
+                at(0)
+            ),
         ];
         for sql in statements {
             db.execute_unprepared(&sql)
@@ -419,7 +441,11 @@ mod tests {
             for step in RecordPruneStep::ALL {
                 removed.push(store.prune_record_step(step, now()).await.unwrap());
             }
-            assert_eq!(removed, [1, 2, 1, 1, 1, 1, 3, 1, 1, 1, 1, 1, 1], "{name}");
+            assert_eq!(
+                removed,
+                [1, 2, 1, 1, 1, 1, 3, 1, 1, 1, 1, 1, 1, 1],
+                "{name}"
+            );
             let grants: Vec<String> = crate::test_support::uncapped(
                 crate::entities::copy_grants::Entity::find().all(kit.connection()),
             )

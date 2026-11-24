@@ -549,6 +549,29 @@ fn fuzz_corpus_pace_request_replays() {
     assert!(refused > 0, "every pace_request seed was accepted");
 }
 
+/// The `account_mail_request` oracle, shared with the fuzz target: the
+/// account-mail settings and verify-email bodies are accepted exactly when
+/// they have the documented shape.
+#[path = "../../../fuzz/oracles/account_mail_request.rs"]
+mod account_mail_request_oracle;
+
+#[test]
+// A missing or unreadable seed is the test failing.
+#[allow(clippy::expect_used)]
+fn fuzz_corpus_account_mail_request_replays() {
+    let (mut accepted, mut refused) = (0, 0);
+    for path in corpus_files("account_mail_request") {
+        if account_mail_request_oracle::check(&std::fs::read(&path).expect("read")) {
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    // The seeds reach both sides.
+    assert!(accepted > 0, "no account_mail_request seed was accepted");
+    assert!(refused > 0, "every account_mail_request seed was accepted");
+}
+
 /// The `connections_request` oracle, shared with the fuzz target: a
 /// branch's "Add my connections" and disconnect bodies are accepted exactly
 /// when they have the documented shape.

@@ -259,16 +259,16 @@ pub use store::{
         MAX_SPLIT_EXPRESSIONS, MAX_SPLIT_EXPRESSION_ID_BYTES,
     },
     AcquireTitle, AcquireTitlePage, AcquireWriter, AcquiredTitleKey, AcquiredTitleKeyPage,
-    AudioStream, CandidateRef, ChangedObject, CopyState, DestinationFeed, DiscoverSubject,
-    EditionAcquisition, EditionAsin, EditionCopy, EditionEnrichment, EditionFile,
+    AudioStream, CandidateRef, ChangedObject, CopyHolder, CopyState, DestinationFeed,
+    DiscoverSubject, EditionAcquisition, EditionAsin, EditionCopy, EditionEnrichment, EditionFile,
     EnrichAttemptOutcome, EnrichCandidate, EnrichCandidatePage, FeedState, FileOwner, FileProbe,
     FileRole, HeldIdentifiers, HoldingSelection, LibraryStore, LostCopies, NewBook,
     NewListeningProgress, NewTitleRequest, NewTitleRequestSource, NodeHoldingSelection,
     ProbedAudioFile, QueueRank, RecordedFile, SavedFilterRecord, ScannedTitle, SeedScope,
     SeenObject, StoreCallHit, StoredCandidate, StoredDiscoverTaste, StoredFeed, StoredQueueRank,
-    TitleHolding, UnprobedFile, UserBookFields, WishWork, ACQUIRED_KEYS_MAX_PAGE, ACQUIRE_WRITER,
-    COPY_RETRY_BASE_DELAY, COPY_RETRY_MAX_DELAY, HOLDING_REMOVED, MAX_COPY_ATTEMPTS,
-    MAX_QUEUE_REASONS, OBJECT_TOMBSTONE_DAYS,
+    TitleHolding, UnlabelledAudio, UnprobedFile, UserBookFields, WishWork, ACQUIRED_KEYS_MAX_PAGE,
+    ACQUIRE_WRITER, COPY_RETRY_BASE_DELAY, COPY_RETRY_MAX_DELAY, HOLDING_REMOVED,
+    MAX_COPY_ATTEMPTS, MAX_QUEUE_REASONS, OBJECT_TOMBSTONE_DAYS,
 };
 pub use store::{NewVector, SpaceCoverage, VectorSpace, VECTOR_KIND_TEXT, VECTOR_KIND_WORK};
 pub use store::{NotifyCursor, NotifyPage, NotifyQueueLimits, MAX_NOTIFY_PAGE};

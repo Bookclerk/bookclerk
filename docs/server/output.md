@@ -654,7 +654,9 @@ alike), the acquire stops with an error before it stores anything. A
 path limit that shortens a part or chapter file's longer name further
 than the planned folder is caught as the files are written instead: a
 copy never writes a file where another copy of the same acquire wrote
-one, on any destination, so that copy fails and is retried. Give
+one, on any destination, or where an earlier acquire recorded a file of
+another copy the library makes, so that copy fails and is retried. A key
+left by a copy the library no longer makes may be written again. Give
 each destination one copy with filters
 when a player scans the whole destination, so it doesn't see the book
 twice.
@@ -714,7 +716,10 @@ storage key stays the main output's. No companion PDF is written for it.
 A convert of a copy the book already has does nothing, unless
 **Make it again if it exists** (`--force`) is ticked. A convert refuses
 `original` copies and the main output's own copy, which only an acquire
-makes, and a book that is not stored yet.
+makes, and a book that is not stored yet. A convert never writes over
+another file of the book: if a tight path limit would put the new copy
+where another copy, or audio a branch uploaded, already is, the convert
+fails.
 
 ## Upgrading to better files
 
