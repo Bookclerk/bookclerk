@@ -64,7 +64,7 @@ _HEALTH_INTERFACES: tuple[tuple[str, str], ...] = (
     ("storefront", "ContentSource"),
     ("remoteLibrary", "RemoteLibrary"),
     ("metadata", "MetadataProvider"),
-    ("covers", "CoverFetcher"),
+    ("mediaDownload", "MediaDownloader"),
     ("metadataFiles", "MetadataFiles"),
     ("notifier", "Notifier"),
     ("ai", "AiModels"),
@@ -110,7 +110,7 @@ def _health_codecs(iface: str) -> tuple[Any, Any]:
 
     Args:
         iface: ``ContentSource``, ``RemoteLibrary``, ``MetadataProvider``,
-            ``CoverFetcher``, ``MetadataFiles``, ``Notifier`` or ``AiModels``.
+            ``MediaDownloader``, ``MetadataFiles``, ``Notifier`` or ``AiModels``.
 
     Returns:
         The ``(params, results)`` struct codecs.
@@ -133,9 +133,9 @@ def _health_codecs(iface: str) -> tuple[Any, Any]:
             _wire._metadata_provider_health_params_codec,
             _wire._metadata_provider_health_results_codec,
         ),
-        "CoverFetcher": (
-            _wire._cover_fetcher_health_params_codec,
-            _wire._cover_fetcher_health_results_codec,
+        "MediaDownloader": (
+            _wire._media_downloader_health_params_codec,
+            _wire._media_downloader_health_results_codec,
         ),
         "MetadataFiles": (
             _wire._metadata_files_health_params_codec,
@@ -161,7 +161,7 @@ def _invoke_health(base: str, iface: str, token: str) -> Any:
     Args:
         base: Bridge base URL.
         iface: Cap'n interface name (``ContentSource``, ``RemoteLibrary``,
-            ``MetadataProvider``, ``CoverFetcher``, ``MetadataFiles``,
+            ``MetadataProvider``, ``MediaDownloader``, ``MetadataFiles``,
             ``Notifier`` or ``AiModels``).
         token: Bridge bearer token.
 

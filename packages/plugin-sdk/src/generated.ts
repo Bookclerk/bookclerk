@@ -737,10 +737,10 @@ export interface Entrypoints {
    */
   metadata?: MetadataProvider | null;
   /**
-   * `covers` entrypoint.
+   * `mediaDownload` entrypoint.
    * Null when the guest does not export this capability.
    */
-  covers?: CoverFetcher | null;
+  mediaDownload?: MediaDownloader | null;
   /**
    * `[sockets]` handler: messages and closes on host-brokered sockets.
    * Null when the guest does not export this capability.
@@ -2041,14 +2041,14 @@ export interface MetadataProvider {
 }
 
 /**
- * `covers` entrypoint: downloads cover images on the host's behalf, so the
- * host itself never makes an outbound request to a URL a plugin or a store
- * supplied. The fetcher only transports bytes: the host sniffs, decodes and
- * re-encodes every image in its media worker before anything stores or
- * serves it. Network access is limited to what the manifest's
+ * `mediaDownload` entrypoint: downloads public media (cover images and
+ * storefronts' audio samples) on the host's behalf, so the host itself never
+ * makes an outbound request to a URL a plugin or a store supplied. The
+ * downloader only transports bytes: the host sniffs, decodes and re-encodes
+ * every body in its media worker before anything stores or serves it. Network access is limited to what the manifest's
  * `[capabilities.network]` declares.
  */
-export interface CoverFetcher {
+export interface MediaDownloader {
   /**
    * Liveness / readiness probe.
    *
@@ -2060,11 +2060,11 @@ export interface CoverFetcher {
    * its index in `params.urls` (`"0"`, `"1"`, ...). The reply says, per URL,
    * whether its body was stored.
    *
-   * @param params - URLs and the per-image byte cap.
+   * @param params - URLs, media kind and the per-body byte cap.
    * @param sink - Host-served store that accepts only those keys.
-   * @returns {@link CoverImagesReply}
+   * @returns {@link DownloadResultsReply}
    */
-  fetchCovers(params: CoverFetchParams, sink: Destination): Promise<CoverImagesReply>;
+  downloadMedia(params: MediaDownloadParams, sink: Destination): Promise<DownloadResultsReply>;
 }
 
 /**
@@ -3236,7 +3236,7 @@ export interface CatalogHit {
    * Absolute `https://` URL of a short audio sample of this edition that
    * the storefront offers publicly (a few minutes, in any format the media
    * worker decodes). The host never hands it to a client: a book's details
-   * play it through a same-origin path, fetched by a `covers` plugin with
+   * play it through a same-origin path, fetched by a `mediaDownload` plugin with
    * `media = audio` and re-encoded in the media worker. Empty when the store
    * has none.
    * Omitted when absent (wire zero value).
@@ -4021,16 +4021,16 @@ export type MetadataChaptersReply =
   | { kind: "ok"; value: MetadataChapters } // Success: chapter layout or not-found marker.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
 
-/** Params of `CoverFetcher.fetchCovers`. */
-export interface CoverFetchParams {
+/** Params of `MediaDownloader.downloadMedia`. */
+export interface MediaDownloadParams {
   /**
-   * Absolute `https://` URLs to fetch, at most `maxCoverUrls`; never empty.
+   * Absolute `https://` URLs to fetch, at most `maxDownloadUrls`; never empty.
    * The host has already checked each one against its URL policy.
    */
   urls: string[];
   /**
-   * Largest body, in bytes, the host accepts for one image; at most
-   * `maxCoverBytes`. The sink refuses a larger body, which fails that URL
+   * Largest body, in bytes, the host accepts for one URL; at most
+   * `maxImageBytes` for images and `maxAudioBytes` for audio. The sink refuses a larger body, which fails that URL
    * only.
    */
   maxBytes: number;
@@ -4039,7 +4039,7 @@ export interface CoverFetchParams {
    * the host's cached copy. Empty, or shorter than `urls`, means the
    * remaining URLs are fetched unconditionally.
    */
-  conditions: CoverCondition[];
+  conditions: DownloadCondition[];
   /**
    * What the URLs name: cover art (the default) or a storefront's audio
    * sample (`CatalogHit.sampleUrl`). A fetcher sends a matching `Accept`
@@ -4053,7 +4053,7 @@ export interface CoverFetchParams {
  * Validators the host already holds for one URL, sent as conditional request
  * headers so an unchanged image costs a `304` instead of its body.
  */
-export interface CoverCondition {
+export interface DownloadCondition {
   /**
    * `If-None-Match` value: the `ETag` the host stored, verbatim; empty for
    * none.
@@ -4069,7 +4069,7 @@ export interface CoverCondition {
 }
 
 /** What happened to one requested URL. */
-export interface CoverImage {
+export interface DownloadResult {
   /** The requested URL, verbatim. */
   url: string;
   /** Whether the body was put into the sink under this URL's index. */
@@ -4122,15 +4122,15 @@ export interface CoverImage {
   age?: string;
 }
 
-/** Success payload of `CoverFetcher.fetchCovers`. */
-export interface CoverImages {
+/** Success payload of `MediaDownloader.downloadMedia`. */
+export interface DownloadResults {
   /** One entry per requested URL, in request order. */
-  images: CoverImage[];
+  downloads: DownloadResult[];
 }
 
-/** Result union of `CoverFetcher.fetchCovers`. */
-export type CoverImagesReply =
-  | { kind: "ok"; value: CoverImages } // Success: one entry per requested URL.
+/** Result union of `MediaDownloader.downloadMedia`. */
+export type DownloadResultsReply =
+  | { kind: "ok"; value: DownloadResults } // Success: one entry per requested URL.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
 
 /**

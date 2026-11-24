@@ -22,7 +22,7 @@ pub const ALL_ENTRYPOINTS: [Entrypoint; 13] = [
     Entrypoint::Cli,
     Entrypoint::Oidc,
     Entrypoint::Metadata,
-    Entrypoint::Covers,
+    Entrypoint::MediaDownload,
     Entrypoint::MetadataFiles,
     Entrypoint::Notifier,
     Entrypoint::Ingress,
@@ -59,7 +59,7 @@ pub fn entrypoint_family(entrypoint: Entrypoint) -> PluginFamily {
         | Entrypoint::Cli
         | Entrypoint::Oidc
         | Entrypoint::Metadata
-        | Entrypoint::Covers
+        | Entrypoint::MediaDownload
         | Entrypoint::MetadataFiles
         | Entrypoint::Notifier
         | Entrypoint::Ai
@@ -79,7 +79,7 @@ pub enum PluginFamily {
     /// Storefront / library source (`Storefront` entrypoint).
     Source,
     /// Event consumer, job runner, remote library, CLI, OIDC bridge,
-    /// metadata provider, cover fetcher, metadata file dialects,
+    /// metadata provider, media downloader, metadata file dialects,
     /// notifier, or model plugin.
     Integration,
     /// Destination / output backend (`Storage` entrypoint).
@@ -2023,7 +2023,7 @@ impl PluginManifest {
                         || self.has_entrypoint(Entrypoint::RemoteLibrary)
                         || self.has_entrypoint(Entrypoint::Oidc)
                         || self.has_entrypoint(Entrypoint::Metadata)
-                        || self.has_entrypoint(Entrypoint::Covers)
+                        || self.has_entrypoint(Entrypoint::MediaDownload)
                         || self.has_entrypoint(Entrypoint::MetadataFiles)
                         || self.has_entrypoint(Entrypoint::Notifier)
                         || self.has_entrypoint(Entrypoint::Ai)

@@ -5,7 +5,7 @@
 # network access, with BOOKCLERK_FILES_DIR pointing at an empty template dir.
 #
 #   1. bookclerk-demo-seed adds Sam, his books, wishlist and offline branch,
-#      and approves and deploys the storefronts and covers.
+#      and approves and deploys the storefronts and media_download.
 #   2. bookclerkd runs until it has replayed the seed's events, downloaded
 #      the default embedding model into the embedder's data dir (verified
 #      against the digests pinned in the plugin package), embedded the

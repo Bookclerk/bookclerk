@@ -1,4 +1,4 @@
-//! `CoverFetcher.fetchCovers` through the workerd launcher: the host sink
+//! `MediaDownloader.downloadMedia` through the workerd launcher: the host sink
 //! reaches the isolate as a put-only grant, and the isolate may stream
 //! several bodies into it at once.
 //!
@@ -17,8 +17,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use bookclerk_plugin_abi::{
-    connect_plugin, ByteRange, CopyResult, CoverFetchParams, CoverFetcher, Destination,
-    HostBindings, Invocation, ListOptions, ListPage, ObjectMetadata, PluginError, PutResult,
+    connect_plugin, ByteRange, CopyResult, Destination, HostBindings, Invocation, ListOptions,
+    ListPage, MediaDownloadParams, MediaDownloader, ObjectMetadata, PluginError, PutResult,
     ReadResult, WriteOptions,
 };
 use bookclerk_workerd::pin::binary_name;
@@ -105,7 +105,7 @@ impl Destination for MemSink {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn workerd_cover_fetcher_streams_bodies_into_the_host_sink() {
+async fn workerd_media_downloader_streams_bodies_into_the_host_sink() {
     let Some(workerd) = find_workerd() else {
         if skip_workerd_allowed() {
             eprintln!("skipping workerd covers contract (BOOKCLERK_SKIP_WORKERD=1)");
@@ -116,7 +116,7 @@ async fn workerd_cover_fetcher_streams_bodies_into_the_host_sink() {
              Local native-only skip: BOOKCLERK_SKIP_WORKERD=1"
         );
     };
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/covers");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/media_download");
     let tmp = tempfile::tempdir().expect("tmpdir");
     let local = tokio::task::LocalSet::new();
     local
@@ -142,14 +142,14 @@ async fn workerd_cover_fetcher_streams_bodies_into_the_host_sink() {
             let covers = client
                 .open(
                     &Invocation {
-                        id: "covers".into(),
+                        id: "media_download".into(),
                         ..Default::default()
                     },
                     HostBindings::default(),
                 )
                 .await
                 .expect("open")
-                .covers
+                .media_download
                 .expect("guest exports `covers`");
 
             let health = covers.health().await.expect("health");
@@ -169,8 +169,8 @@ async fn workerd_cover_fetcher_streams_bodies_into_the_host_sink() {
             .collect();
             let images = tokio::time::timeout(
                 Duration::from_secs(30),
-                covers.fetch_covers(
-                    CoverFetchParams {
+                covers.download_media(
+                    MediaDownloadParams {
                         urls: urls.clone(),
                         max_bytes: 64,
                         conditions: Vec::new(),
@@ -183,8 +183,8 @@ async fn workerd_cover_fetcher_streams_bodies_into_the_host_sink() {
                 ),
             )
             .await
-            .expect("fetchCovers timed out")
-            .expect("fetchCovers");
+            .expect("downloadMedia timed out")
+            .expect("downloadMedia");
             assert_eq!(
                 images.iter().map(|i| i.url.clone()).collect::<Vec<_>>(),
                 urls

@@ -1,5 +1,5 @@
 /**
- * Unit tests for the cover fetcher against a scripted `fetch` and sink.
+ * Unit tests for the media downloader against a scripted `fetch` and sink.
  */
 
 import assert from "node:assert/strict";
@@ -8,8 +8,9 @@ import { test } from "node:test";
 
 import {
   CONCURRENCY,
-  CoverFailure,
-  MAX_BYTES,
+  DownloadFailure,
+  MAX_AUDIO_BYTES,
+  MAX_IMAGE_BYTES,
   MAX_HEADER_BYTES,
   MAX_REDIRECTS,
   MAX_URLS,
@@ -17,13 +18,13 @@ import {
   checkParams,
   checkUrl,
   declaredLength,
-  fetchCovers,
+  downloadMedia,
   fetchOne,
   headerValueOk,
   maybeAudio,
   maybeImage,
   passHeaders,
-  type CoverSink,
+  type DownloadSink,
   type Fetch,
   type FetcherOptions,
   type PutOptions,
@@ -46,9 +47,9 @@ interface Stored {
  * @param fail - Makes every put reject with this message when set.
  * @returns The sink and what it stored.
  */
-function recordingSink(fail?: string): { sink: CoverSink; stored: Stored[] } {
+function recordingSink(fail?: string): { sink: DownloadSink; stored: Stored[] } {
   const stored: Stored[] = [];
-  const sink: CoverSink = {
+  const sink: DownloadSink = {
     async put(key, body, options) {
       const bytes = new Uint8Array(await new Response(body).arrayBuffer());
       if (fail !== undefined) throw new Error(fail);
@@ -105,7 +106,12 @@ test("checkParams accepts the ABI bounds only", () => {
     "audio",
   );
   const full = Array.from({ length: MAX_URLS }, (_, i) => `https://a.example/${i}`);
-  assert.equal(checkParams({ urls: full, maxBytes: MAX_BYTES }).urls.length, MAX_URLS);
+  assert.equal(checkParams({ urls: full, maxBytes: MAX_IMAGE_BYTES }).urls.length, MAX_URLS);
+  // Audio takes its own, larger cap; an image may not ask for it.
+  assert.equal(
+    checkParams({ urls: full, maxBytes: MAX_AUDIO_BYTES, media: "audio" }).maxBytes,
+    MAX_AUDIO_BYTES,
+  );
   for (const bad of [
     undefined,
     null,
@@ -115,7 +121,9 @@ test("checkParams accepts the ABI bounds only", () => {
     { urls: [1], maxBytes: 1 },
     { urls: "https://a.example/", maxBytes: 1 },
     { urls: ["https://a.example/"], maxBytes: 0 },
-    { urls: ["https://a.example/"], maxBytes: MAX_BYTES + 1 },
+    { urls: ["https://a.example/"], maxBytes: MAX_IMAGE_BYTES + 1 },
+    { urls: ["https://a.example/"], maxBytes: MAX_AUDIO_BYTES },
+    { urls: ["https://a.example/"], maxBytes: MAX_AUDIO_BYTES + 1, media: "audio" },
     { urls: ["https://a.example/"], maxBytes: 1.5 },
     { urls: ["https://a.example/"], maxBytes: "1" },
     { urls: ["https://a.example/"], maxBytes: 1, conditions: "x" },
@@ -130,7 +138,7 @@ test("checkParams accepts the ABI bounds only", () => {
       conditions: [{ ifModifiedSince: "x".repeat(MAX_HEADER_BYTES + 1) }],
     },
   ]) {
-    assert.throws(() => checkParams(bad), CoverFailure, JSON.stringify(bad));
+    assert.throws(() => checkParams(bad), DownloadFailure, JSON.stringify(bad));
   }
 });
 
@@ -209,14 +217,14 @@ test("maybeAudio refuses text-like and image types", () => {
   }
 });
 
-test("fetchCovers asks for audio and refuses an image when media is audio", async () => {
+test("downloadMedia asks for audio and refuses an image when media is audio", async () => {
   const { options, seen } = scripted((url) =>
     url.endsWith(".mp3")
       ? new Response(new Uint8Array([0xff, 0xfb]), { headers: { "content-type": "audio/mpeg" } })
       : image(new Uint8Array([0xff, 0xd8])),
   );
   const { sink, stored } = recordingSink();
-  const answers = await fetchCovers(
+  const answers = await downloadMedia(
     options,
     {
       urls: ["https://samples.example/a.mp3", "https://samples.example/b.jpg"],
@@ -256,7 +264,7 @@ test("capped passes small bodies and fails large ones", async () => {
   assert.equal(over.exceeded, true);
 });
 
-test("fetchCovers stores bodies under their index, in request order", async () => {
+test("downloadMedia stores bodies under their index, in request order", async () => {
   const bodies: Record<string, Uint8Array<ArrayBuffer>> = {
     "https://a.example/0.jpg": new Uint8Array([0xff, 0xd8, 0xff, 0]),
     "https://b.example/2.png": new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
@@ -267,7 +275,7 @@ test("fetchCovers stores bodies under their index, in request order", async () =
     return new Response("missing", { status: 404 });
   });
   const { sink, stored } = recordingSink();
-  const images = await fetchCovers(
+  const images = await downloadMedia(
     options,
     {
       urls: ["https://a.example/0.jpg", "https://a.example/gone.jpg", "https://b.example/2.png"],
@@ -290,11 +298,11 @@ test("fetchCovers stores bodies under their index, in request order", async () =
   });
   const headers = new Headers(seen[0]?.init.headers);
   assert.equal(headers.get("accept"), "image/*");
-  assert.equal(headers.get("user-agent"), `Bookclerk-Covers/${VERSION} (+https://bookclerk.app)`);
+  assert.equal(headers.get("user-agent"), `Bookclerk-Media/${VERSION} (+https://bookclerk.app)`);
   assert.ok(seen[0]?.init.signal instanceof AbortSignal);
 });
 
-test("fetchCovers keeps at most CONCURRENCY requests in flight", async () => {
+test("downloadMedia keeps at most CONCURRENCY requests in flight", async () => {
   let inFlight = 0;
   let peak = 0;
   const options: FetcherOptions = {
@@ -308,17 +316,17 @@ test("fetchCovers keeps at most CONCURRENCY requests in flight", async () => {
     },
   };
   const urls = Array.from({ length: 10 }, (_, i) => `https://a.example/${i}`);
-  const images = await fetchCovers(options, { urls, maxBytes: 8 }, recordingSink().sink);
+  const images = await downloadMedia(options, { urls, maxBytes: 8 }, recordingSink().sink);
   assert.equal(images.length, 10);
   assert.ok(images.every((i) => i.stored));
   assert.equal(peak, CONCURRENCY);
 });
 
-test("fetchCovers refuses malformed params before any request", async () => {
+test("downloadMedia refuses malformed params before any request", async () => {
   const { options, seen } = scripted(() => image(new Uint8Array([1])));
   await assert.rejects(
-    fetchCovers(options, { urls: [], maxBytes: 1 }, recordingSink().sink),
-    CoverFailure,
+    downloadMedia(options, { urls: [], maxBytes: 1 }, recordingSink().sink),
+    DownloadFailure,
   );
   assert.equal(seen.length, 0);
 });
@@ -504,11 +512,11 @@ test("fetchOne sends the conditions and reports a 304 without storing", async ()
   assert.equal(headers.get("if-modified-since"), "Tue, 01 Sep 2026 00:00:00 GMT");
 });
 
-test("fetchCovers pairs each condition with its URL and passes headers on", async () => {
+test("downloadMedia pairs each condition with its URL and passes headers on", async () => {
   const { options, seen } = scripted(() =>
     image(new Uint8Array([1]), { etag: '"new"', "last-modified": "Mon, 31 Aug 2026 00:00:00 GMT" }),
   );
-  const images = await fetchCovers(
+  const images = await downloadMedia(
     options,
     {
       urls: ["https://a.example/1", "https://a.example/2"],

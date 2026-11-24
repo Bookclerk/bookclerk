@@ -1412,9 +1412,9 @@ def test_smoke_health_codecs_cover_every_health_interface() -> None:
         _wire._metadata_files_health_params_codec,
         _wire._metadata_files_health_results_codec,
     )
-    assert _health_codecs("CoverFetcher") == (
-        _wire._cover_fetcher_health_params_codec,
-        _wire._cover_fetcher_health_results_codec,
+    assert _health_codecs("MediaDownloader") == (
+        _wire._media_downloader_health_params_codec,
+        _wire._media_downloader_health_results_codec,
     )
     assert _health_codecs("MetadataProvider") == (
         _wire._metadata_provider_health_params_codec,

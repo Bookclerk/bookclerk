@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bookclerk_integrations::{
-    Brand, EventSubscription, ExternalUser, FetchedCover, Integration, IntegrationContext,
+    Brand, EventSubscription, ExternalUser, FetchedMedia, Integration, IntegrationContext,
     IntegrationError, IntegrationHealth, ProvidedOidcClient, QueueSubscription,
     ScheduledInvocation,
 };
@@ -205,7 +205,7 @@ struct Identity {
     /// Whether the guest exports `metadata`.
     supports_metadata: bool,
     /// Whether the guest exports `covers`.
-    supports_covers: bool,
+    supports_media_download: bool,
     /// Whether the guest exports `ai`.
     supports_ai: bool,
     /// Whether the guest exports `notifier`.
@@ -232,7 +232,7 @@ impl Identity {
             queue_subscriptions: guest.queue_subscriptions(),
             cron_schedules: guest.cron_schedules(),
             supports_metadata: guest.supports_metadata(),
-            supports_covers: guest.supports_covers(),
+            supports_media_download: guest.supports_media_download(),
             supports_ai: guest.supports_ai(),
             supports_notifier: guest.supports_notifier(),
             supports_credential_login: guest.supports_credential_login(),
@@ -606,16 +606,16 @@ impl Integration for OnDemandIntegration {
         guest.metadata_chapters(params).await
     }
 
-    fn supports_covers(&self) -> bool {
-        self.identity.supports_covers
+    fn supports_media_download(&self) -> bool {
+        self.identity.supports_media_download
     }
 
-    async fn fetch_covers(
+    async fn download_media(
         &self,
-        params: bookclerk_plugin_abi::CoverFetchParams,
-    ) -> bookclerk_integrations::Result<Vec<FetchedCover>> {
+        params: bookclerk_plugin_abi::MediaDownloadParams,
+    ) -> bookclerk_integrations::Result<Vec<FetchedMedia>> {
         let (guest, _busy) = self.awake().await?;
-        guest.fetch_covers(params).await
+        guest.download_media(params).await
     }
 
     fn supports_ai(&self) -> bool {

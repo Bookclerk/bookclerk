@@ -41,7 +41,7 @@ matching name extending its base: `Storefront(StorefrontEntrypoint)`,
 `Storage(StorageEntrypoint)`, `RemoteLibrary(RemoteLibraryEntrypoint)`,
 `DatabaseAdapter(DatabaseAdapterEntrypoint)`, `Cli(CliEntrypoint)`,
 `Oidc(OidcEntrypoint)`, `Metadata(MetadataEntrypoint)`,
-`Covers(CoverEntrypoint)`, `MetadataFiles(MetadataFilesEntrypoint)`,
+`MediaDownload(MediaDownloadEntrypoint)`, `MetadataFiles(MetadataFilesEntrypoint)`,
 `Notifier(NotifierEntrypoint)`, `Ingress(IngressEntrypoint)`,
 `Provisioning(ProvisioningEntrypoint)` and `Ai(AiEntrypoint)`. The Python SDK serves `direct`
 [`[ingress]`](../../manifest.md#ingress-public-address) plugins only; the

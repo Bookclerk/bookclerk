@@ -133,7 +133,7 @@ const ENTRYPOINT_SERVICE_BINDINGS: Readonly<Record<string, readonly [string, str
     cli: ["PLUGIN_CLI", "Cli"],
     oidc: ["PLUGIN_OIDC", "Oidc"],
     metadata: ["PLUGIN_METADATA", "Metadata"],
-    covers: ["PLUGIN_COVERS", "Covers"],
+    mediaDownload: ["PLUGIN_MEDIA_DOWNLOAD", "MediaDownload"],
     metadataFiles: ["PLUGIN_METADATA_FILES", "MetadataFiles"],
     notifier: ["PLUGIN_NOTIFIER", "Notifier"],
     ingress: ["PLUGIN_INGRESS", "Ingress"],

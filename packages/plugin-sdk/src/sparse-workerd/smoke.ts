@@ -16,8 +16,8 @@ import { parse as parseToml } from "smol-toml";
 import {
   ContentSourceHealthParamsCodec,
   ContentSourceHealthResultsCodec,
-  CoverFetcherHealthParamsCodec,
-  CoverFetcherHealthResultsCodec,
+  MediaDownloaderHealthParamsCodec,
+  MediaDownloaderHealthResultsCodec,
   MetadataFilesHealthParamsCodec,
   MetadataFilesHealthResultsCodec,
   MetadataProviderHealthParamsCodec,
@@ -49,7 +49,7 @@ export type HealthInterface =
   | "ContentSource"
   | "RemoteLibrary"
   | "MetadataProvider"
-  | "CoverFetcher"
+  | "MediaDownloader"
   | "MetadataFiles"
   | "Notifier"
   | "AiModels";
@@ -76,9 +76,9 @@ const HEALTH_CODECS: Readonly<
     params: MetadataProviderHealthParamsCodec,
     results: MetadataProviderHealthResultsCodec,
   },
-  CoverFetcher: {
-    params: CoverFetcherHealthParamsCodec,
-    results: CoverFetcherHealthResultsCodec,
+  MediaDownloader: {
+    params: MediaDownloaderHealthParamsCodec,
+    results: MediaDownloaderHealthResultsCodec,
   },
   MetadataFiles: {
     params: MetadataFilesHealthParamsCodec,
@@ -162,7 +162,7 @@ const HEALTH_ENTRYPOINTS: readonly (readonly [string, HealthInterface])[] = [
   ["storefront", "ContentSource"],
   ["remoteLibrary", "RemoteLibrary"],
   ["metadata", "MetadataProvider"],
-  ["covers", "CoverFetcher"],
+  ["mediaDownload", "MediaDownloader"],
   ["metadataFiles", "MetadataFiles"],
   ["notifier", "Notifier"],
   ["ai", "AiModels"],

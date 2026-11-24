@@ -1465,7 +1465,7 @@ export const ENTRYPOINT_NAMES = [
   "cli",
   "oidc",
   "metadata",
-  "covers",
+  "mediaDownload",
   "metadataFiles",
   "notifier",
   "ingress",

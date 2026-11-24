@@ -1,5 +1,5 @@
 # Hosted demo image: the production image plus the four storefront plugins
-# and the covers plugin, minus everything that could acquire a book. Built on
+# and the media_download plugin, minus everything that could acquire a book. Built on
 # the production builder and runtime stages of packaging/docker/Dockerfile
 # from the same commit, so every crate and plugin in the demo is the version
 # production ships, in one BuildKit build that never exports the builder:
@@ -16,9 +16,9 @@
 #
 # What differs from production, and why:
 #   - The storefronts (Audible, Libro.fm, Chirp, GraphicAudio) and the
-#     covers plugin are staged from the production builder, with their
+#     media_download plugin are staged from the production builder, with their
 #     shipped network grants. Covers, store icons and avatars are downloaded
-#     through `covers` and re-encoded by bookclerk-media-worker, so the web
+#     through `media_download` and re-encoded by bookclerk-media-worker, so the web
 #     app can load them from its own origin.
 #   - No `local` output plugin: with no destination deployed, the host
 #     refuses acquire work by its own fail-closed rules. The demo Worker
@@ -35,7 +35,7 @@
 #   - The library is seeded at build time (the `seeded` stage, bake-seed.sh):
 #     bookclerk-demo-seed adds a second library user with books, a wishlist
 #     and an offline branch (crates/bookclerk-demo-seed), approves and
-#     deploys the storefronts and covers (their manifest grants, as the
+#     deploys the storefronts and media_download (their manifest grants, as the
 #     Worker does), fetches each title's record from its store's catalog
 #     through them, and writes through the library code of this commit,
 #     never raw SQL. bookclerkd then downloads the default embedding
@@ -82,7 +82,7 @@ RUN set -eu; \
       -p bookclerk-plugin-source-libro \
       -p bookclerk-plugin-source-chirp \
       -p bookclerk-plugin-source-graphicaudio; \
-    cargo stage-plugins --release --skip-build --plugin audible --plugin libro --plugin chirp --plugin graphicaudio --plugin covers \
+    cargo stage-plugins --release --skip-build --plugin audible --plugin libro --plugin chirp --plugin graphicaudio --plugin media_download \
     && mkdir -p /out \
     && cp -a target/plugin-artifacts/. /out/ \
     && test "$(find /out -mindepth 2 -maxdepth 2 -name plugin.toml | wc -l)" -eq 5 \

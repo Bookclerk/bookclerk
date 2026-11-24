@@ -171,9 +171,9 @@ const INTERFACES: &[InterfaceEntry] = &[
         methods: &["health", "lookup", "search", "chapters"],
     },
     InterfaceEntry {
-        id: <plugin_capnp::cover_fetcher::Client as HasTypeId>::TYPE_ID,
-        name: "CoverFetcher",
-        methods: &["health", "fetchCovers"],
+        id: <plugin_capnp::media_downloader::Client as HasTypeId>::TYPE_ID,
+        name: "MediaDownloader",
+        methods: &["health", "downloadMedia"],
     },
     InterfaceEntry {
         id: <plugin_capnp::metadata_files::Client as HasTypeId>::TYPE_ID,

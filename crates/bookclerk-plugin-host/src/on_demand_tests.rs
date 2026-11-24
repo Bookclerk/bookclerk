@@ -678,10 +678,10 @@ async fn every_guest_call_wakes_a_sleeping_proxy_and_reaches_the_guest() {
         .expect_err("no metadata");
     assert!(chapters.to_string().contains("does not provide metadata"));
     let covers = proxy
-        .fetch_covers(bookclerk_plugin_abi::CoverFetchParams::default())
+        .download_media(bookclerk_plugin_abi::MediaDownloadParams::default())
         .await
         .expect_err("no covers");
-    assert!(covers.to_string().contains("does not fetch covers"));
+    assert!(covers.to_string().contains("does not download media"));
     // A per-run value, not a literal: the double rejects every login.
     let password = format!("probe-{}", std::process::id());
     let login = proxy
@@ -706,7 +706,7 @@ async fn every_guest_call_wakes_a_sleeping_proxy_and_reaches_the_guest() {
     assert_eq!(started.lock().expect("started").len(), 1);
     assert_eq!(proxy.display_name(), "fake");
     assert!(!proxy.supports_metadata());
-    assert!(!proxy.supports_covers());
+    assert!(!proxy.supports_media_download());
     assert!(!proxy.supports_credential_login());
     assert!(!proxy.supports_library_scan());
     assert!(!proxy.supports_listening_sync());

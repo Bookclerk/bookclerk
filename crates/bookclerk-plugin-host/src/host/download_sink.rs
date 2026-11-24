@@ -1,6 +1,6 @@
-//! In-memory sink a `covers` plugin streams downloaded images into.
+//! In-memory sink a `media_download` plugin streams downloaded images into.
 //!
-//! `CoverFetcher.fetchCovers` hands the guest a host-served `Destination`. The
+//! `MediaDownloader.downloadMedia` hands the guest a host-served `Destination`. The
 //! guest puts the body for `urls[i]` under the key `i`. This sink is that
 //! destination. It is deliberately narrow:
 //!
@@ -18,10 +18,10 @@ use std::cell::RefCell;
 use std::pin::Pin;
 use std::rc::Rc;
 
-use bookclerk_integrations::{CoverHeaders, FetchedCover};
-use bookclerk_plugin_abi::cover_sink_slot;
+use bookclerk_integrations::{CoverHeaders, FetchedMedia};
+use bookclerk_plugin_abi::download_sink_slot;
 use bookclerk_plugin_sdk::{
-    ByteRange, CopyResult, CoverImage, Destination, ListOptions, ListPage, ObjectMetadata,
+    ByteRange, CopyResult, Destination, DownloadResult, ListOptions, ListPage, ObjectMetadata,
     PluginError, PutResult, ReadResult, WriteOptions,
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -37,15 +37,15 @@ enum Slot {
     Filled(Vec<u8>),
 }
 
-/// Shared state of one `fetchCovers` call's sink.
-pub(crate) struct CoverSink {
+/// Shared state of one `downloadMedia` call's sink.
+pub(crate) struct DownloadSink {
     /// Largest body accepted for one key, in bytes.
     max_bytes: u32,
     /// State of each index.
     slots: RefCell<Vec<Slot>>,
 }
 
-impl CoverSink {
+impl DownloadSink {
     /// A sink for `slots` URLs, each body at most `max_bytes`.
     ///
     /// # Arguments
@@ -77,8 +77,8 @@ impl CoverSink {
     ///
     /// # Returns
     ///
-    /// One [`FetchedCover`] per answer, in order.
-    pub(crate) fn take_fetched(&self, images: Vec<CoverImage>) -> Vec<FetchedCover> {
+    /// One [`FetchedMedia`] per answer, in order.
+    pub(crate) fn take_fetched(&self, images: Vec<DownloadResult>) -> Vec<FetchedMedia> {
         let mut slots = self.slots.borrow_mut();
         images
             .into_iter()
@@ -101,7 +101,7 @@ impl CoverSink {
                         Some(image.error.unwrap_or_else(|| "not fetched".into())),
                     ),
                 };
-                FetchedCover {
+                FetchedMedia {
                     url: image.url,
                     body,
                     content_type: image.content_type,
@@ -133,7 +133,7 @@ impl CoverSink {
     /// slot another put is writing or has filled.
     fn reserve(self: &Rc<Self>, key: &str) -> Result<Reservation, PluginError> {
         let mut slots = self.slots.borrow_mut();
-        let index = cover_sink_slot(key, slots.len())
+        let index = download_sink_slot(key, slots.len())
             .ok_or_else(|| PluginError::invalid_params(format!("cover sink has no key {key:?}")))?;
         match slots[index] {
             Slot::Empty => {}
@@ -160,7 +160,7 @@ impl CoverSink {
 /// One put's claim on a slot; releases it on failure or cancellation.
 struct Reservation {
     /// The sink the slot belongs to.
-    sink: Rc<CoverSink>,
+    sink: Rc<DownloadSink>,
     /// Index of the reserved slot.
     index: usize,
     /// Whether [`Reservation::fill`] stored a body.
@@ -184,7 +184,7 @@ impl Drop for Reservation {
 }
 
 /// `Destination` handle the guest call writes through.
-struct SinkHandle(Rc<CoverSink>);
+struct SinkHandle(Rc<DownloadSink>);
 
 #[async_trait::async_trait(?Send)]
 impl Destination for SinkHandle {
@@ -259,19 +259,19 @@ mod tests {
         Box::pin(bytes)
     }
 
-    fn image(url: &str, stored: bool, error: Option<&str>) -> CoverImage {
-        CoverImage {
+    fn image(url: &str, stored: bool, error: Option<&str>) -> DownloadResult {
+        DownloadResult {
             url: url.into(),
             stored,
             content_type: stored.then(|| "image/png".into()),
             error: error.map(Into::into),
-            ..CoverImage::default()
+            ..DownloadResult::default()
         }
     }
 
     #[tokio::test]
     async fn stores_each_index_once_within_the_cap() {
-        let sink = CoverSink::new(3, 4);
+        let sink = DownloadSink::new(3, 4);
         let dest = sink.destination();
         let put = dest
             .put("0", body(b"abcd"), WriteOptions::default())
@@ -344,7 +344,7 @@ mod tests {
 
     #[tokio::test]
     async fn answers_without_bodies_become_errors() {
-        let sink = CoverSink::new(2, 8);
+        let sink = DownloadSink::new(2, 8);
         sink.destination()
             .put("1", body(b"late"), WriteOptions::default())
             .await
@@ -365,14 +365,14 @@ mod tests {
 
     #[tokio::test]
     async fn not_modified_answers_and_headers_are_passed_on() {
-        let sink = CoverSink::new(2, 8);
+        let sink = DownloadSink::new(2, 8);
         // A body under a not-modified answer is not the caller's.
         sink.destination()
             .put("0", body(b"late"), WriteOptions::default())
             .await
             .expect("stored");
         let fetched = sink.take_fetched(vec![
-            CoverImage {
+            DownloadResult {
                 not_modified: true,
                 etag: Some("\"v1\"".into()),
                 cache_control: Some("max-age=60".into()),
@@ -404,7 +404,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_put_reserves_its_slot_until_it_ends() {
-        let sink = CoverSink::new(1, 8);
+        let sink = DownloadSink::new(1, 8);
         let dest = sink.destination();
         let (mut writer, reader) = tokio::io::duplex(16);
         let first = dest.put("0", Box::pin(reader), WriteOptions::default());
@@ -428,7 +428,7 @@ mod tests {
         );
 
         // A failed or cancelled put releases the slot for a retry.
-        let sink = CoverSink::new(1, 2);
+        let sink = DownloadSink::new(1, 2);
         let dest = sink.destination();
         dest.put("0", body(b"abc"), WriteOptions::default())
             .await
@@ -446,7 +446,7 @@ mod tests {
 
     #[tokio::test]
     async fn other_methods_are_unsupported() {
-        let dest = CoverSink::new(1, 8).destination();
+        let dest = DownloadSink::new(1, 8).destination();
         assert!(dest.head("0").await.is_err());
         assert!(dest.list(ListOptions::default()).await.is_err());
         assert!(dest.get("0", None).await.is_err());

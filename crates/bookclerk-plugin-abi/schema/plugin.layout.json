@@ -3510,329 +3510,6 @@
         }
       ]
     },
-    "CoverCondition": {
-      "name": "CoverCondition",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 2,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "ifNoneMatch",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 0
-        },
-        {
-          "name": "ifModifiedSince",
-          "codeOrder": 1,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 1
-        }
-      ]
-    },
-    "CoverFetchParams": {
-      "name": "CoverFetchParams",
-      "file": "plugin.capnp",
-      "dataWords": 1,
-      "pointerCount": 2,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "urls",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "list",
-            "element": {
-              "kind": "text"
-            }
-          },
-          "offset": 0
-        },
-        {
-          "name": "maxBytes",
-          "codeOrder": 1,
-          "discriminantValue": null,
-          "type": {
-            "kind": "uint32"
-          },
-          "offset": 0
-        },
-        {
-          "name": "conditions",
-          "codeOrder": 2,
-          "discriminantValue": null,
-          "type": {
-            "kind": "list",
-            "element": {
-              "kind": "struct",
-              "name": "CoverCondition"
-            }
-          },
-          "offset": 1
-        },
-        {
-          "name": "media",
-          "codeOrder": 3,
-          "discriminantValue": null,
-          "type": {
-            "kind": "enum",
-            "name": "RemoteMedia"
-          },
-          "offset": 2
-        }
-      ]
-    },
-    "CoverFetcher.fetchCovers$Params": {
-      "name": "CoverFetcher.fetchCovers$Params",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 2,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "params",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "CoverFetchParams"
-          },
-          "offset": 0
-        },
-        {
-          "name": "sink",
-          "codeOrder": 1,
-          "discriminantValue": null,
-          "type": {
-            "kind": "interface",
-            "name": "Destination"
-          },
-          "offset": 1
-        }
-      ]
-    },
-    "CoverFetcher.fetchCovers$Results": {
-      "name": "CoverFetcher.fetchCovers$Results",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "result",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "CoverImagesReply"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "CoverFetcher.health$Params": {
-      "name": "CoverFetcher.health$Params",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 0,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": []
-    },
-    "CoverFetcher.health$Results": {
-      "name": "CoverFetcher.health$Results",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "result",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "struct",
-            "name": "HealthReply"
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "CoverImage": {
-      "name": "CoverImage",
-      "file": "plugin.capnp",
-      "dataWords": 1,
-      "pointerCount": 9,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "url",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 0
-        },
-        {
-          "name": "stored",
-          "codeOrder": 1,
-          "discriminantValue": null,
-          "type": {
-            "kind": "bool"
-          },
-          "offset": 0
-        },
-        {
-          "name": "contentType",
-          "codeOrder": 2,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 1
-        },
-        {
-          "name": "error",
-          "codeOrder": 3,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 2
-        },
-        {
-          "name": "notModified",
-          "codeOrder": 4,
-          "discriminantValue": null,
-          "type": {
-            "kind": "bool"
-          },
-          "offset": 1
-        },
-        {
-          "name": "etag",
-          "codeOrder": 5,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 3
-        },
-        {
-          "name": "lastModified",
-          "codeOrder": 6,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 4
-        },
-        {
-          "name": "cacheControl",
-          "codeOrder": 7,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 5
-        },
-        {
-          "name": "expires",
-          "codeOrder": 8,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 6
-        },
-        {
-          "name": "date",
-          "codeOrder": 9,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 7
-        },
-        {
-          "name": "age",
-          "codeOrder": 10,
-          "discriminantValue": null,
-          "type": {
-            "kind": "text"
-          },
-          "offset": 8
-        }
-      ]
-    },
-    "CoverImages": {
-      "name": "CoverImages",
-      "file": "plugin.capnp",
-      "dataWords": 0,
-      "pointerCount": 1,
-      "discriminantCount": 0,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "images",
-          "codeOrder": 0,
-          "discriminantValue": null,
-          "type": {
-            "kind": "list",
-            "element": {
-              "kind": "struct",
-              "name": "CoverImage"
-            }
-          },
-          "offset": 0
-        }
-      ]
-    },
-    "CoverImagesReply": {
-      "name": "CoverImagesReply",
-      "file": "plugin.capnp",
-      "dataWords": 1,
-      "pointerCount": 1,
-      "discriminantCount": 2,
-      "discriminantOffset": 0,
-      "fields": [
-        {
-          "name": "ok",
-          "codeOrder": 0,
-          "discriminantValue": 0,
-          "type": {
-            "kind": "struct",
-            "name": "CoverImages"
-          },
-          "offset": 0
-        },
-        {
-          "name": "err",
-          "codeOrder": 1,
-          "discriminantValue": 1,
-          "type": {
-            "kind": "struct",
-            "name": "PluginError"
-          },
-          "offset": 0
-        }
-      ]
-    },
     "CreateTableSchema": {
       "name": "CreateTableSchema",
       "file": "plugin.capnp",
@@ -5577,6 +5254,196 @@
         }
       ]
     },
+    "DownloadCondition": {
+      "name": "DownloadCondition",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ifNoneMatch",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "ifModifiedSince",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "DownloadResult": {
+      "name": "DownloadResult",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 9,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "url",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 0
+        },
+        {
+          "name": "stored",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 0
+        },
+        {
+          "name": "contentType",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 1
+        },
+        {
+          "name": "error",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 2
+        },
+        {
+          "name": "notModified",
+          "codeOrder": 4,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
+          },
+          "offset": 1
+        },
+        {
+          "name": "etag",
+          "codeOrder": 5,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 3
+        },
+        {
+          "name": "lastModified",
+          "codeOrder": 6,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 4
+        },
+        {
+          "name": "cacheControl",
+          "codeOrder": 7,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 5
+        },
+        {
+          "name": "expires",
+          "codeOrder": 8,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 6
+        },
+        {
+          "name": "date",
+          "codeOrder": 9,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 7
+        },
+        {
+          "name": "age",
+          "codeOrder": 10,
+          "discriminantValue": null,
+          "type": {
+            "kind": "text"
+          },
+          "offset": 8
+        }
+      ]
+    },
+    "DownloadResults": {
+      "name": "DownloadResults",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "downloads",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "DownloadResult"
+            }
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "DownloadResultsReply": {
+      "name": "DownloadResultsReply",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 1,
+      "discriminantCount": 2,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ok",
+          "codeOrder": 0,
+          "discriminantValue": 0,
+          "type": {
+            "kind": "struct",
+            "name": "DownloadResults"
+          },
+          "offset": 0
+        },
+        {
+          "name": "err",
+          "codeOrder": 1,
+          "discriminantValue": 1,
+          "type": {
+            "kind": "struct",
+            "name": "PluginError"
+          },
+          "offset": 0
+        }
+      ]
+    },
     "EmptyReply": {
       "name": "EmptyReply",
       "file": "plugin.capnp",
@@ -5725,12 +5592,12 @@
           "offset": 10
         },
         {
-          "name": "covers",
+          "name": "mediaDownload",
           "codeOrder": 11,
           "discriminantValue": null,
           "type": {
             "kind": "interface",
-            "name": "CoverFetcher"
+            "name": "MediaDownloader"
           },
           "offset": 11
         },
@@ -9667,6 +9534,139 @@
             "kind": "text"
           },
           "offset": 1
+        }
+      ]
+    },
+    "MediaDownloadParams": {
+      "name": "MediaDownloadParams",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "urls",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 0
+        },
+        {
+          "name": "maxBytes",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "uint32"
+          },
+          "offset": 0
+        },
+        {
+          "name": "conditions",
+          "codeOrder": 2,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "struct",
+              "name": "DownloadCondition"
+            }
+          },
+          "offset": 1
+        },
+        {
+          "name": "media",
+          "codeOrder": 3,
+          "discriminantValue": null,
+          "type": {
+            "kind": "enum",
+            "name": "RemoteMedia"
+          },
+          "offset": 2
+        }
+      ]
+    },
+    "MediaDownloader.downloadMedia$Params": {
+      "name": "MediaDownloader.downloadMedia$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 2,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "params",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "MediaDownloadParams"
+          },
+          "offset": 0
+        },
+        {
+          "name": "sink",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "Destination"
+          },
+          "offset": 1
+        }
+      ]
+    },
+    "MediaDownloader.downloadMedia$Results": {
+      "name": "MediaDownloader.downloadMedia$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "DownloadResultsReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "MediaDownloader.health$Params": {
+      "name": "MediaDownloader.health$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": []
+    },
+    "MediaDownloader.health$Results": {
+      "name": "MediaDownloader.health$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "HealthReply"
+          },
+          "offset": 0
         }
       ]
     },
@@ -18380,7 +18380,7 @@
         "cli",
         "oidc",
         "metadata",
-        "covers",
+        "mediaDownload",
         "metadataFiles",
         "notifier",
         "ingress",
@@ -18951,24 +18951,6 @@
         }
       ]
     },
-    "CoverFetcher": {
-      "name": "CoverFetcher",
-      "file": "plugin.capnp",
-      "methods": [
-        {
-          "name": "health",
-          "ordinal": 0,
-          "params": "CoverFetcher.health$Params",
-          "results": "CoverFetcher.health$Results"
-        },
-        {
-          "name": "fetchCovers",
-          "ordinal": 1,
-          "params": "CoverFetcher.fetchCovers$Params",
-          "results": "CoverFetcher.fetchCovers$Results"
-        }
-      ]
-    },
     "Database": {
       "name": "Database",
       "file": "plugin.capnp",
@@ -19218,6 +19200,24 @@
           "ordinal": 3,
           "params": "KvNamespace.list$Params",
           "results": "KvNamespace.list$Results"
+        }
+      ]
+    },
+    "MediaDownloader": {
+      "name": "MediaDownloader",
+      "file": "plugin.capnp",
+      "methods": [
+        {
+          "name": "health",
+          "ordinal": 0,
+          "params": "MediaDownloader.health$Params",
+          "results": "MediaDownloader.health$Results"
+        },
+        {
+          "name": "downloadMedia",
+          "ordinal": 1,
+          "params": "MediaDownloader.downloadMedia$Params",
+          "results": "MediaDownloader.downloadMedia$Results"
         }
       ]
     },
@@ -19715,6 +19715,11 @@
       "file": "plugin.capnp",
       "value": 64
     },
+    "maxAudioBytes": {
+      "name": "maxAudioBytes",
+      "file": "plugin.capnp",
+      "value": 33554432
+    },
     "maxBatchKeys": {
       "name": "maxBatchKeys",
       "file": "plugin.capnp",
@@ -19740,25 +19745,20 @@
       "file": "plugin.capnp",
       "value": 65536
     },
-    "maxCoverBytes": {
-      "name": "maxCoverBytes",
-      "file": "plugin.capnp",
-      "value": 10485760
-    },
-    "maxCoverHeaderBytes": {
-      "name": "maxCoverHeaderBytes",
-      "file": "plugin.capnp",
-      "value": 1024
-    },
-    "maxCoverUrls": {
-      "name": "maxCoverUrls",
-      "file": "plugin.capnp",
-      "value": 32
-    },
     "maxCronBytes": {
       "name": "maxCronBytes",
       "file": "plugin.capnp",
       "value": 128
+    },
+    "maxDownloadHeaderBytes": {
+      "name": "maxDownloadHeaderBytes",
+      "file": "plugin.capnp",
+      "value": 1024
+    },
+    "maxDownloadUrls": {
+      "name": "maxDownloadUrls",
+      "file": "plugin.capnp",
+      "value": 32
     },
     "maxEventCursorBytes": {
       "name": "maxEventCursorBytes",
@@ -19774,6 +19774,11 @@
       "name": "maxIdentifierBytes",
       "file": "plugin.capnp",
       "value": 64
+    },
+    "maxImageBytes": {
+      "name": "maxImageBytes",
+      "file": "plugin.capnp",
+      "value": 10485760
     },
     "maxIngressOriginBytes": {
       "name": "maxIngressOriginBytes",
@@ -19908,7 +19913,7 @@
     "maxProvisionSecretBytes": {
       "name": "maxProvisionSecretBytes",
       "file": "plugin.capnp",
-      "value": 4096
+      "value": 1024
     },
     "maxProvisionSecrets": {
       "name": "maxProvisionSecrets",

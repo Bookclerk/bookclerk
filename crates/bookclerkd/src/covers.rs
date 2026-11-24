@@ -7,7 +7,7 @@
 //! - **Tokens.** A cover path carries the remote URL and an HMAC of it under a
 //!   key that never leaves this node, so the route only ever fetches URLs the
 //!   server itself put in a response. A forged or edited token is a 404.
-//! - **Fetching.** The first plugin that exports the `covers` entrypoint
+//! - **Fetching.** The first plugin that exports the `mediaDownload` entrypoint
 //!   downloads the image (public HTTPS hosts only, size-capped); the host
 //!   makes no request of its own.
 //! - **Processing.** The media pool's confined cover worker checks the file
@@ -171,7 +171,7 @@ pub(crate) enum CoverFailure {
     /// The token is malformed or was not issued by this node.
     UnknownToken,
     /// Nothing on this node can fetch or process covers right now (no
-    /// `covers` plugin, isolation unavailable, or no cache directory).
+    /// `media_download` plugin, isolation unavailable, or no cache directory).
     Unavailable(String),
     /// The download failed or the image was refused.
     Refused(String),
@@ -243,7 +243,7 @@ pub(crate) trait CoverBackend: Send + Sync + 'static {
     ) -> impl Future<Output = Result<CoverSet, CoverFailure>> + Send;
 }
 
-/// The production backend: the integration registry's `covers` plugins and
+/// The production backend: the integration registry's `media_download` plugins and
 /// the media pool's cover worker.
 pub(crate) struct LiveBackend {
     /// Loaded integration guests, read when a cover is fetched.
@@ -256,7 +256,7 @@ impl CoverBackend for LiveBackend {
             .integrations
             .read()
             .await
-            .cover_fetchers()
+            .media_downloaders()
             .into_iter()
             .next()
             .ok_or_else(|| CoverFailure::Unavailable("no deployed plugin fetches covers".into()))?;
@@ -268,7 +268,7 @@ impl CoverBackend for LiveBackend {
         let conditions = if conditional.contains(&true) {
             requests
                 .iter()
-                .map(|request| bookclerk_plugin_abi::CoverCondition {
+                .map(|request| bookclerk_plugin_abi::DownloadCondition {
                     if_none_match: request.validators.if_none_match().map(str::to_owned),
                     if_modified_since: request.validators.if_modified_since(),
                 })
@@ -276,14 +276,14 @@ impl CoverBackend for LiveBackend {
         } else {
             Vec::new()
         };
-        let params = bookclerk_plugin_abi::CoverFetchParams {
+        let params = bookclerk_plugin_abi::MediaDownloadParams {
             urls: requests.into_iter().map(|request| request.url).collect(),
             max_bytes,
             conditions,
             media: bookclerk_plugin_abi::RemoteMedia::Image,
         };
         let fetched = fetcher
-            .fetch_covers(params)
+            .download_media(params)
             .await
             .map_err(|err| CoverFailure::Unavailable(format!("cover fetch failed: {err}")))?;
         let received = SystemTime::now();
@@ -329,7 +329,7 @@ impl CoverBackend for LiveBackend {
 ///   `304 Not Modified` to a plain request is refused.
 /// * `received` - When the answer arrived, for upstream's freshness.
 fn download(
-    cover: bookclerk_integrations::FetchedCover,
+    cover: bookclerk_integrations::FetchedMedia,
     conditional: bool,
     received: SystemTime,
 ) -> Download {
@@ -1503,7 +1503,7 @@ pub(crate) fn load_or_create_key(path: &Path) -> std::io::Result<TokenKey> {
 ///
 /// The path comes from a `cover_path` field in a Discover or catalog
 /// response; append `/128`, `/360` or `/full`. The first request fetches the
-/// image through the `covers` plugin and re-encodes it in the confined media
+/// image through the `media_download` plugin and re-encodes it in the confined media
 /// worker; later ones are served from the node's cover cache. Responses are
 /// immutable, since a path always names the same image, and carry an `ETag`
 /// so a client revalidating anyway gets `304 Not Modified`.
@@ -1677,7 +1677,7 @@ pub(crate) async fn get_image(
 /// Serves a user's Gravatar as a 128 px JPEG through the cover service.
 ///
 /// The `gravatar_hash` of a user (from `/api/auth/me` or `/api/users`) names
-/// the picture. Bookclerk downloads it through the `covers` plugin, so the
+/// the picture. Bookclerk downloads it through the `media_download` plugin, so the
 /// browser never contacts Gravatar.
 #[utoipa::path(
     get,
@@ -2662,13 +2662,13 @@ mod tests {
         }
     }
 
-    /// A `covers` plugin that records each call's params and answers with
+    /// A `media_download` plugin that records each call's params and answers with
     /// `answers`, in order.
     struct Plugin {
         /// Params of each call.
-        calls: Mutex<Vec<bookclerk_plugin_abi::CoverFetchParams>>,
+        calls: Mutex<Vec<bookclerk_plugin_abi::MediaDownloadParams>>,
         /// What every call answers.
-        answers: Vec<bookclerk_integrations::FetchedCover>,
+        answers: Vec<bookclerk_integrations::FetchedMedia>,
     }
 
     #[async_trait::async_trait]
@@ -2702,14 +2702,14 @@ mod tests {
             Ok(bookclerk_integrations::EventResult::Ack)
         }
 
-        fn supports_covers(&self) -> bool {
+        fn supports_media_download(&self) -> bool {
             true
         }
 
-        async fn fetch_covers(
+        async fn download_media(
             &self,
-            params: bookclerk_plugin_abi::CoverFetchParams,
-        ) -> bookclerk_integrations::Result<Vec<bookclerk_integrations::FetchedCover>> {
+            params: bookclerk_plugin_abi::MediaDownloadParams,
+        ) -> bookclerk_integrations::Result<Vec<bookclerk_integrations::FetchedMedia>> {
             lock(&self.calls).push(params);
             Ok(self.answers.clone())
         }
@@ -2717,7 +2717,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_live_backend_sends_conditions_only_when_it_has_them() {
-        use bookclerk_integrations::{FetchedCover, IntegrationRegistry};
+        use bookclerk_integrations::{FetchedMedia, IntegrationRegistry};
         let empty = LiveBackend {
             integrations: Arc::new(tokio::sync::RwLock::new(IntegrationRegistry::new())),
         };
@@ -2731,13 +2731,13 @@ mod tests {
         let plugin = Arc::new(Plugin {
             calls: Mutex::default(),
             answers: vec![
-                FetchedCover {
+                FetchedMedia {
                     not_modified: true,
-                    ..FetchedCover::default()
+                    ..FetchedMedia::default()
                 },
-                FetchedCover {
+                FetchedMedia {
                     not_modified: true,
-                    ..FetchedCover::default()
+                    ..FetchedMedia::default()
                 },
             ],
         });
@@ -2783,7 +2783,7 @@ mod tests {
         );
         assert_eq!(
             conditions[1],
-            bookclerk_plugin_abi::CoverCondition::default()
+            bookclerk_plugin_abi::DownloadCondition::default()
         );
         assert!(matches!(revalidated[0], Download::NotModified { .. }));
         assert!(matches!(revalidated[1], Download::Failed(_)));
@@ -2792,18 +2792,18 @@ mod tests {
 
     #[test]
     fn plugin_answers_become_downloads() {
-        use bookclerk_integrations::{CoverHeaders, FetchedCover};
+        use bookclerk_integrations::{CoverHeaders, FetchedMedia};
         let received = SystemTime::now();
         let headers = CoverHeaders {
             etag: Some("\"a\"".into()),
             cache_control: Some("max-age=86400".into()),
             ..CoverHeaders::default()
         };
-        let body = FetchedCover {
+        let body = FetchedMedia {
             url: "https://a".into(),
             body: Some(vec![1]),
             headers: headers.clone(),
-            ..FetchedCover::default()
+            ..FetchedMedia::default()
         };
         let Download::Body { bytes, policy } = download(body, false, received) else {
             panic!("a body");
@@ -2816,10 +2816,10 @@ mod tests {
                 fresh_for: Duration::from_secs(86400)
             }
         );
-        let unchanged = FetchedCover {
+        let unchanged = FetchedMedia {
             not_modified: true,
             headers,
-            ..FetchedCover::default()
+            ..FetchedMedia::default()
         };
         assert!(matches!(
             download(unchanged.clone(), true, received),
@@ -2829,16 +2829,16 @@ mod tests {
             download(unchanged, false, received),
             Download::Failed(_)
         ));
-        let failed = FetchedCover {
+        let failed = FetchedMedia {
             error: Some("HTTP 404".into()),
-            ..FetchedCover::default()
+            ..FetchedMedia::default()
         };
         assert_eq!(
             download(failed, false, received),
             Download::Failed("HTTP 404".into())
         );
         assert_eq!(
-            download(FetchedCover::default(), false, received),
+            download(FetchedMedia::default(), false, received),
             Download::Failed("no body".into())
         );
         assert_eq!(Refresh::Never.cache_control(), IMMUTABLE);

@@ -46,7 +46,7 @@ extending its base:
 | `entrypoints = ["cli"]` | `Cli` | `CliEntrypoint` |
 | `entrypoints = ["oidc"]` | `Oidc` | `OidcEntrypoint` |
 | `entrypoints = ["metadata"]` | `Metadata` | `MetadataEntrypoint` |
-| `entrypoints = ["covers"]` | `Covers` | `CoverEntrypoint` |
+| `entrypoints = ["mediaDownload"]` | `MediaDownload` | `MediaDownloadEntrypoint` |
 | `entrypoints = ["metadataFiles"]` | `MetadataFiles` | `MetadataFilesEntrypoint` |
 | `entrypoints = ["notifier"]` | `Notifier` | `NotifierEntrypoint` |
 | `entrypoints = ["ingress"]` | `Ingress` | `IngressEntrypoint` |

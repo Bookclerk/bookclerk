@@ -1,9 +1,9 @@
 api_version = 3
-id = "covers_fixture"
-name = "Cover sink fixture"
+id = "media_download_fixture"
+name = "Media download sink fixture"
 version = "1.0.0"
 runtime = "workerd"
-entrypoints = ["covers"]
+entrypoints = ["mediaDownload"]
 
 [workerd]
 compatibility_date = "2026-08-01"

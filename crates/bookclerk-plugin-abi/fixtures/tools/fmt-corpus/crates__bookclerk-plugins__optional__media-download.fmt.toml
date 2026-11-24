@@ -1,9 +1,9 @@
 api_version = 3
-id = "covers"
-name = "Cover images"
+id = "media_download"
+name = "Media downloads"
 version = "0.1.0"
 runtime = "workerd"
-entrypoints = ["covers"]
+entrypoints = ["mediaDownload"]
 
 [workerd]
 compatibility_date = "2026-08-01"

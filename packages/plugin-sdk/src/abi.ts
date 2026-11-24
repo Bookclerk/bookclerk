@@ -66,18 +66,28 @@ export const MAX_EVENT_PAYLOAD_BYTES = 65536 as const;
  */
 export const MAX_KV_VALUE_BYTES = 1048576 as const;
 
-/** Most URLs in one `CoverFetcher.fetchCovers` call. */
-export const MAX_COVER_URLS = 32 as const;
-
-/** Largest image body `CoverFetcher.fetchCovers` may return for one URL. */
-export const MAX_COVER_BYTES = 10485760 as const;
+/** Most URLs in one `MediaDownloader.downloadMedia` call. */
+export const MAX_DOWNLOAD_URLS = 32 as const;
 
 /**
- * Longest cache header value, in bytes, `CoverFetcher.fetchCovers` carries in
+ * Largest image body `MediaDownloader.downloadMedia` may return for one URL
+ * (`media = image`).
+ */
+export const MAX_IMAGE_BYTES = 10485760 as const;
+
+/**
+ * Largest audio body `MediaDownloader.downloadMedia` may return for one URL
+ * (`media = audio`): a storefront's sample of up to ten minutes at a store's
+ * own bitrate.
+ */
+export const MAX_AUDIO_BYTES = 33554432 as const;
+
+/**
+ * Longest cache header value, in bytes, `MediaDownloader.downloadMedia` carries in
  * either direction (a condition the host sends, a header the server sent).
  * The host ignores a longer header the fetcher returns.
  */
-export const MAX_COVER_HEADER_BYTES = 1024 as const;
+export const MAX_DOWNLOAD_HEADER_BYTES = 1024 as const;
 
 /**
  * Largest metadata file `MetadataFiles.parse` reads and `MetadataFiles.render`
@@ -370,7 +380,7 @@ export type PluginErrorCode = (typeof PLUGIN_ERROR_CODES)[number];
  *
  * Ordinal-ordered `Entrypoint` wire names (index = Cap'n Proto ordinal).
  */
-export const ENTRYPOINTS = ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles", "notifier", "ingress", "ai", "provisioning"] as const;
+export const ENTRYPOINTS = ["storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "mediaDownload", "metadataFiles", "notifier", "ingress", "ai", "provisioning"] as const;
 
 /** Union of `ENTRYPOINTS` wire names. */
 export type Entrypoint = (typeof ENTRYPOINTS)[number];
@@ -569,7 +579,7 @@ export const INVOCATION_PURPOSES = ["serve", "provision"] as const;
 export type InvocationPurpose = (typeof INVOCATION_PURPOSES)[number];
 
 /**
- * The kind of public media `CoverFetcher.fetchCovers` downloads.
+ * The kind of public media `MediaDownloader.downloadMedia` downloads.
  *
  * Ordinal-ordered `RemoteMedia` wire names (index = Cap'n Proto ordinal).
  */

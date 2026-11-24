@@ -842,9 +842,9 @@ def _write_entrypoints(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("metadata") is not None:
         if v["metadata"] is not None:
             s.set_cap(10, caps.export_cap(v["metadata"]))
-    if v.get("covers") is not None:
-        if v["covers"] is not None:
-            s.set_cap(11, caps.export_cap(v["covers"]))
+    if v.get("mediaDownload") is not None:
+        if v["mediaDownload"] is not None:
+            s.set_cap(11, caps.export_cap(v["mediaDownload"]))
     if v.get("socketHandler") is not None:
         if v["socketHandler"] is not None:
             s.set_cap(12, caps.export_cap(v["socketHandler"]))
@@ -904,9 +904,9 @@ def _read_entrypoints(s: _StructReader, caps: _CapTable) -> Any:
     metadata = caps.import_cap(s.get_cap_index(10))
     if not (metadata is None):
         out["metadata"] = metadata
-    covers = caps.import_cap(s.get_cap_index(11))
-    if not (covers is None):
-        out["covers"] = covers
+    media_download = caps.import_cap(s.get_cap_index(11))
+    if not (media_download is None):
+        out["mediaDownload"] = media_download
     socket_handler = caps.import_cap(s.get_cap_index(12))
     if not (socket_handler is None):
         out["socketHandler"] = socket_handler
@@ -4943,36 +4943,36 @@ _metadata_chapters_reply_codec = _Codec(1, 1, _write_metadata_chapters_reply, _r
 """Wire codec for ``MetadataChaptersReply`` (1 data words, 1 pointers)."""
 
 
-def _write_cover_fetch_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_media_download_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text_list(0, v["urls"])
     s.set_u32(0, v["maxBytes"])
     items = s.init_struct_list(1, len(v["conditions"]), 0, 2)
     for item, elem in zip(items, v["conditions"], strict=True):
-        _cover_condition_codec.write(item, elem, caps)
+        _download_condition_codec.write(item, elem, caps)
     s.set_u16(2, _ord(A.REMOTE_MEDIAS, v["media"], "RemoteMedia"))
 
 
-def _read_cover_fetch_params(s: _StructReader, caps: _CapTable) -> Any:
+def _read_media_download_params(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "urls": s.get_text_list(0),
         "maxBytes": s.get_u32(0),
-        "conditions": [_cover_condition_codec.read(item, caps) for item in s.get_struct_list(1, 0, 2)],
+        "conditions": [_download_condition_codec.read(item, caps) for item in s.get_struct_list(1, 0, 2)],
         "media": _from_ord(A.REMOTE_MEDIAS, s.get_u16(2), "RemoteMedia"),
     }
 
 
-_cover_fetch_params_codec = _Codec(1, 2, _write_cover_fetch_params, _read_cover_fetch_params)
-"""Wire codec for ``CoverFetchParams`` (1 data words, 2 pointers)."""
+_media_download_params_codec = _Codec(1, 2, _write_media_download_params, _read_media_download_params)
+"""Wire codec for ``MediaDownloadParams`` (1 data words, 2 pointers)."""
 
 
-def _write_cover_condition(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_download_condition(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("ifNoneMatch") is not None:
         s.set_text(0, v["ifNoneMatch"])
     if v.get("ifModifiedSince") is not None:
         s.set_text(1, v["ifModifiedSince"])
 
 
-def _read_cover_condition(s: _StructReader, caps: _CapTable) -> Any:
+def _read_download_condition(s: _StructReader, caps: _CapTable) -> Any:
     out: dict[str, Any] = {
     }
     if_none_match = s.get_text(0)
@@ -4984,11 +4984,11 @@ def _read_cover_condition(s: _StructReader, caps: _CapTable) -> Any:
     return out
 
 
-_cover_condition_codec = _Codec(0, 2, _write_cover_condition, _read_cover_condition)
-"""Wire codec for ``CoverCondition`` (0 data words, 2 pointers)."""
+_download_condition_codec = _Codec(0, 2, _write_download_condition, _read_download_condition)
+"""Wire codec for ``DownloadCondition`` (0 data words, 2 pointers)."""
 
 
-def _write_cover_image(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_download_result(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     s.set_text(0, v["url"])
     s.set_bool(0, v["stored"])
     if v.get("contentType") is not None:
@@ -5010,7 +5010,7 @@ def _write_cover_image(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
         s.set_text(8, v["age"])
 
 
-def _read_cover_image(s: _StructReader, caps: _CapTable) -> Any:
+def _read_download_result(s: _StructReader, caps: _CapTable) -> Any:
     out: dict[str, Any] = {
         "url": s.get_text(0),
         "stored": s.get_bool(0),
@@ -5043,49 +5043,49 @@ def _read_cover_image(s: _StructReader, caps: _CapTable) -> Any:
     return out
 
 
-_cover_image_codec = _Codec(1, 9, _write_cover_image, _read_cover_image)
-"""Wire codec for ``CoverImage`` (1 data words, 9 pointers)."""
+_download_result_codec = _Codec(1, 9, _write_download_result, _read_download_result)
+"""Wire codec for ``DownloadResult`` (1 data words, 9 pointers)."""
 
 
-def _write_cover_images(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
-    items = s.init_struct_list(0, len(v["images"]), 1, 9)
-    for item, elem in zip(items, v["images"], strict=True):
-        _cover_image_codec.write(item, elem, caps)
+def _write_download_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+    items = s.init_struct_list(0, len(v["downloads"]), 1, 9)
+    for item, elem in zip(items, v["downloads"], strict=True):
+        _download_result_codec.write(item, elem, caps)
 
 
-def _read_cover_images(s: _StructReader, caps: _CapTable) -> Any:
+def _read_download_results(s: _StructReader, caps: _CapTable) -> Any:
     return {
-        "images": [_cover_image_codec.read(item, caps) for item in s.get_struct_list(0, 1, 9)],
+        "downloads": [_download_result_codec.read(item, caps) for item in s.get_struct_list(0, 1, 9)],
     }
 
 
-_cover_images_codec = _Codec(0, 1, _write_cover_images, _read_cover_images)
-"""Wire codec for ``CoverImages`` (0 data words, 1 pointers)."""
+_download_results_codec = _Codec(0, 1, _write_download_results, _read_download_results)
+"""Wire codec for ``DownloadResults`` (0 data words, 1 pointers)."""
 
 
-def _write_cover_images_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_download_results_reply(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     kind = v["kind"]
     if kind == "ok":
         s.set_u16(0, 0)
-        _cover_images_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
+        _download_results_codec.write(s.init_struct(0, 0, 1), v["value"], caps)
     elif kind == "err":
         s.set_u16(0, 1)
         _plugin_error_codec.write(s.init_struct(0, 0, 3), v["value"], caps)
     else:
-        raise ValueError(f"unknown CoverImagesReply union member: {kind}")
+        raise ValueError(f"unknown DownloadResultsReply union member: {kind}")
 
 
-def _read_cover_images_reply(s: _StructReader, caps: _CapTable) -> Any:
+def _read_download_results_reply(s: _StructReader, caps: _CapTable) -> Any:
     disc = s.get_u16(0)
     if disc == 0:
-        return {"kind": "ok", "value": _cover_images_codec.read(s.get_struct(0, 0, 1), caps)}
+        return {"kind": "ok", "value": _download_results_codec.read(s.get_struct(0, 0, 1), caps)}
     elif disc == 1:
         return {"kind": "err", "value": _plugin_error_codec.read(s.get_struct(0, 0, 3), caps)}
-    raise ValueError(f"unknown CoverImagesReply union member: {disc}")
+    raise ValueError(f"unknown DownloadResultsReply union member: {disc}")
 
 
-_cover_images_reply_codec = _Codec(1, 1, _write_cover_images_reply, _read_cover_images_reply)
-"""Wire codec for ``CoverImagesReply`` (1 data words, 1 pointers)."""
+_download_results_reply_codec = _Codec(1, 1, _write_download_results_reply, _read_download_results_reply)
+"""Wire codec for ``DownloadResultsReply`` (1 data words, 1 pointers)."""
 
 
 def _write_metadata_file_record(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
@@ -9971,44 +9971,44 @@ _metadata_provider_chapters_results_codec = _Codec(0, 1, _write_metadata_provide
 """Wire codec for ``MetadataProviderChaptersResults`` (0 data words, 1 pointers)."""
 
 
-def _write_cover_fetcher_health_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_media_downloader_health_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     pass
 
 
-def _read_cover_fetcher_health_params(s: _StructReader, caps: _CapTable) -> Any:
+def _read_media_downloader_health_params(s: _StructReader, caps: _CapTable) -> Any:
     return {}
 
 
-_cover_fetcher_health_params_codec = _Codec(0, 0, _write_cover_fetcher_health_params, _read_cover_fetcher_health_params)
-"""Wire codec for ``CoverFetcherHealthParams`` (0 data words, 0 pointers)."""
+_media_downloader_health_params_codec = _Codec(0, 0, _write_media_downloader_health_params, _read_media_downloader_health_params)
+"""Wire codec for ``MediaDownloaderHealthParams`` (0 data words, 0 pointers)."""
 
 
-def _write_cover_fetcher_health_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_media_downloader_health_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("result") is not None:
         _health_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
-def _read_cover_fetcher_health_results(s: _StructReader, caps: _CapTable) -> Any:
+def _read_media_downloader_health_results(s: _StructReader, caps: _CapTable) -> Any:
     return {
         "result": _health_reply_codec.read(s.get_struct(0, 1, 1), caps),
     }
 
 
-_cover_fetcher_health_results_codec = _Codec(0, 1, _write_cover_fetcher_health_results, _read_cover_fetcher_health_results)
-"""Wire codec for ``CoverFetcherHealthResults`` (0 data words, 1 pointers)."""
+_media_downloader_health_results_codec = _Codec(0, 1, _write_media_downloader_health_results, _read_media_downloader_health_results)
+"""Wire codec for ``MediaDownloaderHealthResults`` (0 data words, 1 pointers)."""
 
 
-def _write_cover_fetcher_fetch_covers_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_media_downloader_download_media_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("params") is not None:
-        _cover_fetch_params_codec.write(s.init_struct(0, 1, 2), v["params"], caps)
+        _media_download_params_codec.write(s.init_struct(0, 1, 2), v["params"], caps)
     if v.get("sink") is not None:
         if v["sink"] is not None:
             s.set_cap(1, caps.export_cap(v["sink"]))
 
 
-def _read_cover_fetcher_fetch_covers_params(s: _StructReader, caps: _CapTable) -> Any:
+def _read_media_downloader_download_media_params(s: _StructReader, caps: _CapTable) -> Any:
     out: dict[str, Any] = {
-        "params": _cover_fetch_params_codec.read(s.get_struct(0, 1, 2), caps),
+        "params": _media_download_params_codec.read(s.get_struct(0, 1, 2), caps),
     }
     sink = caps.import_cap(s.get_cap_index(1))
     if not (sink is None):
@@ -10016,23 +10016,23 @@ def _read_cover_fetcher_fetch_covers_params(s: _StructReader, caps: _CapTable) -
     return out
 
 
-_cover_fetcher_fetch_covers_params_codec = _Codec(0, 2, _write_cover_fetcher_fetch_covers_params, _read_cover_fetcher_fetch_covers_params)
-"""Wire codec for ``CoverFetcherFetchCoversParams`` (0 data words, 2 pointers)."""
+_media_downloader_download_media_params_codec = _Codec(0, 2, _write_media_downloader_download_media_params, _read_media_downloader_download_media_params)
+"""Wire codec for ``MediaDownloaderDownloadMediaParams`` (0 data words, 2 pointers)."""
 
 
-def _write_cover_fetcher_fetch_covers_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
+def _write_media_downloader_download_media_results(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:
     if v.get("result") is not None:
-        _cover_images_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
+        _download_results_reply_codec.write(s.init_struct(0, 1, 1), v["result"], caps)
 
 
-def _read_cover_fetcher_fetch_covers_results(s: _StructReader, caps: _CapTable) -> Any:
+def _read_media_downloader_download_media_results(s: _StructReader, caps: _CapTable) -> Any:
     return {
-        "result": _cover_images_reply_codec.read(s.get_struct(0, 1, 1), caps),
+        "result": _download_results_reply_codec.read(s.get_struct(0, 1, 1), caps),
     }
 
 
-_cover_fetcher_fetch_covers_results_codec = _Codec(0, 1, _write_cover_fetcher_fetch_covers_results, _read_cover_fetcher_fetch_covers_results)
-"""Wire codec for ``CoverFetcherFetchCoversResults`` (0 data words, 1 pointers)."""
+_media_downloader_download_media_results_codec = _Codec(0, 1, _write_media_downloader_download_media_results, _read_media_downloader_download_media_results)
+"""Wire codec for ``MediaDownloaderDownloadMediaResults`` (0 data words, 1 pointers)."""
 
 
 def _write_metadata_files_health_params(s: _CapnpStruct, v: Any, caps: _CapTable) -> None:

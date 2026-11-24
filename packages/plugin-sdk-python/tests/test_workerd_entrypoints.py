@@ -12,7 +12,7 @@ from bookclerk_plugin_sdk.workerd import (
     AiEntrypoint,
     BookclerkEntrypoint,
     CliEntrypoint,
-    CoverEntrypoint,
+    MediaDownloadEntrypoint,
     DatabaseAdapterEntrypoint,
     EventBatch,
     EventMessage,
@@ -499,18 +499,18 @@ class DatabaseAdapterSessionTests(unittest.IsolatedAsyncioTestCase):
             await metadata.bookclerkInvoke({}, "search", {"title": "Dune"})
         self.assertEqual(ctx.exception.code, "unsupported")
 
-    async def test_cover_defaults_and_dispatch(self) -> None:
-        covers = CoverEntrypoint()
-        self.assertEqual(await covers.health(), {"ok": True, "detail": ""})
+    async def test_media_download_defaults_and_dispatch(self) -> None:
+        downloader = MediaDownloadEntrypoint()
+        self.assertEqual(await downloader.health(), {"ok": True, "detail": ""})
         with self.assertRaises(PluginError) as ctx:
-            await covers.fetchCovers({"urls": [], "maxBytes": 1}, object())
+            await downloader.downloadMedia({"urls": [], "maxBytes": 1}, object())
         self.assertEqual(ctx.exception.code, "unsupported")
 
-        class Covers(CoverEntrypoint):
-            async def fetchCovers(self, params: dict, sink: object) -> list[dict]:
+        class MediaDownload(MediaDownloadEntrypoint):
+            async def downloadMedia(self, params: dict, sink: object) -> list[dict]:
                 return [{"url": u, "stored": False, "error": repr(sink)} for u in params["urls"]]
 
-        images = await Covers().bookclerkInvoke({}, "fetchCovers", {"urls": ["https://a/"]}, "sink")
+        images = await MediaDownload().bookclerkInvoke({}, "downloadMedia", {"urls": ["https://a/"]}, "sink")
         self.assertEqual(images, [{"url": "https://a/", "stored": False, "error": "'sink'"}])
 
     async def test_provisioning_defaults_and_dispatch(self) -> None:

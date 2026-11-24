@@ -64,14 +64,22 @@ MAX_KV_VALUE_BYTES: int = 1048576
 its own cap but never raise it past this.
 """
 
-MAX_COVER_URLS: int = 32
-"""Most URLs in one `CoverFetcher.fetchCovers` call."""
+MAX_DOWNLOAD_URLS: int = 32
+"""Most URLs in one `MediaDownloader.downloadMedia` call."""
 
-MAX_COVER_BYTES: int = 10485760
-"""Largest image body `CoverFetcher.fetchCovers` may return for one URL."""
+MAX_IMAGE_BYTES: int = 10485760
+"""Largest image body `MediaDownloader.downloadMedia` may return for one URL
+(`media = image`).
+"""
 
-MAX_COVER_HEADER_BYTES: int = 1024
-"""Longest cache header value, in bytes, `CoverFetcher.fetchCovers` carries in
+MAX_AUDIO_BYTES: int = 33554432
+"""Largest audio body `MediaDownloader.downloadMedia` may return for one URL
+(`media = audio`): a storefront's sample of up to ten minutes at a store's
+own bitrate.
+"""
+
+MAX_DOWNLOAD_HEADER_BYTES: int = 1024
+"""Longest cache header value, in bytes, `MediaDownloader.downloadMedia` carries in
 either direction (a condition the host sends, a header the server sent).
 The host ignores a longer header the fetcher returns.
 """
@@ -327,7 +335,7 @@ code.
 Wire strings of ``PluginErrorCode`` in ordinal order (snake_case ``Text`` codes).
 """
 
-ENTRYPOINTS: tuple[str, ...] = ("storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "covers", "metadataFiles", "notifier", "ingress", "ai", "provisioning")
+ENTRYPOINTS: tuple[str, ...] = ("storefront", "storage", "databaseAdapter", "remoteLibrary", "cli", "oidc", "metadata", "mediaDownload", "metadataFiles", "notifier", "ingress", "ai", "provisioning")
 """Named entrypoint a plugin exports (Cloudflare Workers named-entrypoint
 analogue). Each value is a capability the host calls over RPC; triggers on
 the default entrypoint (`event`, `job`) are declared separately.
@@ -457,7 +465,7 @@ Ordinal-ordered ``InvocationPurpose`` wire names (index = Cap'n Proto ordinal).
 """
 
 REMOTE_MEDIAS: tuple[str, ...] = ("image", "audio")
-"""The kind of public media `CoverFetcher.fetchCovers` downloads.
+"""The kind of public media `MediaDownloader.downloadMedia` downloads.
 
 Ordinal-ordered ``RemoteMedia`` wire names (index = Cap'n Proto ordinal).
 """
@@ -571,9 +579,10 @@ __all__ = [
     "MAX_CONFIG_PAYLOAD_BYTES",
     "MAX_EVENT_PAYLOAD_BYTES",
     "MAX_KV_VALUE_BYTES",
-    "MAX_COVER_URLS",
-    "MAX_COVER_BYTES",
-    "MAX_COVER_HEADER_BYTES",
+    "MAX_DOWNLOAD_URLS",
+    "MAX_IMAGE_BYTES",
+    "MAX_AUDIO_BYTES",
+    "MAX_DOWNLOAD_HEADER_BYTES",
     "MAX_METADATA_FILE_BYTES",
     "MAX_METADATA_FILE_DESCRIPTION_BYTES",
     "MAX_METADATA_FILE_TEXT_BYTES",

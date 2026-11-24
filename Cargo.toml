@@ -76,7 +76,7 @@ default-members = [
 exclude = [
     "third_party/audible-rs",
     "fuzz",
-    "crates/bookclerk-plugins/optional/covers",
+    "crates/bookclerk-plugins/optional/media-download",
     "crates/bookclerk-plugins/optional/ingress-cloudflare",
     "crates/bookclerk-plugins/optional/ingress-cloudflare-dns",
     "crates/bookclerk-plugins/optional/ingress-cloudflare-tunnel",

@@ -24,11 +24,16 @@
 //!   record (`CatalogHit.sampleUrl`). The title-sample route asks the
 //!   stores that list a title, signs the URL into a same-origin path with
 //!   this node's own key (as cover paths are signed), and only a path this
-//!   node issued is fetched. The first `covers` plugin downloads it with
+//!   node issued is fetched. The first `mediaDownload` plugin downloads it with
 //!   `media = audio` (public `https` hosts only, at most
-//!   [`bookclerk_plugin_abi::MAX_COVER_BYTES`]); the host makes no request
+//!   [`bookclerk_plugin_abi::MAX_AUDIO_BYTES`]); the host makes no request
 //!   of its own. A store sample is cut to at most
 //!   [`bookclerk_media::pcm_wire::MAX_SAMPLE_MS`].
+//! - **Streaming.** A sample not yet kept is answered as the worker
+//!   encodes it ([`bookclerk_media::MediaPool::stream_sample`]): the
+//!   response starts with the first encoded bytes, so a player starts
+//!   within a second instead of waiting for the whole cut. The cut runs to
+//!   its end and is kept even when the listener leaves early.
 //! - **Cache.** Encoded samples are kept in `cache/samples/`, named by a
 //!   digest of what they were cut from (for an edition, the files the
 //!   playback plan lists), so a changed file gets a new sample. The least
@@ -37,6 +42,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::SystemTime;
 
@@ -48,9 +54,10 @@ use axum::Json;
 use bookclerk_cover::token::{self, is_coverable, TokenKey};
 use bookclerk_library::control_plane::plan_playback;
 use bookclerk_library::COPY_RUNTIME_TOLERANCE_MS;
-use bookclerk_media::{ByteSpan, MediaError, RangeSource};
+use bookclerk_media::{ByteSpan, MediaError, RangeSource, SampleStream};
 use bookclerk_node_proto::{parse_copy_range, CopyRange};
 use bookclerk_storage::{ByteRange, StorageBackend};
+use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
@@ -102,7 +109,7 @@ fn refuse(status: StatusCode, message: &str) -> SampleError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SampleFailure {
     /// Nothing on this node can make it right now: no confined worker, no
-    /// `covers` plugin, or storage that did not answer.
+    /// `mediaDownload` plugin, or storage that did not answer.
     Unavailable(String),
     /// The audio could not be fetched or decoded.
     Refused(String),
@@ -164,6 +171,27 @@ pub(crate) fn is_sample_path(path: &str) -> bool {
     path.strip_prefix("/api/library/editions/")
         .and_then(|rest| rest.strip_suffix("/sample"))
         .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
+/// The encoded bytes of a sample being made, in order; an error ends it.
+pub(crate) type SampleChunks =
+    Pin<Box<dyn Stream<Item = Result<Vec<u8>, SampleFailure>> + Send + 'static>>;
+
+/// A sample to answer with.
+pub(crate) enum SampleBody {
+    /// The whole sample, from the cache.
+    Whole(Vec<u8>),
+    /// The sample as it is made: bytes in order, and an error that ends
+    /// the answer early when the cut fails part way.
+    Live(tokio::sync::mpsc::UnboundedReceiver<std::io::Result<Vec<u8>>>),
+}
+
+/// A worker's cut as [`SampleChunks`].
+fn worker_chunks(stream: SampleStream) -> SampleChunks {
+    Box::pin(futures::stream::unfold(stream, |mut stream| async move {
+        let next = stream.next_bytes().await?;
+        Some((next.map_err(SampleFailure::from), stream))
+    }))
 }
 
 /// Signs store sample URLs into same-origin paths and keeps encoded
@@ -235,52 +263,79 @@ impl SampleService {
     }
 
     /// The sample `cache_key` names: the cached copy, or a new one from
-    /// `make`, kept for next time.
+    /// `make`, answered as it is made and kept for next time.
+    ///
+    /// The answer waits for the first bytes, so a sample that cannot be
+    /// made at all fails here with a status. After that the bytes are
+    /// handed on as they come; the cut runs to its end, and is kept, even
+    /// when the listener stops reading. A cut that fails part way ends the
+    /// answer with an error and keeps nothing. Requests for the same sample
+    /// meanwhile wait for it to be kept, then read the cache.
     ///
     /// # Errors
     ///
-    /// What `make` returns.
+    /// What `make` returns, what the cut returns before its first bytes,
+    /// and [`SampleFailure::Refused`] for a sample with no bytes.
     pub(crate) async fn sample<F, Fut>(
         &self,
         cache_key: &str,
         make: F,
-    ) -> Result<Vec<u8>, SampleFailure>
+    ) -> Result<SampleBody, SampleFailure>
     where
         F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<Vec<u8>, SampleFailure>>,
+        Fut: std::future::Future<Output = Result<SampleChunks, SampleFailure>>,
     {
-        let Some(dir) = self.dir.as_ref() else {
-            return make().await;
-        };
         let name = format!(
             "{}.{SAMPLE_EXTENSION}",
             hex::encode(Sha256::digest(cache_key.as_bytes()))
         );
-        let path = dir.join(&name);
-        if let Some(bytes) = read_cached(&path).await {
-            return Ok(bytes);
+        let path = self.dir.as_ref().map(|dir| dir.join(&name));
+        if let Some(bytes) = cached(path.as_deref()).await {
+            return Ok(SampleBody::Whole(bytes));
         }
         let flight = self.board(&name).await;
         // Another request may have made it while this one waited.
-        if let Some(bytes) = read_cached(&path).await {
-            return Ok(bytes);
+        if let Some(bytes) = cached(path.as_deref()).await {
+            return Ok(SampleBody::Whole(bytes));
         }
-        let made = make().await;
-        if let Ok(bytes) = &made {
-            // The write owns the sample's lock until the file is in place
-            // (or the write failed), even if this request is cancelled
-            // meanwhile, so a waiter never cuts the same sample again.
-            keep(
-                dir,
-                &name,
-                bytes,
-                self.budget,
-                Arc::clone(&self.publishing),
-                flight,
-            )
-            .await;
-        }
-        made
+        let mut chunks = make().await?;
+        let first = match chunks.next().await {
+            Some(Ok(bytes)) => bytes,
+            Some(Err(failure)) => return Err(failure),
+            None => return Err(SampleFailure::Refused("the sample is empty".into())),
+        };
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let dir = self.dir.clone();
+        let budget = self.budget;
+        let publishing = Arc::clone(&self.publishing);
+        tokio::spawn(async move {
+            let mut whole = first.clone();
+            // A listener that left only stops the sends; the cut goes on
+            // for the cache.
+            let _ = tx.send(Ok(first));
+            while let Some(next) = chunks.next().await {
+                match next {
+                    Ok(bytes) => {
+                        whole.extend_from_slice(&bytes);
+                        let _ = tx.send(Ok(bytes));
+                    }
+                    Err(failure) => {
+                        tracing::info!(failure = ?failure, "a sample failed part way");
+                        let _ = tx.send(Err(std::io::Error::other("the sample failed")));
+                        return;
+                    }
+                }
+            }
+            drop(tx);
+            drop(chunks);
+            if let Some(dir) = dir {
+                // The write owns the sample's lock until the file is in
+                // place (or the write failed), so a waiter never cuts the
+                // same sample again.
+                keep(&dir, &name, &whole, budget, publishing, flight).await;
+            }
+        });
+        Ok(SampleBody::Live(rx))
     }
 
     /// This request's share of the lock of `name`, registering the lock
@@ -397,6 +452,11 @@ async fn keep(
         trim(&dir, budget);
     })
     .await;
+}
+
+/// The cached sample at `path`, when there is a cache and it holds one.
+async fn cached(path: Option<&std::path::Path>) -> Option<Vec<u8>> {
+    read_cached(path?).await
 }
 
 /// Reads a cached sample and marks it served (its modification time), or
@@ -533,6 +593,25 @@ pub(crate) fn sample_start(chapter_starts: &[u64]) -> u64 {
     }
 }
 
+/// A sample as a response: a kept one whole or by range
+/// ([`mp3_response`]), a live one as it is made. A live answer has no
+/// length yet, so it ignores `Range` and answers the whole sample.
+fn sample_response(body: SampleBody, range: Option<&HeaderValue>, cache: &'static str) -> Response {
+    let rx = match body {
+        SampleBody::Whole(bytes) => return mp3_response(bytes, range, cache),
+        SampleBody::Live(rx) => rx,
+    };
+    let stream = futures::stream::unfold(rx, |mut rx| async move {
+        let next = rx.recv().await?;
+        Some((next, rx))
+    });
+    let mut response = Response::new(Body::from_stream(stream));
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("audio/mpeg"));
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
+    response
+}
+
 /// An MP3 sample as a response: whole, or the one byte range a `Range`
 /// header asks for.
 fn mp3_response(bytes: Vec<u8>, range: Option<&HeaderValue>, cache: &'static str) -> Response {
@@ -585,10 +664,10 @@ fn mp3_response(bytes: Vec<u8>, range: Option<&HeaderValue>, cache: &'static str
     path = "/api/library/editions/{id}/sample",
     params(
         ("id" = String, Path, description = "Edition id (an `id` in a work's `editions`)."),
-        ("Range" = Option<String>, Header, description = "One byte range (`bytes=A-B`, `bytes=A-` or `bytes=-N`); anything else reads the whole sample."),
+        ("Range" = Option<String>, Header, description = "One byte range (`bytes=A-B`, `bytes=A-` or `bytes=-N`) of a sample already kept; anything else, or a sample still being cut, reads the whole sample."),
     ),
     responses(
-        (status = 200, description = "The sample: mono MP3, five minutes or the rest of the first file.", body = crate::openapi::BinaryBody, content_type = "audio/mpeg"),
+        (status = 200, description = "The sample: mono MP3, five minutes or the rest of the first file. A sample not kept yet streams as the media worker encodes it, without `Content-Length`.", body = crate::openapi::BinaryBody, content_type = "audio/mpeg"),
         (status = 206, description = "The requested byte range, with `Content-Range`.", body = crate::openapi::BinaryBody, content_type = "audio/mpeg"),
         (status = 401, description = "The session ended.", body = ErrorMessage, example = json!({"error": "sign in again"})),
         (status = 403, description = "The session has no library user.", body = ErrorMessage, example = json!({"error": "this session has no library user to keep listening state for"})),
@@ -661,38 +740,38 @@ pub(crate) async fn get_edition_sample(
         .find(|destination| destination.id == destination_id)
         .map(|destination| destination.backend)
         .ok_or_else(no_sample)?;
-    let bytes = state
+    let body = state
         .samples
         .sample(&cache_key, || cut_stored(backend, track_key, start_ms))
         .await
         .map_err(|failure| failure.answer(ROUTE))?;
-    Ok(mp3_response(
-        bytes,
+    Ok(sample_response(
+        body,
         headers.get(header::RANGE),
         EDITION_CACHE_CONTROL,
     ))
 }
 
-/// Cuts an edition's sample from its file on a destination.
+/// Starts cutting an edition's sample from its file on a destination.
 async fn cut_stored(
     backend: Box<dyn StorageBackend>,
     key: String,
     start_ms: u64,
-) -> Result<Vec<u8>, SampleFailure> {
+) -> Result<SampleChunks, SampleFailure> {
     let size = match backend.head(&key).await {
         Ok(Some(probe)) => probe.size,
         Ok(None) => return Err(SampleFailure::Unavailable("the file is not stored".into())),
         Err(err) => return Err(SampleFailure::Unavailable(err.to_string())),
     };
-    let sample = bookclerk_media::pool()
-        .cut_sample(
+    let stream = bookclerk_media::pool()
+        .stream_sample(
             size,
             start_ms,
             SAMPLE_LENGTH_MS,
             StoredFile { backend, key },
         )
         .await?;
-    Ok(sample.mp3)
+    Ok(worker_chunks(stream))
 }
 
 /// `POST /api/discover/title-sample` request: the title as title-meta
@@ -803,15 +882,15 @@ pub(crate) async fn post_title_sample(
     path = "/api/samples/{token}",
     params(
         ("token" = String, Path, description = "Opaque token from a `sample_path`."),
-        ("Range" = Option<String>, Header, description = "One byte range (`bytes=A-B`, `bytes=A-` or `bytes=-N`); anything else reads the whole sample."),
+        ("Range" = Option<String>, Header, description = "One byte range (`bytes=A-B`, `bytes=A-` or `bytes=-N`) of a sample already kept; anything else, or a sample still being cut, reads the whole sample."),
     ),
     responses(
-        (status = 200, description = "The sample, re-encoded: mono MP3.", body = crate::openapi::BinaryBody, content_type = "audio/mpeg"),
+        (status = 200, description = "The sample, re-encoded: mono MP3. A sample not kept yet streams as the media worker encodes it, without `Content-Length`.", body = crate::openapi::BinaryBody, content_type = "audio/mpeg"),
         (status = 206, description = "The requested byte range, with `Content-Range`.", body = crate::openapi::BinaryBody, content_type = "audio/mpeg"),
         (status = 404, description = "The token was not issued by this node (`unknown_sample`).", body = ErrorMessage, example = json!({"error": "unknown_sample"})),
         (status = 416, description = "The range starts at or past the end of the sample (`range_not_satisfiable`); `Content-Range` states the size.", body = ErrorMessage, example = json!({"error": "range_not_satisfiable"})),
         (status = 422, description = "The store's sample could not be downloaded or decoded (`no_sample`).", body = ErrorMessage, example = json!({"error": "no_sample"})),
-        (status = 503, description = "No `covers` plugin or confined media worker is available; retry (`unavailable`).", body = ErrorMessage, example = json!({"error": "unavailable"})),
+        (status = 503, description = "No `mediaDownload` plugin or confined media worker is available; retry (`unavailable`).", body = ErrorMessage, example = json!({"error": "unavailable"})),
     ),
 )]
 pub(crate) async fn get_store_sample(
@@ -826,31 +905,31 @@ pub(crate) async fn get_store_sample(
         .ok_or_else(|| refuse(StatusCode::NOT_FOUND, "unknown_sample"))?;
     let cache_key = format!("store\n{url}");
     let integrations = Arc::clone(&state.integrations);
-    let bytes = state
+    let body = state
         .samples
         .sample(&cache_key, || async move {
             let downloaded = download(&integrations, url).await?;
             let size = u64::try_from(downloaded.len()).unwrap_or(u64::MAX);
-            let sample = bookclerk_media::pool()
-                .cut_sample(
+            let stream = bookclerk_media::pool()
+                .stream_sample(
                     size,
                     0,
                     bookclerk_media::pcm_wire::MAX_SAMPLE_MS,
                     Downloaded(downloaded),
                 )
                 .await?;
-            Ok(sample.mp3)
+            Ok(worker_chunks(stream))
         })
         .await
         .map_err(|failure| failure.answer(ROUTE))?;
-    Ok(mp3_response(
-        bytes,
+    Ok(sample_response(
+        body,
         headers.get(header::RANGE),
         STORE_CACHE_CONTROL,
     ))
 }
 
-/// Downloads a store's sample through the deployed `covers` plugins, in
+/// Downloads a store's sample through the deployed `mediaDownload` plugins, in
 /// order, until one hands back a body: a plugin that refuses audio, fails,
 /// or answers without a body passes the download to the next.
 ///
@@ -863,16 +942,16 @@ async fn download(
     integrations: &tokio::sync::RwLock<bookclerk_integrations::IntegrationRegistry>,
     url: String,
 ) -> Result<Vec<u8>, SampleFailure> {
-    let fetchers = integrations.read().await.cover_fetchers();
+    let fetchers = integrations.read().await.media_downloaders();
     let mut failure = SampleFailure::Unavailable("no deployed plugin fetches remote media".into());
     for fetcher in fetchers {
-        let params = bookclerk_plugin_abi::CoverFetchParams {
+        let params = bookclerk_plugin_abi::MediaDownloadParams {
             urls: vec![url.clone()],
-            max_bytes: bookclerk_plugin_abi::MAX_COVER_BYTES,
+            max_bytes: bookclerk_plugin_abi::MAX_AUDIO_BYTES,
             conditions: Vec::new(),
             media: bookclerk_plugin_abi::RemoteMedia::Audio,
         };
-        let answer = match fetcher.fetch_covers(params).await {
+        let answer = match fetcher.download_media(params).await {
             Ok(fetched) => fetched.into_iter().next(),
             Err(err) => {
                 // A refusal from an earlier plugin says more than a failed call.

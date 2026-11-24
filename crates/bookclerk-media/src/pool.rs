@@ -34,7 +34,7 @@ use tokio::sync::Semaphore;
 use crate::cover_worker::{CoverRunner, CoverWorker};
 use crate::error::{MediaError, Result};
 use crate::job::{MediaJob, MediaJobOutput, MediaJobReply};
-use crate::pcm_stream::{EncodedSample, PcmRunner, PcmStream};
+use crate::pcm_stream::{EncodedSample, PcmRunner, PcmStream, SampleStream};
 use crate::tag_worker::{RangeSource, TagRunner, TagWorker};
 use crate::worker_pipe::ThreadPipe;
 
@@ -409,16 +409,19 @@ impl MediaPool {
         self.pcm.open(size, start_ms, source).await
     }
 
-    /// Cuts a short sample of one audio file, folded to mono and encoded
-    /// as MP3, for a book's details (`bookclerk-media-worker pcm`, opened
-    /// with `Sample`).
+    /// Starts cutting a short sample of one audio file, folded to mono and
+    /// encoded as MP3, for a book's details (`bookclerk-media-worker pcm`,
+    /// opened with `Sample`). The bytes come back as the worker encodes
+    /// them, so a player can start on the first ones.
     ///
     /// Like [`Self::open_pcm`], each call starts its own worker, jailed to
     /// no path and no network, which asks for the byte ranges it reads. It
     /// does not take a job slot; samples have their own limit, as many at
-    /// once as there are job slots, and a call waits for one. The worker decodes only the sample's span,
-    /// and the bytes returned are its encoding, never the file's own. With
-    /// isolation off, samples are refused, never cut in this process.
+    /// once as there are job slots, and a call waits for one. The stream
+    /// holds its slot until it is dropped. The worker decodes only the
+    /// sample's span, and the bytes returned are its encoding, never the
+    /// file's own. With isolation off, samples are refused, never cut in
+    /// this process.
     ///
     /// # Arguments
     ///
@@ -433,11 +436,39 @@ impl MediaPool {
     /// # Errors
     ///
     /// [`MediaError::NotIsolated`] when isolation is off or no worker was
-    /// found, [`MediaError::Native`] when the file cannot be decoded or
-    /// encoded, [`MediaError::Io`] when `source` fails, and
-    /// [`MediaError::Worker`] when the worker cannot be started, breaks the
-    /// protocol, sends more than [`crate::MAX_SAMPLE_BYTES`], or
-    /// takes longer than [`crate::SAMPLE_TIMEOUT`].
+    /// found, [`MediaError::Native`] when the file cannot be opened,
+    /// [`MediaError::Io`] when `source` fails, and [`MediaError::Worker`]
+    /// when the worker cannot be started, breaks the protocol or states no
+    /// format in time. Later failures (a decode error, more than
+    /// [`crate::MAX_SAMPLE_BYTES`], or more than [`crate::SAMPLE_TIMEOUT`]
+    /// in all) end the stream with an error.
+    pub async fn stream_sample<S: RangeSource + 'static>(
+        &self,
+        size: u64,
+        start_ms: u64,
+        length_ms: u64,
+        source: S,
+    ) -> Result<SampleStream> {
+        let slot = Arc::clone(&self.samples)
+            .acquire_owned()
+            .await
+            .map_err(|err| MediaError::Worker {
+                job: "sample",
+                detail: format!("pool closed: {err}"),
+            })?;
+        let stream = self
+            .pcm
+            .stream_sample(size, start_ms, length_ms, source)
+            .await?;
+        Ok(stream.hold(slot))
+    }
+
+    /// Cuts a short sample of one audio file to its end: [`Self::stream_sample`]
+    /// read whole.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::stream_sample`], and whatever ends its stream.
     pub async fn cut_sample<S: RangeSource + 'static>(
         &self,
         size: u64,
@@ -445,15 +476,10 @@ impl MediaPool {
         length_ms: u64,
         source: S,
     ) -> Result<EncodedSample> {
-        let _slot = self
-            .samples
-            .acquire()
+        self.stream_sample(size, start_ms, length_ms, source)
+            .await?
+            .collect()
             .await
-            .map_err(|err| MediaError::Worker {
-                job: "sample",
-                detail: format!("pool closed: {err}"),
-            })?;
-        self.pcm.cut_sample(size, start_ms, length_ms, source).await
     }
 
     /// Run `job`, waiting for a free slot first.

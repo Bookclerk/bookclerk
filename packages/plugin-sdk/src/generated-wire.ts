@@ -1539,39 +1539,39 @@ export interface MetadataProviderChaptersResults {
 }
 
 /**
- * Params envelope of `CoverFetcher.health`.
+ * Params envelope of `MediaDownloader.health`.
  *
  * @internal
  */
-export interface CoverFetcherHealthParams {
+export interface MediaDownloaderHealthParams {
 }
 
 /**
- * Results envelope of `CoverFetcher.health`.
+ * Results envelope of `MediaDownloader.health`.
  *
  * @internal
  */
-export interface CoverFetcherHealthResults {
+export interface MediaDownloaderHealthResults {
   result: T.HealthReply;
 }
 
 /**
- * Params envelope of `CoverFetcher.fetchCovers`.
+ * Params envelope of `MediaDownloader.downloadMedia`.
  *
  * @internal
  */
-export interface CoverFetcherFetchCoversParams {
-  params: T.CoverFetchParams;
+export interface MediaDownloaderDownloadMediaParams {
+  params: T.MediaDownloadParams;
   sink?: T.Destination | null;
 }
 
 /**
- * Results envelope of `CoverFetcher.fetchCovers`.
+ * Results envelope of `MediaDownloader.downloadMedia`.
  *
  * @internal
  */
-export interface CoverFetcherFetchCoversResults {
-  result: T.CoverImagesReply;
+export interface MediaDownloaderDownloadMediaResults {
+  result: T.DownloadResultsReply;
 }
 
 /**
@@ -3179,8 +3179,8 @@ export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
     if (v.metadata != null) {
       s.setCap(10, caps.exportCap(v.metadata));
     }
-    if (v.covers != null) {
-      s.setCap(11, caps.exportCap(v.covers));
+    if (v.mediaDownload != null) {
+      s.setCap(11, caps.exportCap(v.mediaDownload));
     }
     if (v.socketHandler != null) {
       s.setCap(12, caps.exportCap(v.socketHandler));
@@ -3251,9 +3251,9 @@ export const EntrypointsCodec: StructCodec<T.Entrypoints> = {
     if (!(metadataValue == null)) {
       out.metadata = metadataValue;
     }
-    const coversValue = caps.importCap(s.getCapIndex(11)) as T.CoverFetcher;
-    if (!(coversValue == null)) {
-      out.covers = coversValue;
+    const mediaDownloadValue = caps.importCap(s.getCapIndex(11)) as T.MediaDownloader;
+    if (!(mediaDownloadValue == null)) {
+      out.mediaDownload = mediaDownloadValue;
     }
     const socketHandlerValue = caps.importCap(s.getCapIndex(12)) as T.SocketHandler;
     if (!(socketHandlerValue == null)) {
@@ -8975,11 +8975,11 @@ export const MetadataChaptersReplyCodec: StructCodec<T.MetadataChaptersReply> = 
 };
 
 /**
- * Wire codec for `CoverFetchParams` (1 data words, 2 pointers).
+ * Wire codec for `MediaDownloadParams` (1 data words, 2 pointers).
  *
  * @internal
  */
-export const CoverFetchParamsCodec: StructCodec<T.CoverFetchParams> = {
+export const MediaDownloadParamsCodec: StructCodec<T.MediaDownloadParams> = {
   dataWords: 1,
   pointerCount: 2,
   write(s, v, caps) {
@@ -8989,7 +8989,7 @@ export const CoverFetchParamsCodec: StructCodec<T.CoverFetchParams> = {
       const list = v.conditions ?? [];
       const items = s.initStructList(1, list.length, 0, 2);
       for (let i = 0; i < items.length; i++) {
-        CoverConditionCodec.write(items[i]!, list[i]!, caps);
+        DownloadConditionCodec.write(items[i]!, list[i]!, caps);
       }
     }
     s.setUint16(2, ord(A.REMOTE_MEDIAS, v.media ?? A.REMOTE_MEDIAS[0]!, "RemoteMedia"));
@@ -8998,18 +8998,18 @@ export const CoverFetchParamsCodec: StructCodec<T.CoverFetchParams> = {
     return {
       urls: s.getTextList(0),
       maxBytes: s.getUint32(0),
-      conditions: s.getStructList(1, 0, 2).map((item) => CoverConditionCodec.read(item, caps)),
+      conditions: s.getStructList(1, 0, 2).map((item) => DownloadConditionCodec.read(item, caps)),
       media: fromOrd(A.REMOTE_MEDIAS, s.getUint16(2), "RemoteMedia"),
     };
   },
 };
 
 /**
- * Wire codec for `CoverCondition` (0 data words, 2 pointers).
+ * Wire codec for `DownloadCondition` (0 data words, 2 pointers).
  *
  * @internal
  */
-export const CoverConditionCodec: StructCodec<T.CoverCondition> = {
+export const DownloadConditionCodec: StructCodec<T.DownloadCondition> = {
   dataWords: 0,
   pointerCount: 2,
   write(s, v, caps) {
@@ -9023,7 +9023,7 @@ export const CoverConditionCodec: StructCodec<T.CoverCondition> = {
   },
   read(s, caps) {
     void caps;
-    const out: T.CoverCondition = {
+    const out: T.DownloadCondition = {
     };
     const ifNoneMatchValue = s.getText(0);
     if (!(ifNoneMatchValue === "")) {
@@ -9038,11 +9038,11 @@ export const CoverConditionCodec: StructCodec<T.CoverCondition> = {
 };
 
 /**
- * Wire codec for `CoverImage` (1 data words, 9 pointers).
+ * Wire codec for `DownloadResult` (1 data words, 9 pointers).
  *
  * @internal
  */
-export const CoverImageCodec: StructCodec<T.CoverImage> = {
+export const DownloadResultCodec: StructCodec<T.DownloadResult> = {
   dataWords: 1,
   pointerCount: 9,
   write(s, v, caps) {
@@ -9077,7 +9077,7 @@ export const CoverImageCodec: StructCodec<T.CoverImage> = {
   },
   read(s, caps) {
     void caps;
-    const out: T.CoverImage = {
+    const out: T.DownloadResult = {
       url: s.getText(0),
       stored: s.getBool(0),
       notModified: s.getBool(1),
@@ -9119,35 +9119,35 @@ export const CoverImageCodec: StructCodec<T.CoverImage> = {
 };
 
 /**
- * Wire codec for `CoverImages` (0 data words, 1 pointers).
+ * Wire codec for `DownloadResults` (0 data words, 1 pointers).
  *
  * @internal
  */
-export const CoverImagesCodec: StructCodec<T.CoverImages> = {
+export const DownloadResultsCodec: StructCodec<T.DownloadResults> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
     {
-      const list = v.images ?? [];
+      const list = v.downloads ?? [];
       const items = s.initStructList(0, list.length, 1, 9);
       for (let i = 0; i < items.length; i++) {
-        CoverImageCodec.write(items[i]!, list[i]!, caps);
+        DownloadResultCodec.write(items[i]!, list[i]!, caps);
       }
     }
   },
   read(s, caps) {
     return {
-      images: s.getStructList(0, 1, 9).map((item) => CoverImageCodec.read(item, caps)),
+      downloads: s.getStructList(0, 1, 9).map((item) => DownloadResultCodec.read(item, caps)),
     };
   },
 };
 
 /**
- * Wire codec for `CoverImagesReply` (1 data words, 1 pointers).
+ * Wire codec for `DownloadResultsReply` (1 data words, 1 pointers).
  *
  * @internal
  */
-export const CoverImagesReplyCodec: StructCodec<T.CoverImagesReply> = {
+export const DownloadResultsReplyCodec: StructCodec<T.DownloadResultsReply> = {
   dataWords: 1,
   pointerCount: 1,
   write(s, v, caps) {
@@ -9155,7 +9155,7 @@ export const CoverImagesReplyCodec: StructCodec<T.CoverImagesReply> = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          CoverImagesCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+          DownloadResultsCodec.write(s.initStruct(0, 0, 1), v.value, caps);
         }
         break;
       case "err":
@@ -9165,18 +9165,18 @@ export const CoverImagesReplyCodec: StructCodec<T.CoverImagesReply> = {
         }
         break;
       default:
-        throw unknownUnion("CoverImagesReply", (v as { kind: string }).kind);
+        throw unknownUnion("DownloadResultsReply", (v as { kind: string }).kind);
     }
   },
   read(s, caps) {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: CoverImagesCodec.read(s.getStruct(0, 0, 1), caps) };
+        return { kind: "ok", value: DownloadResultsCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
-        throw unknownUnion("CoverImagesReply", disc);
+        throw unknownUnion("DownloadResultsReply", disc);
     }
   },
 };
@@ -15996,11 +15996,11 @@ export const MetadataProviderChaptersResultsCodec: StructCodec<MetadataProviderC
 };
 
 /**
- * Wire codec for the `CoverFetcher.health` params envelope (0 data words, 0 pointers).
+ * Wire codec for the `MediaDownloader.health` params envelope (0 data words, 0 pointers).
  *
  * @internal
  */
-export const CoverFetcherHealthParamsCodec: StructCodec<CoverFetcherHealthParams> = {
+export const MediaDownloaderHealthParamsCodec: StructCodec<MediaDownloaderHealthParams> = {
   dataWords: 0,
   pointerCount: 0,
   write(s, v, caps) {
@@ -16016,11 +16016,11 @@ export const CoverFetcherHealthParamsCodec: StructCodec<CoverFetcherHealthParams
 };
 
 /**
- * Wire codec for the `CoverFetcher.health` results envelope (0 data words, 1 pointers).
+ * Wire codec for the `MediaDownloader.health` results envelope (0 data words, 1 pointers).
  *
  * @internal
  */
-export const CoverFetcherHealthResultsCodec: StructCodec<CoverFetcherHealthResults> = {
+export const MediaDownloaderHealthResultsCodec: StructCodec<MediaDownloaderHealthResults> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
@@ -16036,24 +16036,24 @@ export const CoverFetcherHealthResultsCodec: StructCodec<CoverFetcherHealthResul
 };
 
 /**
- * Wire codec for the `CoverFetcher.fetchCovers` params envelope (0 data words, 2 pointers).
+ * Wire codec for the `MediaDownloader.downloadMedia` params envelope (0 data words, 2 pointers).
  *
  * @internal
  */
-export const CoverFetcherFetchCoversParamsCodec: StructCodec<CoverFetcherFetchCoversParams> = {
+export const MediaDownloaderDownloadMediaParamsCodec: StructCodec<MediaDownloaderDownloadMediaParams> = {
   dataWords: 0,
   pointerCount: 2,
   write(s, v, caps) {
     if (v.params != null) {
-      CoverFetchParamsCodec.write(s.initStruct(0, 1, 2), v.params, caps);
+      MediaDownloadParamsCodec.write(s.initStruct(0, 1, 2), v.params, caps);
     }
     if (v.sink != null) {
       s.setCap(1, caps.exportCap(v.sink));
     }
   },
   read(s, caps) {
-    const out: CoverFetcherFetchCoversParams = {
-      params: CoverFetchParamsCodec.read(s.getStruct(0, 1, 2), caps),
+    const out: MediaDownloaderDownloadMediaParams = {
+      params: MediaDownloadParamsCodec.read(s.getStruct(0, 1, 2), caps),
     };
     const sinkValue = caps.importCap(s.getCapIndex(1)) as T.Destination;
     if (!(sinkValue == null)) {
@@ -16064,21 +16064,21 @@ export const CoverFetcherFetchCoversParamsCodec: StructCodec<CoverFetcherFetchCo
 };
 
 /**
- * Wire codec for the `CoverFetcher.fetchCovers` results envelope (0 data words, 1 pointers).
+ * Wire codec for the `MediaDownloader.downloadMedia` results envelope (0 data words, 1 pointers).
  *
  * @internal
  */
-export const CoverFetcherFetchCoversResultsCodec: StructCodec<CoverFetcherFetchCoversResults> = {
+export const MediaDownloaderDownloadMediaResultsCodec: StructCodec<MediaDownloaderDownloadMediaResults> = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
     if (v.result != null) {
-      CoverImagesReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+      DownloadResultsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
     }
   },
   read(s, caps) {
     return {
-      result: CoverImagesReplyCodec.read(s.getStruct(0, 1, 1), caps),
+      result: DownloadResultsReplyCodec.read(s.getStruct(0, 1, 1), caps),
     };
   },
 };

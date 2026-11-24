@@ -2,7 +2,7 @@
 //!
 //! Each submodule exposes a single [`NAME`](health::NAME) constant equal to
 //! the corresponding `ContentSource` / `RemoteLibrary` / `Oidc` /
-//! `MetadataProvider` / `CoverFetcher` / `MetadataFiles` / `Notifier` /
+//! `MetadataProvider` / `MediaDownloader` / `MetadataFiles` / `Notifier` /
 //! `NotificationRaiser` / `AiModels` / `AiRunner` / `Provisioning` / `Cli` /
 //! `EventConsumer` / `EventPublisher` / `QueueConsumer` / `QueueProducer` /
 //! `PluginWorker` method in
@@ -52,7 +52,7 @@ pub const METHOD_NAMES: &[&str] = &[
     lookup::NAME,
     search::NAME,
     chapters::NAME,
-    fetch_covers::NAME,
+    download_media::NAME,
     parse::NAME,
     render::NAME,
     validate_destination::NAME,
@@ -230,13 +230,13 @@ pub mod chapters {
 }
 
 /// Cover image bodies streamed into a host sink (Cap'n Proto
-/// `CoverFetcher.fetchCovers`).
+/// `MediaDownloader.downloadMedia`).
 ///
-/// Params: [`crate::CoverFetchParams`] plus a host-served
-/// [`crate::Destination`]. Result: [`crate::CoverImages`].
-pub mod fetch_covers {
-    /// Wire method name `"fetchCovers"`.
-    pub const NAME: &str = "fetchCovers";
+/// Params: [`crate::MediaDownloadParams`] plus a host-served
+/// [`crate::Destination`]. Result: [`crate::DownloadResults`].
+pub mod download_media {
+    /// Wire method name `"downloadMedia"`.
+    pub const NAME: &str = "downloadMedia";
 }
 
 /// What one metadata file says (Cap'n Proto `MetadataFiles.parse`).

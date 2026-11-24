@@ -227,17 +227,21 @@ listening (see [Book samples](../adr/book-samples.md)). The same `pcm`
 worker cuts it: a `Sample` request names the file's size, a start and a
 length (at most 10 minutes). The worker reads the ranges it needs as
 above, folds the audio to mono, and encodes MP3 at 64 kbit/s itself, so
-it sends `Encoded` frames of at most 128 KiB instead of samples. The host
-stops it after 2 minutes or 16 MiB of MP3.
+it sends `Encoded` frames of at most 128 KiB instead of samples, as it
+encodes them. The host passes each frame on to the listener as it
+arrives, so playback starts within a second rather than after the whole
+cut, and stops the worker after 2 minutes or 16 MiB of MP3.
 
 - **An edition's sample** is read from the destination that holds its
   first file. It starts at the second chapter when the first is shorter
   than 3 minutes (single-file editions only) and runs 5 minutes.
-- **A store's sample** is downloaded through the `covers` plugin first,
-  then cut from the downloaded bytes the same way.
+- **A store's sample** is downloaded through the `media_download` plugin
+  first (at most 32 MiB), then cut from the downloaded bytes the same way.
 
 Samples are cut the first time someone asks and kept in
-`cache/samples/`. The least recently served are removed once the folder
+`cache/samples/`, even when that listener stops before the end. While a
+sample is being cut its answer has no length and ignores `Range`; once
+kept, it is served whole or by range. The least recently served are removed once the folder
 passes 256 MiB.
 
 Playback never decodes in-process: with `media.isolation = "off"` the

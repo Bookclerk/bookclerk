@@ -42,7 +42,7 @@ pub use traits::{
     ProvidedOidcClient, QueueSubscription, ScheduledInvocation,
 };
 pub use types::{
-    CoverHeaders, ExternalUser, FetchedCover, IntegrationHealth, ListeningProgressSnapshot,
+    CoverHeaders, ExternalUser, FetchedMedia, IntegrationHealth, ListeningProgressSnapshot,
     SyncListeningProviderResult, SyncListeningSummary,
 };
 

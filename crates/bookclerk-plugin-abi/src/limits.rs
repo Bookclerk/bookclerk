@@ -130,15 +130,30 @@ pub const MAX_PROVISION_SUMMARY_LINES: u32 = crate::plugin_capnp::MAX_PROVISION_
 /// Longest line of [`crate::Provisioned::summary`], in bytes.
 pub const MAX_PROVISION_SUMMARY_LINE_BYTES: u32 =
     crate::plugin_capnp::MAX_PROVISION_SUMMARY_LINE_BYTES;
-/// Most URLs in one `CoverFetcher.fetchCovers` call.
-pub const MAX_COVER_URLS: u32 = crate::plugin_capnp::MAX_COVER_URLS;
+/// Most URLs in one `MediaDownloader.downloadMedia` call.
+pub const MAX_DOWNLOAD_URLS: u32 = crate::plugin_capnp::MAX_DOWNLOAD_URLS;
 
-/// Largest image body one `CoverFetcher.fetchCovers` URL may return.
-pub const MAX_COVER_BYTES: u32 = crate::plugin_capnp::MAX_COVER_BYTES;
+/// Largest image body one `MediaDownloader.downloadMedia` URL may return
+/// (`media = image`).
+pub const MAX_IMAGE_BYTES: u32 = crate::plugin_capnp::MAX_IMAGE_BYTES;
 
-/// Longest cache header value one `CoverFetcher.fetchCovers` call carries in
+/// Largest audio body one `MediaDownloader.downloadMedia` URL may return
+/// (`media = audio`): a storefront's sample.
+pub const MAX_AUDIO_BYTES: u32 = crate::plugin_capnp::MAX_AUDIO_BYTES;
+
+/// Largest body one `MediaDownloader.downloadMedia` URL of `media` may return:
+/// [`MAX_IMAGE_BYTES`] for images, [`MAX_AUDIO_BYTES`] for audio.
+#[must_use]
+pub const fn max_download_bytes(media: crate::RemoteMedia) -> u32 {
+    match media {
+        crate::RemoteMedia::Image => MAX_IMAGE_BYTES,
+        crate::RemoteMedia::Audio => MAX_AUDIO_BYTES,
+    }
+}
+
+/// Longest cache header value one `MediaDownloader.downloadMedia` call carries in
 /// either direction, in bytes.
-pub const MAX_COVER_HEADER_BYTES: u32 = crate::plugin_capnp::MAX_COVER_HEADER_BYTES;
+pub const MAX_DOWNLOAD_HEADER_BYTES: u32 = crate::plugin_capnp::MAX_DOWNLOAD_HEADER_BYTES;
 
 /// Largest metadata file `MetadataFiles.parse` reads and `MetadataFiles.render`
 /// returns, in bytes.
@@ -198,7 +213,7 @@ pub const MAX_AI_EMBED_DIMENSIONS: u32 = crate::plugin_capnp::MAX_AI_EMBED_DIMEN
 /// Most language tags on one listed model.
 pub const MAX_AI_LANGUAGES: u32 = crate::plugin_capnp::MAX_AI_LANGUAGES;
 
-/// Parses a `CoverFetcher.fetchCovers` sink key into the URL index it names.
+/// Parses a `MediaDownloader.downloadMedia` sink key into the URL index it names.
 ///
 /// The guest puts the body for `urls[i]` under the key `i`. Only the
 /// canonical decimal spelling is accepted (`0`, `7`, `31`; never `07`, `+7`,
@@ -213,7 +228,7 @@ pub const MAX_AI_LANGUAGES: u32 = crate::plugin_capnp::MAX_AI_LANGUAGES;
 ///
 /// The index, or `None` when `key` is not a canonical index below `slots`.
 #[must_use]
-pub fn cover_sink_slot(key: &str, slots: usize) -> Option<usize> {
+pub fn download_sink_slot(key: &str, slots: usize) -> Option<usize> {
     let canonical = !key.is_empty()
         && key.len() <= 20
         && key.bytes().all(|b| b.is_ascii_digit())
@@ -348,18 +363,31 @@ mod tests {
     }
 
     #[test]
-    fn cover_sink_slot_accepts_canonical_indexes_only() {
-        assert_eq!(cover_sink_slot("0", 3), Some(0));
-        assert_eq!(cover_sink_slot("31", 32), Some(31));
+    fn each_media_has_its_own_cap() {
+        assert_eq!(
+            max_download_bytes(crate::RemoteMedia::Image),
+            MAX_IMAGE_BYTES
+        );
+        assert_eq!(
+            max_download_bytes(crate::RemoteMedia::Audio),
+            MAX_AUDIO_BYTES
+        );
+        const { assert!(MAX_AUDIO_BYTES > MAX_IMAGE_BYTES) };
+    }
+
+    #[test]
+    fn download_sink_slot_accepts_canonical_indexes_only() {
+        assert_eq!(download_sink_slot("0", 3), Some(0));
+        assert_eq!(download_sink_slot("31", 32), Some(31));
         for key in [
             "", "32", "01", "00", "+1", "-1", " 1", "1 ", "1.0", "a", "１",
         ] {
-            assert_eq!(cover_sink_slot(key, 32), None, "{key:?}");
+            assert_eq!(download_sink_slot(key, 32), None, "{key:?}");
         }
-        assert_eq!(cover_sink_slot("3", 32), Some(3));
-        assert_eq!(cover_sink_slot("0", 0), None);
-        assert_eq!(cover_sink_slot(&"9".repeat(21), usize::MAX), None);
-        assert_eq!(cover_sink_slot("18446744073709551616", usize::MAX), None);
+        assert_eq!(download_sink_slot("3", 32), Some(3));
+        assert_eq!(download_sink_slot("0", 0), None);
+        assert_eq!(download_sink_slot(&"9".repeat(21), usize::MAX), None);
+        assert_eq!(download_sink_slot("18446744073709551616", usize::MAX), None);
     }
 
     #[test]

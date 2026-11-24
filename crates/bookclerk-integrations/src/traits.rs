@@ -21,7 +21,7 @@ use bookclerk_plugin_abi::{
 
 use crate::brand::Brand;
 use crate::error::{IntegrationError, Result};
-use crate::types::{ExternalUser, FetchedCover, IntegrationHealth};
+use crate::types::{ExternalUser, FetchedMedia, IntegrationHealth};
 
 /// Declared `[[queues.consumers]]` row (mirrors `plugin.toml`): the queue the
 /// integration's `queue(batch)` trigger consumes and its redelivery policy.
@@ -346,30 +346,30 @@ pub trait Integration: Send + Sync {
         ))
     }
 
-    /// Whether this integration exports the `covers` entrypoint (downloads
+    /// Whether this integration exports the `mediaDownload` entrypoint (downloads
     /// cover images on the host's behalf).
     ///
     /// Default: `false`.
-    fn supports_covers(&self) -> bool {
+    fn supports_media_download(&self) -> bool {
         false
     }
 
-    /// Downloads `params.urls` through the `covers` entrypoint
-    /// (`CoverFetcher.fetchCovers`), refusing any body over
+    /// Downloads `params.urls` through the `mediaDownload` entrypoint
+    /// (`MediaDownloader.downloadMedia`), refusing any body over
     /// `params.max_bytes` and sending each URL's conditions, when it has
     /// any, as conditional request headers.
     ///
-    /// Returns one [`FetchedCover`] per URL, in request order; a URL that
+    /// Returns one [`FetchedMedia`] per URL, in request order; a URL that
     /// failed carries `error` instead of failing the call, and one the
     /// server answered `304 Not Modified` carries `not_modified`.
     ///
     /// Default: unsupported.
-    async fn fetch_covers(
+    async fn download_media(
         &self,
-        _params: bookclerk_plugin_abi::CoverFetchParams,
-    ) -> Result<Vec<FetchedCover>> {
+        _params: bookclerk_plugin_abi::MediaDownloadParams,
+    ) -> Result<Vec<FetchedMedia>> {
         Err(IntegrationError::message(format!(
-            "integration `{}` does not fetch covers",
+            "integration `{}` does not download media",
             self.id()
         )))
     }

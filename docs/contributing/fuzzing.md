@@ -34,7 +34,7 @@ boundary extends it.
 | `abi_decode` | Every generated Cap'n Proto `read_*` codec, the database envelope decoders, and the reply helpers every payload-free guest reply and guest error goes through (`read_empty`, `read_error`) | `bookclerk-plugin-abi` |
 | `provision_reply` | A plugin's answer to its guided setup (`Provisioning.provision`): the Cap'n Proto reply, then the settings JSON, credentials and summary checked against the manifest's `[provisioning] outputs` before anything is stored or sealed | `bookclerk-plugin-abi::provision` |
 | `db_stream` | `executeStreamed` frames an adapter sends, reassembled by the host and the SDKs under the streamed result budget. The TypeScript and Python SDK tests replay the same corpus as shared vectors against their own decoders | `bookclerk-plugin-abi::ExecuteStreamDecoder` |
-| `cover_sink_key` | The key a cover fetcher writes each image under, mapped to a URL slot | `bookclerk-plugin-abi::cover_sink_slot` |
+| `download_sink_key` | The key a media downloader writes each body under, mapped to a URL slot | `bookclerk-plugin-abi::download_sink_slot` |
 | `cover_process` | Cover images from any public website: sniff, decode under limits, resize, re-encode | `bookclerk-cover::process` |
 | `cover_token` | Cover tokens in `/api/covers` and `/api/images` paths, store-sample tokens in `/api/samples` paths, and Gravatar hashes in `/api/avatars` paths: which remote URL a route may fetch | `bookclerk-cover::token` |
 | `cover_wire` | Cover worker frames: requests the worker reads, replies the host reads | `bookclerk-cover::wire` |
@@ -240,10 +240,10 @@ only that. The others check:
   run, a fixed set of mutants derived from them with a seeded generator
   (a flipped byte, a truncation, an inserted byte, a duplicated slice),
   holding the first two invariants and typing every refusal.
-- **`cover_sink_key`**: a key names a slot exactly when it is the
+- **`download_sink_key`**: a key names a slot exactly when it is the
   canonical decimal spelling of an index below the URL count, read digit
   by digit without `str::parse`, so no two keys name one slot. The shared
-  oracle is `fuzz/oracles/cover_sink_key.rs`, replayed from
+  oracle is `fuzz/oracles/download_sink_key.rs`, replayed from
   `bookclerk-plugin-abi`.
 - **`cover_process`**: an input without a JPEG, PNG or WebP signature is
   refused. An accepted cover yields three JPEGs whose markers and frame
@@ -2083,9 +2083,9 @@ tree and on its text, in `npm test` (the `workerd_guests` check).
   `MAX_CHAPTERS`. `found` exactly when that walk finds any. Durations are
   positive safe integers.
 
-### Cover fetcher guest
+### Media download guest
 
-The `covers` guest decides which URLs it requests: the host's URLs and every
+The `media_download` guest decides which URLs it requests: the host's URLs and every
 redirect `Location` an upstream server sends. It also passes header values
 both ways: the host's validators out as request headers, and an upstream
 server's caching headers back in its answer, and it decides from an answer's
@@ -2096,7 +2096,7 @@ server's caching headers back in its answer, and it decides from an answer's
 pick another run.
 
 - **Cover URL policy** (`checkUrl` in
-  `crates/bookclerk-plugins/optional/covers/src/fetcher.ts`). Oracle,
+  `crates/bookclerk-plugins/optional/media_download/src/fetcher.ts`). Oracle,
   written from the policy and the WHATWG URL rules: accept exactly an
   `https` URL with the default port, no credentials, no control characters
   or spaces, at most 4096 code units, and a hostname whose labels are
@@ -2108,7 +2108,7 @@ pick another run.
   against the URL that sent it, no more than `MAX_REDIRECTS` are followed,
   and a body is stored only after a chain the policy allowed in full.
 - **Header values** (`headerValueOk`, `checkParams` conditions and
-  `passHeaders`). Oracle, written from the ABI's `maxCoverHeaderBytes` and
+  `passHeaders`). Oracle, written from the ABI's `maxDownloadHeaderBytes` and
   the visible-ASCII part of RFC 9110's `field-value`: a value passes
   exactly when it is at most 1024 bytes of tab, space and `VCHAR`. A
   condition outside that is refused, and a response header outside it is
