@@ -454,8 +454,10 @@ password goes in the body) and `PUT
 These are needed to open the database or unwrap the master key, so they
 can't be stored in it:
 
-- `BOOKCLERK_AUTH_PASSWORD` or `[auth].password`, which wraps the key at
-  rest (the environment is preferred), and `[auth].key_store`, which says
+- `BOOKCLERK_AUTH_PASSWORD` (or the file `BOOKCLERK_AUTH_PASSWORD_FILE`
+  names, or a `bookclerk-auth-password` systemd credential) or
+  `[auth].password`, which wraps the key at rest (the environment is
+  preferred), and `[auth].key_store`, which says
   where new keys go;
 - `BOOKCLERK_DATABASE_POSTGRES_URL` and the D1 API token (from the
   environment, or `database.credential` and the key store it points into),

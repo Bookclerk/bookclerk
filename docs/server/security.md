@@ -15,7 +15,10 @@ computer but its own. Each item links to the page that explains it.
 store sign-ins, the operator token and plugin secrets.
 
 - Set `BOOKCLERK_AUTH_PASSWORD` (or `[auth].password`) so the key is
-  wrapped at rest.
+  wrapped at rest. In a container, hand it in as a mounted secret with
+  `BOOKCLERK_AUTH_PASSWORD_FILE` so it stays out of the environment; under
+  systemd, as a `bookclerk-auth-password` credential (see
+  [Docker](operations.md#run-it)).
 - To wrap a key that already exists, run
   `bookclerk config master-key wrap`.
 - On a machine with an OS keychain, keep the key there instead:

@@ -55,8 +55,11 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 use crate::error::{LibraryError, Result};
 use crate::secrets::{CIPHER_ALGORITHM, KDF_ALGORITHM, KDF_M_COST, KDF_P_COST, KDF_T_COST};
 
-/// Env var that wraps the DEK in `master.key` (optional).
-pub const AUTH_PASSWORD_ENV: &str = "BOOKCLERK_AUTH_PASSWORD";
+/// Env var that wraps the DEK in `master.key` (optional). The password can
+/// also come from the file `BOOKCLERK_AUTH_PASSWORD_FILE` names or the
+/// `bookclerk-auth-password` systemd credential
+/// ([`bookclerk_config::auth_password_from_env`]).
+pub const AUTH_PASSWORD_ENV: &str = bookclerk_config::AUTH_PASSWORD_ENV;
 
 /// Bootstrap key file under `BOOKCLERK_FILES_DIR` (auto-minted when missing).
 pub const MASTER_KEY_FILE_NAME: &str = "master.key";
@@ -418,16 +421,19 @@ fn envelope_is_wrapped(envelope: &[u8]) -> Option<bool> {
 
 /// Load or mint the DEK and cache it for this process.
 ///
-/// Password comes from `BOOKCLERK_AUTH_PASSWORD` only. Prefer
-/// [`configure_master_key_with`] when `[auth].password` may apply.
+/// Password comes from the environment only (`BOOKCLERK_AUTH_PASSWORD`,
+/// `BOOKCLERK_AUTH_PASSWORD_FILE` or the `bookclerk-auth-password` systemd
+/// credential). Prefer [`configure_master_key_with`] when `[auth].password`
+/// may apply.
 ///
 /// Call once at CLI/daemon startup after `paths.ensure_dirs()`.
 ///
 /// # Errors
 ///
-/// Returns an error when the operation fails.
+/// Returns an error when a named password source gives no password, or
+/// when the key can't be loaded or minted.
 pub fn configure_master_key(files_dir: &Path) -> Result<MasterKey> {
-    configure_master_key_with(files_dir, read_auth_password_env().as_deref())
+    configure_master_key_with(files_dir, read_auth_password_env()?.as_deref())
 }
 
 /// Load or mint the DEK using an explicit password (env / config), then cache it.
@@ -485,9 +491,10 @@ pub fn require_master_key(files_dir: Option<&Path>) -> Result<MasterKey> {
 ///
 /// # Errors
 ///
-/// Returns an error when the operation fails.
+/// Returns an error when a named password source gives no password, or
+/// when the key can't be loaded or minted.
 pub fn resolve_master_key(files_dir: &Path) -> Result<MasterKey> {
-    resolve_master_key_with(files_dir, read_auth_password_env().as_deref())
+    resolve_master_key_with(files_dir, read_auth_password_env()?.as_deref())
 }
 
 /// DEK loaded from `master.key`, plus whether this call created the file.
@@ -721,15 +728,17 @@ pub fn encode_master_key_file(
     }))
 }
 
-/// Reads `BOOKCLERK_AUTH_PASSWORD` and registers it for log redaction; empty is treated as absent.
-fn read_auth_password_env() -> Option<String> {
-    let v = std::env::var(AUTH_PASSWORD_ENV).ok()?;
-    let trimmed = v.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    bookclerk_config::register_secret(trimmed);
-    Some(trimmed.to_string())
+/// Reads the auth password from the environment (the variable, the file it
+/// names, or the systemd credential) and registers it for log redaction; an
+/// empty variable is treated as absent.
+///
+/// # Errors
+///
+/// When a named file or present credential gives no password, so a fresh
+/// mint never runs unwrapped by mistake.
+fn read_auth_password_env() -> Result<Option<String>> {
+    bookclerk_config::auth_password_from_env()
+        .map_err(|e| LibraryError::Other(anyhow::anyhow!("{e}")))
 }
 
 /// Creates `master.key` (mode 0600) for a fresh DEK: the envelope itself
@@ -1819,6 +1828,39 @@ mod tests {
             kind: KeyStoreKind::Keychain,
             required,
         }
+    }
+
+    #[test]
+    fn a_password_file_wraps_a_fresh_key_and_a_blank_one_mints_nothing() {
+        let _guard = master_key_test_lock();
+        std::env::remove_var(AUTH_PASSWORD_ENV);
+        let secrets = tempdir().unwrap();
+        let file = secrets.path().join("auth-password");
+        std::fs::write(&file, "from-a-docker-secret\n").unwrap();
+        std::env::set_var(bookclerk_config::AUTH_PASSWORD_FILE_ENV, &file);
+
+        let dir = tempdir().unwrap();
+        let key = resolve_master_key(dir.path());
+        let wrapped = master_key_is_wrapped(dir.path());
+        let reopened = resolve_master_key_with(dir.path(), Some("from-a-docker-secret"));
+
+        std::fs::write(&file, " \n").unwrap();
+        let blank_dir = tempdir().unwrap();
+        let blank = resolve_master_key(blank_dir.path());
+        std::env::remove_var(bookclerk_config::AUTH_PASSWORD_FILE_ENV);
+
+        let key = key.unwrap();
+        assert_eq!(
+            wrapped.unwrap(),
+            Some(true),
+            "the file's password wraps the key"
+        );
+        assert_eq!(reopened.unwrap().as_bytes(), key.as_bytes());
+        assert!(blank.is_err(), "a blank password file must not mint a key");
+        assert!(
+            !master_key_path(blank_dir.path()).exists(),
+            "nothing is written when the named password source is blank"
+        );
     }
 
     #[test]

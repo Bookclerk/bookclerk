@@ -69,6 +69,8 @@ mod env_tests {
         assert!(plugin_env_allowed("PATH"));
         assert!(plugin_env_allowed("HOME"));
         assert!(!plugin_env_allowed("BOOKCLERK_AUTH_PASSWORD"));
+        assert!(!plugin_env_allowed("BOOKCLERK_AUTH_PASSWORD_FILE"));
+        assert!(!plugin_env_allowed("CREDENTIALS_DIRECTORY"));
         assert!(!plugin_env_allowed("BOOKCLERK_OPERATOR_TOKEN"));
         assert!(!plugin_env_allowed("AWS_SECRET_ACCESS_KEY"));
         assert!(!plugin_env_allowed("CLOUDFLARE_API_TOKEN"));

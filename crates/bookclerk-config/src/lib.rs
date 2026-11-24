@@ -17,6 +17,8 @@
 )]
 
 mod atomic_replace;
+/// Where the password that wraps `master.key` comes from.
+mod auth_password;
 mod cache_settings;
 mod cookie_flags;
 mod database;
@@ -54,6 +56,9 @@ mod settings;
 mod uploads;
 
 pub use atomic_replace::replace_file;
+pub use auth_password::{
+    auth_password_from_env, AUTH_PASSWORD_CREDENTIAL, AUTH_PASSWORD_ENV, AUTH_PASSWORD_FILE_ENV,
+};
 pub use cache_settings::{
     parse_cache_setting, CacheSettingError, CacheSettingKey, DEFAULT_CACHE_BUDGET_BYTES,
     DEFAULT_CACHE_UNVIEWED_DAYS, MAX_CACHE_BUDGET_BYTES, MAX_CACHE_UNVIEWED_DAYS,

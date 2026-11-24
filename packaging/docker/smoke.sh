@@ -14,12 +14,17 @@ image=${1:?usage: smoke.sh <image>}
 port=${SMOKE_PORT:-18787}
 name="bookclerk-smoke-$$"
 volume="bookclerk-smoke-config-$$"
-# A throwaway passphrase for this volume only; passed by name, never on argv.
-export BOOKCLERK_AUTH_PASSWORD="smoke-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+# A throwaway passphrase for this volume only, handed in as a mounted secret
+# file (BOOKCLERK_AUTH_PASSWORD_FILE) the way the docs recommend, never on
+# argv or in the container's environment. The second boot unwraps the key the
+# first boot minted with it.
+secrets=$(mktemp -d)
+(umask 0022 && printf 'smoke-%s\n' "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')" >"$secrets/auth-password")
 
 cleanup() {
   docker rm -f "$name" >/dev/null 2>&1 || true
   docker volume rm "$volume" >/dev/null 2>&1 || true
+  rm -rf "$secrets"
 }
 trap cleanup EXIT
 
@@ -34,7 +39,8 @@ boot() {
   docker run -d --name "$name" \
     -v "$volume:/config" \
     -e BOOKCLERK_DAEMON_LISTEN=0.0.0.0:8787 \
-    -e BOOKCLERK_AUTH_PASSWORD \
+    -v "$secrets/auth-password:/run/secrets/bookclerk-auth-password:ro" \
+    -e BOOKCLERK_AUTH_PASSWORD_FILE=/run/secrets/bookclerk-auth-password \
     -p "127.0.0.1:$port:8787" \
     "$image" >/dev/null
   local healthy=no
@@ -84,5 +90,6 @@ refuse first 'could not install the (platform plugins bundled|bundled platform p
 boot second
 refuse second 'installed bundled platform plugin|updated platform plugin from the bundled copy'
 expect second 'loaded external database plugin'
+refuse second 'minted data-encryption key'
 
 echo "smoke test passed"

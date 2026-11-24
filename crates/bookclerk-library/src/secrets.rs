@@ -504,23 +504,20 @@ fn unseal_secret_uncached(record: &EncryptedSecretRecord) -> Result<Vec<u8>> {
     }
 }
 
-/// Reads `BOOKCLERK_AUTH_PASSWORD` to migrate a legacy `json-encrypted` row; empty fails closed.
+/// Reads the auth password from the environment (`BOOKCLERK_AUTH_PASSWORD`,
+/// `BOOKCLERK_AUTH_PASSWORD_FILE` or the systemd credential) to migrate a
+/// legacy `json-encrypted` row; none fails closed.
 fn read_auth_password_for_legacy(name: &str) -> Result<String> {
-    let v = std::env::var(crate::master_key::AUTH_PASSWORD_ENV).map_err(|_| {
-        LibraryError::Other(anyhow::anyhow!(
-            "legacy json-encrypted record {name} requires {env} — set it to migrate",
-            env = crate::master_key::AUTH_PASSWORD_ENV
-        ))
-    })?;
-    let trimmed = v.trim();
-    if trimmed.is_empty() {
-        return Err(LibraryError::Other(anyhow::anyhow!(
-            "legacy json-encrypted record {name} requires {env} (was empty)",
-            env = crate::master_key::AUTH_PASSWORD_ENV
-        )));
-    }
-    bookclerk_config::register_secret(trimmed);
-    Ok(trimmed.to_string())
+    let env = crate::master_key::AUTH_PASSWORD_ENV;
+    bookclerk_config::auth_password_from_env()
+        .map_err(|e| {
+            LibraryError::Other(anyhow::anyhow!("legacy json-encrypted record {name}: {e}"))
+        })?
+        .ok_or_else(|| {
+            LibraryError::Other(anyhow::anyhow!(
+                "legacy json-encrypted record {name} requires {env} — set it to migrate"
+            ))
+        })
 }
 
 /// Seal arbitrary bytes as base64 string — used by D1 transport layer.
