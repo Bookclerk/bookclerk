@@ -72,9 +72,9 @@ use bookclerk_library::{hash_token, LibraryError, UserStatus};
 use bookclerk_node_proto::{
     canonical_origin, is_branch_name, is_branch_redirect_uri, pkce_challenge, seal_account_bundle,
     seal_shared_branch_bootstrap, AccountBundle, ConnectionType, OAuthEnrollAnswer,
-    OAuthEnrollRequest, OwnerInfo, SecretValue, SharedBranchBootstrap, SharedBranchDatabase,
-    ACCOUNT_BUNDLE_VERSION, BRANCH_CLIENT_ID, BRANCH_CODE_TTL_SECS, BRANCH_SCOPE,
-    SHARED_BRANCH_BOOTSTRAP_VERSION,
+    OAuthEnrollRequest, OwnerInfo, SecretValue, SharedBranchBootstrap, SharedBranchCredential,
+    SharedBranchDatabase, ACCOUNT_BUNDLE_VERSION, BRANCH_CLIENT_ID, BRANCH_CODE_TTL_SECS,
+    BRANCH_SCOPE, SHARED_BRANCH_BOOTSTRAP_VERSION,
 };
 use bookclerk_plugin_host::CredentialSharing;
 use serde::{Deserialize, Serialize};
@@ -98,7 +98,7 @@ pub(crate) fn library_name(origin: &str) -> String {
 /// This library's database as a shared branch would connect to it, or why it
 /// cannot be shared: only PostgreSQL and Cloudflare D1 can be opened by
 /// more than one server. The D1 API token is not filled in here: the redeem
-/// answer adds it ([`with_d1_credential`]) once it holds the DEK.
+/// answer adds it ([`shared_database_credential`]) once it holds the DEK.
 ///
 /// # Errors
 ///
@@ -107,11 +107,13 @@ pub(crate) fn shared_database(
     cfg: &bookclerk_config::Config,
 ) -> Result<SharedBranchDatabase, String> {
     match bookclerk_config::DatabasePluginKind::parse(&cfg.database.plugin) {
-        Some(DatabasePluginKind::Postgres) => bookclerk_config::resolve_postgres_url(cfg)
-            .map(|url| SharedBranchDatabase::Postgres {
-                url: SecretValue::new(url.into_bytes()),
-            })
-            .map_err(|_| "This library's PostgreSQL connection is not readable here.".into()),
+        Some(DatabasePluginKind::Postgres) => {
+            bookclerk_library::database_credential::resolve_postgres_url(cfg)
+                .map(|url| SharedBranchDatabase::Postgres {
+                    url: SecretValue::new(url.as_bytes().to_vec()),
+                })
+                .map_err(|_| "This library's PostgreSQL connection is not readable here.".into())
+        }
         // A shared branch sends its own D1 token only to Cloudflare's API, so a
         // library on another D1 endpoint is not offered as a shared branch's.
         Some(DatabasePluginKind::D1) => {
@@ -120,8 +122,6 @@ pub(crate) fn shared_database(
                     account_id: cfg.database.d1.account_id.clone(),
                     database_id: cfg.database.d1.database_id.clone(),
                     api_base,
-                    api_token: None,
-                    api_token_id: None,
                 })
                 .map_err(|_| {
                     "This library's Cloudflare D1 API origin is not https://api.cloudflare.com, \
@@ -137,42 +137,43 @@ pub(crate) fn shared_database(
     }
 }
 
-/// `database` with this library's D1 credential added, so the shared branch
-/// keeps it in its own master key store instead of needing it set by hand.
-/// A credential that can't be read is left out (the shared branch then
-/// needs `BOOKCLERK_D1_API_TOKEN`); a PostgreSQL database is unchanged.
+/// The database plugin's own credential for a shared branch of `database`,
+/// so the shared branch keeps it in its own master key store instead of
+/// needing it set by hand: for D1, the token this library uses (from the
+/// environment, else stored). A PostgreSQL URL carries its own, so it gets
+/// none; a credential that can't be read is left out (the shared branch
+/// then needs it set by hand) and logged.
 ///
 /// # Arguments
 ///
 /// * `database` - what [`shared_database`] answered.
 /// * `files_dir` - this install's files directory.
 /// * `dek` - this library's data-encryption key.
-pub(crate) fn with_d1_credential(
-    mut database: SharedBranchDatabase,
+pub(crate) fn shared_database_credential(
+    database: &SharedBranchDatabase,
     files_dir: &std::path::Path,
     dek: &bookclerk_library::MasterKey,
-) -> SharedBranchDatabase {
-    match &mut database {
-        SharedBranchDatabase::Postgres { .. } => {}
-        SharedBranchDatabase::D1 {
-            api_token,
-            api_token_id,
-            ..
-        } => match bookclerk_library::database_credential::current_d1_credential(files_dir, dek) {
-            Ok(Some(credential)) => {
-                *api_token = Some(SecretValue::new(credential.token().as_bytes().to_vec()));
-                *api_token_id = credential.token_id().map(str::to_string);
-            }
-            Ok(None) => {}
-            Err(err) => {
-                tracing::warn!(
-                    error = %err,
-                    "shared branch enrollment: this library's D1 token could not be read, so the shared branch needs BOOKCLERK_D1_API_TOKEN"
-                );
-            }
-        },
+) -> Option<SharedBranchCredential> {
+    let current = match database {
+        SharedBranchDatabase::Postgres { .. } => return None,
+        SharedBranchDatabase::D1 { .. } => {
+            bookclerk_library::database_credential::current_d1_credential(files_dir, dek)
+        }
+    };
+    match current {
+        Ok(credential) => credential.map(|credential| SharedBranchCredential {
+            secret: SecretValue::new(credential.secret().as_bytes().to_vec()),
+            secret_id: credential.secret_id().map(str::to_string),
+        }),
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                plugin = database.plugin(),
+                "shared branch enrollment: this library's database credential could not be read, so the shared branch needs it set by hand"
+            );
+            None
+        }
     }
-    database
 }
 
 /// What `info` and Settings → Branches report.
@@ -766,7 +767,8 @@ async fn shared_branch_answer(
         v: SHARED_BRANCH_BOOTSTRAP_VERSION,
         library_id: enrolled.library_id.clone(),
         node_id: enrolled.node_id.clone(),
-        database: with_d1_credential(database, &files_dir, &dek),
+        database_credential: shared_database_credential(&database, &files_dir, &dek),
+        database,
         dek: SecretValue::new(dek.as_bytes().to_vec()),
     };
     drop(dek);

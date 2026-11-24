@@ -1866,10 +1866,13 @@ shared node and branch node.
   (`install_problem`, checked at start and again at the callback).
 - **Shareable database only.** Shared branch is enabled only when the library's
   `[database]` is PostgreSQL or D1. With SQLite the option is shown
-  disabled with the reason. For D1 the sealed bootstrap carries the API token
-  the library uses, which the shared branch keeps in its own master key
-  store (superseding the earlier rule that the token was never sent and
-  each shared branch set its own `BOOKCLERK_D1_API_TOKEN`).
+  disabled with the reason. The sealed bootstrap carries the database
+  plugin's credential (`database_credential` for D1's API token; a
+  PostgreSQL URL is its own), which the shared branch keeps sealed in its
+  own master key store, tagged with the plugin (superseding the earlier
+  rules that the D1 token was never sent, each shared branch setting its
+  own `BOOKCLERK_D1_API_TOKEN`, and that a PostgreSQL URL was written to a
+  `0600` file).
 - **Fresh step-up.** Approving as a shared branch needs a second factor verified in
   that request: a TOTP code, or a user-verified passkey assertion for a
   challenge from `POST /api/auth/branch-consent/step-up` (kind
@@ -1905,8 +1908,10 @@ shared node and branch node.
   daemon redeems with the verifier only it holds.
 - **Applying it.** The joining daemon opens the box with its node key,
   checks the library's database guest is installed here, and writes its
-  own bootstrap: `[database]` in `config.toml` (a Postgres URL into a
-  `0600` file named by `url_file`, never in the TOML), `node-identity.json`
+  own bootstrap: `[database]` in `config.toml` (never the credential; a
+  PostgreSQL branch says `stored_credential = true`), the database
+  credential sealed into `database.credential` in the store `master.key`
+  goes to, `node-identity.json`
   with the node id the library recorded, and `master.key` (BCK2 under its
   own `BOOKCLERK_AUTH_PASSWORD` / `[auth].password` when set, BCK1
   otherwise). `config.toml` is written last. It then restarts cleanly: the

@@ -164,10 +164,18 @@ in the same store as the key, even though it is already sealed:
 - `config master-key move` takes the credential along. Reading fails
   closed, like the key: a missing item or a token sealed under another key
   is an error. `BOOKCLERK_D1_API_TOKEN` still overrides it.
-- A shared branch receives the library's token in its sealed bootstrap,
-  beside the key, and stores it the same way in its own store. A later
-  setup keeps that token unless told to replace it, so shared branches
-  aren't cut off.
+- The credential is the database plugin's, whichever plugin that is: the
+  sealed payload (version 2) names the plugin, and a reader asks for its
+  own plugin's credential, so a stored PostgreSQL URL is never sent to the
+  D1 API or the other way round. A version 1 payload (D1 only, before
+  credentials named their plugin) still reads, as D1's.
+- A shared branch receives the database credential in its sealed
+  bootstrap, beside the key (D1's token, or the PostgreSQL URL), and
+  stores it the same way in its own store, published with `master.key` as
+  one recoverable step. A PostgreSQL branch then names no URL in
+  `config.toml` (`stored_credential = true`), so no file holds it in the
+  clear. A later D1 setup keeps the token unless told to replace it, so
+  shared branches aren't cut off.
 
 ## Consequences
 

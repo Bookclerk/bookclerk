@@ -2427,7 +2427,7 @@ pub async fn start_integration_watchers(state: &AppState) {
 /// Fingerprint of host-owned database connect settings (occupancy + URLs).
 fn database_connect_fingerprint(cfg: &Config) -> String {
     format!(
-        "{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}",
         cfg.database.plugin,
         cfg.database.postgres.url.as_deref().unwrap_or(""),
         cfg.database
@@ -2436,6 +2436,7 @@ fn database_connect_fingerprint(cfg: &Config) -> String {
             .as_ref()
             .map(|path| path.display().to_string())
             .unwrap_or_default(),
+        cfg.database.postgres.stored_credential,
         cfg.database.d1.api_base,
         cfg.database.d1.account_id,
         cfg.database.d1.database_id

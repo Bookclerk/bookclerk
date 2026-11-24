@@ -758,7 +758,7 @@ artifacts = ["bookclerk"]
 
 [targets.shared_branch_bootstrap]
 crate = "bookclerk-node-proto"
-boundary = "The opened shared-branch bootstrap a joining node reads from its library: the [database] section, the D1 API token and its id, and the data key"
+boundary = "The opened shared-branch bootstrap a joining node reads from its library: the [database] section, the database credential and its id, and the data key"
 input_from = "peer"
 side = "host"
 artifacts = ["bookclerk"]

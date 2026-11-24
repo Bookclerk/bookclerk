@@ -974,10 +974,10 @@ const CALLBACK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
             ("refused" = (summary = "The library refused the sign-in.", value = json!({"error": "refused", "detail": "the library refused: the sign-in or invite is used, expired, revoked, or the library isn't accepting new branches"}))),
             ("impersonating" = (summary = "The session is impersonating a user.", value = json!({"error": "forbidden", "message": "You do not have access to this resource.", "status": 403}))),
         )),
-        (status = 409, description = "This install holds data of its own for a shared branch join (`not_empty`), the library's database plugin is not installed here (`database_guest_missing`), the D1 token is not set here (`d1_token_missing`), or joining would make a loop (`join_cycle`, `ancestry_too_deep`).", body = crate::http_error::ErrorDetail, examples(
+        (status = 409, description = "This install holds data of its own for a shared branch join (`not_empty`), the library's database plugin is not installed here (`database_guest_missing`), the library sent no D1 token and none is set here (`d1_token_missing`), or joining would make a loop (`join_cycle`, `ancestry_too_deep`).", body = crate::http_error::ErrorDetail, examples(
             ("not_empty" = (summary = "This install already holds library data (shared branch join).", value = json!({"error": "not_empty", "detail": "this server already holds library data of its own (2 accounts, 148 books); only an empty server can join as a shared branch"}))),
             ("database_guest_missing" = (summary = "The library's database plugin is not installed on this server.", value = json!({"error": "database_guest_missing", "detail": "the library's database is postgres, and its database plugin is not installed on this server; install it, then try again within 10 minutes (the library holds this server as node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c)"}))),
-            ("d1_token_missing" = (summary = "The library's database is D1 and this server has no token.", value = json!({"error": "d1_token_missing", "detail": "the library's database is Cloudflare D1: set BOOKCLERK_D1_API_TOKEN for this server and restart it (the token is never sent between servers), then try again within 10 minutes (the library holds this server as node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c)"}))),
+            ("d1_token_missing" = (summary = "The library's database is D1, it sent no token, and this server has none.", value = json!({"error": "d1_token_missing", "detail": "the library's database is Cloudflare D1 and it sent no API token: set BOOKCLERK_D1_API_TOKEN for this server and restart it, then try again within 10 minutes (the library holds this server as node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c)"}))),
         )),
         (status = 410, description = "The sign-in is unknown, already used, or older than ten minutes; start again (`join_expired`).", body = crate::http_error::ErrorDetail, example = json!({"error": "join_expired", "detail": "this sign-in is unknown, already used, or took longer than 10 minutes; start again"})),
         (status = 502, description = "The redeem can be retried with the sign-in still pending (`join_retry`), the library could not be reached (`unreachable`), it answered with an error (`library_error`), or it enrolled this host but the join could not be saved (`join_unsaved`, `join_failed`).", body = crate::http_error::ErrorDetail, examples(
@@ -1272,12 +1272,17 @@ async fn join_as_shared_branch(
             ),
         );
     }
-    if kind == DatabasePluginKind::D1 && bookclerk_config::resolve_d1_api_token().is_err() {
+    // A library that holds its D1 token only in its own environment sends
+    // none; this server then needs one of its own.
+    if kind == DatabasePluginKind::D1
+        && joined.bootstrap.database_credential.is_none()
+        && bookclerk_config::resolve_d1_api_token().is_err()
+    {
         return join_error(
             StatusCode::CONFLICT,
             "d1_token_missing",
             &format!(
-                "the library's database is Cloudflare D1: set BOOKCLERK_D1_API_TOKEN for this server and restart it (the token is never sent between servers), then try again within 10 minutes (the library holds this server as node {})",
+                "the library's database is Cloudflare D1 and it sent no API token: set BOOKCLERK_D1_API_TOKEN for this server and restart it, then try again within 10 minutes (the library holds this server as node {})",
                 joined.node_id
             ),
         );

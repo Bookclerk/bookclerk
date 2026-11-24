@@ -14,8 +14,9 @@ use std::thread::ThreadId;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use bookclerk_config::{resolve_postgres_url, Config, DatabasePluginKind};
+use bookclerk_config::{Config, DatabasePluginKind};
 use bookclerk_db_exec::db_value_from_sea;
+use bookclerk_library::database_credential::resolve_postgres_url;
 use bookclerk_library::EntityKind;
 use bookclerk_plugin_abi::{
     binding_values_from_params, catalog_page_statement, reserved_catalog_relation_missing,
@@ -1515,7 +1516,8 @@ impl ExternalDatabase {
             Some(DatabasePluginKind::Postgres) => DbConnectParams::Postgres {
                 plugin_data_dir: data_dir,
                 url: resolve_postgres_url(config)
-                    .map_err(|err| PluginError::message(err.to_string()))?,
+                    .map_err(|err| PluginError::message(err.to_string()))?
+                    .to_string(),
                 binding: Some(binding.to_string()),
                 database: Some(unit_ref.to_string()),
                 provision,
@@ -2938,7 +2940,9 @@ fn connect_bindings(
                 .map_err(|err| DbErr::Custom(err.to_string()))?;
             DbConnectParams::Postgres {
                 plugin_data_dir: data_dir,
-                url: resolve_postgres_url(config).map_err(map_config_err)?,
+                url: resolve_postgres_url(config)
+                    .map_err(|err| DbErr::Custom(err.to_string()))?
+                    .to_string(),
                 binding: None,
                 database: None,
                 provision: true,
@@ -3048,11 +3052,6 @@ fn map_reply_validation_abi(err: bookclerk_library::LibraryError) -> AbiPluginEr
 
 /// Wraps a plugin RPC failure as a SeaORM [`DbErr::Custom`].
 fn map_rpc_err(err: crate::PluginError) -> DbErr {
-    DbErr::Custom(err.to_string())
-}
-
-/// Wraps a host config error (missing D1 token / Postgres URL) as [`DbErr::Custom`].
-fn map_config_err(err: bookclerk_config::ConfigError) -> DbErr {
     DbErr::Custom(err.to_string())
 }
 

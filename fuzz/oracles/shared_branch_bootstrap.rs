@@ -3,22 +3,25 @@
 //! (`docs/adr/untrusted-input-fuzzing.md`).
 //!
 //! The input is the opened plaintext of a shared branch bootstrap: the
-//! library's `[database]` connection (for D1, with its API token) and its
-//! data-encryption key, which a joining shared branch writes as its own
-//! bootstrap and keeps in its master key store. The invariants are:
+//! library's `[database]` connection, the database plugin's own credential
+//! (D1's API token; a Postgres URL is its own) and its data-encryption key,
+//! which a joining shared branch writes as its own bootstrap and keeps in
+//! its master key store. The invariants are:
 //!
 //! - parsing never panics, and refuses bytes over the size limit, another
 //!   version, and a bootstrap for another library or node;
 //! - an accepted bootstrap's DEK is exactly 32 bytes;
-//! - an accepted D1 token is 1 to its limit in bytes of UTF-8 with no
-//!   whitespace or control character, and an accepted token id is 1 to its
-//!   limit of ASCII letters, digits, `-` and `_`, and comes with a token,
-//!   checked here rather than through the parser's own rule;
+//! - an accepted credential secret, and an accepted Postgres URL, is 1 to
+//!   its limit in bytes of UTF-8 with no whitespace or control character,
+//!   and an accepted credential id is 1 to its limit of ASCII letters,
+//!   digits, `-` and `_`, checked here rather than through the parser's own
+//!   rule;
+//! - a Postgres bootstrap never carries a separate credential;
 //! - an accepted bootstrap serializes and parses back to an equal one.
 
 use bookclerk_node_proto::{
-    parse_shared_branch_bootstrap, SharedBranchDatabase, DEK_LEN, MAX_BOOTSTRAP_D1_TOKEN_BYTES,
-    MAX_BOOTSTRAP_D1_TOKEN_ID_BYTES, MAX_SHARED_BRANCH_BOOTSTRAP_BYTES,
+    parse_shared_branch_bootstrap, SharedBranchDatabase, DEK_LEN, MAX_BOOTSTRAP_CREDENTIAL_BYTES,
+    MAX_BOOTSTRAP_CREDENTIAL_ID_BYTES, MAX_SHARED_BRANCH_BOOTSTRAP_BYTES,
     SHARED_BRANCH_BOOTSTRAP_VERSION,
 };
 
@@ -45,43 +48,28 @@ pub fn check(data: &[u8]) {
     assert_eq!(bootstrap.node_id, NODE_ID, "another node parsed");
     assert_eq!(bootstrap.dek.len(), DEK_LEN, "a short or long DEK parsed");
     match &bootstrap.database {
-        SharedBranchDatabase::Postgres { .. } => {}
-        SharedBranchDatabase::D1 {
-            api_token,
-            api_token_id,
-            ..
-        } => {
-            if let Some(token) = api_token {
-                let raw = token.expose();
+        SharedBranchDatabase::Postgres { url } => {
+            assert!(
+                bootstrap.database_credential.is_none(),
+                "a Postgres bootstrap with a separate credential parsed"
+            );
+            check_secret(url.expose(), "Postgres URL");
+        }
+        SharedBranchDatabase::D1 { .. } => {}
+    }
+    if let Some(credential) = &bootstrap.database_credential {
+        check_secret(credential.secret.expose(), "credential");
+        if let Some(id) = &credential.secret_id {
+            assert!(
+                !id.is_empty() && id.len() <= MAX_BOOTSTRAP_CREDENTIAL_ID_BYTES,
+                "a credential id of {} bytes parsed",
+                id.len()
+            );
+            for byte in id.bytes() {
                 assert!(
-                    !raw.is_empty() && raw.len() <= MAX_BOOTSTRAP_D1_TOKEN_BYTES,
-                    "a D1 token of {} bytes parsed",
-                    raw.len()
+                    byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_',
+                    "a credential id with byte {byte:#04x} parsed"
                 );
-                let Ok(text) = std::str::from_utf8(raw) else {
-                    panic!("a non-UTF-8 D1 token parsed");
-                };
-                for ch in text.chars() {
-                    assert!(
-                        !ch.is_whitespace() && !ch.is_control(),
-                        "a D1 token with U+{:04X} parsed",
-                        u32::from(ch)
-                    );
-                }
-            }
-            if let Some(id) = api_token_id {
-                assert!(api_token.is_some(), "a token id without a token parsed");
-                assert!(
-                    !id.is_empty() && id.len() <= MAX_BOOTSTRAP_D1_TOKEN_ID_BYTES,
-                    "a token id of {} bytes parsed",
-                    id.len()
-                );
-                for byte in id.bytes() {
-                    assert!(
-                        byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_',
-                        "a token id with byte {byte:#04x} parsed"
-                    );
-                }
             }
         }
     }
@@ -98,4 +86,24 @@ pub fn check(data: &[u8]) {
         Err(err) => panic!("an accepted bootstrap did not parse again: {err}"),
     };
     assert!(back == bootstrap, "a bootstrap changed across a round trip");
+}
+
+/// Panics unless `raw` is 1 to the limit in bytes of UTF-8 with no
+/// whitespace or control character.
+fn check_secret(raw: &[u8], what: &str) {
+    assert!(
+        !raw.is_empty() && raw.len() <= MAX_BOOTSTRAP_CREDENTIAL_BYTES,
+        "a {what} of {} bytes parsed",
+        raw.len()
+    );
+    let Ok(text) = std::str::from_utf8(raw) else {
+        panic!("a non-UTF-8 {what} parsed");
+    };
+    for ch in text.chars() {
+        assert!(
+            !ch.is_whitespace() && !ch.is_control(),
+            "a {what} with U+{:04X} parsed",
+            u32::from(ch)
+        );
+    }
 }

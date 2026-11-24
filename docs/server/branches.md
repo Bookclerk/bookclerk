@@ -504,28 +504,29 @@ with both ends on one machine), as for a branch.
 
 ### What is handed over
 
-In its redeem answer the library sends the `[database]` connection (for
-D1, with the API token the library uses) and the data-encryption key,
+In its redeem answer the library sends the `[database]` connection, the
+database plugin's own credential (the PostgreSQL URL, or the D1 API token
+the library uses) and the data-encryption key,
 sealed to the joining daemon's own X25519 node key.
 It never sends the passphrase-wrapped `master.key` file. The browser never
 sees either, and neither is logged.
 
 The joining daemon writes them as its own bootstrap:
 
-- `config.toml` `[database]`. A PostgreSQL URL goes into
-  `database-postgres.url`, mode `0600`, named by `url_file`, and never
-  into the TOML.
+- `config.toml` `[database]`, without the credential. For PostgreSQL it
+  sets `stored_credential = true` in place of `url` or `url_file`.
 - `node-identity.json`, with the node id the library recorded.
 - `master.key`, wrapped with this server's own `BOOKCLERK_AUTH_PASSWORD`
   (or `[auth].password`) when set, and unwrapped otherwise. When this
   server keeps its key in the OS keychain or `systemd-creds`
   (`[auth].key_store`, or the desktop window's default), the key goes
   into a new item there and `master.key` only names it.
-- For D1, the library's API token, sealed with the key and kept in the
-  same store (`database.credential`, or an item in the OS keychain or
-  `systemd-creds` that it names), as `bookclerk config database setup d1`
-  keeps it. Nothing needs setting by hand. Undoing a failed join deletes
-  it again.
+- The database plugin's credential (the PostgreSQL URL, or the D1 token),
+  sealed with the key and kept in the same store: in `database.credential`,
+  or in an item in the OS keychain or `systemd-creds` that it names. It is
+  tagged with its plugin, so no other database plugin is ever handed it.
+  Nothing needs setting by hand, and nothing holds the credential in the
+  clear. Undoing a failed join deletes it again.
 
 Then `bookclerkd` restarts itself cleanly. It stops its listeners as on
 SIGTERM and re-executes the same binary with the same arguments and

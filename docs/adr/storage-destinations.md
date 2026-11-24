@@ -133,7 +133,9 @@ back (`outputs`), and whether it can remove what it created
   `config.toml` and seals the returned token with the data-encryption key
   in `database.credential`, kept in the same store as the master key (the
   file, the OS keychain or `systemd-creds`), never in the environment or
-  the database it opens.
+  the database it opens. The credential is tagged with its plugin, so the
+  same path serves any database plugin's setup, and a joining shared
+  branch receives and keeps it the same way.
 
 ## Consequences
 

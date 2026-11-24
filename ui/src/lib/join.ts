@@ -1364,7 +1364,7 @@ export function joinErrorMessage(error: unknown, fallback: string): string {
       case "database_guest_missing":
         return "This server doesn't have the library's database plugin installed. Install it, then try again within 10 minutes.";
       case "d1_token_missing":
-        return "Set this server's Cloudflare D1 API token (BOOKCLERK_D1_API_TOKEN), then try again within 10 minutes.";
+        return "The library sent no Cloudflare D1 API token. Set this server's own (BOOKCLERK_D1_API_TOKEN), then try again within 10 minutes.";
       default:
         return error.message || fallback;
     }

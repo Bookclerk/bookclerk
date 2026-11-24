@@ -15,9 +15,9 @@
 
 use std::collections::BTreeMap;
 
-use bookclerk_config::{Config, KeyStoreKind};
+use bookclerk_config::{Config, DatabasePluginKind, KeyStoreKind};
 use bookclerk_library::database_credential::{
-    load_database_credential, store_database_credential, DatabaseCredential,
+    load_database_credential_for, store_database_credential, DatabaseCredential,
 };
 use bookclerk_library::MasterKey;
 use bookclerk_plugin_abi::provision::CheckedProvision;
@@ -120,7 +120,9 @@ fn d1_outputs(checked: &CheckedProvision) -> anyhow::Result<D1Outputs> {
     let credential = checked
         .secrets
         .get("api_token")
-        .map(|token| DatabaseCredential::new(token.expose(), token_id.as_deref()))
+        .map(|token| {
+            DatabaseCredential::new(DatabasePluginKind::D1, token.expose(), token_id.as_deref())
+        })
         .transpose()?;
     Ok(D1Outputs {
         account_id: text("account_id")?,
@@ -160,7 +162,7 @@ fn apply_d1_setup(
     let store = match &outputs.credential {
         Some(credential) => Some(store_database_credential(files_dir, dek, credential)?),
         None => {
-            if load_database_credential(files_dir, dek)?.is_none()
+            if load_database_credential_for(files_dir, dek, DatabasePluginKind::D1)?.is_none()
                 && bookclerk_config::resolve_d1_api_token().is_err()
             {
                 anyhow::bail!(
@@ -192,8 +194,10 @@ fn current_settings(config: &Config, dek: &MasterKey) -> serde_json::Map<String,
     }
     // An unreadable earlier credential only means a new token is minted and
     // the old one is left for the operator to delete.
-    if let Ok(Some(previous)) = load_database_credential(&config.paths().files_dir, dek) {
-        if let Some(id) = previous.token_id() {
+    if let Ok(Some(previous)) =
+        load_database_credential_for(&config.paths().files_dir, dek, DatabasePluginKind::D1)
+    {
+        if let Some(id) = previous.secret_id() {
             settings.insert("api_token_id".into(), Value::from(id));
         }
     }
@@ -323,7 +327,9 @@ mod tests {
             account_id: "3f4b7e3dcab231cbfdaa90a6a28bd548".into(),
             database_id: "0c3a1d2e-4b5f-4a6b-8c7d-9e0f1a2b3c4d".into(),
             database_name: "bookclerk".into(),
-            credential: Some(DatabaseCredential::new("minted", Some("tok_1")).unwrap()),
+            credential: Some(
+                DatabaseCredential::new(DatabasePluginKind::D1, "minted", Some("tok_1")).unwrap(),
+            ),
             summary: vec![],
         };
         let applied = apply_d1_setup(&config, &dek, &outputs).unwrap();
@@ -352,8 +358,10 @@ mod tests {
         assert_eq!(applied.store, None);
         let rewritten = Config::load(Some(dir.path().to_path_buf()), None).unwrap();
         assert_eq!(rewritten.database.d1.database_id, kept.database_id);
-        let still = load_database_credential(dir.path(), &dek).unwrap().unwrap();
-        assert_eq!(still.token(), "minted");
+        let still = load_database_credential_for(dir.path(), &dek, DatabasePluginKind::D1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(still.secret(), "minted");
 
         // Kept, but this server holds no token: refused.
         let fresh = tempfile::tempdir().unwrap();
