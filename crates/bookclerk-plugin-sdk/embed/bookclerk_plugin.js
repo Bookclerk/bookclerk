@@ -17309,7 +17309,7 @@ var QueueFeed = class {
    * page holds the next messages' changes.
    *
    * @param cursor - The previous page's cursor, or `undefined`.
-   * @param limit - Requested changes (0 for {@link MAX_PAGE}).
+   * @param limit - Requested changes (0 for the most, 256).
    * @returns The page.
    * @throws {PluginError} `invalid_cursor` for a cursor that is not this
    *   feed's or is ahead of it; the queue's or KV's own errors.
