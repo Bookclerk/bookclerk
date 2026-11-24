@@ -607,29 +607,33 @@ mod tests {
 
     #[test]
     fn fetched_paths_must_lie_inside_the_cache_dir() {
-        let dir = std::path::Path::new("/scratch/fetch");
+        // An absolute path on this platform: Windows needs a drive.
+        let abs = |path: &str| format!("{}{path}", if cfg!(windows) { "C:" } else { "" });
+        let dir_spelling = abs("/scratch/fetch");
+        let dir = std::path::Path::new(&dir_spelling);
         let fetch = |path: &str| PlainFetch {
             media_kind: MediaKind::Audio,
             files: vec![
-                file("/scratch/fetch/B0/book.m4b", FetchedFileRole::Whole),
+                file(&abs("/scratch/fetch/B0/book.m4b"), FetchedFileRole::Whole),
                 file(path, FetchedFileRole::Cover),
             ],
             ..PlainFetch::default()
         };
         assert_eq!(
-            validate_fetched_paths(&fetch("/scratch/fetch/B0/c.jpg"), &[dir]),
+            validate_fetched_paths(&fetch(&abs("/scratch/fetch/B0/c.jpg")), &[dir]),
             Ok(())
         );
-        for outside in [
-            "/etc/passwd",
-            "relative/c.jpg",
-            "/scratch/fetch",
-            "/scratch/fetch/",
-            "/scratch/fetchx/c.jpg",
-            "/scratch/fetch/../fetch/c.jpg",
-            "/scratch/fetch/./c.jpg",
-            "/scratch/fetch/B0/../../../etc/passwd",
-        ] {
+        let outside = [
+            abs("/etc/passwd"),
+            "relative/c.jpg".to_owned(),
+            abs("/scratch/fetch"),
+            abs("/scratch/fetch/"),
+            abs("/scratch/fetchx/c.jpg"),
+            abs("/scratch/fetch/../fetch/c.jpg"),
+            abs("/scratch/fetch/./c.jpg"),
+            abs("/scratch/fetch/B0/../../../etc/passwd"),
+        ];
+        for outside in &outside {
             assert_eq!(
                 validate_fetched_paths(&fetch(outside), &[dir]),
                 Err(FetchError::OutsideCacheDir { index: 1 }),
@@ -638,19 +642,21 @@ mod tests {
         }
         assert_eq!(
             validate_fetched_paths(
-                &fetch("/scratch/fetch/c.jpg"),
+                &fetch(&abs("/scratch/fetch/c.jpg")),
                 &[std::path::Path::new("rel")]
             ),
             Err(FetchError::OutsideCacheDir { index: 0 })
         );
         // Either spelling of the directory admits a file.
-        let resolved = std::path::Path::new("/private/scratch/fetch");
+        let resolved_spelling = abs("/private/scratch/fetch");
+        let resolved = std::path::Path::new(&resolved_spelling);
+        let in_resolved = abs("/private/scratch/fetch/c.jpg");
         assert_eq!(
-            validate_fetched_paths(&fetch("/private/scratch/fetch/c.jpg"), &[dir, resolved]),
+            validate_fetched_paths(&fetch(&in_resolved), &[dir, resolved]),
             Ok(())
         );
         assert_eq!(
-            validate_fetched_paths(&fetch("/private/scratch/fetch/c.jpg"), &[dir]),
+            validate_fetched_paths(&fetch(&in_resolved), &[dir]),
             Err(FetchError::OutsideCacheDir { index: 1 })
         );
     }
