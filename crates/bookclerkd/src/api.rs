@@ -1683,6 +1683,7 @@ fn shared_routes() -> OpenApiRouter<Arc<AppState>> {
         .routes(routes!(crate::library_works::list_works))
         .routes(routes!(crate::library_meaning::get_meaning_status))
         .routes(routes!(crate::library_meaning::list_similar_works))
+        .routes(routes!(crate::taste_radar::taste_radar))
         .routes(routes!(crate::library_works::get_work))
         .routes(routes!(crate::library_works::put_work_state))
         .routes(routes!(crate::library_works::list_facet_values))
@@ -7184,10 +7185,14 @@ async fn discover_catalog_search(
         && field.is_none()
         && q.rank.unwrap_or_default() == CatalogRank::Meaning
     {
+        // Between results that match the query equally well, the one
+        // closer to the searcher's taste comes first.
+        let taste = crate::taste_radar::caller_axes(&state, &library, &headers).await;
         crate::search_rerank::by_meaning(
             &state,
             &query,
             &mut page.items,
+            taste.as_ref(),
             CATALOG_SEARCH_TIMEOUT.saturating_sub(started.elapsed()),
         )
         .await;

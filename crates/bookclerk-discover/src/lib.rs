@@ -35,6 +35,7 @@ mod scope_filter;
 mod shelves;
 mod stored_feed;
 mod stored_taste;
+mod taste_axes;
 mod title_meta;
 mod ttl_cache;
 mod wish_pool;
@@ -92,6 +93,11 @@ pub use request_queue::{read_request_queue, StoredRequestQueue, REQUEST_QUEUE_MA
 pub use shelves::{
     build_discover_feed, flatten_feed, shelf_is_disabled, shelf_kind_catalog, DiscoverFeed,
     DiscoverShelf, FeedState, ShelfKindInfo, ShelfTaste, SERIES_CAP,
+};
+pub use taste_axes::{
+    axis_centroid, axis_scales, cluster, name_axes, stored_taste_axes, taste_fit, AxisBook,
+    AxisMember, AxisScale, AxisSeed, StoredAxes, TasteAxis, AXIS_MIN_WORKS, MAX_AXIS_SEEDS,
+    MAX_TASTE_AXES, MIN_TASTE_AXES, WISH_SEED_WEIGHT,
 };
 pub use title_meta::{
     check_title_meta_query, plan_title_meta_fill, resolve_title_meta, resolve_title_meta_answer,

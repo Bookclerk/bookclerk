@@ -121,6 +121,24 @@ const BROAD_GENRES: [&str; 8] = [
     "general",
 ];
 
+/// The genre labels of one title, each once, as (label as written,
+/// lowercase key): the comma-, semicolon- or `>`-separated parts of its
+/// genres, without the empty ones and those in [`BROAD_GENRES`].
+pub(crate) fn genre_labels(genres: &str) -> Vec<(String, String)> {
+    let mut labels: Vec<(String, String)> = Vec::new();
+    for label in genres.split([',', ';', '>']).map(str::trim) {
+        let key = label.to_lowercase();
+        if key.is_empty()
+            || BROAD_GENRES.contains(&key.as_str())
+            || labels.iter().any(|(_, seen)| *seen == key)
+        {
+            continue;
+        }
+        labels.push((label.to_string(), key));
+    }
+    labels
+}
+
 /// The genres a person's taste leans to, most common first: the labels
 /// their seeds (books and wishes) carry, counted, at most [`TASTE_GENRES`].
 ///
@@ -140,17 +158,11 @@ pub fn taste_genres(seeds: &[SeedTitle]) -> Vec<String> {
         let Some(categories) = seed.categories.as_deref() else {
             continue;
         };
-        let mut seen: Vec<String> = Vec::new();
-        for label in categories.split([',', ';', '>']).map(str::trim) {
-            let key = label.to_lowercase();
-            if key.is_empty() || BROAD_GENRES.contains(&key.as_str()) || seen.contains(&key) {
-                continue;
-            }
+        for (label, key) in genre_labels(categories) {
             match counted.iter_mut().find(|(_, of, _)| *of == key) {
                 Some((_, _, count)) => *count += 1,
-                None => counted.push((label.to_string(), key.clone(), 1)),
+                None => counted.push((label, key, 1)),
             }
-            seen.push(key);
         }
     }
     // A stable sort: equal counts keep the order of first mention.
@@ -239,6 +251,12 @@ pub struct SubjectTaste {
     pub wishlist: Vec<SeedTitle>,
     /// Display titles of `wishlist`, newest first.
     pub wish_titles: Vec<String>,
+    /// The works of every open wish that shapes the taste, each once: the
+    /// subject's own, or everyone's for the household's taste. They are
+    /// seed works beside `books` and count at
+    /// [`crate::taste_axes::WISH_SEED_WEIGHT`] when the taste's axes are
+    /// found.
+    pub wish_work_ids: Vec<String>,
     /// Lowercase storefront ids the subject has an account with.
     pub linked_sources: HashSet<String>,
     /// Identifiers of every title the library holds, read with the taste so
@@ -275,6 +293,7 @@ impl SubjectTaste {
     fn household(
         books: Vec<TasteTitle>,
         listening: Vec<ListeningSignal>,
+        wish_work_ids: Vec<String>,
         linked_sources: HashSet<String>,
         owned: OwnedIdentities,
     ) -> Self {
@@ -285,6 +304,7 @@ impl SubjectTaste {
             listening,
             wishlist: Vec::new(),
             wish_titles: Vec::new(),
+            wish_work_ids,
             linked_sources,
             owned,
         }
@@ -340,6 +360,18 @@ pub async fn load_subject_taste(
     let owned = OwnedIdentities::of(&household);
     let work_ids: Vec<String> = household.iter().map(|t| t.work_id.clone()).collect();
     let states = library.user_title_states_for_works(&work_ids).await?;
+    let open_wishes = library
+        .list_title_requests(Some(RequestStatus::Open))
+        .await?;
+    // The works of `wishes`, each once, in their order.
+    let wished_works =
+        |wishes: &mut dyn Iterator<Item = &bookclerk_library::TitleRequestRecord>| {
+            let mut seen: HashSet<&str> = HashSet::new();
+            wishes
+                .filter(|wish| !wish.work_id.is_empty() && seen.insert(wish.work_id.as_str()))
+                .map(|wish| wish.work_id.clone())
+                .collect::<Vec<String>>()
+        };
     let all_listening = if opts.include_listening {
         let mut rows = library.list_listening_progress(None).await?;
         if !opts.listening_providers.is_empty() {
@@ -394,6 +426,7 @@ pub async fn load_subject_taste(
         return Ok(SubjectTaste::household(
             household,
             all_listening,
+            wished_works(&mut open_wishes.iter()),
             linked,
             owned,
         ));
@@ -448,11 +481,16 @@ pub async fn load_subject_taste(
     if !users.is_empty() {
         bookclerk_library::apply_user_states(&mut own, &states, &users);
     }
-    let wishes: Vec<_> = library
-        .list_title_requests(Some(RequestStatus::Open))
-        .await?
+    let own_wish = |r: &bookclerk_library::TitleRequestRecord| {
+        r.identity_id.is_some_and(|id| identity_ids.contains(&id))
+    };
+    // Every wish of theirs shapes the taste; only the newest few are also
+    // asked of the stores.
+    let wish_work_ids = wished_works(&mut open_wishes.iter().filter(|r| own_wish(r)));
+    let everyones_wishes = wished_works(&mut open_wishes.iter());
+    let wishes: Vec<_> = open_wishes
         .into_iter()
-        .filter(|r| r.identity_id.is_some_and(|id| identity_ids.contains(&id)))
+        .filter(own_wish)
         .take(WISHLIST_SEED_LIMIT)
         .collect();
     let wish_titles: Vec<String> = wishes.iter().map(|r| r.title.clone()).collect();
@@ -469,6 +507,7 @@ pub async fn load_subject_taste(
         return Ok(SubjectTaste::household(
             household,
             all_listening,
+            everyones_wishes,
             linked_sources,
             owned,
         ));
@@ -499,6 +538,7 @@ pub async fn load_subject_taste(
         listening,
         wishlist,
         wish_titles,
+        wish_work_ids,
         linked_sources,
         owned,
     })
@@ -549,7 +589,7 @@ pub async fn fetch_subject_candidates(
     let taste = load_subject_taste(library, subject, opts).await?;
     // The ranking that follows reads the taste from here instead of the
     // library.
-    store_taste(library, subject, &taste).await?;
+    store_taste(library, subject, &taste, opts).await?;
     let owned = &taste.owned;
     let book_seeds = taste.book_seeds(opts.storefront_seed_limit, &opts.region);
     let wish_seeds: Vec<SeedTitle> = taste
@@ -1399,21 +1439,38 @@ pub async fn refresh_subject_taste(
     opts: &RecommendOptions,
 ) -> Result<()> {
     let taste = load_subject_taste(library, subject, opts).await?;
-    store_taste(library, subject, &taste).await?;
+    store_taste(library, subject, &taste, opts).await?;
     Ok(())
 }
 
 /// Stores the ranking's part of `taste` as `subject`'s taste.
 ///
+/// With a model's vectors (`opts` names the space), the taste's seed works
+/// and wishes are grouped into its axes first ([`crate::taste_axes`]);
+/// works the model has not embedded yet join at the next store.
+///
 /// # Errors
 ///
-/// Returns the library write error, or an encoding error.
+/// Returns the library read or write error, or an encoding error.
 async fn store_taste(
     library: &LibraryStore,
     subject: &DiscoverSubject,
     taste: &SubjectTaste,
+    opts: &RecommendOptions,
 ) -> Result<StoredTaste> {
     let mut stored = StoredTaste::of(taste);
+    if opts.embeddings_enabled && !crate::embed::is_stand_in(&opts.vectors.space) {
+        let mut seeds =
+            crate::recommend::seed_weights(&taste.books, &taste.weights, &taste.listening);
+        for work in &taste.wish_work_ids {
+            // A wish for a book they already finished adds nothing to it.
+            let weight = seeds.entry(work.clone()).or_default();
+            *weight = weight.max(crate::taste_axes::WISH_SEED_WEIGHT);
+        }
+        stored.scores.axes =
+            crate::taste_axes::build_axes(library, &opts.vectors.space, &seeds).await?;
+        stored.axes_space = Some(crate::stored_taste::space_key(&opts.vectors.space));
+    }
     // One bind of one statement: sized to what the database's statements
     // carry, so a database with small statements keeps the heaviest part.
     let budget = taste_budget(library.db_capabilities().max_payload_bytes);
@@ -1439,13 +1496,18 @@ async fn ranking_taste(
 ) -> Result<(SeedScope, StoredTaste)> {
     if let Some(row) = library.get_discover_taste(subject).await? {
         if is_fresh(row.computed_at, Utc::now()) {
-            if let Some(taste) = StoredTaste::decode(&row.taste_json) {
+            // A taste stored before the model served has no axes in its
+            // space: load it again, as when it is old.
+            let serves = |taste: &StoredTaste| {
+                !opts.embeddings_enabled || taste.axes_serve(&opts.vectors.space)
+            };
+            if let Some(taste) = StoredTaste::decode(&row.taste_json).filter(serves) {
                 return Ok((row.seed_scope, taste));
             }
         }
     }
     let taste = load_subject_taste(library, subject, opts).await?;
-    let stored = store_taste(library, subject, &taste).await?;
+    let stored = store_taste(library, subject, &taste, opts).await?;
     Ok((taste.scope, stored))
 }
 
@@ -2301,6 +2363,158 @@ mod tests {
         assert_eq!(row.seed_scope, SeedScope::Own);
         let taste = StoredTaste::decode(&row.taste_json).unwrap();
         assert!(taste.shelf.owned_sources.contains("libro"));
+    }
+
+    /// Stands for a model: a vector says which of three subjects a text
+    /// is about, over one large component every vector shares.
+    struct ThreeTopics(bookclerk_library::VectorSpace);
+
+    #[async_trait::async_trait]
+    impl crate::embed::Embedder for ThreeTopics {
+        fn space(&self) -> &bookclerk_library::VectorSpace {
+            &self.0
+        }
+
+        fn dimensions(&self) -> usize {
+            4
+        }
+
+        async fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+            Ok(texts
+                .iter()
+                .map(|text| {
+                    let text = text.to_lowercase();
+                    let about = |word: &str| if text.contains(word) { 0.5 } else { 0.1 };
+                    vec![0.8, about("dragon"), about("ledger"), about("garden")]
+                })
+                .collect())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stored_taste_groups_books_and_wishes_into_axes() {
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        library
+            .upsert_account("audible", "acct", "us", Some("Main"), true, "audible")
+            .await
+            .unwrap();
+        let reader = library
+            .create_user(bookclerk_library::UserRole::Member, Some("Reader"), None)
+            .await
+            .unwrap();
+        let shelf = [
+            ("Dragon Hoard", "Fantasy"),
+            ("Dragon Flight", "Fantasy"),
+            ("The Ledger", "Business"),
+            ("Ledger Lines", "Business"),
+            ("A Garden Year", "Gardening"),
+            ("Garden Beds", "Gardening"),
+        ];
+        for (at, (title, genre)) in shelf.iter().enumerate() {
+            let mut book =
+                bookclerk_library::NewBook::minimal(format!("B00000{at}"), "acct", "us", *title);
+            book.categories = Some((*genre).into());
+            let book = library.upsert_book(&book).await.unwrap();
+            let work = work_of(&library, &book.holding_id).await;
+            library
+                .set_user_title_state(
+                    reader.id,
+                    &work,
+                    &bookclerk_library::UserBookFields {
+                        is_finished: Some(true),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let wish = library
+            .create_title_request(&bookclerk_library::NewTitleRequest {
+                uuid: None,
+                identity_id: None,
+                title: "Dragon Rider".into(),
+                authors: None,
+                asin: Some("B0WISH0001".into()),
+                isbn: None,
+                notes: None,
+                status: RequestStatus::Open,
+                resolved_edition_id: None,
+                cover_url: None,
+            })
+            .await
+            .unwrap();
+        let space = bookclerk_library::VectorSpace {
+            model: "@embedder/topics".into(),
+            revision: "r1".into(),
+            packs: String::new(),
+        };
+        let subject = DiscoverSubject::Operator;
+        let opts = RecommendOptions {
+            vectors: crate::embed::VectorSource::new(space.clone(), None),
+            ..RecommendOptions::default()
+        };
+
+        // Before the model has embedded the library there is nothing to
+        // group; the taste is stored without axes.
+        refresh_subject_taste(&library, &subject, &opts)
+            .await
+            .unwrap();
+        let before = crate::taste_axes::stored_taste_axes(&library, &subject)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(before.axes.is_empty());
+
+        crate::embed::embed_dirty_works(&library, &mut ThreeTopics(space.clone()), None)
+            .await
+            .unwrap();
+        refresh_subject_taste(&library, &subject, &opts)
+            .await
+            .unwrap();
+        let stored = crate::taste_axes::stored_taste_axes(&library, &subject)
+            .await
+            .unwrap()
+            .unwrap();
+        let names: Vec<&str> = stored.axes.iter().map(|a| a.name.as_str()).collect();
+        // Each finished book weighs 3.5 (finished and held); the wish adds
+        // 1.5 to the dragons, so they come first.
+        assert_eq!(names[0], "Fantasy");
+        let mut rest = names[1..].to_vec();
+        rest.sort_unstable();
+        assert_eq!(rest, ["Business", "Gardening"]);
+        let dragons = &stored.axes[0].members;
+        assert_eq!(dragons.len(), 3, "two books and the wish: {dragons:?}");
+        let wished = dragons.last().unwrap();
+        assert_eq!(wished.work_id, wish.work_id);
+        assert!((wished.weight - crate::taste_axes::WISH_SEED_WEIGHT).abs() < 1e-9);
+        assert!(
+            dragons[0].weight > wished.weight,
+            "a finish outweighs a wish"
+        );
+        // The wish is a seed of the one centroid too.
+        let (_, taste) = ranking_taste(&library, &subject, &opts).await.unwrap();
+        assert!(taste.scores.seed_work_ids.contains(&wish.work_id));
+        assert_eq!(taste.scores.axes, stored.axes);
+
+        // The stand-in's vectors are not grouped.
+        let stand_in = RecommendOptions::default();
+        refresh_subject_taste(&library, &subject, &stand_in)
+            .await
+            .unwrap();
+        let none = crate::taste_axes::stored_taste_axes(&library, &subject)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(none.axes.is_empty());
+        // A ranking with the model finds the fresh taste was not grouped
+        // in its space and loads it again, axes and all.
+        let (_, again) = ranking_taste(&library, &subject, &opts).await.unwrap();
+        assert_eq!(again.scores.axes, stored.axes);
+        // The stand-in reads whatever is stored.
+        let (_, kept) = ranking_taste(&library, &subject, &stand_in).await.unwrap();
+        assert_eq!(kept.scores.axes, stored.axes);
     }
 
     #[tokio::test]

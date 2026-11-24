@@ -600,6 +600,10 @@ pub(crate) mod tests {
             let vectors: Vec<Vec<f32>> = texts
                 .iter()
                 .map(|text| {
+                    if text.text.contains("Starship") {
+                        // A third subject, for tastes with three leanings.
+                        return vec![0.0, 0.0, 1.0];
+                    }
                     let dragons = if text.text.contains("Dragon") {
                         1.0
                     } else {

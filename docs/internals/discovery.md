@@ -147,7 +147,8 @@ operator, a household user, or a portal identity) has a **subject key**
    The fetch then stores what the ranking needs from that taste in
    `discover_tastes`, one row per person: the languages they listen in,
    the authors, narrators, categories and series they like with their
-   weights, the works whose embeddings make up the similarity centroid,
+   weights, the works whose embeddings make up the similarity centroid
+   (open wishes among them), the [taste axes](#taste-axes),
    and the shelf titles' context (wish titles and the stores they have an
    account with included). The ranking reads that row instead of the
    library, so its cost follows the person's candidates, not the size of
@@ -156,9 +157,10 @@ operator, a household user, or a portal identity) has a **subject key**
    one cell, written as one bind of one statement: a taste whose JSON would
    pass 128 KiB, or what the database's statements carry less 1 KiB for
    the rest of the upsert (about 2.6 KiB on D1), keeps only its heaviest
-   entries, which move a score the most, and its first wish titles. A ranking with no stored taste,
-   or one more than a day old, loads the taste from the library and stores
-   it again. Every [taste event](#taste-events) queues a fetch, which
+   entries, which move a score the most, its first wish titles and the
+   heaviest works of each axis. A ranking with no stored taste, one more
+   than a day old, or one whose axes were looked for in another model's
+   space, loads the taste from the library and stores it again. Every [taste event](#taste-events) queues a fetch, which
    stores a fresh taste (also with `discovery.storefront_candidates`
    off, when the fetch calls no store), so the day only matters for finishes, ratings and
    tags, which send no event.
@@ -509,21 +511,101 @@ The CLI runs no model plugin: `bookclerk discover embed` and
 
 ### Scoring similarity
 
-A candidate's similarity is the cosine between its vector and the
-centroid of the reader's taste works.
+How a candidate's similarity counts depends on the vectors and on whether
+the reader's taste has [axes](#taste-axes).
 
-- **Stand-in**: a cosine above 0.15 adds `cosine × 12` points.
-- **Model**: a model's cosines sit in a narrow, high band (unrelated
-  books often score above 0.5), so a fixed threshold does not work. The
-  ranking takes the mean and standard deviation of the similarities of
-  all its candidates. A candidate more than 0.5 deviations above the
-  mean adds 2.5 points per deviation, up to 3 deviations. A ranking of
-  fewer than 12 texts gets no similarity score.
+- **Stand-in**: the cosine between the candidate and the centroid of the
+  reader's seed works. Above 0.15 it adds `cosine × 12` points.
+- **Model, taste with axes**: the candidate is measured against every
+  axis. Its fit on an axis runs from 0 (no closer to the axis's centroid
+  than the reader's works on their other axes) to 1 (as close as the
+  axis's own works). The fits add up: the best in full, the second at
+  half, the third at a quarter. A total above 0.25 adds `total × 6`
+  points, so a book near one axis ranks high (6 points at a full fit)
+  and a book near several ranks higher (up to 10.5).
+- **Model, taste without axes**: a model's cosines sit in a narrow, high
+  band (unrelated books often score above 0.5), so a fixed threshold
+  does not work. The ranking takes the mean and standard deviation of
+  the similarities of all its candidates to the one seed centroid. A
+  candidate more than 0.5 deviations above the mean adds 2.5 points per
+  deviation, up to 3 deviations. A ranking of fewer than 12 texts gets
+  no similarity score.
 
 > [!NOTE]
-> The model weights are a first setting, chosen so that similarity
-> counts for about as much as it did with the stand-in. They are tested
-> on small built libraries, not measured on real ones.
+> The weights are a first setting, chosen so that similarity counts for
+> about as much as it did with the stand-in. They are tested on small
+> built libraries, not measured on real ones.
+
+### Taste axes
+
+One average of everything a person likes sits between their tastes and
+is close to none of them: the mean of hard science fiction and cosy
+mysteries is neither. With a model's vectors, a taste is therefore split
+into axes when it is stored (`crates/bookclerk-discover/src/taste_axes.rs`).
+The stand-in's hash vectors do not group by meaning and get none.
+
+**Seeds.** The seed works are the taste's books and open wishes, each
+with a weight:
+
+| Signal | Weight |
+| --- | --- |
+| Finished | 3 |
+| Rated four stars or more (three) | 2 (1) |
+| Held by the library | 0.5 |
+| Listening | The listen's engagement, up to 6 |
+| Open wish | 1.5, or the book's own weight when that is more |
+
+A household book blended into a member's taste counts at half, as it
+does everywhere. So a wish outweighs a book that is only in the house
+library and weighs less than a book the person finished or rated well.
+A member's taste takes their own wishes; the household's taste takes
+everyone's.
+
+**Grouping.** The 400 heaviest seed works with a vector are grouped by
+spherical k-means, with nothing left to chance so the same taste gives
+the same axes: the first centre is the heaviest work, each next centre
+the work least like the centres so far.
+
+| Rule | Value |
+| --- | --- |
+| Groups tried | The square root of the seed count, within 3 to 6 |
+| Works a group needs | 2; a smaller group is dissolved into the others |
+| Fewer than 3 groups hold | No axes; the ranking uses the one centroid |
+| Order | The group with the most weight first |
+
+**Names.** An axis is named by what its works share and the person's
+other works lack, whatever genre a store files them under. A name is a
+genre label, a series, or a phrase of two to four words from the works'
+descriptions (their first 1,200 characters, markup removed, not starting
+or ending with a common word or a number), such as "New York Times
+bestseller". Its distinctiveness is the share of the axis's works that
+carry it less the share of the other axes' works that do.
+
+| Rule | Value |
+| --- | --- |
+| Works that must carry a genre or series | 2, and a third of the axis |
+| Works that must carry a phrase | 2, and half of the axis |
+| Least distinctiveness | 0.2 |
+| Phrase against genre or series | The phrase must be 0.15 more distinctive |
+| Equal names | The one with more words, then by name |
+| Nothing qualifies | "Like" and the title of the work nearest the axis's centroid |
+
+No two axes of a taste share a name.
+
+**Storage.** The axes are stored with the taste (`discover_tastes`) as
+their names and member works with weights, not as vectors. A ranking
+reads the members' vectors and takes each axis's centroid (the weighted
+mean of its works' unit vectors) and its scale: the weighted mean cosine
+of its own works to the centroid (a fit of 1) and of the other axes'
+works (a fit of 0). The taste records which model space its axes were
+looked for in; a ranking that reads another space loads the taste again,
+so axes appear when a model has embedded the library and follow a change
+of model. A work embedded after the taste was stored joins at the next
+store.
+
+> [!NOTE]
+> The wish weight, the group counts and the naming thresholds are first
+> settings, tested on small built libraries.
 
 ### Searching by meaning
 
@@ -596,6 +678,48 @@ More like this compares two stored vectors, so it needs no model on the
 node that answers. It lists only held works inside the caller's
 [patron scope](../guide/sharing.md#limit-what-a-patron-sees), and a work outside the scope
 answers `404` as its own page does.
+
+### The taste radar
+
+A book's dialog shows how close the book lands to each part of the
+viewer's taste, as a radar: `POST /api/discover/taste/radar`
+(`crates/bookclerkd/src/taste_radar.rs`).
+
+**Axes.** The axes are the viewer's [taste axes](#taste-axes), read from
+their stored taste: the same ones their shelves are ranked against, so
+the chart explains the shelves. They are the viewer's books and open
+wishes grouped by meaning, three to six of them, the one that weighs
+most first.
+
+**Score.** A book's score on an axis is how close it lands to the axis's
+centroid, on the axis's own scale: 0 when it is no closer than the
+viewer's works on their other axes, 1 when it is as close as the axis's
+own works. It is the fit a ranking gives a candidate on that axis, read
+in the space the [search by meaning](#searching-by-meaning) reads.
+
+**The book.** A library work is sent as `work_id` and read from the
+node's index of work vectors; a work outside the caller's
+[patron scope](../guide/sharing.md#limit-what-a-patron-sees) answers
+`404`. A store title is sent as its title, authors, series, genres and
+description (at most 16 KiB together) and embedded by the node's model
+from the same text a candidate is, within 15 seconds. That vector is kept
+in memory only, beside the [store search](#ordering-a-page-with-its-meaning)
+vectors.
+
+**Examples.** Each axis names up to three of its works, books or wishes,
+nearest the book first, and how many works make the axis. The book is
+never its own example.
+
+The scales of a taste's axes are kept in memory per viewer (32 viewers)
+until their taste is stored again or the index is rebuilt. The radar
+writes nothing to the database.
+
+| `state` | Meaning |
+| --- | --- |
+| `ready` | `axes` places the book |
+| `no_taste` | No stored taste yet, or too few books and wishes sit together to make three axes |
+| `no_model` | No model serves the library (for a store title: none on this node) |
+| `embedding` | The library, or this work, is not embedded with the model yet |
 
 ### OSV / `paste`
 
@@ -958,8 +1082,12 @@ meaning (`crates/bookclerkd/src/search_rerank.rs`):
    seen before at about 0.7 s on one core with the default model
    ([Embedding benchmarks](embedding-benchmarks.md)).
 3. Each result has two places: its place in the stores' order and its place
-   by closeness to the query. The page is ordered by the sum of the two,
-   and the stores' order decides between equals. A result must do well in
+   by closeness to the query. The page is ordered by the sum of the two.
+   Between results with the same sum, the one that fits the searcher's
+   [taste axes](#taste-axes) better comes first (the fit a ranking gives a
+   candidate, from the vector already made for the result), and the
+   stores' order decides between the rest. The taste never passes a better
+   match of the query. A result must do well in
    both to lead, so an exact title match the stores put first stays near
    the top. The equal weights are a first setting, not yet measured on real
    searches.
@@ -1007,7 +1135,7 @@ still resolve by ASIN (e.g. English *A Game of Thrones* `B002UZZ93G`).
 | Surface | Commands / routes |
 | --- | --- |
 | CLI | `bookclerk discover recommend` (prints shelves), `embed`, `sync-listening`, `wishlist …` |
-| Daemon | `GET /api/discover/recommendations` (stored feed), `GET /api/discover/status`, `POST /api/discover/refresh`, `GET /api/discover/search?q=` (paged multi-store catalog browse + typeahead), `POST /api/discover/purchase-hints` (+ `/batch`), `GET`/`POST` `/api/wishlist`, `DELETE /api/wishlist/{uuid}`, `GET /api/request-queue`, `GET`/`PATCH /api/preferences` |
+| Daemon | `GET /api/discover/recommendations` (stored feed), `GET /api/discover/status`, `POST /api/discover/refresh`, `GET /api/discover/search?q=` (paged multi-store catalog browse + typeahead), `POST /api/discover/taste/radar` (one book on the viewer's taste radar), `POST /api/discover/purchase-hints` (+ `/batch`), `GET`/`POST` `/api/wishlist`, `DELETE /api/wishlist/{uuid}`, `GET /api/request-queue`, `GET`/`PATCH /api/preferences` |
 | GUI | **Discover** — personalized shelves + catalog search (filter rail, sort + direction, language, Hide Virtual Voice); **Wishlist** — personal list with global queue sidebar |
 
 A patron's scope ([ADR](../adr/patron-scopes.md)) filters the feed and

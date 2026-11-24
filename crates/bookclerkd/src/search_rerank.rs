@@ -3,7 +3,8 @@
 //! A store orders its results by its own relevance. When this node has the
 //! library's embedding model, `GET /api/discover/search` also asks how
 //! close each result on the page is to the query in meaning, and returns
-//! the page in an order that blends the two ([`blended_order`]). The page
+//! the page in an order that blends the two ([`blended_order`]); the
+//! searcher's taste decides between results the blend ranks equal. The page
 //! is ordered before it is returned, so nothing moves after a client shows
 //! it.
 //!
@@ -34,6 +35,7 @@ use bookclerk_discover::{embed_text, CatalogSearchHit, DiscoverError, EmbedField
 
 use crate::api::AppState;
 use crate::embedding::ModelEmbedder;
+use crate::taste_radar::KeptAxes;
 
 /// The longest a page waits for the model. A page of 24 results never seen
 /// before takes about 0.7 s with the default model on one core
@@ -70,7 +72,7 @@ fn hit_text(hit: &CatalogSearchHit) -> String {
 
 /// The cosine of the angle between two vectors; 0 when either has no
 /// direction or they differ in length.
-fn cosine(a: &[f32], b: &[f32]) -> f32 {
+pub(crate) fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() {
         return 0.0;
     }
@@ -97,13 +99,17 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 /// Each result has two places: its place in the store's order, and its
 /// place when the page is ordered by `scores` (closest in meaning first).
 /// The page is ordered by the sum of the two, so a result must do well in
-/// both to lead, and the store's order decides between equals. A first
-/// setting, not yet measured on real searches.
+/// both to lead. Between results with the same sum, the one that fits the
+/// searcher's taste better comes first, and the store's order decides
+/// between those that fit it equally: the taste never passes a better
+/// match of the query. A first setting, not yet measured on real searches.
 ///
 /// # Arguments
 ///
 /// * `scores` - Each result's closeness to the query, in the store's order.
-fn blended_order(scores: &[f32]) -> Vec<usize> {
+/// * `taste` - Each result's fit to the searcher's taste, in the store's
+///   order; empty when the taste is not used.
+fn blended_order(scores: &[f32], taste: &[f32]) -> Vec<usize> {
     let mut by_meaning: Vec<usize> = (0..scores.len()).collect();
     by_meaning.sort_by(|a, b| scores[*b].total_cmp(&scores[*a]).then(a.cmp(b)));
     let mut meaning_place = vec![0_usize; scores.len()];
@@ -111,31 +117,58 @@ fn blended_order(scores: &[f32]) -> Vec<usize> {
         meaning_place[position] = place;
     }
     let mut order: Vec<usize> = (0..scores.len()).collect();
-    order.sort_by_key(|position| (position + meaning_place[*position], *position));
+    let fit = |position: usize| taste.get(position).copied().unwrap_or(0.0);
+    order.sort_by(|a, b| {
+        (a + meaning_place[*a])
+            .cmp(&(b + meaning_place[*b]))
+            .then_with(|| fit(*b).total_cmp(&fit(*a)))
+            .then_with(|| a.cmp(b))
+    });
     order
 }
 
-/// How close each of `texts` is to `query`, when the vectors of all of
-/// them are kept from earlier searches: no model is asked.
+/// How well each of a page's results fits `taste`, from the results'
+/// `vectors` in `space`, in their order; empty without a taste.
+fn taste_fits(
+    taste: Option<&KeptAxes>,
+    space: &bookclerk_library::VectorSpace,
+    vectors: &[Option<Arc<Vec<f32>>>],
+) -> Vec<f32> {
+    taste.map_or_else(Vec::new, |taste| {
+        vectors
+            .iter()
+            .map(|vector| {
+                vector
+                    .as_deref()
+                    .map_or(0.0, |vector| taste.fit(space, vector))
+            })
+            .collect()
+    })
+}
+
+/// How close each of `texts` is to `query` and how well each fits
+/// `taste`, when the vectors of all of them are kept from earlier
+/// searches: no model is asked.
 async fn kept_scores(
     state: &AppState,
     model: &ModelEmbedder,
     query: &str,
     texts: &[String],
-) -> Option<Vec<f32>> {
+    taste: Option<&KeptAxes>,
+) -> Option<(Vec<f32>, Vec<f32>)> {
     let space = model.vector_space();
     let query_vector = state.work_vectors.cached_query(space, query).await?;
-    state
-        .work_vectors
-        .cached_hits(space, texts)
-        .await
-        .into_iter()
-        .map(|vector| Some(cosine(&query_vector, vector?.as_slice())))
-        .collect()
+    let vectors = state.work_vectors.cached_hits(space, texts).await;
+    let closeness = vectors
+        .iter()
+        .map(|vector| Some(cosine(&query_vector, vector.as_deref()?.as_slice())))
+        .collect::<Option<Vec<f32>>>()?;
+    Some((closeness, taste_fits(taste, space, &vectors)))
 }
 
 /// How close each of `texts` (the texts of a page's results) is to
-/// `query` in meaning, in their order.
+/// `query` in meaning and, with `taste`, how well each fits it, both in
+/// their order. The fits are empty without a taste.
 ///
 /// # Errors
 ///
@@ -146,8 +179,9 @@ async fn scores(
     model: &ModelEmbedder,
     query: &str,
     texts: &[String],
+    taste: Option<&KeptAxes>,
     deadline: Duration,
-) -> Result<Vec<f32>, DiscoverError> {
+) -> Result<(Vec<f32>, Vec<f32>), DiscoverError> {
     let space = model.vector_space().clone();
     let query_vector = match state.work_vectors.cached_query(&space, query).await {
         Some(vector) => vector,
@@ -192,14 +226,16 @@ async fn scores(
             .cache_hits(&space, made.into_iter().collect())
             .await;
     }
-    Ok(vectors
+    let closeness = vectors
         .iter()
         .map(|vector| {
             vector
                 .as_deref()
                 .map_or(0.0, |vector| cosine(&query_vector, vector))
         })
-        .collect())
+        .collect();
+    let fits = taste_fits(taste, &space, &vectors);
+    Ok((closeness, fits))
 }
 
 /// Orders one page of store results with their meaning, when this node
@@ -210,6 +246,9 @@ async fn scores(
 /// * `state` - The daemon.
 /// * `query` - The search text.
 /// * `hits` - The page in the store's order; reordered in place.
+/// * `taste` - The searcher's taste axes, which decide between results
+///   that match the query equally well; `None` to leave that to the
+///   store's order.
 /// * `budget` - Time left in the search's own budget.
 ///
 /// # Returns
@@ -219,6 +258,7 @@ pub(crate) async fn by_meaning(
     state: &Arc<AppState>,
     query: &str,
     hits: &mut Vec<CatalogSearchHit>,
+    taste: Option<&Arc<KeptAxes>>,
     budget: Duration,
 ) -> bool {
     let budget = budget.min(RERANK_BUDGET);
@@ -231,7 +271,8 @@ pub(crate) async fn by_meaning(
         let Some(model) = ModelEmbedder::current(&router).await else {
             return Ok(None);
         };
-        if let Some(kept) = kept_scores(state, &model, query, &texts).await {
+        if let Some(kept) = kept_scores(state, &model, query, &texts, taste.map(Arc::as_ref)).await
+        {
             return Ok(Some(kept));
         }
         // The model works in a task of its own, holding a slot until it
@@ -242,10 +283,18 @@ pub(crate) async fn by_meaning(
                 "the model is busy with earlier searches".to_string(),
             ));
         };
-        let (state, query) = (Arc::clone(state), query.to_string());
+        let (state, query, taste) = (Arc::clone(state), query.to_string(), taste.cloned());
         tokio::spawn(async move {
             let _slot = slot;
-            scores(&state, &model, &query, &texts, MODEL_DEADLINE).await
+            scores(
+                &state,
+                &model,
+                &query,
+                &texts,
+                taste.as_deref(),
+                MODEL_DEADLINE,
+            )
+            .await
         })
         .await
         .unwrap_or_else(|err| {
@@ -255,7 +304,7 @@ pub(crate) async fn by_meaning(
         })
         .map(Some)
     };
-    let scores = match tokio::time::timeout(budget, asked).await {
+    let (scores, fits) = match tokio::time::timeout(budget, asked).await {
         Ok(Ok(Some(scores))) => scores,
         // No model on this node: the store's order is all there is.
         Ok(Ok(None)) => return false,
@@ -274,7 +323,7 @@ pub(crate) async fn by_meaning(
     let mut taken: Vec<Option<CatalogSearchHit>> =
         std::mem::take(hits).into_iter().map(Some).collect();
     hits.extend(
-        blended_order(&scores)
+        blended_order(&scores, &fits)
             .into_iter()
             .filter_map(|position| taken.get_mut(position).and_then(Option::take)),
     );
@@ -310,21 +359,31 @@ mod tests {
     #[test]
     fn a_result_leads_when_both_orders_agree_and_the_store_breaks_ties() {
         // Equal in meaning: the store's order stands.
-        assert_eq!(blended_order(&[0.5, 0.5, 0.5]), vec![0, 1, 2]);
+        assert_eq!(blended_order(&[0.5, 0.5, 0.5], &[]), vec![0, 1, 2]);
         // The last result is closest in meaning and the first is furthest:
         // every sum ties, so the store's order still stands.
-        assert_eq!(blended_order(&[0.1, 0.5, 0.9]), vec![0, 1, 2]);
+        assert_eq!(blended_order(&[0.1, 0.5, 0.9], &[]), vec![0, 1, 2]);
+        // On that tie, the result that fits the searcher's taste leads;
+        // the taste does not pass a better match of the query.
+        assert_eq!(
+            blended_order(&[0.1, 0.5, 0.9], &[0.0, 0.0, 1.0]),
+            vec![2, 0, 1]
+        );
+        assert_eq!(
+            blended_order(&[0.9, 0.5, 0.1], &[0.0, 0.0, 1.0]),
+            vec![0, 1, 2]
+        );
         // The store's third and fourth results are the closest in meaning:
         // each passes one result that is far from the query, and the
         // store's first result keeps its lead over the third on the tie.
-        assert_eq!(blended_order(&[0.1, 0.0, 0.9, 0.8]), vec![0, 2, 1, 3]);
+        assert_eq!(blended_order(&[0.1, 0.0, 0.9, 0.8], &[]), vec![0, 2, 1, 3]);
         // A leading result that is the furthest of a longer page drops
         // behind the ones both orders like.
         assert_eq!(
-            blended_order(&[0.0, 0.9, 0.8, 0.7, 0.6, 0.5]),
+            blended_order(&[0.0, 0.9, 0.8, 0.7, 0.6, 0.5], &[]),
             vec![1, 2, 0, 3, 4, 5]
         );
-        assert!(blended_order(&[]).is_empty());
+        assert!(blended_order(&[], &[]).is_empty());
     }
 
     #[test]
@@ -355,7 +414,7 @@ mod tests {
         let files = tempfile::tempdir().unwrap();
         let (state, _library) = daemon(&files, &[], None).await;
         let mut hits = vec![hit("Emma"), hit("Dragon Flight")];
-        assert!(!by_meaning(&state, "Dragon", &mut hits, Duration::from_secs(5)).await);
+        assert!(!by_meaning(&state, "Dragon", &mut hits, None, Duration::from_secs(5)).await);
         assert_eq!(titles(&hits), ["Emma", "Dragon Flight"]);
     }
 
@@ -373,7 +432,16 @@ mod tests {
             ]
         };
         let mut hits = page();
-        assert!(by_meaning(&state, "Dragon tales", &mut hits, Duration::from_secs(5)).await);
+        assert!(
+            by_meaning(
+                &state,
+                "Dragon tales",
+                &mut hits,
+                None,
+                Duration::from_secs(5)
+            )
+            .await
+        );
         // Each result about dragons passes one that is not; the store's
         // first result keeps its place on the tie.
         assert_eq!(
@@ -384,7 +452,16 @@ mod tests {
         assert_eq!(model.texts_embedded(), 5);
         // The same page again asks the model for nothing.
         let mut again = page();
-        assert!(by_meaning(&state, "Dragon tales", &mut again, Duration::from_secs(5)).await);
+        assert!(
+            by_meaning(
+                &state,
+                "Dragon tales",
+                &mut again,
+                None,
+                Duration::from_secs(5)
+            )
+            .await
+        );
         assert_eq!(titles(&again), titles(&hits));
         assert_eq!(model.texts_embedded(), 5);
     }
@@ -404,13 +481,13 @@ mod tests {
             .await
             .unwrap();
         let mut hits = page();
-        assert!(!by_meaning(&state, "Dragon tales", &mut hits, budget).await);
+        assert!(!by_meaning(&state, "Dragon tales", &mut hits, None, budget).await);
         assert_eq!(titles(&hits), ["Emma", "Dragon Flight", "Dragon Song"]);
         assert_eq!(model.texts_embedded(), 0);
         drop(held);
         // With a slot free the page is ordered, and the slot comes back.
         let mut hits = page();
-        assert!(by_meaning(&state, "Dragon tales", &mut hits, budget).await);
+        assert!(by_meaning(&state, "Dragon tales", &mut hits, None, budget).await);
         let asked = model.texts_embedded();
         assert_eq!(asked, 4);
         assert_eq!(
@@ -423,7 +500,7 @@ mod tests {
             .await
             .unwrap();
         let mut again = page();
-        assert!(by_meaning(&state, "Dragon tales", &mut again, budget).await);
+        assert!(by_meaning(&state, "Dragon tales", &mut again, None, budget).await);
         assert_eq!(titles(&again), titles(&hits));
         assert_eq!(model.texts_embedded(), asked);
         drop(held);
@@ -435,9 +512,9 @@ mod tests {
         let model = FakeModel::new();
         let (state, _library) = daemon(&files, &[], Some(&model)).await;
         let mut hits = vec![hit("Emma"), hit("Dragon Flight")];
-        assert!(!by_meaning(&state, "Dragon", &mut hits, Duration::from_millis(10)).await);
+        assert!(!by_meaning(&state, "Dragon", &mut hits, None, Duration::from_millis(10)).await);
         let mut one = vec![hit("Dragon Flight")];
-        assert!(!by_meaning(&state, "Dragon", &mut one, Duration::from_secs(5)).await);
+        assert!(!by_meaning(&state, "Dragon", &mut one, None, Duration::from_secs(5)).await);
         assert_eq!(titles(&hits), ["Emma", "Dragon Flight"]);
         assert_eq!(model.texts_embedded(), 0);
     }
