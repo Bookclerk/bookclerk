@@ -44726,7 +44726,7 @@
             }
           },
           "400": {
-            "description": "The body is not one object whose only key is a valid `email`. As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "The body is not one object whose only key is a valid `email`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -44737,12 +44737,6 @@
                   "message": "The request could not be understood.",
                   "status": 400
                 }
-              },
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -44777,7 +44771,7 @@
             }
           },
           "415": {
-            "description": "The body is not sent as `application/json`. As `text/plain`, when the request did not declare a JSON body.",
+            "description": "The body is not sent as `application/json`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -44788,23 +44782,6 @@
                   "message": "Send JSON with Content-Type: application/json.",
                   "status": 415
                 }
-              },
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Expected request with `Content-Type: application/json`"
-              }
-            }
-          },
-          "422": {
-            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Failed to deserialize the JSON body into the target type: missing field `email` at line 1 column 2"
               }
             }
           },
@@ -44920,7 +44897,7 @@
             }
           },
           "400": {
-            "description": "`bad_request` when the body is not one object whose only key is `token`; `invalid_link` when the link is unknown, used, expired, for an address the account no longer has verified, or for a disabled account. As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "`bad_request` when the body is not one object whose only key is `token`; `invalid_link` when the link is unknown, used, expired, for an address the account no longer has verified, or for a disabled account.",
             "content": {
               "application/json": {
                 "schema": {
@@ -44931,12 +44908,6 @@
                   "message": "This reset link is invalid or has expired. Ask for a new one.",
                   "status": 400
                 }
-              },
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -44956,7 +44927,7 @@
             }
           },
           "415": {
-            "description": "The body is not sent as `application/json`. As `text/plain`, when the request did not declare a JSON body.",
+            "description": "The body is not sent as `application/json`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -44967,23 +44938,6 @@
                   "message": "Send JSON with Content-Type: application/json.",
                   "status": 415
                 }
-              },
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Expected request with `Content-Type: application/json`"
-              }
-            }
-          },
-          "422": {
-            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Failed to deserialize the JSON body into the target type: missing field `token` at line 1 column 2"
               }
             }
           },
@@ -45074,7 +45028,7 @@
             }
           },
           "400": {
-            "description": "`bad_request` when the body is not one object whose only key is `token`; `invalid_link` when the link does not work; or the daemon's origin is not a valid WebAuthn relying party. As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "`bad_request` when the body is not one object whose only key is `token`; `invalid_link` when the link does not work; or the daemon's origin is not a valid WebAuthn relying party.",
             "content": {
               "application/json": {
                 "schema": {
@@ -45085,12 +45039,6 @@
                   "message": "This reset link is invalid or has expired. Ask for a new one.",
                   "status": 400
                 }
-              },
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -45125,7 +45073,7 @@
             }
           },
           "415": {
-            "description": "The body is not sent as `application/json`. As `text/plain`, when the request did not declare a JSON body.",
+            "description": "The body is not sent as `application/json`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -45136,23 +45084,6 @@
                   "message": "Send JSON with Content-Type: application/json.",
                   "status": 415
                 }
-              },
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Expected request with `Content-Type: application/json`"
-              }
-            }
-          },
-          "422": {
-            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Failed to deserialize the JSON body into the target type: missing field `token` at line 1 column 2"
               }
             }
           },
@@ -45243,7 +45174,7 @@
             }
           },
           "400": {
-            "description": "`bad_request` when the body is malformed, the password is blank or longer than 1024 bytes, or a second factor is sent for an account without one; `invalid_link` when the link is unknown, used, expired, for an address the account no longer has verified, or for a disabled account. As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "`bad_request` when the body is malformed, the password is blank or longer than 1024 bytes, or a second factor is sent for an account without one; `invalid_link` when the link is unknown, used, expired, for an address the account no longer has verified, or for a disabled account.",
             "content": {
               "application/json": {
                 "schema": {
@@ -45254,12 +45185,6 @@
                   "message": "This reset link is invalid or has expired. Ask for a new one.",
                   "status": 400
                 }
-              },
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
               }
             }
           },
@@ -45294,7 +45219,7 @@
             }
           },
           "415": {
-            "description": "The body is not sent as `application/json`. As `text/plain`, when the request did not declare a JSON body.",
+            "description": "The body is not sent as `application/json`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -45305,23 +45230,6 @@
                   "message": "Send JSON with Content-Type: application/json.",
                   "status": 415
                 }
-              },
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Expected request with `Content-Type: application/json`"
-              }
-            }
-          },
-          "422": {
-            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                },
-                "example": "Failed to deserialize the JSON body into the target type: missing field `token` at line 1 column 2"
               }
             }
           },

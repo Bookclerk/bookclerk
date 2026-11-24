@@ -411,6 +411,10 @@ export function UserManagementPanel({
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "disabled">("all");
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  // Email edits not yet saved, by user id. They stay out of `users` so
+  // everything else on the panel (the invite's recipient above all) names
+  // the address the server holds, not one still being typed.
+  const [emailDrafts, setEmailDrafts] = useState<Record<number, string>>({});
   const [impersonateBusy, setImpersonateBusy] = useState(false);
   const [menuOpenId, setMenuOpenId] = useState<number | null>(null);
   const [inviteCopied, setInviteCopied] = useState(false);
@@ -1381,20 +1385,26 @@ export function UserManagementPanel({
                 <Input
                   aria-label={`Email for user ${selected.id}`}
                   type="email"
-                  value={selected.email ?? ""}
-                  aria-invalid={!isOptionalEmailValid(selected.email ?? "")}
+                  value={emailDrafts[selected.id] ?? selected.email ?? ""}
+                  aria-invalid={
+                    !isOptionalEmailValid(emailDrafts[selected.id] ?? selected.email ?? "")
+                  }
                   disabled={busy || !selectedEditable}
                   onChange={(e) => {
                     const value = e.target.value;
-                    setUsers((current) =>
-                      current.map((user) =>
-                        user.id === selected.id ? { ...user, email: value } : user,
-                      ),
-                    );
+                    const id = selected.id;
+                    setEmailDrafts((current) => ({ ...current, [id]: value }));
                   }}
                   onBlur={(e) => {
+                    const id = selected.id;
+                    if (emailDrafts[id] === undefined) return;
                     if (!isOptionalEmailValid(e.target.value)) return;
-                    void onPatchUser(selected.id, { email: e.target.value });
+                    void onPatchUser(id, { email: e.target.value }).then(() =>
+                      setEmailDrafts((current) => {
+                        const { [id]: _saved, ...rest } = current;
+                        return rest;
+                      }),
+                    );
                   }}
                 />
               </div>
