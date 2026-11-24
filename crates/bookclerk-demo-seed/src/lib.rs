@@ -219,6 +219,114 @@ const LIBRARY: &[SampleTitle] = &[
         series: Some(("Mistborn", "1")),
         minutes: 390,
     },
+    SampleTitle {
+        store: AUDIBLE,
+        product_id: "demo-the-martian",
+        title: "The Martian",
+        author: "Andy Weir",
+        narrators: "Wil Wheaton",
+        series: None,
+        minutes: 659,
+    },
+    SampleTitle {
+        store: AUDIBLE,
+        product_id: "demo-children-of-time",
+        title: "Children of Time",
+        author: "Adrian Tchaikovsky",
+        narrators: "Mel Hudson",
+        series: Some(("Children of Time", "1")),
+        minutes: 991,
+    },
+    SampleTitle {
+        store: AUDIBLE,
+        product_id: "demo-enders-game",
+        title: "Ender's Game",
+        author: "Orson Scott Card",
+        narrators: "Stefan Rudnicki, Harlan Ellison",
+        series: Some(("Ender Saga", "1")),
+        minutes: 717,
+    },
+    SampleTitle {
+        store: AUDIBLE,
+        product_id: "demo-all-the-light-we-cannot-see",
+        title: "All the Light We Cannot See",
+        author: "Anthony Doerr",
+        narrators: "Zach Appelman",
+        series: None,
+        minutes: 962,
+    },
+    SampleTitle {
+        store: LIBRO,
+        product_id: "demo-the-book-thief",
+        title: "The Book Thief",
+        author: "Markus Zusak",
+        narrators: "Allan Corduner",
+        series: None,
+        minutes: 836,
+    },
+    SampleTitle {
+        store: LIBRO,
+        product_id: "demo-pachinko",
+        title: "Pachinko",
+        author: "Min Jin Lee",
+        narrators: "Allison Hiroto",
+        series: None,
+        minutes: 1096,
+    },
+    SampleTitle {
+        store: AUDIBLE,
+        product_id: "demo-gone-girl",
+        title: "Gone Girl",
+        author: "Gillian Flynn",
+        narrators: "Julia Whelan, Kirby Heyborne",
+        series: None,
+        minutes: 1151,
+    },
+    SampleTitle {
+        store: CHIRP,
+        product_id: "demo-the-girl-with-the-dragon-tattoo",
+        title: "The Girl with the Dragon Tattoo",
+        author: "Stieg Larsson",
+        narrators: "Simon Vance",
+        series: Some(("Millennium", "1")),
+        minutes: 979,
+    },
+    SampleTitle {
+        store: AUDIBLE,
+        product_id: "demo-and-then-there-were-none",
+        title: "And Then There Were None",
+        author: "Agatha Christie",
+        narrators: "Dan Stevens",
+        series: None,
+        minutes: 361,
+    },
+    SampleTitle {
+        store: AUDIBLE,
+        product_id: "demo-sapiens",
+        title: "Sapiens",
+        author: "Yuval Noah Harari",
+        narrators: "Derek Perkins",
+        series: None,
+        minutes: 917,
+    },
+    SampleTitle {
+        store: AUDIBLE,
+        product_id: "demo-born-a-crime",
+        title: "Born a Crime",
+        author: "Trevor Noah",
+        narrators: "Trevor Noah",
+        series: None,
+        minutes: 524,
+    },
+    SampleTitle {
+        store: LIBRO,
+        product_id: "demo-atomic-habits",
+        title: "Atomic Habits",
+        author: "James Clear",
+        narrators: "James Clear",
+        series: None,
+        minutes: 335,
+    },
 ];
 
 /// Titles Sam's branch shared before it went offline. Their files never
@@ -764,6 +872,34 @@ async fn add_store_text(
         .record_store_text(&texts)
         .await
         .context("add the store text of the sample titles")?;
+    // A branch's catalog names a title and its people and nothing more.
+    // The library's own lookup of a title it newly lists adds the rest;
+    // the seed stands in for it, as it does for Sam's own books, so a
+    // branch title is known by more than its name.
+    for sample in BRANCH {
+        let (Some(plugin_key), Some(hit)) = (
+            plugin_keys.get(sample.store.id),
+            records.get(sample.product_id),
+        ) else {
+            continue;
+        };
+        let book = new_book(sample, Some(hit));
+        let Some(edition) = store
+            .edition_of_listing(
+                plugin_key,
+                &listing_marketplace(&book.marketplace),
+                &book.product_id,
+            )
+            .await
+            .with_context(|| format!("find the edition of {}", sample.title))?
+        else {
+            continue;
+        };
+        store
+            .enrich_edition(&edition, &enrichment(sample.store.id, hit))
+            .await
+            .with_context(|| format!("add the store record of {}", sample.title))?;
+    }
     Ok(())
 }
 
