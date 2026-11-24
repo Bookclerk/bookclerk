@@ -197,9 +197,11 @@ is `Bookclerk`). The mark travels inside the message as an inline image,
 so nothing is fetched when the mail is opened. The footer links your
 library's home page (from its public origin) and bookclerk.app. Invites
 also carry a short introduction to Bookclerk, for recipients who have not
-heard of it, and their subject names the library by the From name
-("Alex has invited you to Riverside Library"). When the HTML a notification brings cannot be laid out, the
-plugin sends a plain HTML document instead.
+heard of it. When the From name is set and isn't just `Bookclerk`, an
+invite's subject names the library by it ("Alex has invited you to
+Riverside Library"); otherwise the subject stays "Alex has invited you
+to a Bookclerk library". When the HTML a notification brings cannot be
+laid out, the plugin sends a plain HTML document instead.
 
 To set up a channel:
 
