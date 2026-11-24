@@ -51,8 +51,13 @@ To hide rows you do not want, open **Preferences** in the top bar.
 
 ## Search every store
 
-The search box at the top searches every store's catalog at once. Each book
-shows up once, with where to buy it and the best current price.
+The search box at the top searches every store's catalog at once. Each
+recording shows up once, with where to buy it and the best current price,
+even when several stores, or one store under two publishers, sell it.
+
+Search also shows books your library already has. Those say **In your
+library**, or **Another edition in your library** when you have the book in
+another recording or from another store.
 
 Prices take the stores you have connected into account, so a member price
 counts where you are a member.

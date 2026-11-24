@@ -203,6 +203,12 @@ A remote library whose message announced a new user returns
 `{ pollEvents: true }` from `webSocketMessage`, and the host calls
 `pollEvents` right away instead of at its next scheduled poll.
 
+`pollEvents(params)` gets `{ ackFollows: true }` from a host that calls
+`ackEvents({ externalUserIds })` once it has handled the users a poll
+returned. Keep returning a user until it is acknowledged, so a reply lost
+on the way to the host does not lose the user. A host older than
+`ackEvents` passes no params; treat each returned user as delivered then.
+
 ## Inbound webhooks
 
 A plugin that declares `[[webhooks]]` (see

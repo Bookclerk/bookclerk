@@ -33,6 +33,9 @@ pub struct Model {
     pub avatar_source: Option<String>,
     /// `1` when a TOTP authenticator has been confirmed for this user.
     pub totp_enabled: i64,
+    /// RFC 3339 time `email` was last proven by a link sent to it;
+    /// cleared whenever `email` changes.
+    pub email_verified_at: Option<String>,
 }
 
 /// Declared SeaORM relations (none unless FK edges are modeled).

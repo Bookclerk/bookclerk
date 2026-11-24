@@ -27,13 +27,13 @@ use bookclerk_db_exec::canonical_statement;
 use crate::column_read::only_column;
 use crate::control_plane::{load_artifact_blob, put_artifact_blob};
 use crate::entities::{
-    account_credential_revisions, account_downloads, account_links, account_pace,
-    account_scan_state, account_shares, accounts, admin_controls, bookclerk_receipts, bookmarks,
-    catalog_listing_optouts, catalog_lookups, chapter_list_entries, chapter_lists, claim_tickets,
-    clerk_links, configuration_audit, configuration_changes, configuration_document_parts,
-    configuration_documents, contributors, copy_grants, credits, domain_events,
-    edition_acquisitions, edition_chapters, edition_copies, edition_enrich_attempts, edition_files,
-    edition_identifiers, editions, embeddings, encrypted_secrets, event_deliveries,
+    account_credential_revisions, account_downloads, account_links, account_mail_settings,
+    account_pace, account_scan_state, account_shares, accounts, admin_controls, bookclerk_receipts,
+    bookmarks, catalog_listing_optouts, catalog_lookups, chapter_list_entries, chapter_lists,
+    claim_tickets, clerk_links, configuration_audit, configuration_changes,
+    configuration_document_parts, configuration_documents, contributors, copy_grants, credits,
+    domain_events, edition_acquisitions, edition_chapters, edition_copies, edition_enrich_attempts,
+    edition_files, edition_identifiers, editions, embeddings, encrypted_secrets, event_deliveries,
     event_outbox_stats, expressions, holdings, ignored_titles, ingest_batches, ingest_members,
     intake_items, job_secret_handoffs, job_temp_paths, jobs, library_identity, library_links,
     link_imports, link_requests, listening_progress, listing_offers, metadata_claims,
@@ -60,6 +60,14 @@ use crate::store::LibraryStore;
 /// the two lists together cover the schema.
 pub const LEFT_BEHIND_TABLES: &[(&str, &str)] = &[
     ("discover_candidates", "derived: Discover jobs refetch it"),
+    (
+        "account_mail",
+        "transient: account-mail deliveries, which can be sent again",
+    ),
+    (
+        "email_verifications",
+        "transient: verification links, which patrons can ask for again",
+    ),
     (
         "plugin_webhook_chunks",
         "transient: bodies of stored webhook requests, which the plugins' listing fallback covers",
@@ -261,6 +269,7 @@ macro_rules! copied_entities {
         $each!(notifications);
         $each!(notify_deliveries);
         $each!(notify_inbox);
+        $each!(account_mail_settings);
         $each!(embeddings);
         $each!(user_preferences);
         $each!(patron_controls);

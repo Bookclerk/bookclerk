@@ -44,7 +44,8 @@ plugin = "sqlite"
 [database.d1]
 account_id = "your-cloudflare-account-id"
 database_id = "your-d1-database-uuid"
-# Token is read from BOOKCLERK_D1_API_TOKEN or CLOUDFLARE_API_TOKEN (env-only).
+# The token comes from `bookclerk config database setup d1` (sealed beside
+# master.key) or from BOOKCLERK_D1_API_TOKEN / CLOUDFLARE_API_TOKEN.
 # api_base = "https://api.cloudflare.com/client/v4"
 
 [database.postgres]
@@ -54,9 +55,49 @@ database_id = "your-d1-database-uuid"
 # url_file = "/run/secrets/postgres_url"   # path to a file containing the URL
 ```
 
-The Cloudflare API token comes from the environment only
-(`BOOKCLERK_D1_API_TOKEN`, falling back to `CLOUDFLARE_API_TOKEN`). There
-is no credentials file.
+The Cloudflare API token comes from `BOOKCLERK_D1_API_TOKEN` (falling
+back to `CLOUDFLARE_API_TOKEN`) when either is set, and otherwise from the
+credential the guided setup stored.
+
+### Set up D1 with a pasted token
+
+`bookclerk config database setup d1` does the Cloudflare side for you:
+
+1. Create an API token in the Cloudflare dashboard with **Account > D1 >
+   Edit** and **Account > Account API Tokens > Edit**.
+2. Run the setup and paste the token when asked (it is read from stdin,
+   never from the command line):
+
+   ```bash
+   bookclerk config database setup d1 --database-name bookclerk
+   ```
+
+   Pass `--account-id` when the token can see more than one account, and
+   `--jurisdiction eu` or `--jurisdiction fedramp` to keep a new database's
+   data there.
+3. The setup finds the D1 database of that name, or creates it, and mints
+   a new token that can use D1 and nothing else. It writes
+   `[database.d1].account_id` and `database_id` to `config.toml`.
+4. Move the library onto it with
+   `bookclerk config database migrate --to d1 --apply`, or, on a new
+   install, set `[database].plugin = "d1"`.
+
+The token you pasted is used for this run only. The minted token is
+sealed with the library's data-encryption key and kept in the same store
+as the master key: in `database.credential` beside `master.key` on a file
+install, or in the OS keychain or a `systemd-creds` credential (the TPM)
+on a keychain or `systemd-creds` install, with `database.credential` then
+holding only a pointer. `bookclerk config master-key move` takes the
+credential along with the key.
+
+Running the setup again mints a fresh token and deletes the one the
+previous run minted. It never deletes the database.
+
+> [!NOTE]
+> The stored credential is sealed under this install's key. A shared
+> branch that joins a D1 library installs the library's key, so it sets
+> `BOOKCLERK_D1_API_TOKEN` instead (see
+> [Shared branches](branches.md)), or runs the setup again after joining.
 
 These environment variables override the file:
 
@@ -416,8 +457,9 @@ can't be stored in it:
 - `BOOKCLERK_AUTH_PASSWORD` or `[auth].password`, which wraps the key at
   rest (the environment is preferred), and `[auth].key_store`, which says
   where new keys go;
-- `BOOKCLERK_DATABASE_POSTGRES_URL` and `BOOKCLERK_D1_API_TOKEN` (or
-  `CLOUDFLARE_API_TOKEN`), the database connection;
+- `BOOKCLERK_DATABASE_POSTGRES_URL` and the D1 API token (from the
+  environment, or `database.credential` and the key store it points into),
+  the database connection;
 - `BOOKCLERK_OPERATOR_TOKEN`, an optional override for the durable
   operator API token (otherwise it is sealed in `encrypted_secrets`; see
   `bookclerk daemon token`);
@@ -849,7 +891,10 @@ go too, so the library picks its next keeper afresh. Writes that link a
 signed-in store account, take back a refused sign-in, or revoke a link
 are serialized per account by the `bookclerk_slots` row
 `store-account:<plugin key length>:<plugin key>:<account id>`, which is
-kept once created.
+kept once created. A patron's request for a new verification
+link is serialized the same way, by the row
+`account-mail:<kind>:<user id>`, so overlapping requests record one
+message.
 
 The library model ([ADR](../adr/library-data-model.md)) stores what the
 library holds as works, expressions and editions:

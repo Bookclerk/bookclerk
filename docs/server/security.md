@@ -25,6 +25,9 @@ store sign-ins, the operator token and plugin secrets.
 - On a Linux server with systemd 256 or later, seal it to the machine
   (its TPM when it has one) with `key_store = "systemd-creds"`; see
   [Running Bookclerk → Sealing the key with systemd-creds](operations.md#sealing-the-key-with-systemd-creds).
+- A D1 library's API token, from `bookclerk config database setup d1`, is
+  sealed with the same key and kept in the same store (see
+  [Database → Set up D1 with a pasted token](database.md#set-up-d1-with-a-pasted-token)).
 
 > [!WARNING]
 > Back up the key together with the database: a copy of `master.key`, or

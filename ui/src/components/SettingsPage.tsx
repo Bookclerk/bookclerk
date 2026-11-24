@@ -16,6 +16,7 @@ import { GuidedSetupPanel } from "@/components/GuidedSetupPanel";
 import { PlacementBadge, PlacementPanel } from "@/components/PlacementPanel";
 import { RecoveryCopyReminder } from "@/components/RecoveryCopy";
 import { StorageSyncBadge } from "@/components/StorageSyncBadge";
+import { AccountMailPanel } from "@/components/AccountMailPanel";
 import { UserManagementPanel } from "@/components/UserManagementPanel";
 import {
   PluginConsentDialog,
@@ -1608,6 +1609,8 @@ export function SettingsPage({
               onRevokeOtherSessions={() => void onRevokeOtherSessions()}
             />
           ) : null}
+
+          {activeTab === "users" && showUserAdmin ? <AccountMailPanel /> : null}
 
           {activeTab === "users" && showUserAdmin ? (
             <UserManagementPanel

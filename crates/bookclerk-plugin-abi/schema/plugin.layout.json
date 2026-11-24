@@ -5855,6 +5855,28 @@
         }
       ]
     },
+    "EventAckParams": {
+      "name": "EventAckParams",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "externalUserIds",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "list",
+            "element": {
+              "kind": "text"
+            }
+          },
+          "offset": 0
+        }
+      ]
+    },
     "EventBatch": {
       "name": "EventBatch",
       "file": "plugin.capnp",
@@ -6005,6 +6027,25 @@
           "discriminantValue": null,
           "type": {
             "kind": "text"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "EventPollParams": {
+      "name": "EventPollParams",
+      "file": "plugin.capnp",
+      "dataWords": 1,
+      "pointerCount": 0,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "ackFollows",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "bool"
           },
           "offset": 0
         }
@@ -15144,6 +15185,46 @@
         }
       ]
     },
+    "RemoteLibrary.ackEvents$Params": {
+      "name": "RemoteLibrary.ackEvents$Params",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "params",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EventAckParams"
+          },
+          "offset": 0
+        }
+      ]
+    },
+    "RemoteLibrary.ackEvents$Results": {
+      "name": "RemoteLibrary.ackEvents$Results",
+      "file": "plugin.capnp",
+      "dataWords": 0,
+      "pointerCount": 1,
+      "discriminantCount": 0,
+      "discriminantOffset": 0,
+      "fields": [
+        {
+          "name": "result",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EmptyReply"
+          },
+          "offset": 0
+        }
+      ]
+    },
     "RemoteLibrary.diagnose$Params": {
       "name": "RemoteLibrary.diagnose$Params",
       "file": "plugin.capnp",
@@ -15206,10 +15287,21 @@
       "name": "RemoteLibrary.pollEvents$Params",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 0,
+      "pointerCount": 1,
       "discriminantCount": 0,
       "discriminantOffset": 0,
-      "fields": []
+      "fields": [
+        {
+          "name": "params",
+          "codeOrder": 0,
+          "discriminantValue": null,
+          "type": {
+            "kind": "struct",
+            "name": "EventPollParams"
+          },
+          "offset": 0
+        }
+      ]
     },
     "RemoteLibrary.pollEvents$Results": {
       "name": "RemoteLibrary.pollEvents$Results",
@@ -16083,7 +16175,7 @@
       "name": "ScheduledHandler.scheduled$Params",
       "file": "plugin.capnp",
       "dataWords": 0,
-      "pointerCount": 1,
+      "pointerCount": 2,
       "discriminantCount": 0,
       "discriminantOffset": 0,
       "fields": [
@@ -16096,6 +16188,16 @@
             "name": "ScheduledController"
           },
           "offset": 0
+        },
+        {
+          "name": "cancel",
+          "codeOrder": 1,
+          "discriminantValue": null,
+          "type": {
+            "kind": "interface",
+            "name": "Cancellation"
+          },
+          "offset": 1
         }
       ]
     },
@@ -19398,6 +19500,12 @@
           "ordinal": 6,
           "params": "RemoteLibrary.pollEvents$Params",
           "results": "RemoteLibrary.pollEvents$Results"
+        },
+        {
+          "name": "ackEvents",
+          "ordinal": 7,
+          "params": "RemoteLibrary.ackEvents$Params",
+          "results": "RemoteLibrary.ackEvents$Results"
         }
       ]
     },

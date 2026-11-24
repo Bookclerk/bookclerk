@@ -10,7 +10,12 @@ use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 use zbus::{fdo, ObjectServer};
 
 use super::{delete_on, get_on, set_on, Bus, SERVICE_PATH};
-use crate::{KeychainItemId, KeystoreErrorKind, KEYCHAIN_SERVICE};
+use crate::{
+    ItemKind, KeychainItemId, KeystoreErrorKind, DATABASE_CREDENTIAL_SERVICE, KEYCHAIN_SERVICE,
+};
+
+/// The kind most tests store: a master-key item.
+const MK: ItemKind = ItemKind::MasterKey;
 
 /// Where the fake keeps its one collection.
 const COLLECTION: &str = "/org/freedesktop/secrets/collection/login";
@@ -414,10 +419,16 @@ fn an_item_round_trips_and_is_replaced_and_deleted() {
     let fake = Fake::new();
     let item = KeychainItemId::random();
 
-    set_on(fake.bus(), item, b"first").expect("set");
-    assert_eq!(get_on(fake.bus(), item).expect("get").as_slice(), b"first");
-    set_on(fake.bus(), item, b"second").expect("replace");
-    assert_eq!(get_on(fake.bus(), item).expect("get").as_slice(), b"second");
+    set_on(fake.bus(), MK, item, b"first").expect("set");
+    assert_eq!(
+        get_on(fake.bus(), MK, item).expect("get").as_slice(),
+        b"first"
+    );
+    set_on(fake.bus(), MK, item, b"second").expect("replace");
+    assert_eq!(
+        get_on(fake.bus(), MK, item).expect("get").as_slice(),
+        b"second"
+    );
     {
         let state = lock(&fake.state);
         assert_eq!(state.items.len(), 1, "replaced, not added");
@@ -429,10 +440,33 @@ fn an_item_round_trips_and_is_replaced_and_deleted() {
         assert_eq!(stored.attributes.get("username"), Some(&item.to_string()));
     }
 
-    delete_on(fake.bus(), item).expect("delete");
-    let missing = get_on(fake.bus(), item).expect_err("gone");
+    delete_on(fake.bus(), MK, item).expect("delete");
+    let missing = get_on(fake.bus(), MK, item).expect_err("gone");
     assert_eq!(missing.kind, KeystoreErrorKind::NotFound);
-    delete_on(fake.bus(), item).expect("deleting a missing item is fine");
+    delete_on(fake.bus(), MK, item).expect("deleting a missing item is fine");
+}
+
+#[test]
+fn kinds_are_stored_under_their_own_service() {
+    let fake = Fake::new();
+    let item = KeychainItemId::random();
+    set_on(fake.bus(), MK, item, b"key").expect("set");
+    let missing =
+        get_on(fake.bus(), ItemKind::DatabaseCredential, item).expect_err("other service");
+    assert_eq!(missing.kind, KeystoreErrorKind::NotFound);
+    set_on(fake.bus(), ItemKind::DatabaseCredential, item, b"token").expect("set");
+    assert_eq!(
+        get_on(fake.bus(), MK, item).expect("get").as_slice(),
+        b"key"
+    );
+    let state = lock(&fake.state);
+    let services: Vec<&str> = state
+        .items
+        .values()
+        .filter_map(|stored| stored.attributes.get("service").map(String::as_str))
+        .collect();
+    assert!(services.contains(&DATABASE_CREDENTIAL_SERVICE));
+    assert!(services.contains(&KEYCHAIN_SERVICE));
 }
 
 #[test]
@@ -440,11 +474,17 @@ fn items_of_other_installs_are_kept_apart() {
     let fake = Fake::new();
     let ours = KeychainItemId::random();
     let theirs = KeychainItemId::random();
-    set_on(fake.bus(), ours, b"ours").expect("set");
-    set_on(fake.bus(), theirs, b"theirs").expect("set");
-    assert_eq!(get_on(fake.bus(), ours).expect("get").as_slice(), b"ours");
-    delete_on(fake.bus(), theirs).expect("delete");
-    assert_eq!(get_on(fake.bus(), ours).expect("get").as_slice(), b"ours");
+    set_on(fake.bus(), MK, ours, b"ours").expect("set");
+    set_on(fake.bus(), MK, theirs, b"theirs").expect("set");
+    assert_eq!(
+        get_on(fake.bus(), MK, ours).expect("get").as_slice(),
+        b"ours"
+    );
+    delete_on(fake.bus(), MK, theirs).expect("delete");
+    assert_eq!(
+        get_on(fake.bus(), MK, ours).expect("get").as_slice(),
+        b"ours"
+    );
 }
 
 #[test]
@@ -452,9 +492,12 @@ fn a_missing_default_collection_is_created() {
     let fake = Fake::new();
     fake.with(|state| state.alias = false);
     let item = KeychainItemId::random();
-    set_on(fake.bus(), item, b"key").expect("set into a new collection");
+    set_on(fake.bus(), MK, item, b"key").expect("set into a new collection");
     assert!(lock(&fake.state).alias);
-    assert_eq!(get_on(fake.bus(), item).expect("get").as_slice(), b"key");
+    assert_eq!(
+        get_on(fake.bus(), MK, item).expect("get").as_slice(),
+        b"key"
+    );
 }
 
 #[test]
@@ -465,9 +508,12 @@ fn creating_the_default_collection_goes_through_its_prompt() {
         state.prompt_to_create = true;
     });
     let item = KeychainItemId::random();
-    set_on(fake.bus(), item, b"key").expect("set after the prompt");
+    set_on(fake.bus(), MK, item, b"key").expect("set after the prompt");
     assert_eq!(lock(&fake.state).prompts, 1);
-    assert_eq!(get_on(fake.bus(), item).expect("get").as_slice(), b"key");
+    assert_eq!(
+        get_on(fake.bus(), MK, item).expect("get").as_slice(),
+        b"key"
+    );
 
     let refused = Fake::new();
     refused.with(|state| {
@@ -475,7 +521,7 @@ fn creating_the_default_collection_goes_through_its_prompt() {
         state.prompt_to_create = true;
         state.dismiss = true;
     });
-    let err = set_on(refused.bus(), item, b"key").expect_err("dismissed");
+    let err = set_on(refused.bus(), MK, item, b"key").expect_err("dismissed");
     assert_eq!(err.kind, KeystoreErrorKind::AccessDenied);
 }
 
@@ -483,10 +529,10 @@ fn creating_the_default_collection_goes_through_its_prompt() {
 fn an_existing_item_is_updated_where_it_is() {
     let fake = Fake::new();
     let item = KeychainItemId::random();
-    set_on(fake.bus(), item, b"first").expect("set");
+    set_on(fake.bus(), MK, item, b"first").expect("set");
     // The default collection goes away; the item is still found and updated.
     fake.with(|state| state.alias = false);
-    set_on(fake.bus(), item, b"second").expect("update");
+    set_on(fake.bus(), MK, item, b"second").expect("update");
     let state = lock(&fake.state);
     assert_eq!(state.items.len(), 1);
     assert!(!state.alias, "no new collection was needed");
@@ -500,12 +546,12 @@ fn an_existing_item_is_updated_where_it_is() {
 fn a_prompt_that_never_answers_times_out() {
     let fake = Fake::new();
     let item = KeychainItemId::random();
-    set_on(fake.bus(), item, b"key").expect("set");
+    set_on(fake.bus(), MK, item, b"key").expect("set");
     fake.with(|state| {
         state.locked = true;
         state.silent = true;
     });
-    let err = get_on(fake.bus(), item).expect_err("no answer");
+    let err = get_on(fake.bus(), MK, item).expect_err("no answer");
     assert_eq!(err.kind, KeystoreErrorKind::Unavailable);
 }
 
@@ -513,9 +559,12 @@ fn a_prompt_that_never_answers_times_out() {
 fn a_locked_collection_is_unlocked_through_the_prompt() {
     let fake = Fake::new();
     let item = KeychainItemId::random();
-    set_on(fake.bus(), item, b"key").expect("set");
+    set_on(fake.bus(), MK, item, b"key").expect("set");
     fake.with(|state| state.locked = true);
-    assert_eq!(get_on(fake.bus(), item).expect("get").as_slice(), b"key");
+    assert_eq!(
+        get_on(fake.bus(), MK, item).expect("get").as_slice(),
+        b"key"
+    );
     assert_eq!(lock(&fake.state).prompts, 1);
 }
 
@@ -523,16 +572,16 @@ fn a_locked_collection_is_unlocked_through_the_prompt() {
 fn a_dismissed_prompt_is_access_denied() {
     let fake = Fake::new();
     let item = KeychainItemId::random();
-    set_on(fake.bus(), item, b"key").expect("set");
+    set_on(fake.bus(), MK, item, b"key").expect("set");
     fake.with(|state| {
         state.locked = true;
         state.dismiss = true;
     });
-    let err = get_on(fake.bus(), item).expect_err("dismissed");
+    let err = get_on(fake.bus(), MK, item).expect_err("dismissed");
     assert_eq!(err.kind, KeystoreErrorKind::AccessDenied);
-    let err = set_on(fake.bus(), item, b"other").expect_err("dismissed");
+    let err = set_on(fake.bus(), MK, item, b"other").expect_err("dismissed");
     assert_eq!(err.kind, KeystoreErrorKind::AccessDenied);
-    let err = delete_on(fake.bus(), item).expect_err("dismissed");
+    let err = delete_on(fake.bus(), MK, item).expect_err("dismissed");
     assert_eq!(err.kind, KeystoreErrorKind::AccessDenied);
 }
 
@@ -552,7 +601,7 @@ fn two_matching_items_are_rejected() {
         state.items.insert(2, stored);
         state.next = 2;
     });
-    let err = get_on(fake.bus(), item).expect_err("ambiguous");
+    let err = get_on(fake.bus(), MK, item).expect_err("ambiguous");
     assert_eq!(err.kind, KeystoreErrorKind::Rejected);
 }
 
@@ -560,7 +609,7 @@ fn two_matching_items_are_rejected() {
 fn a_service_without_a_plain_session_is_unavailable() {
     let fake = Fake::new();
     fake.with(|state| state.refuse_session = true);
-    let err = get_on(fake.bus(), KeychainItemId::random()).expect_err("no session");
+    let err = get_on(fake.bus(), MK, KeychainItemId::random()).expect_err("no session");
     assert_eq!(err.kind, KeystoreErrorKind::Unavailable);
 }
 
@@ -568,7 +617,7 @@ fn a_service_without_a_plain_session_is_unavailable() {
 fn a_peer_that_hangs_up_is_unavailable() {
     let (client, service) = std::os::unix::net::UnixStream::pair().expect("socket pair");
     drop(service);
-    let err = get_on(Bus::Peer(client), KeychainItemId::random()).expect_err("no peer");
+    let err = get_on(Bus::Peer(client), MK, KeychainItemId::random()).expect_err("no peer");
     assert_eq!(err.kind, KeystoreErrorKind::Unavailable);
 }
 

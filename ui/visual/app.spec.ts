@@ -289,6 +289,11 @@ const PAGES: AppPage[] = [
   },
   { name: "join-callback", viewer: "operator", path: "/join/callback?code=c1&state=s1" },
   { name: "clerk-callback", viewer: "operator", path: "/clerk/callback?code=c1&state=s1" },
+  {
+    name: "verify-email",
+    viewer: "signed-out",
+    path: `/verify-email?token=${"0123456789abcdef".repeat(4)}`,
+  },
 ];
 
 /**

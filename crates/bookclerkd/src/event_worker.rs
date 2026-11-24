@@ -201,8 +201,16 @@ pub async fn upsert_event_subscriber_catalog(state: &AppState) {
     // Subscriptions belong to the deployment, not to a running process: an
     // instance deployed here but not loaded still subscribes, so its copies
     // of matching events are written at publish time and wait for it.
-    let dormant: Vec<DeployedSubscriber> = deployed_subscribers(&library, &node_id)
-        .await
+    let deployed = deployed_subscribers(&library, &node_id).await;
+    // Instances a present deployment runs here, or `None` when the control
+    // plane could not be read (the loaded processes are then all we know).
+    let running: Option<std::collections::HashSet<String>> = deployed.as_ref().map(|rows| {
+        rows.iter()
+            .map(|deployed| deployed.instance_id.clone())
+            .collect()
+    });
+    let dormant: Vec<DeployedSubscriber> = deployed
+        .unwrap_or_default()
         .into_iter()
         .filter(|deployed| !loaded_instances.contains(deployed.instance_id.as_str()))
         .collect();
@@ -300,8 +308,14 @@ pub async fn upsert_event_subscriber_catalog(state: &AppState) {
                 .get(&row.key)
                 .cloned()
                 .unwrap_or_else(|| row.runtime_subs.clone());
+            // A guest whose deployment is gone stays loaded until deployment
+            // reconcile retires it; its row is disabled meanwhile so dispatch
+            // stops creating deliveries for it.
+            let enabled = running
+                .as_ref()
+                .is_none_or(|ids| ids.contains(instance_id.as_str()));
             if let Err(err) = library
-                .upsert_event_subscriber(&node_id, instance_id, &subs, true)
+                .upsert_event_subscriber(&node_id, instance_id, &subs, enabled)
                 .await
             {
                 warn!(
@@ -347,19 +361,25 @@ struct DeployedSubscriber {
 /// Instances this node should run (`present` or `placed`), with their keys.
 ///
 /// Read from the control plane rather than from loaded processes, so the
-/// catalog says what is deployed even while a guest is not running. A read
-/// failure logs and returns nothing; the catalog then falls back to loaded
-/// instances for this tick, as before.
-async fn deployed_subscribers(library: &LibraryStore, node_id: &str) -> Vec<DeployedSubscriber> {
+/// catalog says what is deployed even while a guest is not running.
+///
+/// # Returns
+///
+/// The deployed instances, or `None` when a control-plane read fails (it is
+/// logged); the catalog then falls back to loaded instances for this tick.
+async fn deployed_subscribers(
+    library: &LibraryStore,
+    node_id: &str,
+) -> Option<Vec<DeployedSubscriber>> {
     let deployments = match list_present_deployments_for_node(library, node_id).await {
         Ok(rows) => rows,
         Err(err) => {
             warn!(error = %err, "deployment read for event catalog failed");
-            return Vec::new();
+            return None;
         }
     };
     if deployments.is_empty() {
-        return Vec::new();
+        return Some(Vec::new());
     }
     // One point read per deployed instance, not a library-wide instance
     // list, so the read stays within an adapter's result-row limit.
@@ -370,7 +390,7 @@ async fn deployed_subscribers(library: &LibraryStore, node_id: &str) -> Vec<Depl
             Ok(None) => {}
             Err(err) => {
                 warn!(error = %err, "plugin instance read for event catalog failed");
-                return Vec::new();
+                return None;
             }
         }
     }
@@ -378,7 +398,7 @@ async fn deployed_subscribers(library: &LibraryStore, node_id: &str) -> Vec<Depl
         .iter()
         .map(|instance| (instance.id.as_str(), instance.plugin_key.as_str()))
         .collect();
-    deployed_from_rows(&deployments, &keys)
+    Some(deployed_from_rows(&deployments, &keys))
 }
 
 /// What the active installed version of a plugin key subscribes to.
@@ -2318,13 +2338,108 @@ queue = "other"
         );
     }
 
+    /// A loaded guest bound to one plugin instance, as deployment reconcile
+    /// registers it.
+    struct LoadedProbe {
+        /// Plugin instance id it runs as.
+        instance: String,
+    }
+
+    #[async_trait::async_trait]
+    impl bookclerk_integrations::Integration for LoadedProbe {
+        fn id(&self) -> &str {
+            "probe"
+        }
+
+        fn plugin_key(&self) -> &str {
+            INSTALLED_ECHO_KEY
+        }
+
+        fn plugin_instance_id(&self) -> Option<&str> {
+            Some(&self.instance)
+        }
+
+        async fn start(
+            &self,
+            _ctx: bookclerk_integrations::IntegrationContext,
+        ) -> bookclerk_integrations::Result<()> {
+            Ok(())
+        }
+
+        async fn health(
+            &self,
+        ) -> bookclerk_integrations::Result<bookclerk_integrations::IntegrationHealth> {
+            Ok(bookclerk_integrations::IntegrationHealth {
+                id: "probe".into(),
+                enabled: true,
+                ok: true,
+                detail: None,
+            })
+        }
+
+        async fn deliver_domain_event(
+            &self,
+            _event: bookclerk_integrations::DomainEvent,
+        ) -> bookclerk_integrations::Result<bookclerk_integrations::EventResult> {
+            Ok(bookclerk_integrations::EventResult::Ack)
+        }
+    }
+
+    /// Whether this node's catalog row for `plugin_id` is enabled.
+    async fn catalog_enabled(store: &LibraryStore, plugin_id: &str) -> bool {
+        let live = store.list_live_event_subscribers().await.unwrap();
+        live.iter()
+            .find(|row| row.plugin_id == plugin_id)
+            .unwrap_or_else(|| panic!("no catalog row for {plugin_id}: {live:?}"))
+            .enabled
+    }
+
+    #[tokio::test]
+    async fn a_loaded_instance_without_a_deployment_is_catalogued_disabled() {
+        let files = tempfile::tempdir().unwrap();
+        let (state, store) = crate::node_api::tests::test_state(&files).await;
+        let instance = deploy_and_heartbeat(&state, &store, files.path(), INSTALLED_ECHO_KEY).await;
+        state
+            .integrations
+            .write()
+            .await
+            .register(std::sync::Arc::new(LoadedProbe {
+                instance: instance.as_str().to_string(),
+            }));
+        upsert_event_subscriber_catalog(&state).await;
+        assert!(catalog_enabled(&store, instance.as_str()).await);
+
+        // Undeployed, the guest stays loaded until reconcile retires it, but
+        // dispatch must stop creating deliveries for it.
+        bookclerk_library::control_plane::undeploy_instance(
+            &store,
+            &bookclerk_library::control_plane::ConfigActor::Operator { id: "test".into() },
+            &instance,
+        )
+        .await
+        .unwrap();
+        upsert_event_subscriber_catalog(&state).await;
+        assert!(!catalog_enabled(&store, instance.as_str()).await);
+
+        // When the deployments cannot be read, the loaded process is all the
+        // node knows, so its row stays enabled.
+        break_table(&store, "DROP TABLE plugin_deployments").await;
+        upsert_event_subscriber_catalog(&state).await;
+        assert!(catalog_enabled(&store, instance.as_str()).await);
+    }
+
     #[tokio::test]
     async fn an_unreadable_control_plane_leaves_only_loaded_instances() {
         let files = tempfile::tempdir().unwrap();
         let (state, store) = crate::node_api::tests::test_state(&files).await;
         let node_id = event_node_id(files.path());
         deploy_and_heartbeat(&state, &store, files.path(), INSTALLED_ECHO_KEY).await;
-        assert_eq!(deployed_subscribers(&store, &node_id).await.len(), 1);
+        assert_eq!(
+            deployed_subscribers(&store, &node_id)
+                .await
+                .map(|rows| rows.len()),
+            Some(1)
+        );
 
         break_table(&store, "DROP TABLE event_subscriber_nodes").await;
         upsert_event_subscriber_catalog(&state).await;
@@ -2334,9 +2449,9 @@ queue = "other"
             "ALTER TABLE plugin_instances RENAME TO gone_instances",
         )
         .await;
-        assert!(deployed_subscribers(&store, &node_id).await.is_empty());
+        assert_eq!(deployed_subscribers(&store, &node_id).await, None);
         break_table(&store, "DROP TABLE plugin_deployments").await;
-        assert!(deployed_subscribers(&store, &node_id).await.is_empty());
+        assert_eq!(deployed_subscribers(&store, &node_id).await, None);
     }
 
     #[tokio::test]

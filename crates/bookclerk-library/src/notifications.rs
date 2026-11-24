@@ -18,7 +18,9 @@
 //!   (when on); when they did not, every personal destination of theirs on
 //!   an instance the administrators offer for `T` with `default_on`. Either
 //!   way only instances the administrators offer for `T` are used.
-//! - **Account** is the host's own mail and is not routed here yet.
+//! - **Account** is the host's own mail. It is never routed: each message
+//!   goes by itself, through the instance administrators chose for it
+//!   (`store::account_mail`).
 //!
 //! A paused destination is skipped.
 
@@ -27,6 +29,7 @@ use bookclerk_plugin_abi::{
     NotificationAlertAction, NotificationAudience, NotificationField, NotificationMessage,
     NotificationSeverity, NotifyDestinationKind,
 };
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Permanent send failures in a row after which a destination is paused.
@@ -147,6 +150,287 @@ impl DeliveryState {
             _ => None,
         }
     }
+}
+
+/// How long a delivered or failed account-mail record is kept.
+pub const ACCOUNT_MAIL_RETENTION_DAYS: i64 = 30;
+
+/// How long an email verification link works.
+pub const EMAIL_VERIFICATION_HOURS: i64 = 24;
+
+/// How long an emailed invite works, as for every claim ticket.
+pub const INVITE_DAYS: i64 = 7;
+
+/// What an account-mail message says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountMailKind {
+    /// A test message from the account-mail settings; delivering it marks
+    /// the instance tested.
+    Test,
+    /// An invite: a link that sets up the account (a claim ticket).
+    Invite,
+    /// A link that proves the user's email address.
+    VerifyEmail,
+}
+
+impl AccountMailKind {
+    /// Every kind, in the order of the `kind` column's CHECK list.
+    pub const ALL: [Self; 3] = [Self::Test, Self::Invite, Self::VerifyEmail];
+
+    /// The stored spelling.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Test => "test",
+            Self::Invite => "invite",
+            Self::VerifyEmail => "verify_email",
+        }
+    }
+
+    /// Parses the stored spelling; `None` when unknown.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "test" => Some(Self::Test),
+            "invite" => Some(Self::Invite),
+            "verify_email" => Some(Self::VerifyEmail),
+            _ => None,
+        }
+    }
+}
+
+/// The notifier instance administrators chose for account mail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountMailSettings {
+    /// The instance that sends account mail.
+    pub plugin_instance_id: String,
+    /// When a test message through it was last delivered; `None` until one
+    /// is, and again after the instance changes.
+    pub tested_at: Option<DateTime<Utc>>,
+}
+
+/// One account-mail message and where its delivery stands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountMail {
+    /// Message id.
+    pub id: String,
+    /// What it says.
+    pub kind: AccountMailKind,
+    /// The user it is for.
+    pub user_id: i64,
+    /// The address it goes to.
+    pub address: String,
+    /// The notifier instance that sends it.
+    pub plugin_instance_id: String,
+    /// Where it stands.
+    pub state: DeliveryState,
+    /// Send attempts made.
+    pub attempts: i64,
+}
+
+/// The link token an account-mail send mints: the raw value goes into the
+/// message once and only its hash is stored.
+#[derive(Clone, PartialEq, Eq)]
+pub struct MintedToken(String);
+
+impl MintedToken {
+    /// The raw token, for the link in the message. Never logged.
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
+    /// Wraps a raw token the store just minted.
+    pub(crate) fn new(raw: String) -> Self {
+        Self(raw)
+    }
+}
+
+impl std::fmt::Debug for MintedToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MintedToken(<redacted>)")
+    }
+}
+
+/// Length of a verification link's token: 32 random bytes as lowercase hex.
+pub const VERIFY_TOKEN_CHARS: usize = 64;
+
+/// Longest plugin instance id the account-mail settings body takes.
+pub const MAX_INSTANCE_ID_BYTES: usize = 128;
+
+/// The token of a verification link, as a patron's browser sends it back:
+/// exactly [`VERIFY_TOKEN_CHARS`] lowercase hex characters.
+#[derive(Clone, PartialEq, Eq)]
+pub struct VerifyEmailToken(String);
+
+impl VerifyEmailToken {
+    /// The raw token, to hash and look up. Never logged.
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for VerifyEmailToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("VerifyEmailToken(<redacted>)")
+    }
+}
+
+/// The body of `PUT /api/notifications/account-mail`, read from a JSON
+/// object only, before [`AccountMailSettingsRequest::validate`] checks it.
+///
+/// The route reads it with the web framework's JSON extractor and
+/// [`parse_account_mail_settings`] reads it from bytes; both go through
+/// this type's reader and the same validation.
+#[derive(Debug)]
+pub struct AccountMailSettingsRequest(SettingsBody);
+
+/// The fields of [`AccountMailSettingsRequest`].
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsBody {
+    /// The notifier instance; `Some(None)` for `null`. A missing key fails
+    /// the read.
+    #[serde(deserialize_with = "present")]
+    plugin_instance_id: Option<Option<String>>,
+}
+
+impl<'de> Deserialize<'de> for AccountMailSettingsRequest {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        crate::control_plane::from_object(d, "a JSON object").map(Self)
+    }
+}
+
+impl AccountMailSettingsRequest {
+    /// Checks the instance id.
+    ///
+    /// # Returns
+    ///
+    /// The instance id: 1 to [`MAX_INSTANCE_ID_BYTES`] printable ASCII
+    /// bytes with no space, or `None` for `null`.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::LibraryError::Invalid`] when the id breaks those rules.
+    pub fn validate(self) -> crate::Result<Option<String>> {
+        let Some(id) = self.0.plugin_instance_id.flatten() else {
+            return Ok(None);
+        };
+        if id.is_empty()
+            || id.len() > MAX_INSTANCE_ID_BYTES
+            || !id.bytes().all(|b| b.is_ascii_graphic())
+        {
+            return Err(crate::LibraryError::Invalid(format!(
+                "account-mail settings: plugin_instance_id must be 1 to \
+                 {MAX_INSTANCE_ID_BYTES} printable characters with no space"
+            )));
+        }
+        Ok(Some(id))
+    }
+}
+
+/// Reads a present value, `null` included, as `Some`.
+fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(d).map(Some)
+}
+
+/// The body of `POST /api/auth/verify-email`, read from a JSON object
+/// only, before [`VerifyEmailRequest::validate`] checks it.
+///
+/// The route reads it with the web framework's JSON extractor and
+/// [`parse_verify_email_request`] reads it from bytes; both go through
+/// this type's reader and the same validation.
+pub struct VerifyEmailRequest(VerifyBody);
+
+impl<'de> Deserialize<'de> for VerifyEmailRequest {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        crate::control_plane::from_object(d, "a JSON object").map(Self)
+    }
+}
+
+impl std::fmt::Debug for VerifyEmailRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("VerifyEmailRequest(<redacted>)")
+    }
+}
+
+/// The fields of [`VerifyEmailRequest`].
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VerifyBody {
+    /// The token from the link.
+    token: String,
+}
+
+impl VerifyEmailRequest {
+    /// Checks the token.
+    ///
+    /// # Returns
+    ///
+    /// The token: exactly [`VERIFY_TOKEN_CHARS`] lowercase hex characters.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::LibraryError::Invalid`] when the token breaks that rule.
+    pub fn validate(self) -> crate::Result<VerifyEmailToken> {
+        let token = self.0.token;
+        if token.len() != VERIFY_TOKEN_CHARS
+            || !token
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(crate::LibraryError::Invalid(format!(
+                "verify-email body: token must be {VERIFY_TOKEN_CHARS} lowercase hex characters"
+            )));
+        }
+        Ok(VerifyEmailToken(token))
+    }
+}
+
+/// Reads a body as `T` from bytes, for the fuzz target and tests (the
+/// routes use the web framework's JSON extractor on the same types).
+fn read_body<'de, T: Deserialize<'de>>(body: &'de [u8], what: &str) -> crate::Result<T> {
+    serde_json::from_slice::<T>(body)
+        .map_err(|err| crate::LibraryError::Invalid(format!("{what}: {err}")))
+}
+
+/// Parses the body of `PUT /api/notifications/account-mail`
+/// from bytes (sans-IO), for the fuzz target and tests. The route reads
+/// the same [`AccountMailSettingsRequest`] with the JSON extractor and
+/// calls the same validation.
+///
+/// The body is one JSON object whose only key is `plugin_instance_id`: a
+/// string of 1 to [`MAX_INSTANCE_ID_BYTES`] printable ASCII bytes with no
+/// space, or `null` to turn account mail off. The key is required and may
+/// not repeat.
+///
+/// # Returns
+///
+/// The instance id, or `None` for `null`.
+///
+/// # Errors
+///
+/// [`crate::LibraryError::Invalid`] naming the first rule the body breaks.
+pub fn parse_account_mail_settings(body: &[u8]) -> crate::Result<Option<String>> {
+    read_body::<AccountMailSettingsRequest>(body, "account-mail settings")?.validate()
+}
+
+/// Parses the body of `POST /api/auth/verify-email` from bytes (sans-IO),
+/// for the fuzz target and tests. The route reads the same
+/// [`VerifyEmailRequest`] with the JSON extractor and calls the same
+/// validation.
+///
+/// The body is one JSON object whose only key is `token`: exactly
+/// [`VERIFY_TOKEN_CHARS`] lowercase hex characters. The key is required
+/// and may not repeat.
+///
+/// # Errors
+///
+/// [`crate::LibraryError::Invalid`] naming the first rule the body breaks.
+pub fn parse_verify_email_request(body: &[u8]) -> crate::Result<VerifyEmailToken> {
+    read_body::<VerifyEmailRequest>(body, "verify-email body")?.validate()
 }
 
 /// Every audience, in the order of the `audience` column's CHECK list.
@@ -364,8 +648,12 @@ pub struct StalledSend {
     /// delivery is gone, already finished or linked to another job, and
     /// the job only needs cancelling.
     pub delivery_id: Option<String>,
-    /// The notifier instance the delivery goes through; `None` exactly
-    /// when `delivery_id` is.
+    /// Its pending account mail, when the job sends one instead of a
+    /// delivery; `None` when the mail is gone, finished or linked to
+    /// another job.
+    pub account_mail_id: Option<String>,
+    /// The notifier instance the delivery or account mail goes through;
+    /// `None` exactly when both of those are.
     pub notifier: Option<String>,
 }
 

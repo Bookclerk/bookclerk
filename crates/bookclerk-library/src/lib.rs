@@ -24,6 +24,7 @@ mod backup;
 mod binding_schema;
 pub mod column_read;
 pub mod control_plane;
+pub mod database_credential;
 mod db_atomic;
 pub mod email;
 pub mod entities;

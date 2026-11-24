@@ -27,7 +27,9 @@
 //!   file's row and compares two copies of an edition by them;
 //! - every marketplace a `catalog.sync` title the library would accept
 //!   carries is at most 16 lowercase ASCII letters and digits, checked byte
-//!   by byte here, since the library scopes ASIN identifiers to it.
+//!   by byte here, since the library scopes ASIN identifiers to it; each
+//!   of its files' content versions is at most 128 bytes with no control
+//!   byte, since the library stores it in the title's manifest.
 //! - every catalog reference a `catalog.upload`, `catalog.session` or
 //!   `catalog.accepted` frame carries that its receiver would act on
 //!   (`CatalogRef::is_well_formed`) names a store and a marketplace without
@@ -189,6 +191,14 @@ pub fn check(data: &[u8]) {
                 "marketplace {:?} accepted",
                 title.marketplace
             );
+            for file in &title.files {
+                if let Some(version) = file.version.as_deref() {
+                    assert!(
+                        version.len() <= 128 && !version.bytes().any(|b| b < 0x20 || b == 0x7f),
+                        "file version {version:?} accepted"
+                    );
+                }
+            }
         }
     }
     check_catalog_refs(&frame.body);
