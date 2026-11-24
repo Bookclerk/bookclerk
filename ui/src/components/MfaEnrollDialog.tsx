@@ -1,5 +1,6 @@
 import { useId, useState, type FormEvent } from "react";
 import { Fingerprint, LogOut, Shield, Smartphone } from "lucide-react";
+import { RecoveryCodesList } from "@/components/RecoveryCodesList";
 import { TotpSetupHint } from "@/components/TotpSetupHint";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,7 +14,7 @@ import {
 } from "@/lib/api";
 import { createPasskey, passkeysSupported } from "@/lib/webauthn";
 
-type Step = "choose" | "totp";
+type Step = "choose" | "totp" | "codes";
 
 /**
  * Blocking gate when host MFA policy is on and this account has no passkey or TOTP.
@@ -41,6 +42,20 @@ export function MfaEnrollDialog({
     qr_svg: string;
   } | null>(null);
   const [totpCode, setTotpCode] = useState("");
+  const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
+
+  /**
+   * Shows the recovery codes a first second factor brings before closing
+   * the gate, or closes it at once when there are none.
+   */
+  async function afterEnrolled(codes: string[] | undefined) {
+    if (codes && codes.length > 0) {
+      setRecoveryCodes(codes);
+      setStep("codes");
+    } else {
+      await onEnrolled();
+    }
+  }
 
   async function onRegisterPasskey() {
     setBusy(true);
@@ -48,11 +63,11 @@ export function MfaEnrollDialog({
     try {
       const begin = await passkeyRegisterBegin();
       const result = await createPasskey(begin);
-      await passkeyRegisterFinish({
+      const codes = await passkeyRegisterFinish({
         ...result,
         name: passkeyName.trim() || undefined,
       });
-      await onEnrolled();
+      await afterEnrolled(codes);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Passkey registration failed");
     } finally {
@@ -81,8 +96,7 @@ export function MfaEnrollDialog({
     setBusy(true);
     setError(null);
     try {
-      await totpEnrollFinish(totpCode.trim());
-      await onEnrolled();
+      await afterEnrolled(await totpEnrollFinish(totpCode.trim()));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Invalid authenticator code");
     } finally {
@@ -130,7 +144,13 @@ export function MfaEnrollDialog({
           </p>
         ) : null}
 
-        {step === "totp" && totpEnroll ? (
+        {step === "codes" ? (
+          <RecoveryCodesList
+            codes={recoveryCodes}
+            onDone={() => void onEnrolled()}
+            doneLabel="I saved my codes, continue"
+          />
+        ) : step === "totp" && totpEnroll ? (
           <form className="flex flex-col gap-3" onSubmit={(e) => void onConfirmTotp(e)}>
             <TotpSetupHint
               secret={totpEnroll.secret}

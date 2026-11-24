@@ -1259,6 +1259,23 @@ function signedIn(viewer: "owner" | "operator"): Routes {
     "GET /api/auth/passkeys": () => ({
       json: { passkeys: [{ id: 1, credential_id: "cred-1", name: "Laptop fingerprint reader" }] },
     }),
+    "GET /api/auth/recovery-codes": () => ({ json: { remaining: 8 } }),
+    "POST /api/auth/recovery-codes": () => ({
+      json: {
+        codes: [
+          "7K3M-Q9TB-2XWD-HF6P",
+          "M4RE-8N2V-TQ7K-ZC3J",
+          "B6WN-3HXT-9PDF-K2QM",
+          "Q8CJ-5VRA-T4YE-N7GH",
+          "2DZK-W6MB-JX3R-8FTN",
+          "H9PV-4QEC-6ZKW-R1MA",
+          "V3TX-7JGN-2BHR-QD5K",
+          "E5FM-1WKQ-8ACZ-T6VJ",
+          "N2RB-9DXH-5MWT-G3PE",
+          "Z7QA-6KVF-3NJC-W8HB",
+        ],
+      },
+    }),
     "GET /api/auth/oidc/identities": () => ({ json: { identities: [] } }),
     "GET /api/auth/oidc/providers": () => ({ json: { enabled: false, providers: [] } }),
     "GET /api/config/master-key": () => ({
@@ -1584,10 +1601,13 @@ const SIGNED_OUT: Routes = {
     },
   }),
   "POST /api/auth/verify-email": () => ({ json: { verified: true } }),
-  // Self-service reset is on; a sample link asks for an authenticator code.
+  // Self-service reset is on; a sample link asks for an authenticator code,
+  // and the account has recovery codes left.
   "GET /api/auth/password-reset": () => ({ json: { available: true } }),
   "POST /api/auth/password-reset": () => ({ status: 202, json: { accepted: true } }),
-  "POST /api/auth/password-reset/check": () => ({ json: { second_factor: "totp" } }),
+  "POST /api/auth/password-reset/check": () => ({
+    json: { second_factor: "totp", recovery_code: true },
+  }),
   "GET /api/auth/signin": () => ({
     json: {
       operator_token: true,

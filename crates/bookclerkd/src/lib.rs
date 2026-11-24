@@ -76,6 +76,7 @@ mod player;
 mod plugin_installs;
 mod profile;
 mod quality_upgrades;
+mod recovery_codes;
 /// Builds the daemon source / integration registry for [`AppState`].
 mod registry;
 mod request_queue_job;

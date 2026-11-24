@@ -1,6 +1,6 @@
 # ADR: Notifications are routed by the host and sent by plugins
 
-- **Status:** Accepted; partly built (routing, delivery log, inbox, web API, the generic webhook provider, the SMTP email provider, and account mail's emailed invites, verified email and self-service password reset; no other providers or second-factor recovery yet). Amended 2026-11-23: the SMTP provider is a native Rust guest (decision 11). Amended 2026-11-23: account mail's send job mints each link's token when it sends, so no link is stored, sealed or erased; only the token's hash is kept (decision 5).
+- **Status:** Accepted; partly built (routing, delivery log, inbox, web API, the generic webhook provider, the SMTP email provider, and account mail's emailed invites, verified email, self-service password reset and recovery codes; no other providers, and no recovery by administrator approval or delay yet). Amended 2026-11-23: the SMTP provider is a native Rust guest (decision 11). Amended 2026-11-23: account mail's send job mints each link's token when it sends, so no link is stored, sealed or erased; only the token's hash is kept (decision 5).
 - **Date:** 2026-11-20
 - **Related:** [Event delivery model](event-delivery-model.md),
   [First-party identity](first-party-identity.md),

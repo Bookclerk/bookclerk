@@ -24,9 +24,11 @@
 //! - Finish: `token` (as above) and `password` (1 to 1024 bytes once
 //!   trimmed) are required; `totp_code` (six ASCII digits) and `passkey`
 //!   (an object of exactly `challenge_id`, 1 to 64 printable ASCII bytes,
-//!   and `credential`, an object) are optional, `null` counting as absent,
-//!   and at most one of them is sent. The parsed values equal the ones
-//!   written.
+//!   and `credential`, an object) and `recovery_code` (at most 40 bytes
+//!   that, ignoring spaces and hyphens and case, and reading `I` and `L`
+//!   as `1` and `O` as `0`, are exactly 16 characters of Crockford's
+//!   base32 alphabet) are optional, `null` counting as absent, and at
+//!   most one of them is sent. The parsed values equal the ones written.
 //!
 //! A refused body is `Invalid`, never another error.
 
@@ -153,6 +155,8 @@ enum Factor {
     Totp(String),
     /// A passkey's challenge id and credential.
     Passkey(String, Value),
+    /// A recovery code: its 16 symbols, normalized.
+    Recovery(String),
 }
 
 /// The finish body.
@@ -177,6 +181,9 @@ fn check_finish(body: &[u8], shown: &str) -> bool {
                     challenge_id,
                     credential,
                 } => Factor::Passkey(challenge_id, credential),
+                ResetSecondFactor::RecoveryCode(code) => {
+                    Factor::Recovery(code.display().replace('-', ""))
+                }
             };
             let parsed = Finish {
                 token: finish.token.expose().to_string(),
@@ -194,7 +201,10 @@ fn check_finish(body: &[u8], shown: &str) -> bool {
 
 /// The finish body the oracle expects; `None` when it must be refused.
 fn expected_finish(body: &[u8]) -> Option<Finish> {
-    let fields = object_of(body, &["token", "password", "totp_code", "passkey"])?;
+    let fields = object_of(
+        body,
+        &["token", "password", "totp_code", "passkey", "recovery_code"],
+    )?;
     let token = link_token(fields.get("token")?)?;
     let Value::String(password) = fields.get("password")? else {
         return None;
@@ -233,17 +243,47 @@ fn expected_finish(body: &[u8]) -> Option<Finish> {
         }
         Some(_) => return None,
     };
-    let factor = match (code, passkey) {
-        (Some(_), Some(_)) => return None,
-        (Some(code), None) => Factor::Totp(code),
-        (None, Some((challenge, credential))) => Factor::Passkey(challenge, credential),
-        (None, None) => Factor::None,
+    let recovery = match fields.get("recovery_code") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(code)) => Some(recovery_symbols(code)?),
+        Some(_) => return None,
+    };
+    let factor = match (code, passkey, recovery) {
+        (Some(code), None, None) => Factor::Totp(code),
+        (None, Some((challenge, credential)), None) => Factor::Passkey(challenge, credential),
+        (None, None, Some(symbols)) => Factor::Recovery(symbols),
+        (None, None, None) => Factor::None,
+        _ => return None,
     };
     Some(Finish {
         token,
         password: password.to_string(),
         factor,
     })
+}
+
+/// The 16 normalized symbols of a recovery code as typed, or `None` when
+/// it is not one.
+fn recovery_symbols(typed: &str) -> Option<String> {
+    const CROCKFORD: &str = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+    if typed.len() > 40 {
+        return None;
+    }
+    let mut symbols = String::new();
+    for c in typed.chars() {
+        let c = match c {
+            ' ' | '-' => continue,
+            'i' | 'I' | 'l' | 'L' => '1',
+            'o' | 'O' => '0',
+            c if c.is_ascii_lowercase() => c.to_ascii_uppercase(),
+            c => c,
+        };
+        if !CROCKFORD.contains(c) {
+            return None;
+        }
+        symbols.push(c);
+    }
+    (symbols.len() == 16).then_some(symbols)
 }
 
 /// The fields of a body that is one JSON object with no repeated keys and

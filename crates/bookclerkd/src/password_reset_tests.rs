@@ -385,6 +385,86 @@ async fn an_authenticator_code_is_asked_for_before_the_link_is_used() {
 }
 
 #[tokio::test]
+async fn a_recovery_code_stands_in_for_a_lost_authenticator() {
+    use bookclerk_library::recovery_code::RecoveryCode;
+    let (state, app, library) = crate::auth::tests::phase2_harness(TOKEN).await;
+    let (_instance, _files) = turn_on(&state, &library).await;
+    let user = patron(&library, "uma@example.com", true).await;
+    let secret = totp_rs::Secret::generate().to_base32();
+    library
+        .confirm_totp_enrollment(user, &secret)
+        .await
+        .expect("enrolled");
+    let token = link(&library, user, "uma@example.com").await;
+    let check = format!(r#"{{"token":"{token}"}}"#);
+    // No codes yet: the link does not offer one, and a code is refused.
+    let (status, _, json) = post(&app, "/api/auth/password-reset/check", &check).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["recovery_code"], false);
+    let codes = crate::recovery_codes::issue_first_set(&library, user)
+        .await
+        .expect("codes");
+    let (_, _, json) = post(&app, "/api/auth/password-reset/check", &check).await;
+    assert_eq!(json["second_factor"], "totp");
+    assert_eq!(json["recovery_code"], true);
+
+    let uri = "/api/auth/password-reset/finish";
+    let stranger = RecoveryCode::generate().display().to_string();
+    let (status, _, json) = post(
+        &app,
+        uri,
+        &format!(r#"{{"token":"{token}","password":"pw","recovery_code":"{stranger}"}}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(json["error"], "invalid_code");
+    // Right selector, wrong secret.
+    let forged = format!("{}-0000-0000-0000", &codes[0][..4]);
+    let (status, _, json) = post(
+        &app,
+        uri,
+        &format!(r#"{{"token":"{token}","password":"pw","recovery_code":"{forged}"}}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(json["error"], "invalid_code");
+
+    let typed = codes[2].to_lowercase().replace('-', " ");
+    let (status, _, json) = post(
+        &app,
+        uri,
+        &format!(r#"{{"token":"{token}","password":"pw","recovery_code":"{typed}"}}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    let after = library.get_user(user).await.expect("read").expect("user");
+    assert!(!after.totp_enabled, "the lost authenticator stayed on");
+    assert_eq!(library.count_recovery_codes(user).await.expect("count"), 0);
+
+    // The account has no second factor now, so another link asks for
+    // none and takes no code.
+    let again = link(&library, user, "uma@example.com").await;
+    let (_, _, json) = post(
+        &app,
+        "/api/auth/password-reset/check",
+        &format!(r#"{{"token":"{again}"}}"#),
+    )
+    .await;
+    assert_eq!(json["second_factor"], "none");
+    assert_eq!(json["recovery_code"], false);
+    let (status, _, json) = post(
+        &app,
+        uri,
+        &format!(
+            r#"{{"token":"{again}","password":"pw","recovery_code":"{}"}}"#,
+            codes[3]
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+}
+
+#[tokio::test]
 async fn a_link_stops_working_for_a_disabled_account_or_a_changed_address() {
     let (state, app, library) = crate::auth::tests::phase2_harness(TOKEN).await;
     let (_instance, _files) = turn_on(&state, &library).await;

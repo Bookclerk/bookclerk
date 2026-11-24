@@ -520,6 +520,20 @@ struct AssertionFinish {
     credential: Box<PublicKeyCredential>,
 }
 
+/// The answer to a stored passkey.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct PasskeyRegistered {
+    /// Always `true`.
+    #[schema(example = true)]
+    ok: bool,
+    /// Ten single-use recovery codes, when this is the caller's first
+    /// second factor; shown this once. Absent when the caller already had
+    /// codes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = json!(["7K3M-Q9TB-2XWD-HF6P", "M4RE-8N2V-TQ7K-ZC3J"]))]
+    recovery_codes: Option<Vec<String>>,
+}
+
 /// Completes registration, stores the passkey, and revokes elevated operator sessions.
 #[utoipa::path(
     post,
@@ -527,7 +541,7 @@ struct AssertionFinish {
     request_body = RegistrationFinish,
     security(("portalSession" = [])),
     responses(
-        (status = 200, description = "The passkey was stored.", body = OkResponse),
+        (status = 200, description = "The passkey was stored; the first second factor also brings recovery codes.", body = PasskeyRegistered),
         (status = 401, description = "The caller is not signed in."),
         (status = 403, description = "The challenge was issued to another user."),
         (status = 400, description = "The challenge is unknown or expired, the attestation is invalid, or the daemon's origin is not a valid WebAuthn relying party."),
@@ -540,7 +554,7 @@ async fn register_finish(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(body): Json<RegistrationFinish>,
-) -> Result<Json<OkResponse>, CallerRefusal> {
+) -> Result<Json<PasskeyRegistered>, CallerRefusal> {
     let user = require_user(&state, &headers).await?;
     let webauthn = origin_webauthn(&state, &headers).await?;
     let library = state.library_snapshot().await;
@@ -580,10 +594,15 @@ async fn register_finish(
     let _ = library
         .insert_security_audit_event(&format!("user:{}", user.id), "passkey_register", None)
         .await;
-    Ok(Json(OkResponse::OK))
+    let recovery_codes = crate::recovery_codes::issue_first_set(&library, user.id).await;
+    Ok(Json(PasskeyRegistered {
+        ok: true,
+        recovery_codes,
+    }))
 }
 
-/// Deletes one passkey after recent reauth; 404 when the id is not this user's.
+/// Deletes one passkey after recent reauth; 404 when the id is not this
+/// user's. The recovery codes go too when it was the last second factor.
 #[utoipa::path(
     delete,
     path = "/api/auth/passkeys/{id}",
@@ -619,6 +638,7 @@ async fn delete_passkey(
     let _ = library
         .delete_elevated_operator_sessions_for_user(user.id)
         .await;
+    crate::recovery_codes::drop_without_factor(&library, user.id).await;
     Ok(Json(OkResponse::OK))
 }
 

@@ -13,8 +13,10 @@ import { assertPasskey, passkeysSupported } from "@/lib/webauthn";
 
 type Phase =
   | { kind: "checking" }
-  | { kind: "form"; factor: ResetFactor }
-  | { kind: "done" }
+  /** `recovery`: a recovery code may stand in for `factor`. */
+  | { kind: "form"; factor: ResetFactor; recovery: boolean }
+  /** `recovered`: a recovery code was used, so the second factors are gone. */
+  | { kind: "done"; recovered: boolean }
   /** `retry`: the check got no answer, so the same link may be tried again. */
   | { kind: "failed"; message: string; retry: boolean };
 
@@ -31,14 +33,22 @@ const NO_ANSWER = "The library did not answer. Check your connection and try aga
  * the address bar before the first request, so it is not kept in history.
  *
  * The page checks the link, asks for the account's second factor when it
- * has one (an authenticator code or a passkey), then sets the new password.
- * Every device is signed out afterwards, so the page ends at sign-in.
+ * has one (an authenticator code or a passkey) or one of its recovery codes
+ * in its place, then sets the new password. Every device is signed out
+ * afterwards, so the page ends at sign-in.
  */
+
+/** A recovery code's letters and digits once spaces and hyphens are dropped. */
+function recoverySymbols(typed: string): string {
+  return typed.replace(/[\s-]/g, "");
+}
 export function ResetPasswordPage() {
   const [phase, setPhase] = useState<Phase>({ kind: "checking" });
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [code, setCode] = useState("");
+  const [useRecovery, setUseRecovery] = useState(false);
+  const [recoveryCode, setRecoveryCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // One check per page load (StrictMode runs effects twice).
@@ -49,7 +59,9 @@ export function ResetPasswordPage() {
   function check(value: string) {
     setPhase({ kind: "checking" });
     void checkPasswordReset(value)
-      .then((factor) => setPhase({ kind: "form", factor }))
+      .then((state) =>
+        setPhase({ kind: "form", factor: state.second_factor, recovery: state.recovery_code }),
+      )
       .catch((err: unknown) => {
         setPhase(
           isApiError(err) && err.status === 400
@@ -83,7 +95,7 @@ export function ResetPasswordPage() {
     check(value);
   }, []);
 
-  async function onSubmit(e: FormEvent, factor: ResetFactor) {
+  async function onSubmit(e: FormEvent, factor: ResetFactor, recovering: boolean) {
     e.preventDefault();
     const value = token.current;
     if (!value) return;
@@ -94,7 +106,9 @@ export function ResetPasswordPage() {
     setBusy(true);
     setError(null);
     try {
-      if (factor === "passkey") {
+      if (recovering) {
+        await finishPasswordReset({ token: value, password, recovery_code: recoveryCode.trim() });
+      } else if (factor === "passkey") {
         const begin = await passwordResetPasskeyBegin(value);
         const passkey = await assertPasskey(begin);
         await finishPasswordReset({ token: value, password, passkey });
@@ -103,15 +117,17 @@ export function ResetPasswordPage() {
       } else {
         await finishPasswordReset({ token: value, password });
       }
-      setPhase({ kind: "done" });
+      setPhase({ kind: "done", recovered: recovering });
     } catch (err) {
       if (isApiError(err) && err.code === "invalid_link") {
         setPhase({ kind: "failed", message: INVALID_LINK, retry: false });
       } else if (isApiError(err) && err.status === 401) {
         setError(
-          factor === "passkey"
-            ? "That passkey did not confirm this account. Try again."
-            : "That code is not right. Enter the current code from your authenticator app.",
+          recovering
+            ? "That recovery code is not right, or it was already used. Check it and try again."
+            : factor === "passkey"
+              ? "That passkey did not confirm this account. Try again."
+              : "That code is not right. Enter the current code from your authenticator app.",
         );
       } else if (isApiError(err) && err.status === 429) {
         setError("Too many attempts from this device. Wait a few minutes, then try again.");
@@ -171,7 +187,11 @@ export function ResetPasswordPage() {
     return (
       <JoinShell
         title="Password changed"
-        lead="Every device that was signed in to your account has been signed out. Sign in with your new password."
+        lead={
+          phase.recovered
+            ? "Every device that was signed in to your account has been signed out, and your authenticator app, passkeys and recovery codes were removed. Sign in with your new password, then set up a new second factor."
+            : "Every device that was signed in to your account has been signed out. Sign in with your new password."
+        }
       >
         <div className="flex gap-2">{toSignIn}</div>
       </JoinShell>
@@ -179,19 +199,26 @@ export function ResetPasswordPage() {
   }
 
   const { factor } = phase;
-  const passkeyBlocked = factor === "passkey" && !passkeysSupported();
+  const recovering = phase.recovery && useRecovery;
+  const passkeyBlocked = !recovering && factor === "passkey" && !passkeysSupported();
   const ready =
     password.trim().length > 0 &&
     confirm.trim().length > 0 &&
-    (factor !== "totp" || code.trim().length === 6) &&
+    (recovering
+      ? recoverySymbols(recoveryCode).length === 16
+      : factor !== "totp" || code.trim().length === 6) &&
     !passkeyBlocked;
+  const switchFactor = (on: boolean) => {
+    setUseRecovery(on);
+    setError(null);
+  };
 
   return (
     <JoinShell
       title="Choose a new password"
       lead="After it is set, every device signed in to your account is signed out."
     >
-      <form onSubmit={(e) => void onSubmit(e, factor)} className="space-y-4">
+      <form onSubmit={(e) => void onSubmit(e, factor, recovering)} className="space-y-4">
         {error ? (
           <p className="text-sm font-medium text-brick-text" role="alert">
             {error}
@@ -225,7 +252,36 @@ export function ResetPasswordPage() {
             required
           />
         </div>
-        {factor === "totp" ? (
+        {recovering ? (
+          <div className="space-y-1.5 rounded-md border border-ink/10 bg-card-mid p-3">
+            <label className="block text-sm font-semibold" htmlFor="reset-recovery">
+              Recovery code
+            </label>
+            <p className="text-sm text-ink/70">
+              Enter one of the recovery codes you saved when you set up your second factor. It works
+              once, and using it removes your authenticator app and passkeys, so set up a new one
+              after you sign in.
+            </p>
+            <Input
+              id="reset-recovery"
+              autoComplete="off"
+              autoCapitalize="characters"
+              spellCheck={false}
+              placeholder="XXXX-XXXX-XXXX-XXXX"
+              value={recoveryCode}
+              onChange={(e) => setRecoveryCode(e.target.value)}
+              maxLength={40}
+            />
+            <button
+              type="button"
+              className="text-sm font-semibold text-ink underline underline-offset-2"
+              onClick={() => switchFactor(false)}
+            >
+              {factor === "passkey" ? "Use my passkey instead" : "Use my authenticator app instead"}
+            </button>
+          </div>
+        ) : null}
+        {!recovering && factor === "totp" ? (
           <div className="space-y-1.5 rounded-md border border-ink/10 bg-card-mid p-3">
             <label className="block text-sm font-semibold" htmlFor="reset-totp">
               Authenticator code
@@ -241,21 +297,41 @@ export function ResetPasswordPage() {
               onChange={(e) => setCode(e.target.value)}
               maxLength={6}
             />
+            {phase.recovery ? (
+              <button
+                type="button"
+                className="text-sm font-semibold text-ink underline underline-offset-2"
+                onClick={() => switchFactor(true)}
+              >
+                Lost your authenticator? Use a recovery code
+              </button>
+            ) : null}
           </div>
         ) : null}
-        {factor === "passkey" ? (
-          <p className="rounded-md border border-ink/10 bg-card-mid p-3 text-sm text-ink/70">
-            {passkeyBlocked
-              ? "Your account is protected by a passkey, and this browser cannot use passkeys. Open the link in a browser that can."
-              : "Your account is protected by a passkey. Your browser asks for it when you save."}
-          </p>
+        {!recovering && factor === "passkey" ? (
+          <div className="space-y-1.5 rounded-md border border-ink/10 bg-card-mid p-3 text-sm text-ink/70">
+            <p>
+              {passkeyBlocked
+                ? "Your account is protected by a passkey, and this browser cannot use passkeys. Open the link in a browser that can."
+                : "Your account is protected by a passkey. Your browser asks for it when you save."}
+            </p>
+            {phase.recovery ? (
+              <button
+                type="button"
+                className="font-semibold text-ink underline underline-offset-2"
+                onClick={() => switchFactor(true)}
+              >
+                Lost your passkey? Use a recovery code
+              </button>
+            ) : null}
+          </div>
         ) : null}
         <Button type="submit" className="w-full" disabled={busy || !ready}>
           {busy
-            ? factor === "passkey"
+            ? !recovering && factor === "passkey"
               ? "Waiting for passkey…"
               : "Saving…"
-            : factor === "passkey"
+            : !recovering && factor === "passkey"
               ? "Confirm with passkey and save"
               : "Save new password"}
         </Button>

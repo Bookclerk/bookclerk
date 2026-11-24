@@ -1257,21 +1257,23 @@ export async function passkeyRegisterBegin(currentPassword?: string): Promise<{
 /**
  * Finish WebAuthn registration.
  *
- * @param body
- * @returns
+ * @param body - The challenge id, the browser's credential and an optional label.
+ * @returns The ten recovery codes a first second factor brings, shown once;
+ *   `undefined` when the user already had codes.
  */
 export async function passkeyRegisterFinish(body: {
   challenge_id: string;
   credential: Record<string, unknown>;
   name?: string;
-}): Promise<void> {
+}): Promise<string[] | undefined> {
   const res = await fetch("/api/auth/passkeys/register/finish", {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  await parseJson(res);
+  const answer = await parseJson<{ recovery_codes?: string[] }>(res);
+  return answer.recovery_codes;
 }
 
 /**
@@ -2141,16 +2143,46 @@ export async function totpEnrollBegin(currentPassword?: string): Promise<{
  * Confirms the pending TOTP secret with an authenticator code.
  *
  * @param code - Six-digit code from the authenticator app.
- * @returns Resolves when enrollment is confirmed.
+ * @returns The ten recovery codes a first second factor brings, shown once;
+ *   `undefined` when the user already had codes.
  */
-export async function totpEnrollFinish(code: string): Promise<void> {
+export async function totpEnrollFinish(code: string): Promise<string[] | undefined> {
   const res = await fetch("/api/auth/totp/enroll/finish", {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ code }),
   });
-  await parseJson(res);
+  const answer = await parseJson<{ recovery_codes?: string[] }>(res);
+  return answer.recovery_codes;
+}
+
+/**
+ * How many unused recovery codes the current user has.
+ *
+ * @returns The count; 0 without a second factor.
+ */
+export async function fetchRecoveryCodeCount(): Promise<number> {
+  const res = await fetch("/api/auth/recovery-codes", { credentials: "include" });
+  const body = await parseJson<{ remaining: number }>(res);
+  return body.remaining;
+}
+
+/**
+ * Makes a new set of ten recovery codes, replacing the current set.
+ *
+ * @param currentPassword - Required when the portal session is older than the reauth window.
+ * @returns The new codes, shown this once.
+ */
+export async function regenerateRecoveryCodes(currentPassword?: string): Promise<string[]> {
+  const res = await fetch("/api/auth/recovery-codes", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(currentPassword ? { current_password: currentPassword } : {}),
+  });
+  const body = await parseJson<{ codes: string[] }>(res);
+  return body.codes;
 }
 
 /**
@@ -5887,21 +5919,33 @@ export async function requestPasswordReset(email: string): Promise<void> {
   await parseJson(res);
 }
 
+/** What a working password-reset link needs to finish. */
+export interface ResetLinkState {
+  /** The second factor finishing the reset asks for. */
+  second_factor: ResetFactor;
+  /** Whether a recovery code may stand in for that factor. */
+  recovery_code: boolean;
+}
+
 /**
  * Checks a password-reset link without using it up.
  *
  * @param token - The token from the link.
- * @returns The second factor finishing the reset asks for.
+ * @returns The second factor finishing the reset asks for, and whether a
+ *   recovery code may stand in for it.
  */
-export async function checkPasswordReset(token: string): Promise<ResetFactor> {
+export async function checkPasswordReset(token: string): Promise<ResetLinkState> {
   const res = await fetch("/api/auth/password-reset/check", {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ token }),
   });
-  const body = await parseJson<{ second_factor: ResetFactor }>(res);
-  return body.second_factor;
+  const body = await parseJson<Partial<ResetLinkState>>(res);
+  return {
+    second_factor: body.second_factor ?? "none",
+    recovery_code: body.recovery_code === true,
+  };
 }
 
 /**
@@ -5927,7 +5971,8 @@ export async function passwordResetPasskeyBegin(token: string): Promise<{
  * Finishes a password reset: sets the password and signs every device out.
  *
  * @param body - The link's token, the new password, and the second factor
- *   the link asked for (a code or a passkey assertion), if any.
+ *   the link asked for (a code or a passkey assertion) or a recovery code
+ *   in its place, if any.
  * @returns How many sessions were signed out.
  */
 export async function finishPasswordReset(body: {
@@ -5935,6 +5980,7 @@ export async function finishPasswordReset(body: {
   password: string;
   totp_code?: string;
   passkey?: { challenge_id: string; credential: Record<string, unknown> };
+  recovery_code?: string;
 }): Promise<{ revoked_sessions: number | null }> {
   const res = await fetch("/api/auth/password-reset/finish", {
     method: "POST",

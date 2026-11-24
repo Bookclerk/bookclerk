@@ -44,6 +44,7 @@ pub mod pacing;
 pub mod password;
 pub mod proxy_txn;
 pub mod quality;
+pub mod recovery_code;
 mod schema_state;
 mod schema_walk;
 pub mod scope;
@@ -194,6 +195,7 @@ pub use store::work_tags::{
     normalize_work_tags, parse_work_tags_request, WorkTag, WorkTagSource, WorkTagsBody,
     WorkTagsRequest, MAX_WORK_TAGS, MAX_WORK_TAG_BYTES,
 };
+pub use store::RecoveryCodeIssue;
 pub use store::{
     apply_user_states,
     catalog_listings::{

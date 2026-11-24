@@ -11,8 +11,10 @@ The design is in the [notifications ADR](../adr/notifications.md).
 > [webhook notifier](#the-webhook-notifier), the
 > [email notifier](#the-email-notifier) and
 > [account mail](#account-mail) (emailed invites, verified addresses and
-> [password reset](#password-reset)) are built. Second-factor recovery and
-> the chat, paging and push notifiers come later.
+> [password reset](#password-reset), with
+> [recovery codes](sign-in.md#recovery-codes) in place of a lost second
+> factor) are built. Recovery by administrator approval or after a
+> waiting period, and the chat, paging and push notifiers, come later.
 
 ## How a notification travels
 
@@ -367,12 +369,18 @@ a link.
    lock anyone out.
 4. Opening the link asks for a new password. An account with an
    authenticator app also asks for its current code; one with passkeys
-   and no authenticator asks for a passkey. A wrong code does not use
-   the link up.
+   and no authenticator asks for a passkey. Either account can enter one
+   of its [recovery codes](sign-in.md#recovery-codes) instead. A wrong
+   code does not use the link up.
 5. Saving sets the password, signs every device out (browser and
    elevated sessions, and revokes OpenID refresh tokens) and mails a
    notice that the password was changed. The change is recorded in the
    security audit log as `password_reset_self`, in the same atomic write.
+   With a recovery code, that write also uses the code up and removes
+   the account's authenticator app, passkeys and other codes, since the
+   patron lost them, and the audit row is
+   `password_reset_recovery_code`. The patron sets up a new second
+   factor after signing in.
 
 Links that do not work and wrong codes count toward a per-client limit,
 the same one failed sign-ins use, so repeated tries are answered `429`
@@ -409,13 +417,14 @@ The web API (no sign-in needed; the link is the proof):
   it answers `202`, `409` with `reset_unavailable` when reset is off, or
   `503` with `busy` when the notification queue is full.
 - `POST /api/auth/password-reset/check` with `{"token": "…"}` checks a
-  link without using it and says which second factor it needs (`none`,
-  `totp` or `passkey`).
+  link without using it and says which second factor it needs
+  (`second_factor`: `none`, `totp` or `passkey`) and whether a recovery
+  code may stand in for it (`recovery_code`).
 - `POST /api/auth/password-reset/passkey` with `{"token": "…"}` begins
   the passkey step.
 - `POST /api/auth/password-reset/finish` with `token`, `password` and
-  either `totp_code` or `passkey` (`challenge_id` and `credential`) sets
-  the password.
+  one of `totp_code`, `passkey` (`challenge_id` and `credential`) or
+  `recovery_code` sets the password.
 
 ## Retries, pausing and the delivery log
 

@@ -7232,6 +7232,7 @@ pub(crate) mod player_cards;
 pub(crate) mod player_catalog;
 pub(crate) mod plugin_databases;
 pub(crate) mod plugin_kv;
+pub(crate) mod recovery_codes;
 pub(crate) mod request_queue;
 pub(crate) mod retention;
 pub(crate) mod scan_state;
@@ -7269,6 +7270,7 @@ pub use edition_files::{
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
 pub use holdings::{HoldingSelection, NodeHoldingSelection, HOLDING_REMOVED};
 pub use notifications::{NotifyCursor, NotifyPage, NotifyQueueLimits, MAX_NOTIFY_PAGE};
+pub use recovery_codes::RecoveryCodeIssue;
 pub use request_queue::{QueueRank, StoredQueueRank, MAX_QUEUE_REASONS};
 pub use taste_titles::{apply_user_states, HeldIdentifiers};
 pub use vectors::{NewVector, SpaceCoverage, VectorSpace, VECTOR_KIND_TEXT, VECTOR_KIND_WORK};
@@ -7284,5 +7286,7 @@ mod account_mail_tests;
 mod notifications_tests;
 #[cfg(test)]
 mod paging_tests;
+#[cfg(test)]
+mod recovery_codes_tests;
 #[cfg(test)]
 mod tests;

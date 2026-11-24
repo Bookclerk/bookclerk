@@ -102,6 +102,10 @@ impl ResetFactor {
 pub(crate) struct PasswordResetLinkState {
     /// The second factor the finish step asks for.
     second_factor: ResetFactor,
+    /// Whether the account has an unused recovery code, which the finish
+    /// step takes (`recovery_code`) in place of `second_factor`.
+    #[schema(example = true)]
+    recovery_code: bool,
 }
 
 /// The answer to a finished reset.
@@ -167,6 +171,12 @@ pub(crate) struct PasswordResetFinishBody {
     totp_code: Option<String>,
     /// Passkey assertion, when the link asks for `passkey`.
     passkey: Option<PasswordResetPasskeyBody>,
+    /// One of the account's recovery codes, in place of the authenticator
+    /// code or passkey: 16 letters and digits, case, spaces and hyphens
+    /// ignored. Finishing with one also removes the account's
+    /// authenticator, passkeys and other codes.
+    #[schema(example = "7K3M-Q9TB-2XWD-HF6P")]
+    recovery_code: Option<String>,
 }
 
 /// The `400` for a link that does not work: unknown, used, expired, for
@@ -389,10 +399,24 @@ pub(crate) async fn post_password_reset_check(
         let _ = auth.record_login_failure(&key).await;
         return invalid_link();
     };
-    match factor_for(&library, &user).await {
-        Ok(second_factor) => Json(PasswordResetLinkState { second_factor }).into_response(),
-        Err(_) => unavailable(),
-    }
+    let second_factor = match factor_for(&library, &user).await {
+        Ok(second_factor) => second_factor,
+        Err(_) => return unavailable(),
+    };
+    let recovery_code = match second_factor {
+        ResetFactor::None => false,
+        ResetFactor::Totp | ResetFactor::Passkey => {
+            match library.count_recovery_codes(user.id).await {
+                Ok(remaining) => remaining > 0,
+                Err(_) => return unavailable(),
+            }
+        }
+    };
+    Json(PasswordResetLinkState {
+        second_factor,
+        recovery_code,
+    })
+    .into_response()
 }
 
 /// Begins the passkey step of a reset, for an account whose link asks for
@@ -526,8 +550,29 @@ pub(crate) async fn post_password_reset_finish(
             "That second factor is not right. Try again.",
         )
     };
+    let mut stored = required.stored();
     match (required, &finish.second_factor) {
         (ResetFactor::None, ResetSecondFactor::None) => {}
+        (ResetFactor::Totp | ResetFactor::Passkey, ResetSecondFactor::RecoveryCode(code)) => {
+            let hash = match library.recovery_code_hash(user.id, code.selector()).await {
+                Ok(hash) => hash,
+                Err(_) => return unavailable(),
+            };
+            let matches = match hash {
+                Some(hash) => match code.verify(&hash) {
+                    Ok(matches) => matches,
+                    Err(_) => return unavailable(),
+                },
+                None => false,
+            };
+            if !matches {
+                let _ = auth.record_login_failure(&key).await;
+                return wrong_factor();
+            }
+            stored = bookclerk_library::notifications::PasswordResetFactor::RecoveryCode {
+                selector: code.selector().to_string(),
+            };
+        }
         (ResetFactor::Totp, ResetSecondFactor::Totp(code)) => {
             match crate::totp::verify_user_totp(&library, &user, code).await {
                 Ok(true) => {}
@@ -579,7 +624,12 @@ pub(crate) async fn post_password_reset_finish(
                 "Confirm with one of your passkeys.",
             )
         }
-        (ResetFactor::None, ResetSecondFactor::Totp(_) | ResetSecondFactor::Passkey { .. }) => {
+        (
+            ResetFactor::None,
+            ResetSecondFactor::Totp(_)
+            | ResetSecondFactor::Passkey { .. }
+            | ResetSecondFactor::RecoveryCode(_),
+        ) => {
             return json_auth_error(
                 StatusCode::BAD_REQUEST,
                 "bad_request",
@@ -592,9 +642,10 @@ pub(crate) async fn post_password_reset_finish(
     };
     // One atomic write sets the password, signs every session out and
     // spends the link, and repeats the factor check: a factor enrolled
-    // since the check above makes it refuse.
+    // since the check above, or a recovery code used meanwhile, makes it
+    // refuse.
     let revoked = match library
-        .redeem_password_reset(&finish.token, user.id, required.stored(), &hash, Utc::now())
+        .redeem_password_reset(&finish.token, user.id, stored, &hash, Utc::now())
         .await
     {
         Ok(Some(done)) => done.revoked_sessions,

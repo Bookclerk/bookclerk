@@ -86,6 +86,20 @@ pub struct TotpEnrollment {
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
+/// The answer to a confirmed TOTP enrollment.
+pub struct TotpEnrolled {
+    /// Always `true`.
+    #[schema(example = true)]
+    pub ok: bool,
+    /// Ten single-use recovery codes, when this is the caller's first
+    /// second factor; shown this once. Absent when the caller already had
+    /// codes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = json!(["7K3M-Q9TB-2XWD-HF6P", "M4RE-8N2V-TQ7K-ZC3J"]))]
+    pub recovery_codes: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// The host-wide second-factor policy.
 pub struct MfaPolicy {
     /// Whether every password sign-in must be followed by a passkey or authenticator code.
@@ -260,6 +274,7 @@ pub(crate) fn enrollment_exempt(path: &str) -> bool {
         || path == "/api/preferences"
         || path.starts_with("/api/auth/totp")
         || path.starts_with("/api/auth/passkeys")
+        || path == "/api/auth/recovery-codes"
         || path.starts_with("/api/auth/sessions")
         || path.starts_with("/api/auth/profile")
 }
@@ -457,7 +472,7 @@ struct EnrollFinish {
     request_body = EnrollFinish,
     security(("portalSession" = [])),
     responses(
-        (status = 200, description = "TOTP is on.", body = crate::auth::OkResponse),
+        (status = 200, description = "TOTP is on; the first second factor also brings recovery codes.", body = TotpEnrolled),
         (status = 400, description = "No enrollment is pending; start one first."),
         (status = 401, description = "The caller is not signed in (the standard error body), or the code is wrong (`invalid_code`).", body = crate::http_error::ErrorJson, examples(
             ("invalid_code" = (summary = "The code is wrong.", value = json!({"error": "invalid_code", "message": "Invalid authenticator code.", "status": 401}))),
@@ -498,10 +513,16 @@ async fn enroll_finish(
     let _ = library
         .insert_security_audit_event(&format!("user:{}", user.id), "totp_enroll", None)
         .await;
-    Ok(Json(crate::auth::OkResponse::OK).into_response())
+    let recovery_codes = crate::recovery_codes::issue_first_set(&library, user.id).await;
+    Ok(Json(TotpEnrolled {
+        ok: true,
+        recovery_codes,
+    })
+    .into_response())
 }
 
-/// Disables TOTP after recent reauth and deletes sealed secrets.
+/// Disables TOTP after recent reauth and deletes sealed secrets; the
+/// recovery codes go too when no passkey remains.
 #[utoipa::path(
     delete,
     path = "/api/auth/totp",
@@ -531,6 +552,7 @@ async fn disable_totp(
     let _ = library
         .insert_security_audit_event(&format!("user:{}", user.id), "totp_disable", None)
         .await;
+    crate::recovery_codes::drop_without_factor(&library, user.id).await;
     Ok(Json(crate::auth::OkResponse::OK))
 }
 
@@ -806,6 +828,12 @@ mod tests {
         let (finish_status, finish_body) = json_of(finish).await;
         assert_eq!(finish_status, StatusCode::OK);
         assert_eq!(finish_body["ok"], true);
+        // The first second factor brings ten recovery codes, shown once.
+        let codes = finish_body["recovery_codes"].as_array().expect("codes");
+        assert_eq!(codes.len(), 10);
+        assert!(codes
+            .iter()
+            .all(|c| c.as_str().is_some_and(|c| c.len() == 19)));
 
         let challenged = app
             .clone()

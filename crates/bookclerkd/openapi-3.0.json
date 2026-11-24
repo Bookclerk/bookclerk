@@ -43148,11 +43148,11 @@
         },
         "responses": {
           "200": {
-            "description": "The passkey was stored.",
+            "description": "The passkey was stored; the first second factor also brings recovery codes.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OkResponse"
+                  "$ref": "#/components/schemas/PasskeyRegistered"
                 }
               }
             }
@@ -43315,7 +43315,7 @@
         "tags": [
           "Auth"
         ],
-        "summary": "Deletes one passkey after recent reauth; 404 when the id is not this user's.",
+        "summary": "Deletes one passkey after recent reauth; 404 when the id is not this\nuser's. The recovery codes go too when it was the last second factor.",
         "operationId": "delete_passkey",
         "parameters": [
           {
@@ -44451,11 +44451,11 @@
         },
         "responses": {
           "200": {
-            "description": "TOTP is on.",
+            "description": "TOTP is on; the first second factor also brings recovery codes.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OkResponse"
+                  "$ref": "#/components/schemas/TotpEnrolled"
                 }
               }
             }
@@ -44727,7 +44727,7 @@
         "tags": [
           "Auth"
         ],
-        "summary": "Disables TOTP after recent reauth and deletes sealed secrets.",
+        "summary": "Disables TOTP after recent reauth and deletes sealed secrets; the\nrecovery codes go too when no passkey remains.",
         "operationId": "disable_totp",
         "requestBody": {
           "content": {
@@ -45776,6 +45776,290 @@
           }
         },
         "security": [],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      }
+    },
+    "/api/auth/recovery-codes": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "How many recovery codes the caller has left.",
+        "description": "Access: any signed-in user, for their own account.",
+        "operationId": "get_recovery_codes",
+        "responses": {
+          "200": {
+            "description": "How many unused codes the caller has.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryCodeStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      },
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Makes a new set of ten recovery codes, replacing the caller's current\nset, and shows it this once.",
+        "description": "Access: any signed-in user with a second factor, for their own account;\na sign-in older than fifteen minutes must send `current_password`.",
+        "operationId": "post_recovery_codes",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoveryCodesReauthBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The new set; the old codes no longer work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryCodeSet"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not syntactically valid JSON.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in, or the session is older than fifteen minutes and `current_password` is missing or wrong.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The caller has no authenticator app or passkey, so recovery codes have nothing to stand in for.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "conflict",
+                  "message": "Conflict",
+                  "status": 409
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request did not declare a JSON body.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: current_password: invalid type: integer `1`, expected a string at line 1 column 21"
+              }
+            }
+          },
+          "429": {
+            "description": "Too many wrong `current_password` attempts for this account; try again after the lockout.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many requests. Try again shortly.",
+                  "status": 429
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The codes could not be hashed or stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "portalSession": []
+          }
+        ],
         "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
@@ -68089,6 +68373,32 @@
           }
         }
       },
+      "PasskeyRegistered": {
+        "type": "object",
+        "description": "The answer to a stored passkey.",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Always `true`.",
+            "example": true
+          },
+          "recovery_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ten single-use recovery codes, when this is the caller's first\nsecond factor; shown this once. Absent when the caller already had\ncodes.",
+            "example": [
+              "7K3M-Q9TB-2XWD-HF6P",
+              "M4RE-8N2V-TQ7K-ZC3J"
+            ],
+            "nullable": true
+          }
+        }
+      },
       "PasskeyRequestOptions": {
         "type": "object",
         "description": "WebAuthn request options for `navigator.credentials.get()`, plus the challenge id for the finish step.",
@@ -68349,6 +68659,12 @@
             },
             "additionalProperties": false,
             "nullable": true
+          },
+          "recovery_code": {
+            "type": "string",
+            "description": "One of the account's recovery codes, in place of the authenticator\ncode or passkey: 16 letters and digits, case, spaces and hyphens\nignored. Finishing with one also removes the account's\nauthenticator, passkeys and other codes.",
+            "example": "7K3M-Q9TB-2XWD-HF6P",
+            "nullable": true
           }
         },
         "additionalProperties": false
@@ -68372,7 +68688,8 @@
         "type": "object",
         "description": "What a working reset link needs to finish.",
         "required": [
-          "second_factor"
+          "second_factor",
+          "recovery_code"
         ],
         "properties": {
           "second_factor": {
@@ -68382,6 +68699,11 @@
               }
             ],
             "description": "The second factor the finish step asks for."
+          },
+          "recovery_code": {
+            "type": "boolean",
+            "description": "Whether the account has an unused recovery code, which the finish\nstep takes (`recovery_code`) in place of `second_factor`.",
+            "example": true
           }
         }
       },
@@ -74480,6 +74802,54 @@
           }
         }
       },
+      "RecoveryCodeSet": {
+        "type": "object",
+        "description": "A new set of recovery codes, shown this once.",
+        "required": [
+          "codes"
+        ],
+        "properties": {
+          "codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ten single-use codes, each four groups of four letters and digits.\nThey are never shown again; a new set replaces them.",
+            "example": [
+              "7K3M-Q9TB-2XWD-HF6P",
+              "M4RE-8N2V-TQ7K-ZC3J"
+            ]
+          }
+        }
+      },
+      "RecoveryCodeStatus": {
+        "type": "object",
+        "description": "How many recovery codes the caller has left.",
+        "required": [
+          "remaining"
+        ],
+        "properties": {
+          "remaining": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unused codes; 0 when the caller has no second factor.",
+            "example": 8,
+            "minimum": 0
+          }
+        }
+      },
+      "RecoveryCodesReauthBody": {
+        "type": "object",
+        "description": "The body of `POST /api/auth/recovery-codes`.",
+        "properties": {
+          "current_password": {
+            "type": "string",
+            "description": "The caller's password, needed when their sign-in is older than\nfifteen minutes.",
+            "example": "correct horse battery staple",
+            "nullable": true
+          }
+        }
+      },
       "RecoveryCopyAnswer": {
         "type": "string",
         "description": "What the operator recorded about a recovery copy of the key in use.",
@@ -78449,6 +78819,32 @@
             "type": "string",
             "description": "Challenge to send with the code; expires after five minutes.",
             "example": "2c7e4f0a-9b1d-4e3c-a5f6-7d8e9f0a1b2c"
+          }
+        }
+      },
+      "TotpEnrolled": {
+        "type": "object",
+        "description": "The answer to a confirmed TOTP enrollment.",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Always `true`.",
+            "example": true
+          },
+          "recovery_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ten single-use recovery codes, when this is the caller's first\nsecond factor; shown this once. Absent when the caller already had\ncodes.",
+            "example": [
+              "7K3M-Q9TB-2XWD-HF6P",
+              "M4RE-8N2V-TQ7K-ZC3J"
+            ],
+            "nullable": true
           }
         }
       },
