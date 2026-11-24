@@ -389,8 +389,8 @@ unchanged, and an authenticator or passkey added after the link was
 opened makes saving fail without using the link up. When the database's
 reply is lost, Bookclerk sends the same write again and then compares
 the stored password with the new one, so a write that did commit is
-still reported as a success. If the database cannot be reached for that
-check either, the outcome is unknown: the patron sees an error, and the
+still reported as a success. If the retry or that check fails too, the
+outcome is unknown: the patron sees an error, and the
 new password may already be in effect. The password-changed notice is queued
 after that write, on a best-effort basis: if it cannot be queued, the
 reset, the sign-outs and the audit row still stand, and the failure is
