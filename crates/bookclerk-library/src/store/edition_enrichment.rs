@@ -238,14 +238,13 @@ impl LibraryStore {
             .map(|x| (x.id.clone(), x))
             .collect();
         let work_ids: Vec<String> = expressions.values().map(|x| x.work_id.clone()).collect();
+        let mut work_rows = find_chunked::<works::Entity, _>(self, &work_ids, |part| {
+            works::Entity::find().filter(works::Column::Id.is_in(part.to_vec()))
+        })
+        .await?;
+        self.complete_work_texts(&mut work_rows).await?;
         let works: HashMap<String, works::Model> =
-            find_chunked::<works::Entity, _>(self, &work_ids, |part| {
-                works::Entity::find().filter(works::Column::Id.is_in(part.to_vec()))
-            })
-            .await?
-            .into_iter()
-            .map(|w| (w.id.clone(), w))
-            .collect();
+            work_rows.into_iter().map(|w| (w.id.clone(), w)).collect();
         let held_ids: Vec<String> = held_editions.iter().map(|e| e.id.clone()).collect();
         // The smallest ISBN and ASIN of each edition, keyed by scheme.
         let mut smallest: HashMap<(String, String), String> = HashMap::new();
@@ -357,11 +356,13 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?;
         if let Some(expression) = &expression {
-            if let Some(work) = works::Entity::find_by_id(expression.work_id.clone())
+            if let Some(mut work) = works::Entity::find_by_id(expression.work_id.clone())
                 .one(self.db())
                 .await
                 .map_err(LibraryError::Orm)?
             {
+                self.complete_work_texts(std::slice::from_mut(&mut work))
+                    .await?;
                 let work_fill = WorkEnrichment {
                     description: lacking(work.description.as_deref(), fill.description.as_ref()),
                     subjects: lacking(work.subjects.as_deref(), fill.subjects.as_ref()),

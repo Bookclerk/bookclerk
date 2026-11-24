@@ -3,15 +3,23 @@
 //! A JSON string is the physical body. Callers pass an already-validated
 //! document for one namespace. Lost updates fail the `revision` predicate and
 //! do not insert an audit row or a change notice.
+//!
+//! A body wider than one piece the database plugin carries (the smallest of
+//! its cell, statement and result limits) is stored in
+//! `configuration_document_parts` pieces under the write's operation id,
+//! written before the batch that commits the document. The document row
+//! then names that operation and its piece count, and the same batch drops
+//! every piece the row does not name.
 
 use crate::EntityKind;
+use bookclerk_plugin_abi::TypedDbStatement;
 use chrono::{Duration, Utc};
-use sea_orm::EntityTrait;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use super::batch::{self, exec, int, query, request, text};
-use crate::entities::{bookclerk_receipts, configuration_documents};
+use crate::entities::{bookclerk_receipts, configuration_document_parts, configuration_documents};
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
 
@@ -32,6 +40,14 @@ pub const PLUGIN_INSTANCE_CONFIG_NAMESPACE: &str = "config";
 
 /// Maximum UTF-8 size of `document_json`.
 pub const MAX_CONFIGURATION_DOCUMENT_BYTES: usize = 16 * 1024;
+
+/// Room a piece's row takes in a reply beside its body: its key columns and
+/// the reply's framing.
+const PART_ROW_OVERHEAD: usize = 512;
+
+/// Reads of a document stored in pieces before a reader gives up because
+/// concurrent replacements keep dropping the pieces it is about to read.
+const PART_READ_ATTEMPTS: usize = 3;
 
 /// Maximum length of an audit actor or operation id.
 const MAX_ACTOR_LEN: usize = 128;
@@ -291,22 +307,188 @@ pub enum ReplaceOutcome {
 
 /// Reads one document.
 ///
+/// A body stored in pieces is read in keyset pages sized to the database
+/// plugin's result limits and joined again. When a concurrent replacement
+/// dropped the pieces between the row read and the piece read, the row is
+/// read again, up to [`PART_READ_ATTEMPTS`] times.
+///
 /// # Errors
 ///
-/// Returns an error when the read fails.
+/// Returns an error when the read fails, or [`LibraryError::Unavailable`]
+/// when replacements kept dropping the pieces of every row read.
 pub async fn load_document(
     store: &LibraryStore,
     key: &DocumentKey,
 ) -> Result<Option<StoredDocument>> {
-    let row = configuration_documents::Entity::find_by_id((
-        key.scope_type.clone(),
-        key.scope_id.clone(),
-        key.namespace.clone(),
-    ))
-    .one(store.db())
-    .await
-    .map_err(LibraryError::Orm)?;
-    Ok(row.map(stored_from_model))
+    for _ in 0..PART_READ_ATTEMPTS {
+        let Some(row) = configuration_documents::Entity::find_by_id((
+            key.scope_type.clone(),
+            key.scope_id.clone(),
+            key.namespace.clone(),
+        ))
+        .one(store.db())
+        .await
+        .map_err(LibraryError::from_db_err)?
+        else {
+            return Ok(None);
+        };
+        if row.document_parts == 0 {
+            return Ok(Some(stored_from_model(row)));
+        }
+        if let Some(body) = read_parts(store, &row).await? {
+            return Ok(Some(StoredDocument {
+                document_json: body,
+                ..stored_from_model(row)
+            }));
+        }
+    }
+    Err(LibraryError::Unavailable(format!(
+        "configuration document {} kept changing while it was read",
+        key.namespace
+    )))
+}
+
+/// The body `row`'s pieces join into, or `None` when they are not a
+/// gapless run of `row.document_parts` pieces from 0 (a later replacement
+/// dropped them).
+///
+/// # Errors
+///
+/// Returns the database error.
+async fn read_parts(
+    store: &LibraryStore,
+    row: &configuration_documents::Model,
+) -> Result<Option<String>> {
+    let caps = store.db_capabilities();
+    let width = super::chunk_bytes(caps).saturating_add(PART_ROW_OVERHEAD);
+    let by_bytes = match caps.max_result_bytes {
+        0 => u64::MAX,
+        bytes => u64::from(bytes) / u64::try_from(width).unwrap_or(u64::MAX),
+    };
+    let mut page = crate::store::keyset::result_page(store)
+        .min(by_bytes)
+        .max(1);
+    let pieces = crate::store::keyset::read_keyset_pages(
+        store,
+        configuration_document_parts::Entity::find()
+            .filter(configuration_document_parts::Column::ScopeType.eq(row.scope_type.clone()))
+            .filter(configuration_document_parts::Column::ScopeId.eq(row.scope_id.clone()))
+            .filter(configuration_document_parts::Column::Namespace.eq(row.namespace.clone()))
+            .filter(
+                configuration_document_parts::Column::WriteOperationId
+                    .eq(row.write_operation_id.clone()),
+            ),
+        &[configuration_document_parts::Column::Seq],
+        &mut page,
+    )
+    .await?;
+    let gapless = i64::try_from(pieces.len()).ok() == Some(row.document_parts)
+        && (0_i64..).zip(&pieces).all(|(seq, piece)| piece.seq == seq);
+    Ok(gapless.then(|| pieces.into_iter().map(|piece| piece.body).collect()))
+}
+
+/// How a body is stored: the text the document row holds, its piece count,
+/// and the piece inserts to run before the row names them.
+struct StoredBody {
+    /// `document_json`: the whole body, or empty when it is in pieces.
+    inline: String,
+    /// `document_parts`: `0` when the body is inline.
+    parts: i64,
+    /// One insert per piece, empty when the body is inline.
+    inserts: Vec<TypedDbStatement>,
+}
+
+/// Cuts `document_json` into pieces under `operation_id` when it is wider
+/// than one piece the database plugin carries.
+fn stored_body(
+    store: &LibraryStore,
+    key: &DocumentKey,
+    document_json: &str,
+    operation_id: &str,
+) -> StoredBody {
+    let width = super::chunk_bytes(store.db_capabilities());
+    if document_json.len() <= width {
+        return StoredBody {
+            inline: document_json.to_string(),
+            parts: 0,
+            inserts: Vec::new(),
+        };
+    }
+    let inserts: Vec<TypedDbStatement> = (0_i64..)
+        .zip(super::cut_text(document_json, width))
+        .map(|(seq, body)| {
+            exec(
+                "INSERT OR IGNORE INTO configuration_document_parts (
+                    scope_type, scope_id, namespace, write_operation_id, seq, body
+                 ) VALUES (?, ?, ?, ?, ?, ?)",
+                vec![
+                    text(&key.scope_type),
+                    text(&key.scope_id),
+                    text(&key.namespace),
+                    text(operation_id),
+                    int(seq),
+                    text(body),
+                ],
+            )
+        })
+        .collect();
+    StoredBody {
+        inline: String::new(),
+        parts: i64::try_from(inserts.len()).unwrap_or(i64::MAX),
+        inserts,
+    }
+}
+
+/// Writes `body`'s pieces in as few batches as the database plugin's
+/// limits allow. They are invisible until a document row names
+/// `operation_id`, and a write that never commits leaves them for the next
+/// committed write of the document to drop.
+///
+/// # Errors
+///
+/// Returns the database error, or a limit error when one piece does not
+/// fit a batch.
+async fn write_parts(store: &LibraryStore, body: StoredBody, operation_id: &str) -> Result<()> {
+    let mut batches = crate::store::write_batches::WriteBatches::new(
+        store.db_capabilities(),
+        "configuration piece",
+    );
+    let mut full = Vec::new();
+    for insert in body.inserts {
+        full.extend(batches.push(insert)?);
+    }
+    full.extend(batches.finish());
+    for (part, statements) in full.into_iter().enumerate() {
+        batch::execute_host_batch(
+            store,
+            request(&format!("{operation_id}:parts:{part}"), statements),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Drops every piece of `key`'s document its row does not name: those of an
+/// earlier write, of a write that lost its revision check, or every piece
+/// when the body is inline.
+fn drop_unnamed_parts(key: &DocumentKey) -> TypedDbStatement {
+    exec(
+        "DELETE FROM configuration_document_parts
+          WHERE scope_type = ? AND scope_id = ? AND namespace = ?
+            AND write_operation_id NOT IN (
+                SELECT write_operation_id FROM configuration_documents
+                 WHERE scope_type = ? AND scope_id = ? AND namespace = ?
+                   AND document_parts > 0
+            )",
+        vec![
+            text(&key.scope_type),
+            text(&key.scope_id),
+            text(&key.namespace),
+            text(&key.scope_type),
+            text(&key.scope_id),
+            text(&key.namespace),
+        ],
+    )
 }
 
 /// Inserts `document_json` when the key is absent.
@@ -332,6 +514,9 @@ pub async fn import_if_absent(
     if let Some(existing) = load_document(store, key).await? {
         return Ok(existing);
     }
+    let body = stored_body(store, key, document_json, operation_id);
+    let (inline, parts) = (body.inline.clone(), body.parts);
+    write_parts(store, body, operation_id).await?;
     let now = Utc::now().to_rfc3339();
     batch::execute_host_batch(
         store,
@@ -341,14 +526,15 @@ pub async fn import_if_absent(
                 exec(
                     "INSERT OR IGNORE INTO configuration_documents (
                     scope_type, scope_id, namespace, schema_version, revision,
-                    document_json, updated_at, updated_by, write_operation_id
-                ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)",
+                    document_json, document_parts, updated_at, updated_by, write_operation_id
+                ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)",
                     vec![
                         text(&key.scope_type),
                         text(&key.scope_id),
                         text(&key.namespace),
                         int(schema_version),
-                        text(document_json),
+                        text(&inline),
+                        int(parts),
                         text(&now),
                         text(actor.audit_id()),
                         text(operation_id),
@@ -414,6 +600,7 @@ pub async fn import_if_absent(
                         1,
                     ),
                 ),
+                drop_unnamed_parts(key),
             ],
         ),
     )
@@ -478,6 +665,9 @@ pub async fn replace_document(
             current_revision: current.revision,
         });
     }
+    let body = stored_body(store, key, document_json, operation_id);
+    let (inline, parts) = (body.inline.clone(), body.parts);
+    write_parts(store, body, operation_id).await?;
     let now = Utc::now().to_rfc3339();
     let expires = (Utc::now() + Duration::hours(24)).to_rfc3339();
     let slot = format!("config-cas:{operation_id}");
@@ -496,7 +686,8 @@ pub async fn replace_document(
                 exec(
                     "UPDATE configuration_documents SET
                         schema_version = ?, revision = revision + 1, document_json = ?,
-                        updated_at = ?, updated_by = ?, write_operation_id = ?
+                        document_parts = ?, updated_at = ?, updated_by = ?,
+                        write_operation_id = ?
                      WHERE scope_type = ? AND scope_id = ? AND namespace = ?
                        AND revision = ? AND schema_version = ?
                        AND NOT EXISTS (
@@ -504,7 +695,8 @@ pub async fn replace_document(
                        )",
                     vec![
                         int(schema_version),
-                        text(document_json),
+                        text(&inline),
+                        int(parts),
                         text(&now),
                         text(actor.audit_id()),
                         text(operation_id),
@@ -621,6 +813,7 @@ pub async fn replace_document(
                     vec![text(operation_id)],
                     1,
                 ),
+                drop_unnamed_parts(key),
             ],
         ),
     )
@@ -906,4 +1099,175 @@ struct ReceiptPayload {
     /// Schema version observed when the receipt was written.
     #[allow(dead_code)]
     schema_version: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use sea_orm::EntityTrait;
+
+    use super::*;
+    use crate::test_support::{sqlite, uncapped, Profile};
+
+    /// A JSON document of about `bytes` bytes, multibyte so a piece's byte
+    /// and character counts differ.
+    fn wide_document(bytes: usize) -> String {
+        let mut note = String::new();
+        while note.len() < bytes {
+            note.push_str("é—x");
+        }
+        serde_json::json!({ "note": note }).to_string()
+    }
+
+    /// Every stored piece of `key`'s document, in key order.
+    async fn pieces(
+        store: &LibraryStore,
+        key: &DocumentKey,
+    ) -> Vec<configuration_document_parts::Model> {
+        let mut rows = uncapped(configuration_document_parts::Entity::find().all(store.db()))
+            .await
+            .unwrap();
+        rows.retain(|row| row.namespace == key.namespace);
+        rows.sort_by(|a, b| (&a.write_operation_id, a.seq).cmp(&(&b.write_operation_id, b.seq)));
+        rows
+    }
+
+    /// The operator that writes the test documents.
+    fn operator() -> ConfigActor {
+        ConfigActor::Operator { id: "cli".into() }
+    }
+
+    #[tokio::test]
+    async fn a_document_wider_than_a_piece_is_stored_in_pieces_under_every_profile() {
+        for profile in Profile::ALL {
+            let name = format!("{profile:?}");
+            let kit = sqlite::memory(profile).await;
+            let store = kit.into_store();
+            let key = DocumentKey::library("test.wide");
+            let width = super::super::chunk_bytes(store.db_capabilities());
+            let wide = wide_document(
+                width
+                    .saturating_mul(3)
+                    .min(MAX_CONFIGURATION_DOCUMENT_BYTES - 64),
+            );
+            let stored = import_if_absent(&store, &operator(), &key, 1, &wide, "op-import")
+                .await
+                .unwrap();
+            assert_eq!(stored.document_json, wide, "{name}");
+            let row = uncapped(
+                configuration_documents::Entity::find_by_id((
+                    key.scope_type.clone(),
+                    key.scope_id.clone(),
+                    key.namespace.clone(),
+                ))
+                .one(store.db()),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let first = pieces(&store, &key).await;
+            if wide.len() > width {
+                assert!(row.document_json.is_empty(), "{name}");
+                assert_eq!(
+                    i64::try_from(first.len()).unwrap(),
+                    row.document_parts,
+                    "{name}"
+                );
+                assert!(
+                    first.iter().all(|piece| piece.body.len() <= width),
+                    "{name}"
+                );
+            } else {
+                assert_eq!(row.document_parts, 0, "{name}");
+                assert!(first.is_empty(), "{name}");
+            }
+
+            // A wider replacement goes in under its own operation; the
+            // earlier pieces are dropped once the row names the new ones.
+            let wider = wide_document(
+                width
+                    .saturating_mul(4)
+                    .min(MAX_CONFIGURATION_DOCUMENT_BYTES - 64),
+            );
+            let outcome = replace_document(&store, &operator(), &key, 1, 1, &wider, "op-wider")
+                .await
+                .unwrap();
+            let ReplaceOutcome::Applied(applied) = outcome else {
+                panic!("{name}: {outcome:?}");
+            };
+            assert_eq!(applied.document_json, wider, "{name}");
+            assert!(
+                pieces(&store, &key)
+                    .await
+                    .iter()
+                    .all(|piece| piece.write_operation_id == "op-wider"),
+                "{name}"
+            );
+
+            // A replacement that loses its revision check leaves the
+            // stored document and drops the pieces it staged.
+            let lost = replace_document(&store, &operator(), &key, 1, 1, &wide, "op-lost")
+                .await
+                .unwrap();
+            assert_eq!(
+                lost,
+                ReplaceOutcome::Conflict {
+                    current_revision: 2
+                },
+                "{name}"
+            );
+            assert!(
+                pieces(&store, &key)
+                    .await
+                    .iter()
+                    .all(|piece| piece.write_operation_id == "op-wider"),
+                "{name}"
+            );
+            assert_eq!(
+                load_document(&store, &key)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .document_json,
+                wider,
+                "{name}"
+            );
+
+            // An inline replacement drops every piece.
+            let small = r#"{"note":"small"}"#;
+            let outcome = replace_document(&store, &operator(), &key, 1, 2, small, "op-small")
+                .await
+                .unwrap();
+            assert!(matches!(outcome, ReplaceOutcome::Applied(_)), "{name}");
+            assert!(pieces(&store, &key).await.is_empty(), "{name}");
+            assert_eq!(
+                load_document(&store, &key)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .document_json,
+                small,
+                "{name}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_document_missing_a_piece_is_read_again_then_refused() {
+        let store = sqlite::memory(Profile::Minimum).await.into_store();
+        let key = DocumentKey::library("test.wide");
+        let width = super::super::chunk_bytes(store.db_capabilities());
+        let wide = wide_document(width * 3);
+        import_if_absent(&store, &operator(), &key, 1, &wide, "op-import")
+            .await
+            .unwrap();
+        uncapped(
+            configuration_document_parts::Entity::delete_many()
+                .filter(configuration_document_parts::Column::Seq.eq(1))
+                .exec(store.db()),
+        )
+        .await
+        .unwrap();
+        let err = load_document(&store, &key).await.unwrap_err();
+        assert!(matches!(err, LibraryError::Unavailable(_)), "{err:?}");
+    }
 }

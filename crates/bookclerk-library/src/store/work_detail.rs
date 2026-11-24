@@ -208,13 +208,15 @@ impl LibraryStore {
     ///
     /// Returns [`LibraryError::Orm`] when a read fails.
     pub async fn library_work_detail(&self, work_id: &str) -> Result<Option<WorkDetail>> {
-        let Some(work) = works::Entity::find_by_id(work_id.to_string())
+        let Some(mut work) = works::Entity::find_by_id(work_id.to_string())
             .one(self.db())
             .await
             .map_err(LibraryError::Orm)?
         else {
             return Ok(None);
         };
+        self.complete_work_texts(std::slice::from_mut(&mut work))
+            .await?;
         if work.parent_work_id.is_some() {
             return Ok(None);
         }

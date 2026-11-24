@@ -1,0 +1,626 @@
+//! A work's long texts (description, subjects, categories) stored in pieces
+//! when they do not fit its row on the database plugin.
+//!
+//! A text goes to `work_text_parts` when it is wider than one piece the
+//! plugin carries (the smallest of its cell, statement and result limits)
+//! or when keeping it inline would make the work's row wider than one
+//! reply. Its own column then holds an empty string, and the row's
+//! `text_version` names the pieces. Writes stage the pieces first, then
+//! change the row with a compare-and-swap on its `updated_at` and
+//! `text_version` in the batch that drops the pieces the row no longer
+//! names, so a row never names pieces that are gone. Readers join the
+//! pieces again with [`LibraryStore::complete_work_texts`].
+//!
+//! On a plugin without cell or result caps (the first-party SQLite one)
+//! every text stays inline and nothing here changes what is stored.
+
+use std::collections::BTreeMap;
+
+use bookclerk_plugin_abi::TypedDbStatement;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+
+use super::library_model::find_chunked_paged;
+use super::write_batches::WriteBatches;
+use super::{now_str, LibraryStore};
+use crate::control_plane::batch;
+use crate::entities::{work_text_parts, works};
+use crate::error::{LibraryError, Result};
+
+/// Room a work row takes in a reply beside its text columns: the reply's
+/// framing and the column names.
+const ROW_OVERHEAD: usize = 512;
+
+/// Times a read or a write starts again when a concurrent write of the same
+/// work replaced its texts in between.
+const ATTEMPTS: usize = 3;
+
+/// The long texts a work row carries, in the order they are placed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum TextField {
+    /// `works.description`.
+    Description,
+    /// `works.subjects`.
+    Subjects,
+    /// `works.categories`.
+    Categories,
+}
+
+impl TextField {
+    /// Every field, in placement order.
+    const ALL: [Self; 3] = [Self::Description, Self::Subjects, Self::Categories];
+
+    /// The stored `work_text_parts.field` value.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Description => "description",
+            Self::Subjects => "subjects",
+            Self::Categories => "categories",
+        }
+    }
+
+    /// Parses a stored `work_text_parts.field` value.
+    fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|field| field.as_str() == value)
+    }
+
+    /// This field's value in `row`, to replace.
+    fn of_mut(self, row: &mut works::Model) -> &mut Option<String> {
+        match self {
+            Self::Description => &mut row.description,
+            Self::Subjects => &mut row.subjects,
+            Self::Categories => &mut row.categories,
+        }
+    }
+}
+
+/// The values one write gives a work's texts and cover.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct WorkTexts {
+    /// Blurb or synopsis.
+    pub(crate) description: Option<String>,
+    /// Subject tags (serialized).
+    pub(crate) subjects: Option<String>,
+    /// Category labels (serialized).
+    pub(crate) categories: Option<String>,
+    /// HTTPS cover URL.
+    pub(crate) cover_url: Option<String>,
+}
+
+impl WorkTexts {
+    /// This write's value for `field`.
+    fn field(&self, field: TextField) -> &Option<String> {
+        match field {
+            TextField::Description => &self.description,
+            TextField::Subjects => &self.subjects,
+            TextField::Categories => &self.categories,
+        }
+    }
+}
+
+/// Where one write puts a work's texts: the column values, the version
+/// that names the pieces, and the piece inserts to run first.
+struct Placed {
+    /// The column values, with an empty string for a text in pieces.
+    columns: BTreeMap<TextField, Option<String>>,
+    /// The new `text_version`, `None` when every text is inline.
+    version: Option<String>,
+    /// One insert per piece.
+    inserts: Vec<TypedDbStatement>,
+}
+
+/// Bytes `value` takes in a row.
+fn width(value: Option<&str>) -> usize {
+    value.map_or(0, str::len)
+}
+
+impl LibraryStore {
+    /// Replaces the long texts of every row in `rows` that keeps them in
+    /// pieces with the joined text.
+    ///
+    /// Pieces are read in keyset pages sized to the database plugin's
+    /// result limits. A row whose pieces a concurrent write dropped is read
+    /// again, up to a few times.
+    ///
+    /// # Errors
+    ///
+    /// Returns the database error, or [`LibraryError::Unavailable`] when
+    /// concurrent writes kept replacing a work's texts while it was read.
+    pub(crate) async fn complete_work_texts(&self, rows: &mut [works::Model]) -> Result<()> {
+        for _ in 0..ATTEMPTS {
+            let pieced: Vec<usize> = (0..rows.len())
+                .filter(|&at| rows[at].text_version.is_some())
+                .collect();
+            if pieced.is_empty() {
+                return Ok(());
+            }
+            let ids: Vec<String> = pieced.iter().map(|&at| rows[at].id.clone()).collect();
+            let pieces = self.read_text_parts(&ids).await?;
+            let mut stale: Vec<usize> = Vec::new();
+            for at in pieced {
+                let row = &mut rows[at];
+                let version = row.text_version.clone().unwrap_or_default();
+                match joined(&pieces, &row.id, &version) {
+                    Some(texts) if !texts.is_empty() => {
+                        for (field, text) in texts {
+                            *field.of_mut(row) = Some(text);
+                        }
+                        row.text_version = None;
+                    }
+                    _ => stale.push(at),
+                }
+            }
+            if stale.is_empty() {
+                return Ok(());
+            }
+            // A later write replaced these texts: read the rows again.
+            let ids: Vec<String> = stale.iter().map(|&at| rows[at].id.clone()).collect();
+            let fresh: BTreeMap<String, works::Model> =
+                super::library_model::find_chunked::<works::Entity, _>(self, &ids, |part| {
+                    works::Entity::find().filter(works::Column::Id.is_in(part.iter().cloned()))
+                })
+                .await?
+                .into_iter()
+                .map(|row| (row.id.clone(), row))
+                .collect();
+            for at in stale {
+                if let Some(row) = fresh.get(&rows[at].id) {
+                    rows[at] = row.clone();
+                }
+            }
+        }
+        if let Some(row) = rows.iter().find(|row| row.text_version.is_some()) {
+            return Err(LibraryError::Unavailable(format!(
+                "the texts of work {} kept changing while they were read",
+                row.id
+            )));
+        }
+        Ok(())
+    }
+
+    /// Every stored piece of the works `ids`, in key order.
+    ///
+    /// # Errors
+    ///
+    /// Returns the database error.
+    async fn read_text_parts(&self, ids: &[String]) -> Result<Vec<work_text_parts::Model>> {
+        find_chunked_paged(
+            self,
+            ids,
+            &[
+                work_text_parts::Column::WorkId,
+                work_text_parts::Column::Version,
+                work_text_parts::Column::Field,
+                work_text_parts::Column::Seq,
+            ],
+            |part| {
+                work_text_parts::Entity::find()
+                    .filter(work_text_parts::Column::WorkId.is_in(part.iter().cloned()))
+            },
+        )
+        .await
+    }
+
+    /// Rewrites one work's texts and cover to what `merge` makes of the
+    /// stored ones, placing each text inline or in pieces for the database
+    /// plugin.
+    ///
+    /// `merge` sees the work's row with its texts completed and answers the
+    /// values to store, or `None` to leave the work as it is. The row
+    /// changes only if no other write changed it since it was read; when
+    /// one did, the work is read and merged again, up to a few times.
+    ///
+    /// # Arguments
+    ///
+    /// * `work_id` - The work to rewrite.
+    /// * `merge` - The values to store, given the stored row.
+    ///
+    /// # Returns
+    ///
+    /// `false` when the work does not exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns the database error, or [`LibraryError::Conflict`] when other
+    /// writes kept changing the work.
+    pub(crate) async fn update_work_texts<F>(&self, work_id: &str, merge: F) -> Result<bool>
+    where
+        F: Fn(&works::Model) -> Option<WorkTexts>,
+    {
+        for _ in 0..ATTEMPTS {
+            let Some(row) = works::Entity::find_by_id(work_id.to_string())
+                .one(&self.db)
+                .await
+                .map_err(LibraryError::from_db_err)?
+            else {
+                return Ok(false);
+            };
+            let mut completed = [row.clone()];
+            self.complete_work_texts(&mut completed).await?;
+            let [completed] = completed;
+            let Some(texts) = merge(&completed) else {
+                return Ok(true);
+            };
+            if self.swap_work_texts(&row, &texts).await? {
+                return Ok(true);
+            }
+        }
+        Err(LibraryError::Conflict(format!(
+            "work {work_id} kept changing while its texts were written"
+        )))
+    }
+
+    /// Writes `texts` over `row`, as stored when read, if it is unchanged.
+    ///
+    /// # Returns
+    ///
+    /// `false` when another write changed the row first; the pieces this
+    /// write staged are dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns the database error.
+    async fn swap_work_texts(&self, row: &works::Model, texts: &WorkTexts) -> Result<bool> {
+        let placed = self.place_work_texts(row, texts);
+        let mut batches = WriteBatches::new(self.db_capabilities(), "work text piece");
+        let mut staged = Vec::new();
+        for insert in placed.inserts {
+            staged.extend(batches.push(insert)?);
+        }
+        staged.extend(batches.finish());
+        for statements in staged {
+            let operation_id = format!("work-text-parts-{}", uuid::Uuid::new_v4());
+            self.execute_host_batch(batch::request(&operation_id, statements))
+                .await?;
+        }
+        let column = |field: TextField| {
+            batch::text_opt(
+                placed
+                    .columns
+                    .get(&field)
+                    .and_then(|value| value.as_deref()),
+            )
+        };
+        let operation_id = format!("work-texts-{}", uuid::Uuid::new_v4());
+        let reply = self
+            .execute_host_batch(batch::request(
+                &operation_id,
+                vec![
+                    batch::exec(
+                        "UPDATE works SET description = ?, subjects = ?, categories = ?, \
+                         cover_url = ?, text_version = ?, updated_at = ? \
+                         WHERE id = ? AND updated_at = ? AND COALESCE(text_version, '') = ?",
+                        vec![
+                            column(TextField::Description),
+                            column(TextField::Subjects),
+                            column(TextField::Categories),
+                            batch::text_opt(texts.cover_url.as_deref()),
+                            batch::text_opt(placed.version.as_deref()),
+                            batch::text(&now_str()),
+                            batch::text(&row.id),
+                            batch::text(&row.updated_at),
+                            batch::text(row.text_version.as_deref().unwrap_or_default()),
+                        ],
+                    ),
+                    drop_unnamed_parts(&row.id),
+                ],
+            ))
+            .await?;
+        Ok(batch::rows_affected(&reply, 0) > 0)
+    }
+
+    /// Places `texts` for `row`: inline while each fits one piece and the
+    /// row still fits one reply, the rest in pieces under a new version.
+    fn place_work_texts(&self, row: &works::Model, texts: &WorkTexts) -> Placed {
+        let caps = self.db_capabilities();
+        let piece = crate::control_plane::chunk_bytes(caps);
+        // The other columns, the version a pieced row names and its new
+        // `updated_at` (64 bytes each at most), and the reply's framing.
+        let fixed = [
+            row.id.as_str(),
+            row.kind.as_str(),
+            row.title.as_str(),
+            row.match_key.as_str(),
+            row.parent_work_id.as_deref().unwrap_or_default(),
+            texts.cover_url.as_deref().unwrap_or_default(),
+            row.created_at.as_str(),
+            row.updated_at.as_str(),
+        ]
+        .iter()
+        .map(|value| value.len())
+        .sum::<usize>()
+        .saturating_add(2 * 64 + ROW_OVERHEAD);
+        let mut budget = match caps.max_result_bytes {
+            0 => usize::MAX,
+            bytes => usize::try_from(bytes)
+                .unwrap_or(usize::MAX)
+                .saturating_sub(fixed),
+        };
+        // The narrowest texts are kept inline first, so as many as fit stay
+        // in the row.
+        let mut order = TextField::ALL;
+        order.sort_by_key(|&field| width(texts.field(field).as_deref()));
+        let mut columns = BTreeMap::new();
+        let mut pieced = Vec::new();
+        for field in order {
+            let value = texts.field(field);
+            let len = width(value.as_deref());
+            if len <= piece && len <= budget {
+                budget -= len;
+                columns.insert(field, value.clone());
+            } else {
+                columns.insert(field, Some(String::new()));
+                pieced.push(field);
+            }
+        }
+        if pieced.is_empty() {
+            return Placed {
+                columns,
+                version: None,
+                inserts: Vec::new(),
+            };
+        }
+        let version = uuid::Uuid::new_v4().simple().to_string();
+        let mut inserts = Vec::new();
+        for field in pieced {
+            let text = texts.field(field).as_deref().unwrap_or_default();
+            let cut = crate::control_plane::cut_text(text, piece);
+            let parts = i64::try_from(cut.len()).unwrap_or(i64::MAX);
+            for (seq, body) in (0_i64..).zip(cut) {
+                inserts.push(batch::exec(
+                    "INSERT OR IGNORE INTO work_text_parts \
+                     (work_id, version, field, seq, parts, body) VALUES (?, ?, ?, ?, ?, ?)",
+                    vec![
+                        batch::text(&row.id),
+                        batch::text(&version),
+                        batch::text(field.as_str()),
+                        batch::int(seq),
+                        batch::int(parts),
+                        batch::text(body),
+                    ],
+                ));
+            }
+        }
+        Placed {
+            columns,
+            version: Some(version),
+            inserts,
+        }
+    }
+}
+
+/// Drops every piece of `work_id`'s texts its row does not name: those of
+/// an earlier write, of a write that lost its compare-and-swap, or every
+/// piece when the texts are inline.
+fn drop_unnamed_parts(work_id: &str) -> TypedDbStatement {
+    batch::exec(
+        "DELETE FROM work_text_parts WHERE work_id = ? AND version NOT IN \
+         (SELECT text_version FROM works WHERE id = ? AND text_version IS NOT NULL)",
+        vec![batch::text(work_id), batch::text(work_id)],
+    )
+}
+
+/// The texts `version`'s pieces of `work_id` join into, or `None` when a
+/// text's pieces are not a gapless run of its piece count from 0.
+fn joined(
+    pieces: &[work_text_parts::Model],
+    work_id: &str,
+    version: &str,
+) -> Option<BTreeMap<TextField, String>> {
+    let mut by_field: BTreeMap<TextField, Vec<&work_text_parts::Model>> = BTreeMap::new();
+    for piece in pieces
+        .iter()
+        .filter(|piece| piece.work_id == work_id && piece.version == version)
+    {
+        by_field
+            .entry(TextField::parse(&piece.field)?)
+            .or_default()
+            .push(piece);
+    }
+    let mut out = BTreeMap::new();
+    for (field, mut run) in by_field {
+        run.sort_by_key(|piece| piece.seq);
+        let count = run.first().map(|piece| piece.parts)?;
+        let gapless = i64::try_from(run.len()).ok() == Some(count)
+            && (0_i64..)
+                .zip(&run)
+                .all(|(seq, piece)| piece.seq == seq && piece.parts == count);
+        if !gapless {
+            return None;
+        }
+        out.insert(
+            field,
+            run.into_iter().map(|piece| piece.body.as_str()).collect(),
+        );
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use sea_orm::EntityTrait;
+
+    use super::*;
+    use crate::test_support::{sqlite, uncapped, Profile};
+    use crate::{NewBook, WorkEnrichment};
+
+    /// Text of about `bytes` bytes, multibyte so a piece's byte and
+    /// character counts differ.
+    fn long_text(bytes: usize) -> String {
+        let mut out = String::new();
+        while out.len() < bytes {
+            out.push_str("é—x ");
+        }
+        out
+    }
+
+    /// A store under `profile` holding one work; answers the work's id.
+    async fn one_work(profile: Profile) -> (LibraryStore, String) {
+        let store = sqlite::memory(profile).await.into_store();
+        store
+            .upsert_account("audible", "a1", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let book = NewBook::minimal("B00X", "a1", "US", "Dune");
+        let record = store.upsert_book(&book).await.unwrap();
+        let work_id = store
+            .work_of_holding(&record.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
+        (store, work_id)
+    }
+
+    /// Every stored piece, in key order.
+    async fn pieces(store: &LibraryStore) -> Vec<work_text_parts::Model> {
+        let mut rows = uncapped(work_text_parts::Entity::find().all(store.db()))
+            .await
+            .unwrap();
+        rows.sort_by(|a, b| (&a.version, &a.field, a.seq).cmp(&(&b.version, &b.field, b.seq)));
+        rows
+    }
+
+    #[tokio::test]
+    async fn long_work_texts_are_stored_in_pieces_under_every_profile() {
+        for profile in Profile::ALL {
+            let name = format!("{profile:?}");
+            let (store, work_id) = one_work(profile).await;
+            let piece = crate::control_plane::chunk_bytes(store.db_capabilities());
+            let description = long_text(piece.saturating_mul(3).min(12_000));
+            let subjects = long_text(piece.min(900));
+            let categories = String::from("Science Fiction");
+            store
+                .set_work_enrichment(
+                    &work_id,
+                    &WorkEnrichment {
+                        description: Some(description.clone()),
+                        subjects: Some(subjects.clone()),
+                        categories: Some(categories.clone()),
+                        cover_url: Some("https://covers.example/dune.jpg".into()),
+                    },
+                )
+                .await
+                .unwrap();
+            let work = store.get_work(&work_id).await.unwrap().unwrap();
+            assert_eq!(
+                work.description.as_deref(),
+                Some(description.as_str()),
+                "{name}"
+            );
+            assert_eq!(work.subjects.as_deref(), Some(subjects.as_str()), "{name}");
+            assert_eq!(
+                work.categories.as_deref(),
+                Some(categories.as_str()),
+                "{name}"
+            );
+            let row = uncapped(works::Entity::find_by_id(work_id.clone()).one(store.db()))
+                .await
+                .unwrap()
+                .unwrap();
+            let stored = pieces(&store).await;
+            if description.len() > piece {
+                assert_eq!(row.description.as_deref(), Some(""), "{name}");
+                assert!(row.text_version.is_some(), "{name}");
+                assert!(stored.iter().all(|p| p.body.len() <= piece), "{name}");
+                assert!(
+                    stored
+                        .iter()
+                        .all(|p| Some(&p.version) == row.text_version.as_ref()),
+                    "{name}"
+                );
+            } else {
+                assert!(row.text_version.is_none(), "{name}");
+                assert!(stored.is_empty(), "{name}");
+            }
+            // The row fits one reply under the profile.
+            assert!(
+                store.list_works_page(None, 10).await.unwrap().len() == 1,
+                "{name}"
+            );
+
+            // A short description takes the texts inline again and drops
+            // every piece.
+            store
+                .set_work_enrichment(
+                    &work_id,
+                    &WorkEnrichment {
+                        description: Some("Spice.".into()),
+                        subjects: Some("Desert".into()),
+                        ..WorkEnrichment::default()
+                    },
+                )
+                .await
+                .unwrap();
+            let work = store.get_work(&work_id).await.unwrap().unwrap();
+            assert_eq!(work.description.as_deref(), Some("Spice."), "{name}");
+            assert_eq!(
+                work.categories.as_deref(),
+                Some(categories.as_str()),
+                "{name}"
+            );
+            assert!(pieces(&store).await.is_empty(), "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_write_over_a_changed_row_drops_what_it_staged() {
+        let (store, work_id) = one_work(Profile::Minimum).await;
+        let piece = crate::control_plane::chunk_bytes(store.db_capabilities());
+        let stale = uncapped(works::Entity::find_by_id(work_id.clone()).one(store.db()))
+            .await
+            .unwrap()
+            .unwrap();
+        store
+            .set_work_enrichment(
+                &work_id,
+                &WorkEnrichment {
+                    description: Some("Spice.".into()),
+                    ..WorkEnrichment::default()
+                },
+            )
+            .await
+            .unwrap();
+        let applied = store
+            .swap_work_texts(
+                &stale,
+                &WorkTexts {
+                    description: Some(long_text(piece * 2)),
+                    ..WorkTexts::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(!applied);
+        assert!(pieces(&store).await.is_empty());
+        let work = store.get_work(&work_id).await.unwrap().unwrap();
+        assert_eq!(work.description.as_deref(), Some("Spice."));
+        assert!(!store
+            .update_work_texts("no-such-work", |_| None)
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_work_missing_a_piece_is_read_again_then_refused() {
+        let (store, work_id) = one_work(Profile::Minimum).await;
+        let piece = crate::control_plane::chunk_bytes(store.db_capabilities());
+        store
+            .set_work_enrichment(
+                &work_id,
+                &WorkEnrichment {
+                    description: Some(long_text(piece * 3)),
+                    ..WorkEnrichment::default()
+                },
+            )
+            .await
+            .unwrap();
+        uncapped(
+            work_text_parts::Entity::delete_many()
+                .filter(work_text_parts::Column::Seq.eq(1))
+                .exec(store.db()),
+        )
+        .await
+        .unwrap();
+        let err = store.get_work(&work_id).await.unwrap_err();
+        assert!(matches!(err, LibraryError::Unavailable(_)), "{err:?}");
+    }
+}

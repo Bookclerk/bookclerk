@@ -30,7 +30,7 @@ use crate::entities::{
     account_credential_revisions, account_downloads, account_links, account_pace,
     account_scan_state, account_shares, accounts, admin_controls, bookclerk_receipts, bookmarks,
     catalog_listing_optouts, catalog_lookups, chapter_list_entries, chapter_lists, claim_tickets,
-    clerk_links, configuration_audit, configuration_changes, configuration_documents, contributors,
+    clerk_links, configuration_audit, configuration_changes, configuration_document_parts, configuration_documents, contributors,
     copy_grants, credits, domain_events, edition_acquisitions, edition_chapters, edition_copies,
     edition_enrich_attempts, edition_files, edition_identifiers, editions, embeddings,
     encrypted_secrets, event_deliveries, event_outbox_stats, expressions, holdings, ignored_titles,
@@ -48,7 +48,7 @@ use crate::entities::{
     resolution_conflicts, resolution_overrides, saved_filters, security_audit_events, series,
     series_entries, store_listings, title_request_sources, title_requests, user_invites,
     user_preferences, user_title_state, user_work_tags, users, webauthn_challenges,
-    webauthn_credentials, window_book_parts, window_books, work_identifiers, work_tags, works,
+    webauthn_credentials, window_book_parts, window_books, work_identifiers, work_tags, work_text_parts, works,
 };
 use crate::error::{LibraryError, Result};
 use crate::store::LibraryStore;
@@ -188,6 +188,7 @@ macro_rules! copied_entities {
     ($each:ident) => {
         $each!(library_identity);
         $each!(configuration_documents);
+        $each!(configuration_document_parts);
         $each!(configuration_changes);
         $each!(configuration_audit);
         $each!(users);
@@ -203,6 +204,7 @@ macro_rules! copied_entities {
         $each!(portal_identities);
         // Shows before their episodes (`works.parent_work_id`).
         $each!(works);
+        $each!(work_text_parts);
         $each!(work_identifiers);
         $each!(work_tags);
         $each!(expressions);
@@ -550,6 +552,7 @@ async fn clear_replaced_rows(dest: &impl ConnectionTrait) -> Result<()> {
     clear!(nodes);
     clear!(configuration_audit);
     clear!(configuration_changes);
+    clear!(configuration_document_parts);
     clear!(configuration_documents);
     clear!(library_identity);
     Ok(())
@@ -557,11 +560,12 @@ async fn clear_replaced_rows(dest: &impl ConnectionTrait) -> Result<()> {
 
 /// Tables whose destination rows [`clear_replaced_rows`] replaces, so they
 /// do not make a destination count as non-empty.
-const REPLACED_TABLES: [&str; 6] = [
+const REPLACED_TABLES: [&str; 7] = [
     "event_outbox_stats",
     "nodes",
     "configuration_audit",
     "configuration_changes",
+    "configuration_document_parts",
     "configuration_documents",
     "library_identity",
 ];
@@ -673,6 +677,7 @@ mod tests {
             subjects: Set(None),
             categories: Set(None),
             cover_url: Set(None),
+            text_version: Set(None),
             created_at: Set("2026-01-01T00:00:00Z".into()),
             updated_at: Set("2026-01-01T00:00:00Z".into()),
         }

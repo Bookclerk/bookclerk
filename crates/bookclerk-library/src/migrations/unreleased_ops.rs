@@ -262,8 +262,27 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         subjects TEXT,
         categories TEXT,
         cover_url TEXT,
+        text_version TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
+    )",
+    ),
+    // A work's description, subjects or categories too wide for one cell,
+    // or for the work's row to fit one reply, on the database plugin, cut
+    // into pieces joined again in `seq` order. Every piece carries its
+    // text's piece count (`parts`). The pieces go in first under a new
+    // `version`; the work's row then names that version (`text_version`,
+    // the text's own column empty), and the batch that renames it drops
+    // the pieces it no longer names.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS work_text_parts (
+        work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+        version TEXT NOT NULL,
+        field TEXT NOT NULL CHECK (field IN ('description', 'subjects', 'categories')),
+        seq INTEGER NOT NULL,
+        parts INTEGER NOT NULL,
+        body TEXT NOT NULL,
+        PRIMARY KEY (work_id, version, field, seq)
     )",
     ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_works_match ON works(match_key)"),
@@ -1191,10 +1210,28 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         schema_version INTEGER NOT NULL,
         revision INTEGER NOT NULL,
         document_json TEXT NOT NULL,
+        document_parts INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL,
         updated_by TEXT NOT NULL,
         write_operation_id TEXT NOT NULL,
         PRIMARY KEY (scope_type, scope_id, namespace)
+    )",
+    ),
+    // A configuration document too wide for one cell or statement of the
+    // database plugin, cut into pieces joined again in `seq` order. The
+    // pieces go in under the write's operation id, in the batch that
+    // replaces the document or before it; the document row then names that
+    // operation and its piece count (its `document_json` empty), and the
+    // same batch drops every piece the row does not name.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS configuration_document_parts (
+        scope_type TEXT NOT NULL,
+        scope_id TEXT NOT NULL,
+        namespace TEXT NOT NULL,
+        write_operation_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        body TEXT NOT NULL,
+        PRIMARY KEY (scope_type, scope_id, namespace, write_operation_id, seq)
     )",
     ),
     MigrationOp::Schema(

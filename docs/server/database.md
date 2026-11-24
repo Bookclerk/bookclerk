@@ -812,6 +812,12 @@ Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `plugin_databases` and `bookclerk_schema_migrations`, plus the library
 model tables below.
 
+A configuration document (`configuration_documents`) wider than one piece
+the database plugin carries (the smallest of its cell, statement and
+result limits) is stored in `configuration_document_parts` pieces under
+the write that committed it. The document row names that write and its
+piece count, and the same write drops the pieces of earlier ones.
+
 `patron_controls` holds the member controls an Administrator set for one
 Member, as JSON naming only the controls that differ from the library's
 default (the `core.member_controls` configuration document); a Member
@@ -851,7 +857,10 @@ library holds as works, expressions and editions:
   its gaps (`enrich_source`, `enrich_confidence`, `enrich_updated_at`), and
   `edition_enrich_attempts` records an ask that left gaps open
   (`partial` or `unmatched`), so gap-filling waits before asking again
-  ([Metadata gap-fill](../internals/discovery.md#metadata-gap-fill-open-library-compliance));
+  ([Metadata gap-fill](../internals/discovery.md#metadata-gap-fill-open-library-compliance)),
+  and a work's description, subjects or categories too wide for one cell
+  of the database plugin, or for the work's row to fit one reply, are
+  stored in `work_text_parts` pieces that the work's `text_version` names;
 - `store_listings` (one per plugin, marketplace and product, with the
   store's own text for it: synopsis, cover, credits as printed, series and
   the store's own series or show product id, ratings, and `is_explicit`

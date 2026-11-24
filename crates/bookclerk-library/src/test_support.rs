@@ -382,14 +382,9 @@ impl ProfileStore {
         // any adapter session exists; the gate starts refusing afterwards.
         crate::apply_host_schema(&db).await?;
         handle.refuse(true);
-        // Plain reads are held to the profile's result rows and bytes from
-        // here on, the way the plugin host's proxy holds them. Cells are not
-        // held yet: configuration documents wider than one cell are stored
-        // whole until they are stored in pieces.
-        handle.cap_reads(Some(ReadCaps {
-            max_cell_bytes: 0,
-            ..ReadCaps::from_capabilities(&caps)
-        }));
+        // Plain reads are held to the profile's result rows, bytes and cell
+        // width from here on, the way the plugin host's proxy holds them.
+        handle.cap_reads(Some(ReadCaps::from_capabilities(&caps)));
         let exec = Arc::new(ProfileExec::new(db.clone(), caps.clone()));
         let atomic = NamedAtomicBackend::new(ProfileAtomic::new(Arc::clone(&exec), caps.clone()));
         let store = LibraryStore::from_connection(db)

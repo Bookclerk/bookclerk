@@ -20,6 +20,7 @@ use uuid::Uuid;
 use super::listing_reads::{
     edition_identifier_key, work_identifier_key, ListingPool, SnapshotReader,
 };
+use super::work_texts::WorkTexts;
 use super::{now_str, parse_dt, LibraryStore, NewBook};
 use crate::atomic_ops::{atomic_status, DbAtomicParams};
 use crate::entities::{
@@ -1882,14 +1883,11 @@ impl LibraryStore {
         &self,
         ids: &[String],
     ) -> Result<std::collections::BTreeMap<String, WorkRecord>> {
-        let mut found: Vec<WorkRecord> = find_chunked(self, ids, |part| {
+        let rows = find_chunked(self, ids, |part| {
             works::Entity::find().filter(works::Column::Id.is_in(part.iter().cloned()))
         })
-        .await?
-        .into_iter()
-        .map(map_work)
-        .collect();
-        self.fill_work_names(&mut found).await?;
+        .await?;
+        let found = self.work_records(rows).await?;
         Ok(found.into_iter().map(|w| (w.id.clone(), w)).collect())
     }
 
@@ -1906,9 +1904,7 @@ impl LibraryStore {
         else {
             return Ok(None);
         };
-        let mut works = vec![map_work(work)];
-        self.fill_work_names(&mut works).await?;
-        Ok(works.pop())
+        Ok(self.work_records(vec![work]).await?.pop())
     }
 
     /// Lists up to `limit` works with ids after `after_id`, in id order, with
@@ -1936,19 +1932,15 @@ impl LibraryStore {
         if let Some(after) = after_id {
             query = query.filter(works::Column::Id.gt(after));
         }
-        let mut works: Vec<WorkRecord> = super::keyset::read_keyset_limit(
+        let rows = super::keyset::read_keyset_limit(
             self,
             query,
             &[works::Column::Id],
             super::keyset::KeyOrder::Ascending,
             limit.clamp(1, 500),
         )
-        .await?
-        .into_iter()
-        .map(map_work)
-        .collect();
-        self.fill_work_names(&mut works).await?;
-        Ok(works)
+        .await?;
+        self.work_records(rows).await
     }
 
     /// Lists every work by title, with its work-level credits and series.
@@ -1957,15 +1949,24 @@ impl LibraryStore {
     ///
     /// Returns [`LibraryError::Orm`] when a read fails.
     pub async fn list_works(&self) -> Result<Vec<WorkRecord>> {
-        let mut works: Vec<WorkRecord> = crate::store::keyset::read_keyset(
+        let rows = crate::store::keyset::read_keyset(
             self,
             works::Entity::find(),
             &[works::Column::Title, works::Column::Id],
         )
-        .await?
-        .into_iter()
-        .map(map_work)
-        .collect();
+        .await?;
+        self.work_records(rows).await
+    }
+
+    /// `rows` as work records: their texts completed, then their credited
+    /// names, narrators and series filled.
+    ///
+    /// # Errors
+    ///
+    /// Returns the database error.
+    async fn work_records(&self, mut rows: Vec<works::Model>) -> Result<Vec<WorkRecord>> {
+        self.complete_work_texts(&mut rows).await?;
+        let mut works: Vec<WorkRecord> = rows.into_iter().map(map_work).collect();
         self.fill_work_names(&mut works).await?;
         Ok(works)
     }
@@ -2203,22 +2204,33 @@ impl LibraryStore {
         work_id: &str,
         enrichment: &WorkEnrichment,
     ) -> Result<()> {
-        use sea_orm::{ActiveModelTrait, ActiveValue::Set};
-        let Some(existing) = works::Entity::find_by_id(work_id.to_string())
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-        else {
-            return Err(LibraryError::not_found(EntityKind::Work, work_id));
-        };
-        let mut am: works::ActiveModel = existing.clone().into();
-        am.description = Set(enrichment.description.clone().or(existing.description));
-        am.subjects = Set(enrichment.subjects.clone().or(existing.subjects));
-        am.cover_url = Set(enrichment.cover_url.clone().or(existing.cover_url));
-        am.categories = Set(enrichment.categories.clone().or(existing.categories));
-        am.updated_at = Set(now_str());
-        am.update(&self.db).await.map_err(LibraryError::Orm)?;
-        Ok(())
+        let found = self
+            .update_work_texts(work_id, |existing| {
+                Some(WorkTexts {
+                    description: enrichment
+                        .description
+                        .clone()
+                        .or_else(|| existing.description.clone()),
+                    subjects: enrichment
+                        .subjects
+                        .clone()
+                        .or_else(|| existing.subjects.clone()),
+                    categories: enrichment
+                        .categories
+                        .clone()
+                        .or_else(|| existing.categories.clone()),
+                    cover_url: enrichment
+                        .cover_url
+                        .clone()
+                        .or_else(|| existing.cover_url.clone()),
+                })
+            })
+            .await?;
+        if found {
+            Ok(())
+        } else {
+            Err(LibraryError::not_found(EntityKind::Work, work_id))
+        }
     }
 
     /// Fills the work an edition belongs to from a library title's
@@ -2238,7 +2250,6 @@ impl LibraryStore {
         edition_id: &str,
         fill: &WorkEnrichment,
     ) -> Result<()> {
-        use sea_orm::{ActiveModelTrait, ActiveValue::Set};
         if fill.is_empty() {
             return Ok(());
         }
@@ -2249,23 +2260,18 @@ impl LibraryStore {
         else {
             return Ok(());
         };
-        let Some(work) = works::Entity::find_by_id(work_id)
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-        else {
-            return Ok(());
-        };
-        if !fill.fills(&work) {
-            return Ok(());
-        }
-        let mut am: works::ActiveModel = work.clone().into();
-        am.description = Set(work.description.or_else(|| fill.description.clone()));
-        am.subjects = Set(work.subjects.or_else(|| fill.subjects.clone()));
-        am.categories = Set(work.categories.or_else(|| fill.categories.clone()));
-        am.cover_url = Set(work.cover_url.or_else(|| fill.cover_url.clone()));
-        am.updated_at = Set(now_str());
-        am.update(&self.db).await.map_err(LibraryError::Orm)?;
+        self.update_work_texts(&work_id, |work| {
+            fill.fills(work).then(|| WorkTexts {
+                description: work
+                    .description
+                    .clone()
+                    .or_else(|| fill.description.clone()),
+                subjects: work.subjects.clone().or_else(|| fill.subjects.clone()),
+                categories: work.categories.clone().or_else(|| fill.categories.clone()),
+                cover_url: work.cover_url.clone().or_else(|| fill.cover_url.clone()),
+            })
+        })
+        .await?;
         Ok(())
     }
 
