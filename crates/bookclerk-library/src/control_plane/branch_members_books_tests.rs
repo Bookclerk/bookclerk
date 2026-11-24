@@ -89,6 +89,7 @@ fn title(product: &str) -> CatalogTitle {
             key,
             size: 10,
             content_type: Some("audio/mp4".into()),
+            version: None,
         }],
     }
 }

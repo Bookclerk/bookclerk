@@ -1138,7 +1138,9 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // (`control_plane::branch_catalog`): `share_ref` is `store:product_id` as
     // the branch named it, `share_title` the title as received (JSON
     // `CatalogTitle`), `share_digest` its manifest digest and
-    // `delivered_digest` the digest whose files reached this library; its
+    // `delivered_digest` the digest whose files reached this library,
+    // `refused_digest` / `refused_at` an upload of that digest refused for
+    // good (asked for again a day later or once the manifest changes); its
     // `seen_pass` is the branch's catalog pass. Account holdings leave them
     // empty.
     MigrationOp::Schema(
@@ -1159,6 +1161,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         share_digest TEXT,
         delivered_digest TEXT,
         delivered_at TEXT,
+        refused_digest TEXT,
+        refused_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE (listing_id, holder),
@@ -1170,7 +1174,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
             OR (holder_kind = 'patron' AND user_id IS NOT NULL AND plugin_key IS NULL
                 AND account_id IS NULL AND node_id IS NULL)),
         CHECK (holder_kind = 'node' OR (share_ref IS NULL AND share_title IS NULL
-            AND share_digest IS NULL AND delivered_digest IS NULL AND delivered_at IS NULL))
+            AND share_digest IS NULL AND delivered_digest IS NULL AND delivered_at IS NULL
+            AND refused_digest IS NULL AND refused_at IS NULL))
     )",
     ),
     MigrationOp::Schema(

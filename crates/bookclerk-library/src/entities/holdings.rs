@@ -54,6 +54,13 @@ pub struct Model {
     pub delivered_digest: Option<String>,
     /// For a node holding, the RFC 3339 time its files last arrived.
     pub delivered_at: Option<String>,
+    /// For a node holding, the manifest digest whose upload this library
+    /// refused for good (a key or folder another title holds here), so the
+    /// files are not asked for again until the manifest changes or
+    /// `refused_at` is a day old.
+    pub refused_digest: Option<String>,
+    /// For a node holding, the RFC 3339 time of that refusal.
+    pub refused_at: Option<String>,
     /// RFC 3339 timestamp when the row was inserted.
     pub created_at: String,
     /// RFC 3339 timestamp when the row was last modified.
