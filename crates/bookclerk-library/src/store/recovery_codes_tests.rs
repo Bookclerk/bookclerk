@@ -311,3 +311,28 @@ async fn a_recovery_code_finishes_a_reset_once_and_removes_every_factor_under_ev
         );
     }
 }
+
+#[tokio::test]
+async fn turning_the_authenticator_flag_off_drops_the_codes_under_every_profile() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = memory(profile).await.into_store();
+        let user = verified_member(&store, "sam@example.com").await;
+        store.set_user_totp_enabled(user, true).await.unwrap();
+        assert!(store
+            .issue_recovery_codes(
+                user,
+                &RecoveryCode::generate_set(),
+                RecoveryCodeIssue::First,
+                Utc::now()
+            )
+            .await
+            .unwrap());
+        store.set_user_totp_enabled(user, false).await.unwrap();
+        assert_eq!(
+            store.count_recovery_codes(user).await.unwrap(),
+            0,
+            "{name}: codes outlived the authenticator"
+        );
+    }
+}

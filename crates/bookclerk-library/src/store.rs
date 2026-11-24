@@ -3381,35 +3381,43 @@ impl LibraryStore {
     /// # Arguments
     ///
     /// * `user_id` - First-party user id.
-    /// * `enabled` - `true` after a successful enroll confirm; `false` on disable.
+    /// * `enabled` - `true` after a successful enroll confirm; `false` on
+    ///   disable, which also drops the recovery codes when no passkey remains.
     ///
     /// # Errors
     ///
     /// Returns [`LibraryError::NotFound`] when the user does not exist.
     pub async fn set_user_totp_enabled(&self, user_id: i64, enabled: bool) -> Result<()> {
         let operation_id = format!("user-totp-enabled-{}", Uuid::new_v4());
+        let mut statements = vec![batch::exec(
+            "UPDATE users SET totp_enabled = ?, updated_at = ? WHERE id = ?",
+            vec![
+                batch::int(i64::from(enabled)),
+                batch::text(&now_str()),
+                batch::int(user_id),
+            ],
+        )];
+        if !enabled {
+            // Turning the authenticator off drops recovery codes in the
+            // same write when no passkey remains.
+            statements.push(batch::exec(
+                &format!(
+                    "DELETE FROM recovery_codes WHERE user_id = ? AND NOT {}",
+                    recovery_codes::HAS_SECOND_FACTOR
+                ),
+                vec![batch::int(user_id), batch::int(user_id)],
+            ));
+        }
+        statements.push(crate::control_plane::bump_if_any(
+            LiveTopic::Users,
+            batch::query(
+                "SELECT 1 FROM users WHERE id = ?",
+                vec![batch::int(user_id)],
+                1,
+            ),
+        ));
         let reply = self
-            .execute_host_batch(batch::request(
-                &operation_id,
-                vec![
-                    batch::exec(
-                        "UPDATE users SET totp_enabled = ?, updated_at = ? WHERE id = ?",
-                        vec![
-                            batch::int(i64::from(enabled)),
-                            batch::text(&now_str()),
-                            batch::int(user_id),
-                        ],
-                    ),
-                    crate::control_plane::bump_if_any(
-                        LiveTopic::Users,
-                        batch::query(
-                            "SELECT 1 FROM users WHERE id = ?",
-                            vec![batch::int(user_id)],
-                            1,
-                        ),
-                    ),
-                ],
-            ))
+            .execute_host_batch(batch::request(&operation_id, statements))
             .await?;
         if batch::rows_affected(&reply, 0) == 0 {
             return Err(LibraryError::missing(EntityKind::User));
