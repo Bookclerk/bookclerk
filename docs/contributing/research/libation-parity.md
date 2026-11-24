@@ -18,7 +18,9 @@ Chardonnay and Classic share the same backend; this matrix uses upstream
 **Headless parity with Classic/Chardonnay is complete for the LibationCli +
 acquire surface.** All LibationCli verbs, download/decrypt settings that affect
 headless operation, naming templates, podcast handling, library metadata,
-migrate-from-classic, and classic EF Postgres `copydb` are implemented.
+migrate-from-classic, and classic EF Postgres `copydb` are implemented, except
+`RetainAaxFile`: Bookclerk does not keep the encrypted download, because
+Audible's AAXC and Widevine files play only with keys Bookclerk does not store.
 
 Remaining items are either **GUI-only**, **intentionally deferred** (upgrade
 checks), or **minor headless polish** listed under

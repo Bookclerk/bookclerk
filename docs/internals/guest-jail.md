@@ -50,7 +50,9 @@ media. Guest `fetchTitle` lists its files by role (`part`, `whole`,
 `cover`, `catalogRecord`, `annotations`) and carries an optional `pdfUrl`.
 The host refuses a reply naming any file that does not resolve, symlinks
 followed, to a regular file inside the fetch's cache directory, so a guest
-cannot have the host copy a host file into storage. Catalog methods are on the
+cannot have the host copy a host file into storage. The host pins where that
+directory resolves before it asks the guest, so swapping the folder for a
+link only makes the reply's files resolve elsewhere and be refused. Catalog methods are on the
 Workers RPC wire for external guests. When an account is removed (Accounts
 page or `bookclerk library revoke-account`), the host first calls the guest's
 `revokeAccount` with the account's stored credentials so it can sign out at
