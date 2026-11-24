@@ -2448,15 +2448,14 @@ mod tests {
             cancel: Some(Arc::clone(&cancel)),
         };
 
+        /// What the stand-in guest call would answer.
+        type Answer = std::result::Result<(), bookclerk_plugin_sdk::PluginError>;
+
         /// Races `stop` against a guest call that never answers, returning
         /// once the call has started (after the baseline, as in a real
         /// fetch). When the call ends it writes `late` into the scratch, as
         /// a guest may while its call is torn down.
-        async fn start(
-            stop: FetchStop,
-            late: Option<PathBuf>,
-        ) -> tokio::task::JoinHandle<std::result::Result<(), bookclerk_plugin_sdk::PluginError>>
-        {
+        async fn start(stop: FetchStop, late: Option<PathBuf>) -> tokio::task::JoinHandle<Answer> {
             /// Writes its path when dropped, standing in for a guest that
             /// writes until its call has ended.
             struct WritesOnDrop(Option<PathBuf>);
@@ -2468,17 +2467,12 @@ mod tests {
                 }
             }
             let (started, on_start) = tokio::sync::oneshot::channel();
-            let task =
-                tokio::spawn(
-                    stop.race(async move {
-                        let _late = WritesOnDrop(late);
-                        let _ = started.send(());
-                        std::future::pending::<
-                            std::result::Result<(), bookclerk_plugin_sdk::PluginError>,
-                        >()
-                        .await
-                    }),
-                );
+            let call = async move {
+                let _late = WritesOnDrop(late);
+                let _ = started.send(());
+                std::future::pending::<Answer>().await
+            };
+            let task = tokio::spawn(stop.race(call));
             on_start.await.unwrap();
             task
         }
