@@ -9,8 +9,9 @@
  * to the library whose messages travel as live frames on the relay socket
  * that served it. `health` reopens sockets that closed.
  */
-import { BookclerkEntrypoint, IngressEntrypoint, } from "@bookclerk/plugin-sdk/workerd";
+import { BookclerkEntrypoint, IngressEntrypoint, ProvisioningEntrypoint, } from "@bookclerk/plugin-sdk/workerd";
 import { handleClose, handleMessage, liveContext, relayHealth, startRelay, stopRelay, } from "./lifecycle.js";
+import { deprovisionRelay, provisionRelay } from "./provision.js";
 // workerd treats every named export of this module as an entrypoint, so it
 // exports only the entrypoint classes; the logic lives in `lifecycle.ts`.
 /** `ingress` entrypoint: the relay's lifecycle. */
@@ -39,6 +40,27 @@ export class Ingress extends IngressEntrypoint {
      */
     stop() {
         return stopRelay(this.env.SOCKETS);
+    }
+}
+/** `provisioning` entrypoint: the guided setup (see `provision.ts`). */
+export class Provisioning extends ProvisioningEntrypoint {
+    /**
+     * Mints the Workers token from the pasted one.
+     *
+     * @param request - The operator's grant.
+     * @returns The account and the token to keep.
+     */
+    provision(request) {
+        return provisionRelay({ env: this.env, fetch: (input, init) => fetch(input, init) }, request);
+    }
+    /**
+     * Deletes the relay Worker and the minted token.
+     *
+     * @param request - The operator's grant, or kind `none`.
+     * @returns Resolves once they are gone.
+     */
+    deprovision(request) {
+        return deprovisionRelay({ env: this.env, fetch: (input, init) => fetch(input, init) }, request);
     }
 }
 /** Default entrypoint: the relay sockets' handlers. */

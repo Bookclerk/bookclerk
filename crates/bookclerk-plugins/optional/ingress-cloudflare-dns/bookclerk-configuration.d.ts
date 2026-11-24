@@ -13,6 +13,7 @@ export interface Env extends BookclerkEnv {
     hostname: string;
     ipv4: boolean;
     ipv6: boolean;
+    api_token_id: string | undefined;
     [key: string]: unknown;
   };
   /** `[secrets]` values sealed by the operator (present only when granted). */

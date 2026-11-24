@@ -11,6 +11,7 @@ export interface Env extends BookclerkEnv {
   /** `[[settings]]` values (defaults merged with the instance document) decoded from the granted config payload. */
   CONFIG: {
     hostname: string;
+    account_id: string | undefined;
     [key: string]: unknown;
   };
   /** `[secrets]` values sealed by the operator (present only when granted). */

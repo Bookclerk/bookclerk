@@ -244,7 +244,7 @@ export async function reconcile(
   if (unchanged && !force) return { published, problems };
 
   const dns = new CloudflareDns(ctx.fetch, settings.token);
-  const zone = await dns.zone(zoneCandidates(settings.hostname));
+  const { id: zone } = await dns.zone(zoneCandidates(settings.hostname));
   const records = await dns.records(zone, settings.hostname);
   if (records.some((record) => record.type === "CNAME")) {
     throw new DnsError(

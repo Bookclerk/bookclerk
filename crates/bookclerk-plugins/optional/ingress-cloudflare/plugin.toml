@@ -3,7 +3,7 @@ id = "cloudflare_relay"
 name = "Cloudflare relay"
 version = "0.1.0"
 runtime = "workerd"
-entrypoints = ["ingress"]
+entrypoints = ["ingress", "provisioning"]
 
 [workerd]
 compatibility_date = "2026-08-01"
@@ -27,6 +27,11 @@ path = "index.js"
 type = "js"
 
 [[modules]]
+name = "api.js"
+path = "api.js"
+type = "js"
+
+[[modules]]
 name = "cloudflare.js"
 path = "cloudflare.js"
 type = "js"
@@ -34,6 +39,11 @@ type = "js"
 [[modules]]
 name = "lifecycle.js"
 path = "lifecycle.js"
+type = "js"
+
+[[modules]]
+name = "provision.js"
+path = "provision.js"
 type = "js"
 
 [[modules]]
@@ -57,6 +67,11 @@ path = "serve.js"
 type = "js"
 
 [[modules]]
+name = "tokens.js"
+path = "tokens.js"
+type = "js"
+
+[[modules]]
 name = "version.js"
 path = "version.js"
 type = "js"
@@ -74,6 +89,22 @@ domains = ["api.cloudflare.com", "*.workers.dev"]
 # The relay announces each public request on one of these sockets; the host
 # holds them while the plugin waits.
 [sockets]
+
+# Guided setup: with a pasted Cloudflare API token it finds the account and
+# mints a token that can deploy Workers there and nothing else, which the
+# plugin keeps to deploy and update the relay. The pasted token is not
+# stored. It runs under the network grant above (api.cloudflare.com).
+[provisioning]
+provider = "cloudflare"
+grants = ["api_token"]
+token_url = "https://dash.cloudflare.com/profile/api-tokens"
+token_permissions = [
+    "Account > Workers Scripts > Edit",
+    "Account > Account API Tokens > Edit",
+]
+inputs = ["account_id", "worker_name"]
+outputs = ["account_id", "api_token", "api_token_id"]
+deprovision = true
 
 [vars]
 
@@ -95,6 +126,12 @@ description = "Name of the Worker the plugin deploys; it becomes the first label
 key = "api_token"
 label = "Cloudflare API token"
 type = "secret"
-description = "An API token with the Workers Scripts: Edit permission on this account."
+description = "An API token with the Workers Scripts: Edit permission on this account. The guided setup fills it in."
+
+[[settings]]
+key = "api_token_id"
+label = "Setup token id"
+type = "string"
+description = "Filled in by the guided setup: the id of the API token it created, so a later setup or removal deletes it. Leave it empty when you paste your own token."
 
 [secrets]

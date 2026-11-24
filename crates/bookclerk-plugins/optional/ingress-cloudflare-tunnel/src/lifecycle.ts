@@ -109,6 +109,16 @@ export interface Settings {
 const DOMAIN =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
+/**
+ * Whether `name` is a DNS name the plugin can serve.
+ *
+ * @param name - Candidate, lowercase.
+ * @returns `true` for dot-separated LDH labels, 253 characters at most.
+ */
+export function hostnameOk(name: string): boolean {
+  return DOMAIN.test(name);
+}
+
 /** A tunnel id: a UUID. */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -189,7 +199,7 @@ export function settingsOf(env: Env): Settings {
       "set hostname to the public hostname your tunnel routes to the library",
     );
   }
-  if (!DOMAIN.test(hostname)) {
+  if (!hostnameOk(hostname)) {
     throw PluginError.fromWire(
       "invalid_params",
       "hostname must be a host name such as library.example.com",

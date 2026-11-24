@@ -13,9 +13,13 @@
 import {
   BookclerkEntrypoint,
   IngressEntrypoint,
+  ProvisioningEntrypoint,
+  type DeprovisionRequest,
   type HostWebSocket,
   type IngressHealth,
   type IngressStarted,
+  type Provisioned,
+  type ProvisionRequest,
   type SocketMessageData,
   type SocketMessageOk,
 } from "@bookclerk/plugin-sdk/workerd";
@@ -28,6 +32,7 @@ import {
   startRelay,
   stopRelay,
 } from "./lifecycle.ts";
+import { deprovisionRelay, provisionRelay } from "./provision.ts";
 
 // workerd treats every named export of this module as an entrypoint, so it
 // exports only the entrypoint classes; the logic lives in `lifecycle.ts`.
@@ -60,6 +65,29 @@ export class Ingress extends IngressEntrypoint<Env> {
    */
   override stop(): Promise<void> {
     return stopRelay(this.env.SOCKETS);
+  }
+}
+
+/** `provisioning` entrypoint: the guided setup (see `provision.ts`). */
+export class Provisioning extends ProvisioningEntrypoint<Env> {
+  /**
+   * Mints the Workers token from the pasted one.
+   *
+   * @param request - The operator's grant.
+   * @returns The account and the token to keep.
+   */
+  override provision(request: ProvisionRequest): Promise<Provisioned> {
+    return provisionRelay({ env: this.env, fetch: (input, init) => fetch(input, init) }, request);
+  }
+
+  /**
+   * Deletes the relay Worker and the minted token.
+   *
+   * @param request - The operator's grant, or kind `none`.
+   * @returns Resolves once they are gone.
+   */
+  override deprovision(request: DeprovisionRequest): Promise<void> {
+    return deprovisionRelay({ env: this.env, fetch: (input, init) => fetch(input, init) }, request);
   }
 }
 

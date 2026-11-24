@@ -18,7 +18,10 @@
  * - client addresses: Node's `net.isIP`, less IPv6 zones;
  * - live frames: an independent decoder restating the layout and the
  *   sendable close codes, plus a byte-exact round trip through
- *   `encodeLiveFrame`.
+ *   `encodeLiveFrame`;
+ * - Cloudflare API answers to the guided setup (`fuzz/api/`, JSON text):
+ *   the envelope, account, permission group, new token and Worker list
+ *   rules restated over `JSON.parse`'s value.
  *
  * `FUZZ_SEED` and `FUZZ_ITERATIONS` pick another run; a failure prints the
  * seed, iteration and input that reproduce it.
@@ -28,6 +31,15 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { isIP } from "node:net";
 import { test } from "node:test";
+
+import { parseEnvelope } from "../src/api.ts";
+import { MIGRATION_TAG, parseScriptState } from "../src/cloudflare.ts";
+import {
+  SetupError,
+  parseAccounts,
+  parseMintedToken,
+  parsePermissionGroup,
+} from "../src/tokens.ts";
 
 import {
   FRAME_PREFIX_BYTES,
@@ -648,5 +660,117 @@ test("notice and address seeds replay and mutations match the oracles", () => {
   for (let i = 0; i < ITERATIONS; i++) {
     const seed = seeds[Math.floor(rand() * seeds.length)] ?? "";
     checkNotice(mutateText(seed, rand), `FUZZ_SEED=${SEED} iteration ${i}`);
+  }
+});
+
+/**
+ * Whether a value is one of Cloudflare's ids, by character.
+ *
+ * @param id - Candidate.
+ * @returns The answer.
+ */
+function hexId(id: unknown): id is string {
+  return (
+    typeof id === "string" &&
+    id.length === 32 &&
+    [...id].every((c) => "0123456789abcdef".includes(c))
+  );
+}
+
+/**
+ * Whether a value is a JSON object (not null or an array).
+ *
+ * @param value - Candidate.
+ * @returns The answer.
+ */
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Checks one API answer against the restated rules.
+ *
+ * @param input - The answer's body.
+ * @param label - What to print on failure.
+ */
+function checkApi(input: string, label: string): void {
+  try {
+    let value: unknown;
+    let json = true;
+    try {
+      value = JSON.parse(input);
+    } catch {
+      json = false;
+    }
+    for (const status of [200, 404]) {
+      if (!json || !isObject(value)) {
+        assert.throws(() => parseEnvelope(status, input), SetupError);
+        continue;
+      }
+      const envelope = parseEnvelope(status, input);
+      if (status === 200 && value.success === true) {
+        assert.deepEqual(envelope, { ok: true, result: value.result });
+      } else {
+        const first: unknown = Array.isArray(value.errors) ? value.errors[0] : undefined;
+        const message = isObject(first) && typeof first.message === "string" ? first.message : "";
+        assert.deepEqual(envelope, { ok: false, message: message.slice(0, 200) });
+      }
+    }
+    if (!json || !isObject(value)) return;
+    const result = value.result;
+    if (Array.isArray(result)) {
+      assert.deepEqual(
+        parseAccounts(result),
+        result
+          .filter((a: unknown) => isObject(a) && hexId(a.id))
+          .map((a) => (a as { id: string }).id),
+      );
+      const group = result.find(
+        (g: unknown) => isObject(g) && g.name === "Workers Scripts Write" && hexId(g.id),
+      ) as Record<string, unknown> | undefined;
+      assert.equal(
+        parsePermissionGroup(result, "Workers Scripts Write"),
+        group === undefined ? null : group.id,
+      );
+      const script = result.find((w: unknown) => isObject(w) && w.id === "bookclerk-relay") as
+        Record<string, unknown> | undefined;
+      assert.equal(
+        parseScriptState(result, "bookclerk-relay"),
+        script === undefined
+          ? "absent"
+          : script.migration_tag === MIGRATION_TAG
+            ? "relay"
+            : "other",
+      );
+    } else {
+      assert.throws(() => parseAccounts(result), SetupError);
+      assert.throws(() => parsePermissionGroup(result, "Workers Scripts Write"), SetupError);
+      assert.throws(() => parseScriptState(result, "bookclerk-relay"), SetupError);
+    }
+    const token = isObject(result) ? result : null;
+    const usable =
+      token !== null &&
+      hexId(token.id) &&
+      typeof token.value === "string" &&
+      token.value.length >= 1 &&
+      token.value.length <= 1024 &&
+      [...token.value].every((c) => c >= "!" && c <= "~");
+    if (usable) {
+      assert.deepEqual(parseMintedToken(result), { id: token.id, value: token.value });
+    } else {
+      assert.throws(() => parseMintedToken(result), SetupError);
+    }
+  } catch (err) {
+    throw new Error(`${label} input ${JSON.stringify(input)}: ${String(err)}`, { cause: err });
+  }
+}
+
+test("API answer seeds replay and mutations match the restated rules", () => {
+  const seeds = corpus("api").map((seed) => seed.text);
+  const rand = prng(SEED + 4);
+  seeds.forEach((seed, i) => checkApi(seed, `seed ${i}`));
+  for (let i = 0; i < ITERATIONS; i++) {
+    const seed = seeds[Math.floor(rand() * seeds.length)] ?? "";
+    checkApi(mutateText(seed, rand), `FUZZ_SEED=${SEED} iteration ${i}`);
   }
 });

@@ -10,11 +10,16 @@
 import {
   BookclerkEntrypoint,
   IngressEntrypoint,
+  ProvisioningEntrypoint,
+  type DeprovisionRequest,
   type IngressHealth,
   type IngressStarted,
+  type Provisioned,
+  type ProvisionRequest,
 } from "@bookclerk/plugin-sdk/workerd";
 import type { Env } from "../bookclerk-configuration.js";
 import { dnsHealth, liveContext, startDns, stopDns } from "./lifecycle.ts";
+import { deprovisionDns, provisionDns } from "./provision.ts";
 
 // workerd treats every named export of this module as an entrypoint, so it
 // exports only the entrypoint classes; the logic lives in `lifecycle.ts`.
@@ -47,6 +52,29 @@ export class Ingress extends IngressEntrypoint<Env> {
   override stop(): Promise<void> {
     stopDns();
     return Promise.resolve();
+  }
+}
+
+/** `provisioning` entrypoint: the guided setup (see `provision.ts`). */
+export class Provisioning extends ProvisioningEntrypoint<Env> {
+  /**
+   * Mints the zone's token from the pasted one.
+   *
+   * @param request - The operator's grant.
+   * @returns The host name and the token to keep.
+   */
+  override provision(request: ProvisionRequest): Promise<Provisioned> {
+    return provisionDns(liveContext(this.env), request);
+  }
+
+  /**
+   * Deletes the kept records and the minted token.
+   *
+   * @param request - The operator's grant, or kind `none`.
+   * @returns Resolves once they are gone.
+   */
+  override deprovision(request: DeprovisionRequest): Promise<void> {
+    return deprovisionDns(liveContext(this.env), request);
   }
 }
 
