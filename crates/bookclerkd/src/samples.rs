@@ -445,11 +445,11 @@ fn trim(dir: &std::path::Path, budget: u64) {
 }
 
 /// A file on a destination, read one range at a time for the media worker.
-struct StoredFile {
+pub(crate) struct StoredFile {
     /// The destination holding it.
-    backend: Box<dyn StorageBackend>,
+    pub(crate) backend: Box<dyn StorageBackend>,
     /// Its storage key there.
-    key: String,
+    pub(crate) key: String,
 }
 
 impl RangeSource for StoredFile {

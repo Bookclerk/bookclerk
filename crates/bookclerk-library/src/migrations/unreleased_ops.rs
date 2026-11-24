@@ -1003,6 +1003,12 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_domain_events_wake_pending ON domain_events(created_at, id) WHERE wake_pending = 1",
     ),
+    // Prefix reads of one event type's dedup keys across accounts and
+    // sources: whether an edition's acquire state changed through any of
+    // its holdings since its last `book_acquired`.
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_domain_events_type_key ON domain_events(queue_name, event_type, dedup_key)",
+    ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS event_deliveries (
         id TEXT PRIMARY KEY NOT NULL,
@@ -1812,7 +1818,10 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // `sort_series`, `length_minutes` and `purchased_at` are sort keys:
     // series then position (works with no series last), the longest held
     // edition's runtime (0 when unknown) and the newest purchase time
-    // (empty when no store reported one). `facets_ready` is 1 once every
+    // (empty when no store reported one). `acquirable_editions` counts the
+    // held editions an acquire would still queue (not acquired, queued or
+    // downloading), so the list offers Acquire beside an acquired one.
+    // `facets_ready` is 1 once every
     // `library_work_facets` row of this refresh is written: a patron scope
     // admits only such rows, so a half-written refresh hides the work
     // rather than slipping it past an exclude rule.
@@ -1836,7 +1845,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         length_minutes INTEGER NOT NULL,
         purchased_at TEXT NOT NULL,
         refreshed_at TEXT NOT NULL,
-        facets_ready INTEGER NOT NULL DEFAULT 0
+        facets_ready INTEGER NOT NULL DEFAULT 0,
+        acquirable_editions INTEGER NOT NULL DEFAULT 0
     )",
     ),
     MigrationOp::Schema(

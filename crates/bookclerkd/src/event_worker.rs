@@ -152,7 +152,7 @@ fn spawn_delivery_worker(state: Arc<AppState>) {
             );
             match claim_delivery(&library, &owner, &groups, max_in_flight, &node_id).await {
                 Ok(Some(delivery)) => {
-                    run_delivery(&state, &library, delivery).await;
+                    run_delivery(&state, &library, delivery, &node_id).await;
                 }
                 Ok(None) => {
                     tokio::select! {
@@ -946,10 +946,15 @@ async fn claim_group(
 }
 
 /// Invoke `Integration.onEvent` and persist the fenced [`EventResult`].
+///
+/// Host consumers run in place of a plugin; `node_id` is this node, for a
+/// host consumer that claims more of its own deliveries to handle them
+/// together.
 async fn run_delivery(
     state: &AppState,
     library: &LibraryStore,
     delivery: bookclerk_library::EventDeliveryRecord,
+    node_id: &str,
 ) {
     let fence = delivery.fence();
     let Some(event) = library
@@ -972,11 +977,11 @@ async fn run_delivery(
         return;
     }
     if crate::library_index::is_library_index_consumer_id(&delivery.plugin_id) {
-        crate::library_index::run_library_index_delivery(library, &event, &delivery).await;
+        crate::library_index::run_library_index_deliveries(library, node_id, event, delivery).await;
         return;
     }
     if crate::search_index::is_search_consumer_id(&delivery.plugin_id) {
-        crate::search_index::run_search_delivery(state, library, &event, &delivery).await;
+        crate::search_index::run_search_deliveries(state, library, node_id, event, delivery).await;
         return;
     }
     let integration = {

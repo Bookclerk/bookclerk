@@ -216,6 +216,7 @@ stateDiagram-v2
 | `branch_request` | `branch_request:node={id}:work={id}` | `network` | none: the branch it is pinned to takes it over the node socket (`requests.claim` / `requests.finish`) |
 | `notify_send` | `notify_send:delivery={id}` | `network` | `run_notify_send` on a node running the notifier instance (requires it); parks itself between retries with `defer_job` |
 | `ingest_batch` | `ingest_batch:batch={id}` | `network` | `run_ingest_batch` on the node that holds the upload's bytes (pinned by `payload.node_id`; never handed to a branch) |
+| `file_probe` | `file_probe:node={id}` | `network` | `run_file_probe` on the node it is pinned to (no network; probes the audio files on its destinations that have no probe, see [What a stored file's row says](../server/media.md#what-a-stored-files-row-says)) |
 | `chapter_align` | `chapter_align:edition={id}` | `network` | `run_chapter_align` on a node that holds the library database; the edition is `payload.title` (see [Aligning chapters to a copy](../server/playback.md#aligning-chapters-to-a-copy)) |
 
 `plugin_scheduled` jobs aren't enqueued through the API. Each daemon's cron
@@ -289,6 +290,11 @@ A `search_index_rebuild` job is pinned to one node the same way. See
 A `library_index_rebuild` job is not pinned: any node claims it. See
 [Library index](#library-index).
 
+A `file_probe` job is pinned to one node too. The heartbeat queues one,
+at most once a day, when a destination deployed on the node has an audio
+file with no probe. It walks those files in pages and skips one it
+cannot read, so the next day's job tries it again.
+
 Reserved classes (no worker in this release): `media`, `transcription`,
 `indexing`.
 
@@ -311,7 +317,10 @@ and store identifiers). It is kept current two ways:
   and adds it back while the work is held, so a work nobody holds any
   more leaves the index. A holding event whose listing is already gone
   removes the marker below, since its work can no longer be found, so the
-  node rebuilds.
+  node rebuilds. The consumer handles the delivery it was given together
+  with up to 63 more of its own that are ready, refreshing each work they
+  touch once, so a podcast scan's event per episode does not read the
+  whole show once per episode.
 - **Rebuild job.** A finished rebuild leaves a marker for the current
   document layout in the index folder. When it is missing (a new node, a
   deleted folder, or an index of an older layout, which is discarded), the
@@ -366,9 +375,13 @@ library database, so the whole library shares one index:
   event refreshes its edition's work, a holding event the work of its
   listing, and `book_acquired` the work of its edition (or of its title,
   when the payload names no edition). A refresh reads the work as it is
-  now and writes its whole row, so a row's authors and series are as
-  current as the last of these events: a credit or series change alone
-  does not refresh it. A work whose last holding is gone keeps its row
+  now and writes its whole row. A link writes a title's credits and
+  series in batches after the link itself, so the last of those batches
+  publishes an `edition_updated` for the listing's edition while some
+  listing of it is held; a refresh that ran between them is followed by
+  one that sees them. Like the search consumer, this one folds the
+  deliveries that are ready (up to 64) into one refresh of the works they
+  touch; a delivery whose work lookup fails is retried on its own. A work whose last holding is gone keeps its row
   with a holding count of 0, which pages skip, and the row is deleted
   only when the work itself is. A failed refresh is retried up to ten
   times, then dead-lettered.
@@ -403,8 +416,17 @@ cover is known, because store text and a title's enrichment are written
 after the link whose event refreshed the row. The route reads the cover
 when it serves the page: the edition's own (the first store cover a
 listing of it reported), else the first store cover among its listings, else its work's (or, for an episode, its show's), so
-a cover stored later shows without another refresh. The work detail route
-gives each edition its cover the same way.
+a cover stored later shows without another refresh. A store cover that
+may make another edition the better choice (store text, or a catalog
+answer such as a Discover expansion naming a held edition) refreshes the
+rows of the held works it covers; unheld works in the answer are left
+alone. The work detail route gives each edition its cover the same way.
+
+Each row also counts its held editions an acquire would still queue
+(`acquirable_editions`: neither acquired, queued nor downloading). The
+row's `acquire_status` is the furthest state any edition reached, so a
+work with an acquired audio edition beside a held ebook reads `acquired`;
+the library page offers Acquire while the count is above 0.
 
 Each row carries the sort keys of every order the page offers: title,
 first author, newest holding, series then position (works in no series

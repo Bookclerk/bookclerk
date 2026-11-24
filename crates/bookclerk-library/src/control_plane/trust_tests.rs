@@ -920,6 +920,15 @@ async fn acquires_are_trusted_and_planned_per_item(owner_db: LibraryStore, host_
     );
     assert!(!claimant_may_run(Claimant::Remote, &align));
     assert!(claimant_may_run(Claimant::Local, &align));
+    let probe = record(
+        JobKind::FileProbe,
+        JobPayload {
+            node_id: Some("node".into()),
+            ..JobPayload::default()
+        },
+    );
+    assert!(!claimant_may_run(Claimant::Remote, &probe));
+    assert!(claimant_may_run(Claimant::Local, &probe));
     assert!(job_trusted(&host_db, &trust, &forced).await.unwrap());
     assert!(
         !node_may_claim_job(&host_db, HOST, Claimant::Remote, &forced)

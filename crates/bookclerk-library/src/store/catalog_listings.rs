@@ -631,6 +631,8 @@ impl LibraryStore {
         // same answer is not sent through the resolver again.
         let mut resolved_now: HashMap<(String, String, String), String> = HashMap::new();
         let mut unresolved = 0usize;
+        // Editions whose store text in this answer carries a cover.
+        let mut covered_editions: BTreeSet<String> = BTreeSet::new();
         for (input, listing) in listings.iter().zip(&parsed) {
             let Some(listing) = listing else {
                 ids.push(None);
@@ -651,6 +653,14 @@ impl LibraryStore {
                 Some(id) => (id, false),
                 None => match self.try_link_listing(listing, None).await? {
                     Some(plan) => {
+                        if input
+                            .detail
+                            .cover_url
+                            .as_deref()
+                            .is_some_and(|c| !c.trim().is_empty())
+                        {
+                            covered_editions.insert(plan.listing.edition_id.clone());
+                        }
                         let id = plan.listing.id;
                         resolved_now.insert(key.clone(), id.clone());
                         (id, true)
@@ -688,6 +698,10 @@ impl LibraryStore {
         if let Some(last) = batches.finish() {
             self.run_catalog_batch(last).await?;
         }
+        // A cover can make another edition the better cover edition of a
+        // held work whose row was written before the cover was known.
+        self.refresh_covered_works(&covered_editions.into_iter().collect::<Vec<_>>())
+            .await?;
         Ok(RecordedListings { ids, unresolved })
     }
 
@@ -950,17 +964,25 @@ impl LibraryStore {
         self.record_listing_details(&writes).await?;
         // A cover can make another edition the better cover edition of a
         // held work whose row was written before the cover was known.
-        let mut works: BTreeSet<String> = BTreeSet::new();
-        for edition_id in &covered_editions {
-            if let Some(work) = self.work_of_edition(edition_id).await? {
-                works.insert(work);
-            }
-        }
-        if !works.is_empty() {
-            self.refresh_library_works(&works.into_iter().collect::<Vec<_>>())
-                .await?;
-        }
+        self.refresh_covered_works(&covered_editions.into_iter().collect::<Vec<_>>())
+            .await?;
         Ok(writes.len())
+    }
+
+    /// Refreshes the page index rows of the held works whose editions in
+    /// `edition_ids` just gained a store cover, so a row can name the newly
+    /// covered edition as its cover edition (#1050, #1052). Unheld works
+    /// have no row a patron sees and are left alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns the read or write error.
+    async fn refresh_covered_works(&self, edition_ids: &[String]) -> Result<()> {
+        let works = self.held_works_of_editions(edition_ids).await?;
+        if !works.is_empty() {
+            self.refresh_library_works(&works).await?;
+        }
+        Ok(())
     }
 
     /// Sends one chunk of catalog writes as one atomic host batch.

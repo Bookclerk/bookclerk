@@ -185,93 +185,221 @@ fn parse_change(event: &DomainEventRecord) -> Result<Change, String> {
     }
 }
 
-/// Writes one change into the index.
+/// What one change's lookup came to, which decides how its delivery is
+/// settled.
+#[derive(Debug, PartialEq, Eq)]
+enum Lookup {
+    /// The change names a work, so the batch's refresh decides the
+    /// delivery.
+    Work,
+    /// Nothing is left to refresh for the change (its edition is gone, or
+    /// a gone listing marked the index for a rebuild): the delivery is
+    /// acked whatever the refresh of other works does.
+    Settled,
+    /// The lookup failed with this message: the delivery is retried by
+    /// itself.
+    Failed(String),
+}
+
+/// Writes the changes of a batch into the index: every work they touched
+/// is refreshed once.
+///
+/// Each change's lookup stands alone, so one that fails does not hold
+/// back the works the others found.
 ///
 /// # Returns
 ///
-/// How many documents were written.
-///
-/// # Errors
-///
-/// Returns [`SearchError::Busy`] when another writer holds the index, or
-/// the library or index error.
-async fn apply_change(
+/// Per change, in order, what its lookup came to ([`Lookup`]), and the
+/// outcome of refreshing the works the successful
+/// lookups found: how many documents were written, or
+/// [`SearchError::Busy`] when another writer holds the index, or the
+/// library or index error.
+async fn apply_changes(
     works: &WorkSearchIndex,
     library: &LibraryStore,
-    change: &Change,
-) -> bookclerk_search::Result<usize> {
-    let work = match change {
-        Change::Edition(edition_id) => library.work_of_edition(edition_id).await?,
-        Change::Listing(listing_id) => {
-            let work = library.work_of_listing(listing_id).await?;
-            if work.is_none() {
+    changes: &[&Change],
+) -> (Vec<Lookup>, bookclerk_search::Result<usize>) {
+    let mut touched = std::collections::BTreeSet::new();
+    let mut lookups = Vec::with_capacity(changes.len());
+    for change in changes {
+        let work = match change {
+            Change::Edition(edition_id) => library
+                .work_of_edition(edition_id)
+                .await
+                .map_err(SearchError::from),
+            Change::Listing(listing_id) => match library.work_of_listing(listing_id).await {
                 // The listing is gone, so the work it belonged to is
                 // unknown: rebuild instead.
-                works.mark_incomplete()?;
+                Ok(None) => works.mark_incomplete().map(|()| None),
+                found => found.map_err(SearchError::from),
+            },
+        };
+        match work {
+            Ok(Some(work)) => {
+                touched.insert(work);
+                lookups.push(Lookup::Work);
             }
-            work
+            Ok(None) => lookups.push(Lookup::Settled),
+            Err(err) => lookups.push(Lookup::Failed(err.to_string())),
         }
-    };
-    match work {
-        Some(work) => works.refresh_works(library, &[work]).await,
-        None => Ok(0),
     }
+    let refreshed = if touched.is_empty() {
+        Ok(0)
+    } else {
+        works
+            .refresh_works(library, &touched.into_iter().collect::<Vec<_>>())
+            .await
+    };
+    (lookups, refreshed)
 }
 
-/// Handles one claimed delivery for this node's search index consumer:
-/// refresh the documents the event touched, then ack; retry shortly when
-/// the index is busy; dead-letter a body this consumer cannot read.
+/// Most deliveries a search index consumer handles together: the claimed
+/// one and up to this many minus one more it claims while they are ready.
+const DRAIN_BATCH: u32 = 64;
+
+/// Lease length of the deliveries the consumer claims for a batch, as the
+/// delivery workers lease theirs.
+const DRAIN_LEASE_SECS: u64 = 60;
+
+/// Handles a claimed delivery for this node's search index consumer,
+/// together with the consumer's other deliveries that are ready now (up to
+/// [`DRAIN_BATCH`]): refreshes the documents they touched, each work once,
+/// then acks them; retries them shortly when the index is busy;
+/// dead-letters a body this consumer cannot read.
+///
+/// A podcast scan publishes an event per episode and a show's document
+/// reads every episode, so deliveries that queue up while one refresh runs
+/// are folded into the next (#989).
 ///
 /// # Arguments
 ///
 /// * `state` - Daemon state (for the index directory).
 /// * `library` - Open library store.
-/// * `event` - The delivered event.
+/// * `node_id` - This node's catalog id, for claiming more deliveries.
+/// * `event` - The claimed delivery's event.
 /// * `delivery` - The claimed delivery.
-pub async fn run_search_delivery(
+pub async fn run_search_deliveries(
     state: &AppState,
     library: &LibraryStore,
-    event: &DomainEventRecord,
-    delivery: &EventDeliveryRecord,
+    node_id: &str,
+    event: DomainEventRecord,
+    delivery: EventDeliveryRecord,
 ) {
-    let fence = delivery.fence();
-    let change = match parse_change(event) {
-        Ok(change) => change,
-        Err(reason) => {
-            warn!(event_id = %event.id, %reason, "search index consumer refused an event");
-            let _ = library.dead_letter_event_delivery(&fence, &reason).await;
-            return;
+    let consumer = [delivery.plugin_id.clone()];
+    let mut batch = vec![(event, delivery)];
+    let owner = format!("search-index-{}", uuid::Uuid::new_v4());
+    while batch.len() < usize::try_from(DRAIN_BATCH).unwrap_or(usize::MAX) {
+        let claimed = library
+            .lease_next_event_delivery(
+                &owner,
+                DRAIN_LEASE_SECS,
+                &uuid::Uuid::new_v4().to_string(),
+                &consumer,
+                DRAIN_BATCH,
+                node_id,
+            )
+            .await;
+        let delivery = match claimed {
+            Ok(Some(delivery)) => delivery,
+            Ok(None) => break,
+            Err(err) => {
+                debug!(error = %err, "search index consumer stopped claiming more deliveries");
+                break;
+            }
+        };
+        match library.get_domain_event(&delivery.event_id).await {
+            Ok(Some(event)) => batch.push((event, delivery)),
+            Ok(None) => {
+                let _ = library
+                    .dead_letter_event_delivery(&delivery.fence(), "parent event missing")
+                    .await;
+            }
+            Err(err) => {
+                // Let the lease lapse; the delivery comes back.
+                warn!(delivery_id = %delivery.id, error = %err, "could not read a delivery's event");
+                break;
+            }
         }
-    };
+    }
+    run_search_batch(state, library, &batch).await;
+}
+
+/// Writes a batch of claimed deliveries into this node's index, then acks,
+/// retries or dead-letters each delivery.
+///
+/// # Arguments
+///
+/// * `state` - Daemon state (for the index directory).
+/// * `library` - Open library store.
+/// * `batch` - Claimed deliveries with their events.
+pub(crate) async fn run_search_batch(
+    state: &AppState,
+    library: &LibraryStore,
+    batch: &[(DomainEventRecord, EventDeliveryRecord)],
+) {
+    let mut readable = Vec::with_capacity(batch.len());
+    for (event, delivery) in batch {
+        match parse_change(event) {
+            Ok(change) => readable.push((event, delivery, change)),
+            Err(reason) => {
+                warn!(event_id = %event.id, %reason, "search index consumer refused an event");
+                let _ = library
+                    .dead_letter_event_delivery(&delivery.fence(), &reason)
+                    .await;
+            }
+        }
+    }
+    if readable.is_empty() {
+        return;
+    }
+    let changes: Vec<&Change> = readable.iter().map(|(_, _, change)| change).collect();
     let dir = state.config.read().await.paths().search_index_dir.clone();
     let gate = write_gate(&dir);
-    let outcome = match gate.try_lock() {
-        Err(_) => Err(SearchError::Busy),
+    let (lookups, outcome) = match gate.try_lock() {
+        Err(_) => (Vec::new(), Err(SearchError::Busy)),
         Ok(_gate) => match WorkSearchIndex::open(&dir) {
-            Ok(works) => apply_change(&works, library, &change).await,
-            Err(err) => Err(err),
+            Ok(works) => apply_changes(&works, library, &changes).await,
+            Err(err) => (Vec::new(), Err(err)),
         },
     };
-    let result = match outcome {
-        Ok(written) => {
-            debug!(event_id = %event.id, ?change, written, "search index refreshed");
-            library.ack_event_delivery(&fence).await
+    for (i, (event, delivery, change)) in readable.iter().enumerate() {
+        let fence = delivery.fence();
+        // No lookup ran when the index could not be opened for writing:
+        // the refresh outcome decides every delivery.
+        let lookup = lookups.get(i).unwrap_or(&Lookup::Work);
+        let result = match (lookup, &outcome) {
+            (Lookup::Failed(err), _) => {
+                warn!(event_id = %event.id, error = %err, "search index lookup failed");
+                library.fail_event_delivery(&fence, err).await
+            }
+            (Lookup::Settled, _) => {
+                debug!(event_id = %event.id, ?change, "search index change left nothing to refresh");
+                library.ack_event_delivery(&fence).await
+            }
+            (Lookup::Work, Ok(written)) => {
+                debug!(event_id = %event.id, ?change, written, "search index refreshed");
+                library.ack_event_delivery(&fence).await
+            }
+            (Lookup::Work, Err(SearchError::Busy)) => {
+                let run_after = chrono::Duration::from_std(BUSY_RETRY)
+                    .map(|d| Utc::now() + d)
+                    .unwrap_or_else(|_| Utc::now());
+                library
+                    .retry_event_delivery(
+                        &fence,
+                        run_after,
+                        "search index busy with another writer",
+                    )
+                    .await
+            }
+            (Lookup::Work, Err(err)) => {
+                warn!(event_id = %event.id, error = %err, "search index refresh failed");
+                library.fail_event_delivery(&fence, &err.to_string()).await
+            }
+        };
+        if let Err(err) = result {
+            warn!(delivery_id = %delivery.id, error = %err, "search index delivery update failed");
         }
-        Err(SearchError::Busy) => {
-            let run_after = chrono::Duration::from_std(BUSY_RETRY)
-                .map(|d| Utc::now() + d)
-                .unwrap_or_else(|_| Utc::now());
-            library
-                .retry_event_delivery(&fence, run_after, "search index busy with another writer")
-                .await
-        }
-        Err(err) => {
-            warn!(event_id = %event.id, error = %err, "search index refresh failed");
-            library.fail_event_delivery(&fence, &err.to_string()).await
-        }
-    };
-    if let Err(err) = result {
-        warn!(delivery_id = %delivery.id, error = %err, "search index delivery update failed");
     }
 }
 
@@ -497,7 +625,7 @@ mod tests {
                 .await
                 .expect("claim")
                 .expect("a delivery");
-            run_search_delivery(state, library, &event, &delivery).await;
+            run_search_batch(state, library, &[(event.clone(), delivery.clone())]).await;
             let after = library
                 .get_event_delivery(&delivery.id)
                 .await
@@ -547,10 +675,10 @@ mod tests {
         );
         works.rebuild(&library).await.expect("works rebuild");
         assert!(WorkSearchIndex::is_complete(&works_dir));
-        let written = apply_change(&works, &library, &parse_change(&gone).expect("parse"))
-            .await
-            .expect("apply");
-        assert_eq!(written, 0);
+        let (lookups, written) =
+            apply_changes(&works, &library, &[&parse_change(&gone).expect("parse")]).await;
+        assert_eq!(lookups, [Lookup::Settled]);
+        assert_eq!(written.expect("apply"), 0);
         assert!(!WorkSearchIndex::is_complete(&works_dir));
     }
 
@@ -595,7 +723,7 @@ mod tests {
         {
             let gate = write_gate(&dir);
             let _held = gate.lock().await;
-            run_search_delivery(&state, &library, &event, &delivery).await;
+            run_search_batch(&state, &library, &[(event.clone(), delivery.clone())]).await;
         }
         let row = library
             .get_event_delivery(&delivery.id)
@@ -611,7 +739,7 @@ mod tests {
             .await
             .expect("read")
             .expect("row");
-        run_search_delivery(&state, &library, &bogus, &delivery).await;
+        run_search_batch(&state, &library, &[(bogus.clone(), delivery.clone())]).await;
         let row = library
             .get_event_delivery(&delivery.id)
             .await
