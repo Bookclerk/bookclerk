@@ -999,7 +999,7 @@ impl LibraryStore {
     /// everywhere and spends the link, all in one atomic batch.
     ///
     /// The first statement claims the link: it marks the row with
-    /// [`RESET_CLAIM`] only while the link is unexpired, is for `user_id`,
+    /// a claim marker (`RESET_CLAIM`) only while the link is unexpired, is for `user_id`,
     /// still names the account's verified address, the account is not
     /// disabled, and its second factor is still `factor`. Every later
     /// write is guarded only by that claim, and the claimed row is deleted
