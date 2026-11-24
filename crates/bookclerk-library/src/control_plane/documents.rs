@@ -6,10 +6,13 @@
 //!
 //! A body wider than one piece the database plugin carries (the smallest of
 //! its cell, statement and result limits) is stored in
-//! `configuration_document_parts` pieces under the write's operation id,
-//! written before the batch that commits the document. The document row
-//! then names that operation and its piece count, and the same batch drops
-//! every piece the row does not name.
+//! `configuration_document_parts` pieces under a set id unique to the write,
+//! written before the batch that commits the document. That batch commits
+//! only while every staged piece is still there; the document row then
+//! names the set and its piece count, and the batch drops the set the row
+//! replaced and, when it lost, the set it staged, each only while no row
+//! names it. A write whose batch fails drops its staged set the same
+//! guarded way.
 
 use crate::EntityKind;
 use bookclerk_plugin_abi::TypedDbStatement;
@@ -586,13 +589,17 @@ pub async fn import_if_absent(
     let body = stored_body(store, key, document_json, operation_id);
     let (inline, parts, parts_id) = (body.inline.clone(), body.parts, body.parts_id.clone());
     write_parts(store, key, body).await?;
+    pause_after_staging(operation_id).await;
     let now = Utc::now().to_rfc3339();
     let mut statements = vec![
                 exec(
                     "INSERT OR IGNORE INTO configuration_documents (
                     scope_type, scope_id, namespace, schema_version, revision,
                     document_json, document_parts, updated_at, updated_by, write_operation_id
-                ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)",
+                ) SELECT ?, ?, ?, ?, 1, ?, ?, ?, ?, ?
+                   WHERE (SELECT COUNT(*) FROM configuration_document_parts
+                           WHERE scope_type = ? AND scope_id = ? AND namespace = ?
+                             AND parts_id = ?) = ?",
                     vec![
                         text(&key.scope_type),
                         text(&key.scope_id),
@@ -603,6 +610,11 @@ pub async fn import_if_absent(
                         text(&now),
                         text(actor.audit_id()),
                         text(operation_id),
+                        text(&key.scope_type),
+                        text(&key.scope_id),
+                        text(&key.namespace),
+                        text(parts_id.as_deref().unwrap_or_default()),
+                        int(parts),
                     ],
                 ),
                 exec(
@@ -760,7 +772,10 @@ pub async fn replace_document(
                        AND revision = ? AND schema_version = ?
                        AND NOT EXISTS (
                             SELECT 1 FROM bookclerk_receipts WHERE operation_id = ?
-                       )",
+                       )
+                       AND (SELECT COUNT(*) FROM configuration_document_parts
+                             WHERE scope_type = ? AND scope_id = ? AND namespace = ?
+                               AND parts_id = ?) = ?",
                     vec![
                         int(schema_version),
                         text(&inline),
@@ -774,6 +789,11 @@ pub async fn replace_document(
                         int(expected_revision),
                         int(schema_version),
                         text(operation_id),
+                        text(&key.scope_type),
+                        text(&key.scope_id),
+                        text(&key.namespace),
+                        text(parts_id.as_deref().unwrap_or_default()),
+                        int(parts),
                     ],
                 ),
                 exec(
@@ -1003,7 +1023,7 @@ async fn pause_after_empty_receipt_lookup(operation_id: &str) {
 #[cfg(not(test))]
 async fn pause_after_empty_receipt_lookup(_operation_id: &str) {}
 
-/// Test barrier between staging a replacement's pieces and the swap that
+/// Test barrier between staging a write's pieces and the swap that
 /// names them.
 ///
 /// Production builds do nothing. Tests arm it so another write can commit
@@ -1011,15 +1031,11 @@ async fn pause_after_empty_receipt_lookup(_operation_id: &str) {}
 #[cfg(test)]
 async fn pause_after_staging(operation_id: &str) {
     let pause = {
-        let mut slot = STAGED_PAUSE.lock().await;
-        if slot
-            .as_ref()
-            .is_some_and(|pause| pause.operation_id == operation_id)
-        {
-            slot.take()
-        } else {
-            None
-        }
+        let mut armed = STAGED_PAUSES.lock().await;
+        armed
+            .iter()
+            .position(|pause| pause.operation_id == operation_id)
+            .map(|at| armed.swap_remove(at))
     };
     if let Some(pause) = pause {
         let _ = pause.arrived.send(());
@@ -1052,16 +1068,17 @@ pub(crate) async fn arm_empty_receipt_pause(pause: EmptyReceiptPause) {
     *EMPTY_RECEIPT_PAUSE.lock().await = Some(pause);
 }
 
-/// The armed pause between staging a replacement's pieces and its swap.
+/// The armed pauses between staging a write's pieces and its swap, one per
+/// operation id, so tests running at once do not take each other's.
 #[cfg(test)]
-static STAGED_PAUSE: tokio::sync::Mutex<Option<EmptyReceiptPause>> =
-    tokio::sync::Mutex::const_new(None);
+static STAGED_PAUSES: tokio::sync::Mutex<Vec<EmptyReceiptPause>> =
+    tokio::sync::Mutex::const_new(Vec::new());
 
-/// Arms the replacement named by `pause.operation_id` to pause after it
+/// Arms the import or replacement named by `pause.operation_id` to pause after it
 /// stages its pieces, until `release` completes.
 #[cfg(test)]
 pub(crate) async fn arm_staged_pause(pause: EmptyReceiptPause) {
-    *STAGED_PAUSE.lock().await = Some(pause);
+    STAGED_PAUSES.lock().await.push(pause);
 }
 
 /// Resolves a prior receipt before a new compare-and-swap.
@@ -1369,7 +1386,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_replacement_that_loses_after_staging_keeps_the_winners_pieces() {
+    async fn a_replacement_that_loses_after_staging_keeps_other_writers_pieces() {
         for profile in Profile::ALL {
             let name = format!("{profile:?}");
             let store = sqlite::memory(profile).await.into_store();
@@ -1386,7 +1403,7 @@ mod tests {
             let (arrived_tx, arrived_rx) = tokio::sync::oneshot::channel();
             let (release_tx, release_rx) = tokio::sync::oneshot::channel();
             arm_staged_pause(EmptyReceiptPause {
-                operation_id: "op-lost".into(),
+                operation_id: "op-race-lost".into(),
                 arrived: arrived_tx,
                 release: release_rx,
             })
@@ -1401,7 +1418,7 @@ mod tests {
                     1,
                     1,
                     &losing,
-                    "op-lost",
+                    "op-race-lost",
                 )
                 .await
             });
@@ -1409,10 +1426,30 @@ mod tests {
                 .await
                 .expect("the losing write stages its pieces");
             // Another write commits revision 2 meanwhile.
-            let won = replace_document(&store, &operator(), &key, 1, 1, &winning, "op-won")
+            let won = replace_document(&store, &operator(), &key, 1, 1, &winning, "op-race-won")
                 .await
                 .unwrap();
             assert!(matches!(won, ReplaceOutcome::Applied(_)), "{name}: {won:?}");
+            // A third write reads revision 2 and stages its pieces before the
+            // losing write cleans up.
+            let third_body = wide_document(width.saturating_mul(3).min(8_000) + 19);
+            let (third_arrived_tx, third_arrived_rx) = tokio::sync::oneshot::channel();
+            let (third_release_tx, third_release_rx) = tokio::sync::oneshot::channel();
+            arm_staged_pause(EmptyReceiptPause {
+                operation_id: "op-race-third".into(),
+                arrived: third_arrived_tx,
+                release: third_release_rx,
+            })
+            .await;
+            let third = {
+                let (store, key, body) = (store.clone(), key.clone(), third_body.clone());
+                tokio::spawn(async move {
+                    replace_document(&store, &operator(), &key, 1, 2, &body, "op-race-third").await
+                })
+            };
+            third_arrived_rx
+                .await
+                .expect("the third write stages its pieces");
             release_tx.send(()).expect("release the losing write");
             let lost = loser.await.unwrap().unwrap();
             assert!(
@@ -1424,19 +1461,30 @@ mod tests {
                 ),
                 "{name}: {lost:?}"
             );
-            // The winner reads back whole; only its pieces remain.
+            // The winner reads back whole.
             let loaded = load_document(&store, &key).await.unwrap().unwrap();
             assert_eq!(loaded.revision, 2, "{name}");
             assert_eq!(loaded.document_json, winning, "{name}");
+            // The third write's staged pieces outlived the loser's clean-up:
+            // it commits and reads back whole, and only its pieces remain.
+            third_release_tx.send(()).expect("release the third write");
+            let applied = third.await.unwrap().unwrap();
+            assert!(
+                matches!(applied, ReplaceOutcome::Applied(_)),
+                "{name}: {applied:?}"
+            );
+            let loaded = load_document(&store, &key).await.unwrap().unwrap();
+            assert_eq!(loaded.revision, 3, "{name}");
+            assert_eq!(loaded.document_json, third_body, "{name}");
             let sets: std::collections::BTreeSet<String> = pieces(&store, &key)
                 .await
                 .into_iter()
                 .map(|piece| piece.parts_id)
                 .collect();
-            if winning.len() > width {
+            if third_body.len() > width {
                 assert_eq!(sets.len(), 1, "{name}: {sets:?}");
                 assert!(
-                    sets.iter().all(|id| id.starts_with("op-won:")),
+                    sets.iter().all(|id| id.starts_with("op-race-third:")),
                     "{name}: {sets:?}"
                 );
             } else {
@@ -1537,6 +1585,93 @@ mod tests {
                     assert!(sets.is_empty(), "{name}: {sets:?}");
                 }
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_write_whose_pieces_vanished_before_its_swap_names_nothing() {
+        for profile in Profile::ALL {
+            let name = format!("{profile:?}");
+            let store = sqlite::memory(profile).await.into_store();
+            let key = DocumentKey::library("test.wide");
+            let width = super::super::chunk_bytes(store.db_capabilities());
+            let wide = wide_document(width.saturating_mul(3).min(8_000));
+            if wide.len() <= width {
+                continue;
+            }
+            // Each write's staged pieces are dropped while it is paused before
+            // its swap, as a clean-up that ran ahead of a late swap would.
+            let paused = |operation_id: &str| {
+                let (arrived_tx, arrived_rx) = tokio::sync::oneshot::channel();
+                let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+                let pause = EmptyReceiptPause {
+                    operation_id: operation_id.into(),
+                    arrived: arrived_tx,
+                    release: release_rx,
+                };
+                (pause, arrived_rx, release_tx)
+            };
+            let drop_staged = |prefix: &'static str| {
+                let store = store.clone();
+                async move {
+                    uncapped(
+                        configuration_document_parts::Entity::delete_many()
+                            .filter(
+                                configuration_document_parts::Column::PartsId.starts_with(prefix),
+                            )
+                            .exec(store.db()),
+                    )
+                    .await
+                    .unwrap();
+                }
+            };
+
+            let (pause, arrived, release) = paused("op-vanish-import");
+            arm_staged_pause(pause).await;
+            let writer = {
+                let (store, key, wide) = (store.clone(), key.clone(), wide.clone());
+                tokio::spawn(async move {
+                    import_if_absent(&store, &operator(), &key, 1, &wide, "op-vanish-import").await
+                })
+            };
+            arrived.await.expect("the import stages its pieces");
+            drop_staged("op-vanish-import:").await;
+            release.send(()).expect("release the import");
+            assert!(writer.await.unwrap().is_err(), "{name}");
+            assert!(
+                load_document(&store, &key).await.unwrap().is_none(),
+                "{name}"
+            );
+
+            import_if_absent(&store, &operator(), &key, 1, &wide, "op-import-2")
+                .await
+                .unwrap();
+            let (pause, arrived, release) = paused("op-vanish-replace");
+            arm_staged_pause(pause).await;
+            let writer = {
+                let (store, key) = (store.clone(), key.clone());
+                let wider = wide_document(width.saturating_mul(3).min(8_000) + 5);
+                tokio::spawn(async move {
+                    replace_document(&store, &operator(), &key, 1, 1, &wider, "op-vanish-replace")
+                        .await
+                })
+            };
+            arrived.await.expect("the replacement stages its pieces");
+            drop_staged("op-vanish-replace:").await;
+            release.send(()).expect("release the replacement");
+            let outcome = writer.await.unwrap().unwrap();
+            assert!(
+                matches!(
+                    outcome,
+                    ReplaceOutcome::Conflict {
+                        current_revision: 1
+                    }
+                ),
+                "{name}: {outcome:?}"
+            );
+            let loaded = load_document(&store, &key).await.unwrap().unwrap();
+            assert_eq!(loaded.revision, 1, "{name}");
+            assert_eq!(loaded.document_json, wide, "{name}");
         }
     }
 

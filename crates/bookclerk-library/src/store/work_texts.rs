@@ -7,11 +7,15 @@
 //! reply. Its own column then holds an empty string, and the row's
 //! `text_version` names the pieces. Writes stage the pieces under a new
 //! version first, then change the row with a compare-and-swap on its
-//! `updated_at` and `text_version`. The same batch drops the version the
-//! row replaced and, when the swap lost, the version it staged, each only
-//! while no row names it. Pieces of a named version are never dropped, so
-//! a row never names pieces that are gone, and a write that loses never
-//! touches another writer's staged pieces. Readers join the pieces again
+//! `updated_at` and `text_version` that also requires every staged piece
+//! to still be there. The same batch drops the version the row replaced
+//! and, when the swap lost, the version it staged, each only while no row
+//! names it; a write whose swap fails drops its staged version the same
+//! guarded way. Pieces of a named version are never dropped and a swap
+//! never names a version missing pieces, so a row never names pieces that
+//! are gone, even when a swap the caller gave up on lands after the
+//! clean-up, and a write that loses never touches another writer's staged
+//! pieces. Readers join the pieces again
 //! with [`LibraryStore::complete_work_texts`] and accept them only while
 //! the row still names their version.
 //!
@@ -118,9 +122,13 @@ struct Placed {
 
 /// The swap that names a work's new texts, only over the row the write
 /// read.
+///
+/// It names the new version only while all its pieces are stored, so a swap
+/// that lands after its own clean-up changes nothing.
 const PUBLISH_SQL: &str = "UPDATE works SET description = ?, subjects = ?, categories = ?, \
      cover_url = ?, text_version = ?, updated_at = ? \
-     WHERE id = ? AND updated_at = ? AND COALESCE(text_version, '') = ?";
+     WHERE id = ? AND updated_at = ? AND COALESCE(text_version, '') = ? \
+     AND (SELECT COUNT(*) FROM work_text_parts WHERE work_id = ? AND version = ?) = ?";
 
 /// Room in the publication batch for the statement that drops unnamed
 /// versions: its SQL and its binds.
@@ -320,6 +328,7 @@ impl LibraryStore {
         let placed = self.place_work_texts(row, texts);
         let mut batches = WriteBatches::new(self.db_capabilities(), "work text piece");
         let mut staged = Vec::new();
+        let pieces = placed.inserts.len();
         for insert in placed.inserts {
             staged.extend(batches.push(insert)?);
         }
@@ -356,6 +365,9 @@ impl LibraryStore {
                 batch::text(&row.id),
                 batch::text(&row.updated_at),
                 batch::text(row.text_version.as_deref().unwrap_or_default()),
+                batch::text(&row.id),
+                batch::text(placed.version.as_deref().unwrap_or_default()),
+                batch::int(i64::try_from(pieces).unwrap_or(i64::MAX)),
             ],
         )];
         let versions: Vec<&str> = [row.text_version.as_deref(), placed.version.as_deref()]
@@ -893,6 +905,49 @@ mod tests {
             assert_eq!(work.categories, texts.categories, "{name}");
             let listed = store.list_works_page(None, 10).await.unwrap();
             assert_eq!(listed.len(), 1, "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_swap_never_names_a_version_missing_pieces() {
+        for profile in Profile::ALL {
+            let name = format!("{profile:?}");
+            let (store, work_id) = one_work(profile).await;
+            let row = uncapped(works::Entity::find_by_id(work_id.clone()).one(store.db()))
+                .await
+                .unwrap()
+                .unwrap();
+            // A swap that lands after its own clean-up dropped its pieces.
+            let reply = store
+                .execute_host_batch(batch::request(
+                    "work-texts-late",
+                    vec![batch::exec(
+                        PUBLISH_SQL,
+                        vec![
+                            batch::text(""),
+                            batch::text_opt(None),
+                            batch::text_opt(None),
+                            batch::text_opt(None),
+                            batch::text("gone"),
+                            batch::text(&now_str()),
+                            batch::text(&row.id),
+                            batch::text(&row.updated_at),
+                            batch::text(""),
+                            batch::text(&row.id),
+                            batch::text("gone"),
+                            batch::int(2),
+                        ],
+                    )],
+                ))
+                .await
+                .unwrap();
+            assert_eq!(batch::rows_affected(&reply, 0), 0, "{name}");
+            let after = uncapped(works::Entity::find_by_id(work_id.clone()).one(store.db()))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(after.text_version.is_none(), "{name}");
+            assert!(store.get_work(&work_id).await.is_ok(), "{name}");
         }
     }
 

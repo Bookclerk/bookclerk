@@ -859,9 +859,11 @@ the database plugin carries (the smallest of its cell, statement and
 result limits) is stored in `configuration_document_parts` pieces under a
 set id unique to the write that staged them. The document row's
 `document_json` then holds that set id, and `document_parts` its piece
-count. A write drops only the set it replaced and, when it did not commit,
-its own set, and only while no row names it, so it never removes pieces
-another write is still staging.
+count. A write commits only while every piece it staged is still stored.
+It drops only the set it replaced and, when it did not commit, its own
+set, and only while no row names it, so it never removes pieces another
+write is still staging. Work texts in `work_text_parts` follow the same
+rules.
 
 `patron_controls` holds the member controls an Administrator set for one
 Member, as JSON naming only the controls that differ from the library's
