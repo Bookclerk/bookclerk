@@ -108,6 +108,42 @@ fn introduces_bookclerk(message: &NotificationMessage) -> bool {
     message.notification_type == INVITE_TYPE
 }
 
+/// The field an invite names the Administrator who sent it in.
+pub const INVITED_BY_FIELD: &str = "Invited by";
+
+/// The message as this sender words it. An invite's subject names the
+/// library by the From name (`Alex has invited you to Riverside Library`)
+/// instead of the host's generic `a Bookclerk library`, and its
+/// `Invited by` field is left out because the subject already names them.
+/// Every other message is returned as it is.
+///
+/// # Arguments
+///
+/// * `message` - The rendered message.
+/// * `sender` - The From name, which names the library.
+#[must_use]
+pub fn worded_for(message: &NotificationMessage, sender: &str) -> NotificationMessage {
+    let mut worded = message.clone();
+    if !introduces_bookclerk(message) {
+        return worded;
+    }
+    let inviter = message
+        .fields
+        .iter()
+        .find(|field| field.name == INVITED_BY_FIELD)
+        .map(|field| field.value.trim().to_owned())
+        .filter(|name| !name.is_empty());
+    worded.fields.retain(|field| field.name != INVITED_BY_FIELD);
+    if names_library(sender) {
+        let library = sender.trim();
+        worded.title = match inviter {
+            Some(name) => format!("{name} has invited you to {library}"),
+            None => format!("You're invited to {library}"),
+        };
+    }
+    worded
+}
+
 /// The introduction's heading, for recipients who may not know Bookclerk.
 pub const INTRO_TITLE: &str = "New to Bookclerk?";
 
@@ -493,6 +529,7 @@ pub fn html_body(message: &NotificationMessage, sender: &str) -> (String, bool) 
 /// The message, ready for DATA (before dot-stuffing).
 #[must_use]
 pub fn compose(message: &NotificationMessage, envelope: &Envelope<'_>) -> String {
+    let message = &worded_for(message, envelope.from_name);
     let text = plain_body(message, envelope.from_name);
     let (html, branded) = html_body(message, envelope.from_name);
     let logo = [InlineImage {

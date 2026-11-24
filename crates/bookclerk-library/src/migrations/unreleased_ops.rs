@@ -2380,7 +2380,9 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // One row per account-mail message and its delivery. The link's token
     // is minted by the send job when it sends and only its hash is kept
     // (in `claim_tickets` or `email_verifications`), so no link is stored
-    // here or anywhere else.
+    // here or anywhere else. `requested_by` is the Administrator who asked
+    // for an invite, named in its subject; empty when the library sent it
+    // on its own or that account is gone.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS account_mail (
         id TEXT PRIMARY KEY NOT NULL,
@@ -2392,6 +2394,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         attempts INTEGER NOT NULL DEFAULT 0,
         reason TEXT,
         job_id TEXT,
+        requested_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
     )",
