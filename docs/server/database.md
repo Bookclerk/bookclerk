@@ -862,8 +862,9 @@ set id unique to the write that staged them. The document row's
 count. A write commits only while every piece it staged is still stored.
 It drops only the set it replaced and, when it did not commit, its own
 set, and only while no row names it, so it never removes pieces another
-write is still staging. Work texts in `work_text_parts` follow the same
-rules.
+write is still staging. Each write and each clean-up first locks the
+pieces of the sets it decides on, so two that overlap see each other's
+outcome. Work texts in `work_text_parts` follow the same rules.
 
 `patron_controls` holds the member controls an Administrator set for one
 Member, as JSON naming only the controls that differ from the library's

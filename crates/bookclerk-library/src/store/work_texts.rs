@@ -353,7 +353,14 @@ impl LibraryStore {
             )
         };
         let operation_id = format!("work-texts-{}", uuid::Uuid::new_v4());
-        let mut statements = vec![batch::exec(
+        let mut statements: Vec<TypedDbStatement> = lock_versions(
+            &row.id,
+            &placed.version.as_deref().into_iter().collect::<Vec<_>>(),
+        )
+        .into_iter()
+        .collect();
+        let swap_at = statements.len();
+        statements.push(batch::exec(
             PUBLISH_SQL,
             vec![
                 column(TextField::Description),
@@ -369,7 +376,7 @@ impl LibraryStore {
                 batch::text(placed.version.as_deref().unwrap_or_default()),
                 batch::int(i64::try_from(pieces).unwrap_or(i64::MAX)),
             ],
-        )];
+        ));
         let versions: Vec<&str> = [row.text_version.as_deref(), placed.version.as_deref()]
             .into_iter()
             .flatten()
@@ -379,7 +386,7 @@ impl LibraryStore {
             .execute_host_batch(batch::request(&operation_id, statements))
             .await
         {
-            Ok(reply) => Ok(batch::rows_affected(&reply, 0) > 0),
+            Ok(reply) => Ok(batch::rows_affected(&reply, swap_at) > 0),
             Err(err) => {
                 // The publication either never applied or applied with its
                 // reply lost; the guarded drop keeps the version only in the
@@ -408,9 +415,7 @@ impl LibraryStore {
         let _ = self
             .execute_host_batch(batch::request(
                 &operation_id,
-                drop_unnamed_versions(&row.id, &[version])
-                    .into_iter()
-                    .collect(),
+                drop_unnamed_versions(&row.id, &[version]),
             ))
             .await;
     }
@@ -516,20 +521,53 @@ impl LibraryStore {
 ///
 /// # Returns
 ///
-/// `None` when there is no version to drop.
-fn drop_unnamed_versions(work_id: &str, versions: &[&str]) -> Option<TypedDbStatement> {
+/// The statements that lock the versions' pieces and then drop the unnamed
+/// ones; none when there is no version to drop.
+fn drop_unnamed_versions(work_id: &str, versions: &[&str]) -> Vec<TypedDbStatement> {
+    let Some(lock) = lock_versions(work_id, versions) else {
+        return Vec::new();
+    };
+    let mut binds = vec![batch::text(work_id)];
+    binds.extend(versions.iter().map(|version| batch::text(version)));
+    binds.push(batch::text(work_id));
+    let marks = vec!["?"; versions.len()].join(", ");
+    vec![
+        lock,
+        batch::exec(
+            &format!(
+                "DELETE FROM work_text_parts WHERE work_id = ? AND version IN ({marks}) \
+                 AND version NOT IN \
+                 (SELECT text_version FROM works WHERE id = ? AND text_version IS NOT NULL)"
+            ),
+            binds,
+        ),
+    ]
+}
+
+/// Locks the pieces of `versions` for the rest of the batch, so a swap
+/// naming one of them and a drop of it never overlap.
+///
+/// The swap and the drop each take these locks in a statement of their own
+/// before the statement that decides, so on an engine that reads each
+/// statement as of its start (PostgreSQL at `READ COMMITTED`) the deciding
+/// statement starts after the other batch committed and sees its outcome:
+/// a drop that went first leaves the swap counting missing pieces, and a
+/// swap that went first leaves the drop seeing the row name its version.
+///
+/// # Returns
+///
+/// `None` when there is no version to lock.
+fn lock_versions(work_id: &str, versions: &[&str]) -> Option<TypedDbStatement> {
     if versions.is_empty() {
         return None;
     }
     let mut binds = vec![batch::text(work_id)];
     binds.extend(versions.iter().map(|version| batch::text(version)));
-    binds.push(batch::text(work_id));
     let marks = vec!["?"; versions.len()].join(", ");
     Some(batch::exec(
         &format!(
-            "DELETE FROM work_text_parts WHERE work_id = ? AND version IN ({marks}) \
-             AND version NOT IN \
-             (SELECT text_version FROM works WHERE id = ? AND text_version IS NOT NULL)"
+            "UPDATE work_text_parts SET body = body \
+             WHERE work_id = ? AND version IN ({marks})"
         ),
         binds,
     ))

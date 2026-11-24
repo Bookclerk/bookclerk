@@ -113,8 +113,8 @@ pub struct ProfileExec {
     lose_replies: Mutex<u32>,
     /// Batches still to be refused as lock contention.
     lock_requests: Mutex<u32>,
-    /// When set, armed faults reach only batches whose first statement's
-    /// SQL starts with this text; other batches pass untouched.
+    /// When set, armed faults reach only batches with a statement whose SQL
+    /// starts with this text; other batches pass untouched.
     fault_target: Mutex<Option<String>>,
 }
 
@@ -151,8 +151,8 @@ impl ProfileExec {
         *Self::counter(&self.lock_requests) = n;
     }
 
-    /// Aims armed faults at batches whose first statement's SQL starts
-    /// with `prefix`, or at every batch when `None`.
+    /// Aims armed faults at batches with a statement whose SQL starts with
+    /// `prefix`, or at every batch when `None`.
     pub fn aim_faults_at(&self, prefix: Option<&str>) {
         *self.fault_target.lock().unwrap_or_else(|e| e.into_inner()) = prefix.map(str::to_owned);
     }
@@ -163,8 +163,8 @@ impl ProfileExec {
         target.as_deref().is_none_or(|prefix| {
             request
                 .statements
-                .first()
-                .is_some_and(|statement| statement.sql.starts_with(prefix))
+                .iter()
+                .any(|statement| statement.sql.starts_with(prefix))
         })
     }
 
@@ -480,7 +480,7 @@ impl ProfileStore {
         self.exec.lock_next_requests(n);
     }
 
-    /// Aims the armed faults at batches whose first statement's SQL starts
+    /// Aims the armed faults at batches with a statement whose SQL starts
     /// with `prefix`, so a test can fail one step of a multi-batch write;
     /// `None` aims them at every batch again.
     pub fn aim_faults_at(&self, prefix: Option<&str>) {

@@ -518,10 +518,8 @@ async fn drop_staged_parts(store: &LibraryStore, key: &DocumentKey, parts_id: Op
     let Some(parts_id) = parts_id else {
         return;
     };
-    if let Some(drop) = drop_unnamed_parts(key, &[parts_id]) {
-        let _ = batch::execute_host_batch(store, request(&format!("{parts_id}:drop"), vec![drop]))
-            .await;
-    }
+    let drop = drop_unnamed_parts(key, &[parts_id]);
+    let _ = batch::execute_host_batch(store, request(&format!("{parts_id}:drop"), drop)).await;
 }
 
 /// Drops the pieces of `key`'s document in the sets `parts_ids` that its
@@ -531,11 +529,12 @@ async fn drop_staged_parts(store: &LibraryStore, key: &DocumentKey, parts_id: Op
 ///
 /// # Returns
 ///
-/// `None` when there is no set to drop.
-fn drop_unnamed_parts(key: &DocumentKey, parts_ids: &[&str]) -> Option<TypedDbStatement> {
-    if parts_ids.is_empty() {
-        return None;
-    }
+/// The statements that lock the sets' pieces and then drop the unnamed
+/// ones; none when there is no set to drop.
+fn drop_unnamed_parts(key: &DocumentKey, parts_ids: &[&str]) -> Vec<TypedDbStatement> {
+    let Some(lock) = lock_parts(key, parts_ids) else {
+        return Vec::new();
+    };
     let mut binds = vec![
         text(&key.scope_type),
         text(&key.scope_id),
@@ -548,7 +547,7 @@ fn drop_unnamed_parts(key: &DocumentKey, parts_ids: &[&str]) -> Option<TypedDbSt
         text(&key.namespace),
     ]);
     let marks = vec!["?"; parts_ids.len()].join(", ");
-    Some(exec(
+    let drop = exec(
         &format!(
             "DELETE FROM configuration_document_parts
               WHERE scope_type = ? AND scope_id = ? AND namespace = ?
@@ -558,6 +557,41 @@ fn drop_unnamed_parts(key: &DocumentKey, parts_ids: &[&str]) -> Option<TypedDbSt
                      WHERE scope_type = ? AND scope_id = ? AND namespace = ?
                        AND document_parts > 0
                 )"
+        ),
+        binds,
+    );
+    vec![lock, drop]
+}
+
+/// Locks the pieces of `key`'s sets `parts_ids` for the rest of the batch,
+/// so a write naming one of them and a drop of it never overlap.
+///
+/// The write and the drop each take these locks in a statement of their own
+/// before the statement that decides, so on an engine that reads each
+/// statement as of its start (PostgreSQL at `READ COMMITTED`) the deciding
+/// statement starts after the other batch committed and sees its outcome:
+/// a drop that went first leaves the write counting missing pieces, and a
+/// write that went first leaves the drop seeing the row name its set.
+///
+/// # Returns
+///
+/// `None` when there is no set to lock.
+fn lock_parts(key: &DocumentKey, parts_ids: &[&str]) -> Option<TypedDbStatement> {
+    if parts_ids.is_empty() {
+        return None;
+    }
+    let mut binds = vec![
+        text(&key.scope_type),
+        text(&key.scope_id),
+        text(&key.namespace),
+    ];
+    binds.extend(parts_ids.iter().map(|id| text(id)));
+    let marks = vec!["?"; parts_ids.len()].join(", ");
+    Some(exec(
+        &format!(
+            "UPDATE configuration_document_parts SET body = body
+              WHERE scope_type = ? AND scope_id = ? AND namespace = ?
+                AND parts_id IN ({marks})"
         ),
         binds,
     ))
@@ -591,7 +625,12 @@ pub async fn import_if_absent(
     write_parts(store, key, body).await?;
     pause_after_staging(operation_id).await;
     let now = Utc::now().to_rfc3339();
-    let mut statements = vec![
+    let lock: Vec<TypedDbStatement> =
+        lock_parts(key, &parts_id.as_deref().into_iter().collect::<Vec<_>>())
+            .into_iter()
+            .collect();
+    let mut statements = lock;
+    statements.extend([
                 exec(
                     "INSERT OR IGNORE INTO configuration_documents (
                     scope_type, scope_id, namespace, schema_version, revision,
@@ -677,7 +716,7 @@ pub async fn import_if_absent(
                         1,
                     ),
                 ),
-    ];
+    ]);
     statements.extend(drop_unnamed_parts(
         key,
         &parts_id.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -755,7 +794,14 @@ pub async fn replace_document(
     let now = Utc::now().to_rfc3339();
     let expires = (Utc::now() + Duration::hours(24)).to_rfc3339();
     let slot = format!("config-cas:{operation_id}");
-    let mut statements = vec![
+    let lock: Vec<TypedDbStatement> =
+        lock_parts(key, &parts_id.as_deref().into_iter().collect::<Vec<_>>())
+            .into_iter()
+            .collect();
+    // Every statement index below counts from after the lock.
+    let shift = lock.len();
+    let mut statements = lock;
+    statements.extend([
                 exec(
                     "INSERT OR IGNORE INTO bookclerk_slots (slot_key, bump) \
                      SELECT ?, 0 WHERE NOT EXISTS ( \
@@ -901,8 +947,9 @@ pub async fn replace_document(
                     vec![text(operation_id)],
                     1,
                 ),
-    ];
-    // The receipt read stays statement 8; the clean-up goes after it.
+    ]);
+    // The receipt read stays statement 8 after the lock; the clean-up goes
+    // after it.
     let stale: Vec<&str> = [replaced_parts.as_deref(), parts_id.as_deref()]
         .into_iter()
         .flatten()
@@ -916,7 +963,7 @@ pub async fn replace_document(
         }
     };
 
-    let rows = batch::rows(&reply, 8);
+    let rows = batch::rows(&reply, shift + 8);
     let Some(row) = rows.first() else {
         return Err(LibraryError::Other(anyhow::anyhow!(
             "configuration replace for {} did not record a receipt",
