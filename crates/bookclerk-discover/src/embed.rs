@@ -186,13 +186,122 @@ pub fn embed_text(fields: &EmbedFields<'_>) -> String {
     parts.extend(present(fields.authors));
     parts.extend(present(fields.series));
     parts.extend(present(fields.genres));
-    if let Some(description) = present(fields.description) {
+    if let Some(description) = fields
+        .description
+        .map(plain_description)
+        .filter(|text| !text.is_empty())
+    {
         parts.push(description.chars().take(EMBED_DESCRIPTION_CHARS).collect());
     }
     parts.join("\n")
 }
 
-/// Build the text blob embedded for a work.
+/// A description as the model reads it: markup dropped (everything
+/// between `<` and `>`), the common entities decoded, and runs of white
+/// space made one space. Stores send descriptions as HTML, and the tags
+/// would otherwise use up the characters a description is cut to.
+fn plain_description(description: &str) -> String {
+    let mut text = String::with_capacity(description.len());
+    let mut in_tag = false;
+    for c in description.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' if in_tag => {
+                in_tag = false;
+                text.push(' ');
+            }
+            _ if !in_tag => text.push(c),
+            _ => {}
+        }
+    }
+    let text = text
+        .replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&");
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// What a wish knows of the book it is for, from the store it was made
+/// at: what a work that only a wish names is embedded from, since the
+/// work itself then carries a title and an author and nothing else.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WishText {
+    /// Series name, when the store names one.
+    pub series: Option<String>,
+    /// Genres or categories, as one line.
+    pub genres: Option<String>,
+    /// Synopsis; may contain HTML.
+    pub description: Option<String>,
+}
+
+impl WishText {
+    /// What `entry` of the wishlist knows of its book.
+    #[must_use]
+    pub fn of(entry: &bookclerk_library::GlobalQueueEntry) -> Self {
+        Self {
+            series: entry.series.clone(),
+            genres: entry.genres.clone(),
+            description: entry.description.clone(),
+        }
+    }
+}
+
+/// The text embedded for a work: the work's own fields and, for each the
+/// work lacks, what an open wish for it knows.
+///
+/// A wished book and the same book on a store shelf are then embedded
+/// from the same kind of text, so they land close, and wishes group by
+/// what the books are about, not by their titles' words.
+///
+/// # Arguments
+///
+/// * `work` - The library work.
+/// * `wish` - What an open wish for the work knows, when there is one.
+///
+/// # Returns
+///
+/// The work's [`embed_text`].
+#[must_use]
+pub fn text_for_wished_work(work: &WorkRecord, wish: Option<&WishText>) -> String {
+    let filled = |text: &Option<String>| text.as_deref().is_some_and(|t| !t.trim().is_empty());
+    let authors = work.credits.join(", ");
+    let own_series = work.series.join(", ");
+    let series = if own_series.trim().is_empty() {
+        wish.and_then(|wish| wish.series.clone())
+            .unwrap_or_default()
+    } else {
+        own_series
+    };
+    let own_genres: Vec<&str> = [work.categories.as_deref(), work.subjects.as_deref()]
+        .into_iter()
+        .flatten()
+        .filter(|text| !text.trim().is_empty())
+        .collect();
+    let genres = if own_genres.is_empty() {
+        wish.and_then(|wish| wish.genres.clone())
+            .unwrap_or_default()
+    } else {
+        own_genres.join(", ")
+    };
+    let description = if filled(&work.description) {
+        work.description.as_deref()
+    } else {
+        wish.and_then(|wish| wish.description.as_deref())
+    };
+    embed_text(&EmbedFields {
+        title: &work.title,
+        authors: Some(&authors),
+        series: Some(&series),
+        genres: Some(&genres),
+        description,
+    })
+}
+
+/// Build the text blob embedded for a work, from the work's own fields.
 ///
 /// # Arguments
 ///
@@ -200,23 +309,10 @@ pub fn embed_text(fields: &EmbedFields<'_>) -> String {
 ///
 /// # Returns
 ///
-/// The work's [`embed_text`].
+/// The work's [`embed_text`]; [`text_for_wished_work`] with no wish.
 #[must_use]
 pub fn text_for_work(work: &WorkRecord) -> String {
-    let authors = work.credits.join(", ");
-    let series = work.series.join(", ");
-    let genres: Vec<&str> = [work.categories.as_deref(), work.subjects.as_deref()]
-        .into_iter()
-        .flatten()
-        .collect();
-    let genres = genres.join(", ");
-    embed_text(&EmbedFields {
-        title: &work.title,
-        authors: Some(&authors),
-        series: Some(&series),
-        genres: Some(&genres),
-        description: work.description.as_deref(),
-    })
+    text_for_wished_work(work, None)
 }
 
 /// SHA-256 hex of embedding input text.
@@ -396,6 +492,14 @@ pub async fn embed_dirty_works(
     let space = embedder.space().clone();
     let dims = stored_dims(embedder)?;
     library.prune_orphan_work_vectors().await?;
+    // A work only a wish names carries no genres or description of its
+    // own: it is embedded with what the wish knows.
+    let wished: HashMap<String, WishText> = library
+        .list_global_request_queue()
+        .await?
+        .iter()
+        .map(|entry| (entry.work_id.clone(), WishText::of(entry)))
+        .collect();
     let mut written = 0usize;
     let mut after: Option<String> = None;
     loop {
@@ -419,7 +523,7 @@ pub async fn embed_dirty_works(
         let mut dirty_texts = Vec::new();
         let mut dirty_ids = Vec::new();
         for work in &works {
-            let text = text_for_work(work);
+            let text = text_for_wished_work(work, wished.get(&work.id));
             let hash = text_hash(&text);
             if stored.get(&work.id) == Some(&hash) {
                 continue;
@@ -729,6 +833,128 @@ mod tests {
             "x".repeat(1200)
         );
         assert_eq!(text_for_work(&full), expected);
+    }
+
+    #[test]
+    fn a_description_is_embedded_without_its_markup() {
+        assert_eq!(
+            plain_description("<p><b>A  Tale</b></p>\n<p>Tom &amp; Jerry&#39;s&nbsp;feud.</p>"),
+            "A Tale Tom & Jerry's feud."
+        );
+        assert_eq!(plain_description("1 < 2 and 3 > 2"), "1 2");
+        assert_eq!(plain_description("<br>"), "");
+        // The cut to 1,200 characters counts the text, not the tags.
+        let text = embed_text(&EmbedFields {
+            title: "T",
+            description: Some(&format!("<p>{}</p>", "x".repeat(1300))),
+            ..EmbedFields::default()
+        });
+        assert_eq!(text, format!("T\n{}", "x".repeat(1200)));
+        let none = embed_text(&EmbedFields {
+            title: "T",
+            description: Some("<p> </p>"),
+            ..EmbedFields::default()
+        });
+        assert_eq!(none, "T");
+    }
+
+    #[test]
+    fn a_work_only_a_wish_names_is_embedded_with_what_the_wish_knows() {
+        let mut wished = work(&["Stephen E. Ambrose"], &[], &[]);
+        wished.title = "D-Day".into();
+        let wish = WishText {
+            series: None,
+            genres: Some("History, Military".into()),
+            description: Some("<p>The Normandy landings.</p>".into()),
+        };
+        assert_eq!(
+            text_for_wished_work(&wished, Some(&wish)),
+            "D-Day\nStephen E. Ambrose\nHistory, Military\nThe Normandy landings."
+        );
+        assert_eq!(text_for_wished_work(&wished, None), text_for_work(&wished));
+        // What the work carries itself wins, field by field.
+        wished.categories = Some("World War II".into());
+        wished.series = vec!["Ambrose".into()];
+        wished.description = Some(" ".into());
+        let other = WishText {
+            series: Some("Other".into()),
+            ..wish
+        };
+        assert_eq!(
+            text_for_wished_work(&wished, Some(&other)),
+            "D-Day\nStephen E. Ambrose\nAmbrose\nWorld War II\nThe Normandy landings."
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wished_work_is_embedded_again_when_its_wish_learns_of_the_book() {
+        let store = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        let wish = store
+            .create_title_request(&bookclerk_library::NewTitleRequest {
+                uuid: None,
+                identity_id: None,
+                title: "D-Day".into(),
+                authors: Some("Stephen E. Ambrose".into()),
+                asin: Some("B0WISH0001".into()),
+                isbn: None,
+                notes: None,
+                status: bookclerk_library::RequestStatus::Open,
+                resolved_edition_id: None,
+                cover_url: None,
+            })
+            .await
+            .unwrap();
+        let mut embedder = HashEmbedder::new(64);
+        let space = embedder.space().clone();
+        embed_dirty_works(&store, &mut embedder, None)
+            .await
+            .unwrap();
+        let hash_of = |store: &LibraryStore| {
+            let store = store.clone();
+            let space = space.clone();
+            let id = wish.work_id.clone();
+            async move {
+                store
+                    .vector_text_hashes(VECTOR_KIND_WORK, &space, std::slice::from_ref(&id))
+                    .await
+                    .unwrap()
+                    .remove(&id)
+                    .unwrap()
+            }
+        };
+        let thin = hash_of(&store).await;
+        store
+            .upsert_title_request_sources(
+                wish.id,
+                &[bookclerk_library::NewTitleRequestSource {
+                    source: "audible".into(),
+                    product_id: "B0WISH0001".into(),
+                    description: Some("<p>The Normandy landings.</p>".into()),
+                    categories: Some("History".into()),
+                    ..Default::default()
+                }],
+            )
+            .await
+            .unwrap();
+        let pass = embed_dirty_works(&store, &mut embedder, None)
+            .await
+            .unwrap();
+        assert_eq!(pass.written, 1);
+        let rich = hash_of(&store).await;
+        assert_ne!(thin, rich);
+        let work = store.get_work(&wish.work_id).await.unwrap().unwrap();
+        let entry = store
+            .list_global_request_queue()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.work_id == wish.work_id)
+            .unwrap();
+        let text = text_for_wished_work(&work, Some(&WishText::of(&entry)));
+        assert!(text.ends_with("History\nThe Normandy landings."), "{text}");
+        assert_eq!(rich, text_hash(&text));
     }
 
     #[test]

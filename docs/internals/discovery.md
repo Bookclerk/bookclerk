@@ -442,8 +442,17 @@ A row is one of two kinds:
 
 The text of a work and of a candidate is built the same way: title,
 authors, series, genres and the first 1,200 characters of the
-description. Narrators are left out: a narrator reads books of every
-kind.
+description, with its markup removed first (tags dropped, common
+entities decoded) so tags do not use up the 1,200. Narrators are left
+out: a narrator reads books of every kind.
+
+A work that only a wish names carries a title and an author and nothing
+else, which would group wishes by the words of their titles. Such a
+work is embedded with the series, genres and description its open wish
+holds from the store it was made at, each used only where the work has
+none of its own. A wishlist entry is ranked from the same fields. When a
+wish learns more of its book, the next embedding pass sees another text
+and embeds the work again.
 
 ### Which space serves
 
@@ -644,7 +653,9 @@ of model. Axes are not recorded as that space's, so the next ranking
 builds them again, when they were built while fewer than half of the
 seed works had a vector (a fresh library whose first taste is stored
 before it is embedded), or before 12 of the viewer's candidates had one
-(a ranking embeds them) while storefront candidates are on. A work
+(a ranking embeds them) while storefront candidates are on. A ranking
+that read axes without a stored scale stores the taste again as soon as
+it has ranked, so the scale does not wait for another event. A work
 embedded after that joins at the next store.
 
 > [!NOTE]

@@ -1438,8 +1438,8 @@ fn queue_entry_text(entry: &bookclerk_library::GlobalQueueEntry) -> String {
     embed_text(&EmbedFields {
         title: &entry.title,
         authors: entry.authors.as_deref(),
-        series: None,
-        genres: None,
+        series: entry.series.as_deref(),
+        genres: entry.genres.as_deref(),
         description: entry.description.as_deref(),
     })
 }

@@ -1395,6 +1395,10 @@ pub async fn rank_subject_feed(
     rank_opts.disabled_shelves = Vec::new();
     let candidates: Vec<StorefrontCandidate> = map.into_values().collect();
     let languages = taste.language_set();
+    // Axes stored before the candidates had vectors have no stored scale
+    // yet ([`store_taste`]).
+    let unmeasured = opts.fetch_storefront_candidates
+        && taste.scores.axes.iter().any(|axis| axis.ordinary.is_none());
     let recs = rank_candidates(
         library,
         registry,
@@ -1404,6 +1408,12 @@ pub async fn rank_subject_feed(
         &rank_opts,
     )
     .await?;
+    if unmeasured {
+        // This ranking embedded the candidates: store the taste again
+        // now, measured, so the radar and the search need not wait for
+        // the next ranking, which only another event brings.
+        refresh_subject_taste(library, subject, opts).await?;
+    }
     let shelf = taste.shelf;
     let mut feed = feed_from_recommendations(&recs, &shelf, &rank_opts);
     // Cards keep only what is personal to the subject; catalog metadata the
@@ -2571,10 +2581,22 @@ mod tests {
         )
         .await
         .unwrap();
-        // The next ranking builds them again, measured against the books
-        // on offer; none of those is about dragons or ledgers, so an
-        // ordinary one sits well short of the axes' own books.
-        let (_, measured) = ranking_taste(&library, &subject, &opts).await.unwrap();
+        // A ranking that finds them unmeasured stores the taste again as
+        // soon as it has ranked, measured against the books on offer; none
+        // of those is about dragons or ledgers, so an ordinary one sits
+        // well short of the axes' own books.
+        rank_subject_feed(&library, &SourceRegistry::new(), &subject, &opts)
+            .await
+            .unwrap();
+        let measured = StoredTaste::decode(
+            &library
+                .get_discover_taste(&subject)
+                .await
+                .unwrap()
+                .unwrap()
+                .taste_json,
+        )
+        .unwrap();
         for axis in &measured.scores.axes {
             let ordinary = axis.ordinary.unwrap();
             assert!((0.8..0.95).contains(&ordinary), "{ordinary}");
