@@ -623,6 +623,9 @@ No two axes of a taste share a name.
 
 A phrase written all in capitals is shown with only each word's first
 letter so ("NEW YORK TIMES" becomes "New York Times").
+A phrase made only of praise or of a reviewer's name ("Best Books",
+"Library Journal", "Starred Review") names no axis: it says how the books
+were received, not what they are about.
 
 #### The scale of an axis
 
@@ -1233,7 +1236,7 @@ queue order; Discover personalizes the feed (including wishlist items).
 | If you like {Author} | `because` | Related/similar titles **not** by that author |
 | Narrated by {Narrator} | `narrator` | Liked-narrator overlap |
 | Because you like {Genre} | `genre` | Category/subject overlap from finished titles |
-| Similar to your books and wishes | `similar_taste` | Titles that fit the taste by meaning, in order of that fit alone (a liked author or narrator does not move a title up this shelf) |
+| Similar to your books and wishes | `similar_taste` | Titles that fit the taste by meaning, in order of that fit alone (a liked author or narrator does not move a title up this shelf), at most two by one author |
 | Popular in {Genre} | `starter_genre` (`starter_genre:fantasy`, …; a label in a non-Latin script also carries eight hex digits of its hash, so two such genres never share an id) | Genre browse: the genres the taste leans to, and the starter genres while it is thin |
 | Chirp deals right now | `chirp_deals` | Chirp top + free deals |
 | Picked for you on {Store} | `from_store` (`from_audible`, …) | Titles no personal shelf took, ranked by taste, under the store where they cost the person least |

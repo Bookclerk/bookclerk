@@ -95,6 +95,29 @@ const STOPWORDS: [&str; 62] = [
     "our", "we", "i", "him", "them", "about", "after", "before", "all", "s",
 ];
 
+/// Words of praise and of where a book was reviewed. A description phrase
+/// made only of these ("Best Books", "Library Journal", "Best Book of the
+/// Year") says how a book was received and nothing of what it is about,
+/// so it names no axis.
+const RECEPTION_WORDS: [&str; 16] = [
+    "best",
+    "book",
+    "books",
+    "year",
+    "library",
+    "journal",
+    "publishers",
+    "weekly",
+    "kirkus",
+    "booklist",
+    "review",
+    "reviews",
+    "starred",
+    "audiofile",
+    "magazine",
+    "earphones",
+];
+
 /// One work on a taste axis.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AxisMember {
@@ -826,8 +849,8 @@ fn phrase_display(phrase: &str) -> String {
 }
 
 /// The phrases of two to four words in a description that neither start
-/// nor end with a stopword, each once, as (phrase as shown, lowercase
-/// key).
+/// nor end with a stopword and are not only praise or a reviewer's name
+/// ([`RECEPTION_WORDS`]), each once, as (phrase as shown, lowercase key).
 fn description_phrases(description: &str) -> Vec<(String, String)> {
     let words = description_words(description);
     let lower: Vec<String> = words.iter().map(|word| word.to_lowercase()).collect();
@@ -838,6 +861,12 @@ fn description_phrases(description: &str) -> Vec<(String, String)> {
         for start in 0..words.len().saturating_sub(len - 1) {
             let end = start + len;
             if plain(&lower[start]) || plain(&lower[end - 1]) {
+                continue;
+            }
+            let reception = lower[start..end].iter().all(|word| {
+                RECEPTION_WORDS.contains(&word.as_str()) || STOPWORDS.contains(&word.as_str())
+            });
+            if reception {
                 continue;
             }
             let key = lower[start..end].join(" ");
@@ -1771,5 +1800,28 @@ mod tests {
         assert!(phrases.iter().all(|p| !p.starts_with("The ")));
         assert!(phrases.iter().all(|p| !p.ends_with(" the")));
         assert!(phrases.iter().all(|p| !p.contains('<')));
+    }
+
+    #[test]
+    fn praise_and_reviewers_are_not_phrases() {
+        let phrases: Vec<String> = description_phrases(
+            "One of the best books of the year. Library Journal starred review. \
+             A New York Times bestseller about a generation ship.",
+        )
+        .into_iter()
+        .map(|(phrase, _)| phrase)
+        .collect();
+        for dull in [
+            "best books",
+            "best books of the year",
+            "Library Journal",
+            "starred review",
+            "Library Journal starred review",
+        ] {
+            assert!(!phrases.iter().any(|p| p == dull), "{dull}");
+        }
+        // A phrase with a word of its own stays.
+        assert!(phrases.contains(&"New York Times bestseller".to_string()));
+        assert!(phrases.contains(&"generation ship".to_string()));
     }
 }
