@@ -6,7 +6,6 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use filetime::{set_file_times, FileTime};
 use sha2::Digest;
 use tokio::fs;
 
@@ -938,22 +937,26 @@ impl StorageBackend for LocalFsBackend {
         if !path.exists() {
             return Ok(());
         }
-        let created = created.map(FileTime::from_system_time);
-        let modified = modified.map(FileTime::from_system_time);
-        match (created, modified) {
-            (Some(c), Some(m)) => set_file_times(&path, c, m).map_err(StorageError::Io)?,
-            (None, Some(m)) => {
-                let meta = std::fs::metadata(&path).map_err(StorageError::Io)?;
-                let c = FileTime::from_last_modification_time(&meta);
-                set_file_times(&path, c, m).map_err(StorageError::Io)?;
-            }
-            (Some(c), None) => {
-                let meta = std::fs::metadata(&path).map_err(StorageError::Io)?;
-                let m = FileTime::from_last_modification_time(&meta);
-                set_file_times(&path, c, m).map_err(StorageError::Io)?;
-            }
-            (None, None) => {}
-        }
+        // `created` has always landed in the access-time slot: portable
+        // filesystems expose no settable birth time. A missing side keeps
+        // the file's current modification time, as before.
+        let current_modified = || {
+            std::fs::metadata(&path)
+                .and_then(|meta| meta.modified())
+                .map_err(StorageError::Io)
+        };
+        let (accessed, modified) = match (created, modified) {
+            (Some(c), Some(m)) => (c, m),
+            (None, Some(m)) => (current_modified()?, m),
+            (Some(c), None) => (c, current_modified()?),
+            (None, None) => return Ok(()),
+        };
+        let times = std::fs::FileTimes::new()
+            .set_accessed(accessed)
+            .set_modified(modified);
+        open_for_set_times(&path)
+            .and_then(|file| file.set_times(times))
+            .map_err(StorageError::Io)?;
         Ok(())
     }
 
@@ -1266,6 +1269,32 @@ async fn write_local_meta_sidecar(
     }
     fs::write(&path, payload).await?;
     Ok(())
+}
+
+/// Opens `path` with only the access needed to change its timestamps.
+///
+/// Unix sets times through `futimens` on any descriptor the owner holds, so a
+/// read-only open works even for a read-only file. Windows needs
+/// `FILE_WRITE_ATTRIBUTES` on the handle and nothing more, which also leaves
+/// read-only files touchable.
+///
+/// # Errors
+///
+/// Returns the open error, for example when the file does not exist.
+fn open_for_set_times(path: &Path) -> std::io::Result<std::fs::File> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        /// The Win32 `FILE_WRITE_ATTRIBUTES` access right.
+        const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+        std::fs::OpenOptions::new()
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .open(path)
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::File::open(path)
+    }
 }
 
 #[cfg(test)]
@@ -2168,6 +2197,54 @@ mod tests {
         assert!(!b.exists("new").await.unwrap());
     }
 
+    /// Seconds since the epoch of `path`'s access and modification times.
+    fn file_times(path: &Path) -> (u64, u64) {
+        let meta = std::fs::metadata(path).unwrap();
+        let secs = |t: SystemTime| t.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+        (
+            secs(meta.accessed().unwrap()),
+            secs(meta.modified().unwrap()),
+        )
+    }
+
+    #[tokio::test]
+    async fn touching_a_file_sets_each_given_time_and_keeps_the_rest() {
+        let (dir, b) = intent_backend();
+        b.put("t/a", Bytes::from_static(b"a"), ObjectMeta::default())
+            .await
+            .unwrap();
+        let path = dir.path().join("t/a");
+        let at = |secs: u64| SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+
+        b.touch_file("t/a", Some(at(1_000)), Some(at(2_000)))
+            .await
+            .unwrap();
+        assert_eq!(file_times(&path), (1_000, 2_000));
+
+        // A missing created time takes the file's current modification time.
+        b.touch_file("t/a", None, Some(at(3_000))).await.unwrap();
+        assert_eq!(file_times(&path), (2_000, 3_000));
+
+        // A missing modified time keeps the file's current one.
+        b.touch_file("t/a", Some(at(4_000)), None).await.unwrap();
+        assert_eq!(file_times(&path), (4_000, 3_000));
+
+        b.touch_file("t/a", None, None).await.unwrap();
+        assert_eq!(file_times(&path), (4_000, 3_000));
+
+        // A read-only file still takes new times, and a missing key is a no-op.
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&path, perms).unwrap();
+        b.touch_file("t/a", Some(at(5_000)), Some(at(6_000)))
+            .await
+            .unwrap();
+        assert_eq!(file_times(&path), (5_000, 6_000));
+        b.touch_file("t/missing", Some(at(1)), Some(at(1)))
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn a_hinted_listing_fills_signatures_and_filters_by_time() {
         let (dir, b) = intent_backend();
@@ -2177,8 +2254,15 @@ mod tests {
         b.put("p/new", Bytes::from_static(b"n"), ObjectMeta::default())
             .await
             .unwrap();
-        let past = FileTime::from_unix_time(1_000_000, 0);
-        set_file_times(dir.path().join("p/old"), past, past).unwrap();
+        let past = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        open_for_set_times(&dir.path().join("p/old"))
+            .unwrap()
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_accessed(past)
+                    .set_modified(past),
+            )
+            .unwrap();
         let since = 2_000_000_000;
         let page = b
             .list_hinted(&ListRequest {

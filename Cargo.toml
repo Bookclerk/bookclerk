@@ -250,7 +250,6 @@ uuid = { version = "1", features = ["v4", "v5", "serde"] }
 email_address = "0.2"
 tantivy = "0.27"
 csv = "1"
-filetime = "0.2"
 rust_xlsxwriter = "0.102"
 tar = "0.4"
 flate2 = "1"
