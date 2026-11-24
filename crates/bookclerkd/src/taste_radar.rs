@@ -812,7 +812,7 @@ mod tests {
         let files = tempfile::tempdir().unwrap();
         let model = FakeModel::new();
         let (state, library) = library(&files, Some(&model)).await;
-        library
+        let wish = library
             .create_title_request(&bookclerk_library::NewTitleRequest {
                 uuid: None,
                 identity_id: None,
@@ -825,6 +825,20 @@ mod tests {
                 resolved_edition_id: None,
                 cover_url: None,
             })
+            .await
+            .unwrap();
+        // The store's record of the wished book: a wish nothing is known
+        // of beyond its title would be left out of the grouping.
+        library
+            .upsert_title_request_sources(
+                wish.id,
+                &[bookclerk_library::NewTitleRequestSource {
+                    source: "audible".into(),
+                    product_id: "B0WISH0001".into(),
+                    categories: Some("Fantasy".into()),
+                    ..Default::default()
+                }],
+            )
             .await
             .unwrap();
         embed(&state, &library).await;
