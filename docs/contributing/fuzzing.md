@@ -2187,6 +2187,34 @@ text mutations in `npm test` (the `workerd_guests` check); `FUZZ_SEED` and
   each header arrives). The decoder gives the same messages and the same
   close code whatever the chunk boundaries.
 
+### Cloudflare DNS guest
+
+The `cloudflare_dns` guest reads three things it did not produce: the
+address echo's answer, the Cloudflare API's answers, and the host name
+the operator typed.
+`crates/bookclerk-plugins/optional/ingress-cloudflare-dns/test/fuzz.test.ts`
+replays `fuzz/address/` (a family digit, a space, then the body with
+`\n` for a newline), `fuzz/api/` (API answer JSON) and `fuzz/hostname/`,
+and runs seeded text mutations in `npm test` (the `workerd_guests` check);
+`FUZZ_SEED` and `FUZZ_ITERATIONS` pick another run.
+
+- **Echo answers** (`parseEchoAnswer`, `isPublicAddress` in
+  `src/address.ts`). Oracle: Node's `net.isIPv4` and `net.isIPv6` (less
+  zones) decide what is an address, the WHATWG URL serializer gives the
+  canonical IPv6 text, and a `net.BlockList` of the special-purpose ranges
+  decides what is public.
+- **API answers** (`parseEnvelope`, `parseZone`, `parseRecords` in
+  `src/dns.ts`). Oracle: the envelope, zone and record rules restated over
+  `JSON.parse`'s value (a success only with a 2xx status and
+  `success: true`, Cloudflare's first error message cut to 200
+  characters, ids of 32 lowercase hex digits checked by character, only
+  records named exactly the host name).
+- **Host names** (`parseHostname`, `zoneCandidates`). Oracle: RFC 1035's
+  label rules restated character by character (at most 253 bytes, at
+  least two labels of 1 to 63 letters, digits and inner dashes, no `xn--`
+  label, a top label that starts with a letter); each zone candidate is a
+  parent of the name.
+
 ### Cloudflare Tunnel guest
 
 The `cloudflare_tunnel` guest parses everything on its edge connection:

@@ -498,17 +498,20 @@ impl LibraryStore {
                 None => PatronPick::Default,
                 Some(p) if p.enabled == 0 => PatronPick::Off,
                 Some(_) => PatronPick::Chosen(
-                    notify_patron_targets::Entity::find()
-                        .filter(notify_patron_targets::Column::UserId.eq(patron))
-                        .filter(
-                            notify_patron_targets::Column::NotificationType.eq(notification_type),
-                        )
-                        .all(&self.db)
-                        .await
-                        .map_err(LibraryError::Orm)?
-                        .into_iter()
-                        .map(|t| t.destination_id)
-                        .collect(),
+                    crate::store::keyset::read_keyset(
+                        self,
+                        notify_patron_targets::Entity::find()
+                            .filter(notify_patron_targets::Column::UserId.eq(patron))
+                            .filter(
+                                notify_patron_targets::Column::NotificationType
+                                    .eq(notification_type),
+                            ),
+                        &[notify_patron_targets::Column::DestinationId],
+                    )
+                    .await?
+                    .into_iter()
+                    .map(|t| t.destination_id)
+                    .collect(),
                 ),
             };
             if !matches!(pick, PatronPick::Chosen(_)) || attempt >= 3 {
@@ -550,11 +553,14 @@ impl LibraryStore {
                 let (routes, in_app) = loop {
                     attempt += 1;
                     let before = read_revision().await.map_err(LibraryError::Orm)?;
-                    let routes = notify_routes::Entity::find()
-                        .filter(notify_routes::Column::NotificationType.eq(&new.notification_type))
-                        .all(&self.db)
-                        .await
-                        .map_err(LibraryError::Orm)?;
+                    let routes = crate::store::keyset::read_keyset(
+                        self,
+                        notify_routes::Entity::find().filter(
+                            notify_routes::Column::NotificationType.eq(&new.notification_type),
+                        ),
+                        &[notify_routes::Column::DestinationId],
+                    )
+                    .await?;
                     let in_app =
                         notify_inbox_routes::Entity::find_by_id(new.notification_type.clone())
                             .one(&self.db)
@@ -600,13 +606,14 @@ impl LibraryStore {
                 }
             }
             (NotificationAudience::Patron, Some(patron)) => {
-                let offers = notify_patron_offers::Entity::find()
-                    .filter(
+                let offers = crate::store::keyset::read_keyset(
+                    self,
+                    notify_patron_offers::Entity::find().filter(
                         notify_patron_offers::Column::NotificationType.eq(&new.notification_type),
-                    )
-                    .all(&self.db)
-                    .await
-                    .map_err(LibraryError::Orm)?;
+                    ),
+                    &[notify_patron_offers::Column::PluginInstanceId],
+                )
+                .await?;
                 if offers.is_empty() {
                     return Ok(RouteTargets::default());
                 }
@@ -619,13 +626,15 @@ impl LibraryStore {
                     .filter(|o| o.default_on != 0)
                     .map(|o| o.plugin_instance_id.clone())
                     .collect();
-                let personal = notify_destinations::Entity::find()
-                    .filter(notify_destinations::Column::UserId.eq(patron))
-                    .filter(notify_destinations::Column::Kind.eq("personal"))
-                    .filter(notify_destinations::Column::PausedAt.is_null())
-                    .all(&self.db)
-                    .await
-                    .map_err(LibraryError::Orm)?;
+                let personal = crate::store::keyset::read_keyset(
+                    self,
+                    notify_destinations::Entity::find()
+                        .filter(notify_destinations::Column::UserId.eq(patron))
+                        .filter(notify_destinations::Column::Kind.eq("personal"))
+                        .filter(notify_destinations::Column::PausedAt.is_null()),
+                    &[notify_destinations::Column::Id],
+                )
+                .await?;
                 let picked = match self.patron_pick(patron, &new.notification_type).await? {
                     PatronPick::Off => return Ok(RouteTargets::default()),
                     PatronPick::Default => None,
@@ -681,14 +690,15 @@ impl LibraryStore {
         plugin_key: &str,
         account_id: &str,
     ) -> Result<bool> {
-        let identities: Vec<i64> = portal_identities::Entity::find()
-            .filter(portal_identities::Column::UserId.eq(user_id))
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(|i| i.id)
-            .collect();
+        let identities: Vec<i64> = crate::store::keyset::read_keyset(
+            self,
+            portal_identities::Entity::find().filter(portal_identities::Column::UserId.eq(user_id)),
+            &[portal_identities::Column::Id],
+        )
+        .await?
+        .into_iter()
+        .map(|i| i.id)
+        .collect();
         if identities.is_empty() {
             return Ok(false);
         }
@@ -1519,16 +1529,19 @@ impl LibraryStore {
     ///
     /// An error when the read fails.
     pub async fn notify_channels(&self) -> Result<Vec<Destination>> {
-        notify_destinations::Entity::find()
-            .filter(notify_destinations::Column::Kind.eq(DestinationKind::Channel.as_str()))
-            .order_by_asc(notify_destinations::Column::CreatedAt)
-            .order_by_asc(notify_destinations::Column::Id)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(destination)
-            .collect()
+        crate::store::keyset::read_keyset(
+            self,
+            notify_destinations::Entity::find()
+                .filter(notify_destinations::Column::Kind.eq(DestinationKind::Channel.as_str())),
+            &[
+                notify_destinations::Column::CreatedAt,
+                notify_destinations::Column::Id,
+            ],
+        )
+        .await?
+        .into_iter()
+        .map(destination)
+        .collect()
     }
 
     /// One patron's personal destinations, oldest first.
@@ -1537,17 +1550,20 @@ impl LibraryStore {
     ///
     /// An error when the read fails.
     pub async fn personal_destinations(&self, user_id: i64) -> Result<Vec<Destination>> {
-        notify_destinations::Entity::find()
-            .filter(notify_destinations::Column::Kind.eq(DestinationKind::Personal.as_str()))
-            .filter(notify_destinations::Column::UserId.eq(user_id))
-            .order_by_asc(notify_destinations::Column::CreatedAt)
-            .order_by_asc(notify_destinations::Column::Id)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(destination)
-            .collect()
+        crate::store::keyset::read_keyset(
+            self,
+            notify_destinations::Entity::find()
+                .filter(notify_destinations::Column::Kind.eq(DestinationKind::Personal.as_str()))
+                .filter(notify_destinations::Column::UserId.eq(user_id)),
+            &[
+                notify_destinations::Column::CreatedAt,
+                notify_destinations::Column::Id,
+            ],
+        )
+        .await?
+        .into_iter()
+        .map(destination)
+        .collect()
     }
 
     /// Renames a destination.
@@ -1643,23 +1659,27 @@ impl LibraryStore {
     /// An error when the read fails or a stored severity is malformed.
     pub async fn notify_routes(&self) -> Result<BTreeMap<String, Vec<Route>>> {
         let mut out: BTreeMap<String, Vec<Route>> = BTreeMap::new();
-        for row in notify_routes::Entity::find()
-            .order_by_asc(notify_routes::Column::NotificationType)
-            .order_by_asc(notify_routes::Column::DestinationId)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
+        for row in crate::store::keyset::read_keyset(
+            self,
+            notify_routes::Entity::find(),
+            &[
+                notify_routes::Column::NotificationType,
+                notify_routes::Column::DestinationId,
+            ],
+        )
+        .await?
         {
             out.entry(row.notification_type).or_default().push(Route {
                 destination_id: row.destination_id,
                 min_severity: parse_severity(&row.min_severity)?,
             });
         }
-        for row in notify_inbox_routes::Entity::find()
-            .order_by_asc(notify_inbox_routes::Column::NotificationType)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
+        for row in crate::store::keyset::read_keyset(
+            self,
+            notify_inbox_routes::Entity::find(),
+            &[notify_inbox_routes::Column::NotificationType],
+        )
+        .await?
         {
             // The built-in target leads its type's list.
             out.entry(row.notification_type).or_default().insert(
@@ -1772,12 +1792,15 @@ impl LibraryStore {
     /// An error when the read fails.
     pub async fn patron_offers(&self) -> Result<BTreeMap<String, Vec<PatronOffer>>> {
         let mut out: BTreeMap<String, Vec<PatronOffer>> = BTreeMap::new();
-        for row in notify_patron_offers::Entity::find()
-            .order_by_asc(notify_patron_offers::Column::NotificationType)
-            .order_by_asc(notify_patron_offers::Column::PluginInstanceId)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
+        for row in crate::store::keyset::read_keyset(
+            self,
+            notify_patron_offers::Entity::find(),
+            &[
+                notify_patron_offers::Column::NotificationType,
+                notify_patron_offers::Column::PluginInstanceId,
+            ],
+        )
+        .await?
         {
             out.entry(row.notification_type)
                 .or_default()
@@ -1847,31 +1870,36 @@ impl LibraryStore {
     /// An error when a read fails.
     pub async fn patron_choices(&self, user_id: i64) -> Result<Vec<PatronChoice>> {
         let mut targets: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for row in notify_patron_targets::Entity::find()
-            .filter(notify_patron_targets::Column::UserId.eq(user_id))
-            .order_by_asc(notify_patron_targets::Column::DestinationId)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
+        for row in crate::store::keyset::read_keyset(
+            self,
+            notify_patron_targets::Entity::find()
+                .filter(notify_patron_targets::Column::UserId.eq(user_id)),
+            &[
+                notify_patron_targets::Column::NotificationType,
+                notify_patron_targets::Column::DestinationId,
+            ],
+        )
+        .await?
         {
             targets
                 .entry(row.notification_type)
                 .or_default()
                 .push(row.destination_id);
         }
-        Ok(notify_patron_prefs::Entity::find()
-            .filter(notify_patron_prefs::Column::UserId.eq(user_id))
-            .order_by_asc(notify_patron_prefs::Column::NotificationType)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(|row| PatronChoice {
-                destination_ids: targets.remove(&row.notification_type).unwrap_or_default(),
-                notification_type: row.notification_type,
-                enabled: row.enabled != 0,
-            })
-            .collect())
+        Ok(crate::store::keyset::read_keyset(
+            self,
+            notify_patron_prefs::Entity::find()
+                .filter(notify_patron_prefs::Column::UserId.eq(user_id)),
+            &[notify_patron_prefs::Column::NotificationType],
+        )
+        .await?
+        .into_iter()
+        .map(|row| PatronChoice {
+            destination_ids: targets.remove(&row.notification_type).unwrap_or_default(),
+            notification_type: row.notification_type,
+            enabled: row.enabled != 0,
+        })
+        .collect())
     }
 
     /// Stores one patron's choice for one patron type, replacing the last.
@@ -1890,14 +1918,17 @@ impl LibraryStore {
         }
         // Only a notifier offered for the type can carry it: routing skips
         // any other, so such a pick would quietly leave the inbox alone.
-        let offered: BTreeSet<String> = notify_patron_offers::Entity::find()
-            .filter(notify_patron_offers::Column::NotificationType.eq(&choice.notification_type))
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(|o| o.plugin_instance_id)
-            .collect();
+        let offered: BTreeSet<String> = crate::store::keyset::read_keyset(
+            self,
+            notify_patron_offers::Entity::find().filter(
+                notify_patron_offers::Column::NotificationType.eq(&choice.notification_type),
+            ),
+            &[notify_patron_offers::Column::PluginInstanceId],
+        )
+        .await?
+        .into_iter()
+        .map(|o| o.plugin_instance_id)
+        .collect();
         let mut seen = BTreeSet::new();
         for id in &choice.destination_ids {
             if !seen.insert(id.as_str()) {

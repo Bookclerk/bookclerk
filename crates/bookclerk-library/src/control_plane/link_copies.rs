@@ -23,10 +23,7 @@
 
 use chrono::{DateTime, Duration, Utc};
 use sea_orm::sea_query::{Expr, OnConflict};
-use sea_orm::{
-    ActiveValue::Set, ColumnTrait as _, EntityTrait as _, QueryFilter as _, QueryOrder as _,
-    QuerySelect as _,
-};
+use sea_orm::{ActiveValue::Set, ColumnTrait as _, EntityTrait as _, QueryFilter as _};
 
 use crate::call_number;
 use crate::entities::link_copy_files;
@@ -356,16 +353,23 @@ pub async fn stale_link_copies(
     let ours = format!("{node_id}/");
     let live = format!("{node_id}/{incarnation}/");
     let before = stamp(now - Duration::seconds(STALE_LINK_COPY_AGE_SECS));
-    let rows = link_copy_files::Entity::find()
-        .filter(link_copy_files::Column::State.eq(STATE_COPYING))
-        .filter(link_copy_files::Column::WrittenAt.lt(before))
-        .filter(link_copy_files::Column::Writer.starts_with(ours.as_str()))
-        .filter(link_copy_files::Column::Writer.not_like(format!("{live}%")))
-        .order_by_asc(link_copy_files::Column::WrittenAt)
-        .limit(STALE_LINK_COPY_BATCH)
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+    // Read in pages the database plugin's result limits allow.
+    let rows = crate::store::keyset::read_keyset_limit(
+        store,
+        link_copy_files::Entity::find()
+            .filter(link_copy_files::Column::State.eq(STATE_COPYING))
+            .filter(link_copy_files::Column::WrittenAt.lt(before))
+            .filter(link_copy_files::Column::Writer.starts_with(ours.as_str()))
+            .filter(link_copy_files::Column::Writer.not_like(format!("{live}%"))),
+        &[
+            link_copy_files::Column::WrittenAt,
+            link_copy_files::Column::Destination,
+            link_copy_files::Column::StorageKey,
+        ],
+        crate::store::keyset::KeyOrder::Ascending,
+        STALE_LINK_COPY_BATCH,
+    )
+    .await?;
     Ok(rows
         .into_iter()
         // `starts_with` binds a LIKE pattern, where `_` matches any one

@@ -14,10 +14,9 @@ use bookclerk_plugin_abi::{DbType, DbValue, TypedDbStatement};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
 
 use super::{now_str, parse_dt, LibraryStore};
-use crate::column_read::SelectColumnExt;
 use crate::control_plane::batch;
 use crate::entities::{account_links, portal_identities, user_title_state};
-use crate::error::{LibraryError, Result};
+use crate::error::Result;
 use crate::models::UserTitleState;
 use crate::store::library_index::facet_key;
 use crate::store::UserBookFields;
@@ -110,7 +109,7 @@ impl LibraryStore {
     ///
     /// # Errors
     ///
-    /// Returns [`LibraryError::Orm`] when a read fails.
+    /// Returns a [`LibraryError`](crate::error::LibraryError) when a read fails.
     pub async fn user_title_states(&self, user_ids: &[i64]) -> Result<Vec<UserTitleState>> {
         let users: Vec<i64> = user_ids
             .iter()
@@ -121,15 +120,18 @@ impl LibraryStore {
         let mut out = Vec::new();
         for part in users.chunks(self.lookup_chunk()) {
             out.extend(
-                user_title_state::Entity::find()
-                    .filter(user_title_state::Column::UserId.is_in(part.iter().copied()))
-                    .order_by_asc(user_title_state::Column::UserId)
-                    .order_by_asc(user_title_state::Column::WorkId)
-                    .all(&self.db)
-                    .await
-                    .map_err(LibraryError::Orm)?
-                    .into_iter()
-                    .map(map_state),
+                crate::store::keyset::read_keyset(
+                    self,
+                    user_title_state::Entity::find()
+                        .filter(user_title_state::Column::UserId.is_in(part.iter().copied())),
+                    &[
+                        user_title_state::Column::UserId,
+                        user_title_state::Column::WorkId,
+                    ],
+                )
+                .await?
+                .into_iter()
+                .map(map_state),
             );
         }
         Ok(out)
@@ -150,7 +152,7 @@ impl LibraryStore {
     ///
     /// # Errors
     ///
-    /// Returns [`LibraryError::Orm`] when a read fails.
+    /// Returns a [`LibraryError`](crate::error::LibraryError) when a read fails.
     pub async fn user_title_states_of_works(
         &self,
         user_id: i64,
@@ -192,26 +194,32 @@ impl LibraryStore {
     ///
     /// # Errors
     ///
-    /// Returns [`LibraryError::Orm`] when a read fails.
+    /// Returns a [`LibraryError`](crate::error::LibraryError) when a read fails.
     pub async fn users_linked_to_account(
         &self,
         plugin_key: &str,
         account_id: &str,
     ) -> Result<Vec<i64>> {
-        let identities: Vec<i64> = account_links::Entity::find()
-            .filter(account_links::Column::PluginKey.eq(plugin_key))
-            .filter(account_links::Column::AccountId.eq(account_id))
-            .into_column::<i64, _>(account_links::Column::IdentityId)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+        let identities: Vec<i64> = super::keyset::read_keyset(
+            self,
+            account_links::Entity::find()
+                .filter(account_links::Column::PluginKey.eq(plugin_key))
+                .filter(account_links::Column::AccountId.eq(account_id)),
+            &[account_links::Column::Id],
+        )
+        .await?
+        .into_iter()
+        .map(|link| link.identity_id)
+        .collect();
         let mut users = BTreeSet::new();
         for part in identities.chunks(self.lookup_chunk()) {
-            for identity in portal_identities::Entity::find()
-                .filter(portal_identities::Column::Id.is_in(part.iter().copied()))
-                .all(&self.db)
-                .await
-                .map_err(LibraryError::Orm)?
+            for identity in crate::store::keyset::read_keyset(
+                self,
+                portal_identities::Entity::find()
+                    .filter(portal_identities::Column::Id.is_in(part.iter().copied())),
+                &[portal_identities::Column::Id],
+            )
+            .await?
             {
                 users.extend(identity.user_id);
             }

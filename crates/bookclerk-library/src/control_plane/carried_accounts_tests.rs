@@ -578,11 +578,13 @@ async fn sent_shares_are_recorded_in_batches_every_profile_accepts() {
         record_accounts_sent(store, "node-1", &carried)
             .await
             .unwrap();
-        let shares = account_shares::Entity::find()
-            .filter(account_shares::Column::Direction.eq(SHARE_SENT))
-            .all(store.db())
-            .await
-            .unwrap();
+        let shares = crate::test_support::uncapped(
+            account_shares::Entity::find()
+                .filter(account_shares::Column::Direction.eq(SHARE_SENT))
+                .all(store.db()),
+        )
+        .await
+        .unwrap();
         assert_eq!(shares.len(), 45, "{name}");
         assert_eq!(kit.refused_begins(), 0, "{name}");
     }

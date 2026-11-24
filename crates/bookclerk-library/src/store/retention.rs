@@ -444,80 +444,82 @@ mod tests {
                 removed.push(store.prune_record_step(step, now()).await.unwrap());
             }
             assert_eq!(removed, [1, 2, 1, 1, 1, 1, 4, 1, 1, 1, 1, 1, 1], "{name}");
-            let grants: Vec<String> = crate::entities::copy_grants::Entity::find()
-                .all(kit.connection())
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|row| row.copy_id)
-                .collect();
+            let grants: Vec<String> = crate::test_support::uncapped(
+                crate::entities::copy_grants::Entity::find().all(kit.connection()),
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.copy_id)
+            .collect();
             assert_eq!(grants, ["g-live"], "{name}");
             assert_eq!(kit.refused_begins(), 0, "{name}");
 
             let db = kit.connection();
-            let codes: Vec<String> = oidc_auth_codes::Entity::find()
-                .all(db)
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|row| row.code_hash)
-                .collect();
+            let codes: Vec<String> =
+                crate::test_support::uncapped(oidc_auth_codes::Entity::find().all(db))
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|row| row.code_hash)
+                    .collect();
             assert_eq!(codes, ["c-live"], "{name}");
-            let tokens: Vec<String> = oidc_refresh_tokens::Entity::find()
-                .all(db)
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|row| row.token_hash)
-                .collect();
+            let tokens: Vec<String> =
+                crate::test_support::uncapped(oidc_refresh_tokens::Entity::find().all(db))
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|row| row.token_hash)
+                    .collect();
             assert_eq!(tokens, ["r-live"], "{name}");
-            let sessions: Vec<String> = portal_sessions::Entity::find()
-                .all(db)
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|row| row.token_hash)
-                .collect();
+            let sessions: Vec<String> =
+                crate::test_support::uncapped(portal_sessions::Entity::find().all(db))
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|row| row.token_hash)
+                    .collect();
             assert_eq!(sessions, ["p-live"], "{name}");
-            let tickets: Vec<String> = claim_tickets::Entity::find()
-                .all(db)
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|row| row.token_hash)
-                .collect();
+            let tickets: Vec<String> =
+                crate::test_support::uncapped(claim_tickets::Entity::find().all(db))
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|row| row.token_hash)
+                    .collect();
             assert_eq!(tickets, ["t-recent"], "{name}");
-            let kept: Vec<String> = crate::entities::notifications::Entity::find()
-                .all(db)
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|row| row.id)
-                .collect();
+            let kept: Vec<String> = crate::test_support::uncapped(
+                crate::entities::notifications::Entity::find().all(db),
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
             assert_eq!(kept, ["n-recent"], "{name}");
-            let invites: Vec<String> = user_invites::Entity::find()
-                .all(db)
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|row| row.token_hash)
-                .collect();
+            let invites: Vec<String> =
+                crate::test_support::uncapped(user_invites::Entity::find().all(db))
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|row| row.token_hash)
+                    .collect();
             assert_eq!(invites, ["i-recent"], "{name}");
-            let links: Vec<String> = node_enrollment_links::Entity::find()
-                .all(db)
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|row| row.link_id)
-                .collect();
+            let links: Vec<String> =
+                crate::test_support::uncapped(node_enrollment_links::Entity::find().all(db))
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|row| row.link_id)
+                    .collect();
             assert_eq!(links, ["l-recent"], "{name}");
-            let mut uploads: Vec<String> = node_upload_sessions::Entity::find()
-                .all(db)
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|row| row.upload_id)
-                .collect();
+            let mut uploads: Vec<String> =
+                crate::test_support::uncapped(node_upload_sessions::Entity::find().all(db))
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|row| row.upload_id)
+                    .collect();
             uploads.sort();
             // A catalog upload a file record still names stays.
             assert_eq!(
@@ -525,38 +527,38 @@ mod tests {
                 ["u-catalog", "u-discarding-here", "u-open", "u-recent"],
                 "{name}"
             );
-            let scans: Vec<String> = storage_scan_generations::Entity::find()
-                .all(db)
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|row| row.scan_id)
-                .collect();
+            let scans: Vec<String> =
+                crate::test_support::uncapped(storage_scan_generations::Entity::find().all(db))
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|row| row.scan_id)
+                    .collect();
             assert_eq!(scans, ["s-fresh"], "{name}");
             assert_eq!(store.storage_scan_generation_count().await.unwrap(), 1);
-            let audit: Vec<String> = security_audit_events::Entity::find()
-                .all(db)
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|row| row.action)
-                .collect();
+            let audit: Vec<String> =
+                crate::test_support::uncapped(security_audit_events::Entity::find().all(db))
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|row| row.action)
+                    .collect();
             assert_eq!(audit, ["recent"], "{name}");
-            let revisions: Vec<i64> = configuration_audit::Entity::find()
-                .all(db)
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|row| row.revision)
-                .collect();
+            let revisions: Vec<i64> =
+                crate::test_support::uncapped(configuration_audit::Entity::find().all(db))
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|row| row.revision)
+                    .collect();
             assert_eq!(revisions, [2], "{name}");
-            let changes: Vec<i64> = configuration_changes::Entity::find()
-                .all(db)
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|row| row.revision)
-                .collect();
+            let changes: Vec<i64> =
+                crate::test_support::uncapped(configuration_changes::Entity::find().all(db))
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|row| row.revision)
+                    .collect();
             assert_eq!(changes, [2], "{name}");
 
             // A second pass finds nothing left to remove.

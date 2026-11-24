@@ -68,6 +68,9 @@ jobs:
   # A visual approval commit (only ui/visual/baselines.lock changed since a
   # parent whose run of this workflow succeeded) carries that run over
   # instead of running again (docs/contributing/ci.md#visual-approval-commits).
+  # It is skipped outside pull requests, and a skipped ancestor skips every
+  # later job whose `if` has no status function, so each job after it starts
+  # with `!cancelled()` or `always()` and checks its needs' results itself.
   carry:
     name: Look for a visual approval commit
     if: github.event_name == 'pull_request' && !github.event.pull_request.draft && github.event.pull_request.head.repo.full_name != ''
@@ -215,7 +218,9 @@ jobs:
   dry-run:
     name: dry run ${{ matrix.image }} (${{ matrix.arch }})
     needs: plan
-    if: needs.plan.outputs.push == 'false'
+    if: >-
+      !cancelled() && needs.plan.result == 'success'
+      && needs.plan.outputs.push == 'false'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     permissions:
@@ -243,7 +248,9 @@ jobs:
   build:
     name: build ${{ matrix.image }} (${{ matrix.arch }})
     needs: plan
-    if: needs.plan.outputs.push == 'true' && needs.plan.outputs.build != '[]'
+    if: >-
+      !cancelled() && needs.plan.result == 'success'
+      && needs.plan.outputs.push == 'true' && needs.plan.outputs.build != '[]'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     permissions:
@@ -346,7 +353,7 @@ jobs:
     name: attest ${{ matrix.image }}
     needs: [plan, publish]
     if: >-
-      always() && needs.publish.result == 'success'
+      always() && needs.plan.result == 'success' && needs.publish.result == 'success'
       && needs.plan.outputs.push == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -411,7 +418,9 @@ jobs:
   desktop:
     name: desktop packages
     needs: plan
-    if: needs.plan.outputs.desktop == 'true'
+    if: >-
+      !cancelled() && needs.plan.result == 'success'
+      && needs.plan.outputs.desktop == 'true'
     # The called workflow narrows these per job: only its publish job, run
     # for a release, writes to the release or attests.
     permissions:

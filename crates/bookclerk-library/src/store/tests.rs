@@ -9245,10 +9245,11 @@ async fn a_scanned_page_writes_store_text_only_when_it_changes_under_every_profi
                 .collect()
         };
         let listings = || async {
-            let mut rows = crate::entities::store_listings::Entity::find()
-                .all(store.db())
-                .await
-                .unwrap();
+            let mut rows = crate::test_support::uncapped(
+                crate::entities::store_listings::Entity::find().all(store.db()),
+            )
+            .await
+            .unwrap();
             rows.sort_by(|a, b| a.product_id.cmp(&b.product_id));
             rows
         };

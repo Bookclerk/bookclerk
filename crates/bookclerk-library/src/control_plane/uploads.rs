@@ -38,7 +38,7 @@ use base64::Engine as _;
 use bookclerk_node_proto::{UploadFile, MAX_UPLOAD_FILES};
 use chrono::{DateTime, Duration, Utc};
 use rand::RngCore as _;
-use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
+use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QuerySelect};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -1785,15 +1785,20 @@ pub async fn uploads_to_sweep(
     store: &LibraryStore,
     receiving_node_id: &str,
 ) -> Result<Vec<UploadSession>> {
-    let rows = node_upload_sessions::Entity::find()
-        .filter(node_upload_sessions::Column::ReceivingNodeId.eq(receiving_node_id))
-        .filter(node_upload_sessions::Column::State.is_in([STATE_OPEN, STATE_DISCARDING]))
-        .order_by_asc(node_upload_sessions::Column::CreatedAt)
-        .order_by_asc(node_upload_sessions::Column::UploadId)
-        .limit(UPLOAD_SWEEP_SCAN)
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
+    // Read in pages the database plugin's result limits allow.
+    let rows = crate::store::keyset::read_keyset_limit(
+        store,
+        node_upload_sessions::Entity::find()
+            .filter(node_upload_sessions::Column::ReceivingNodeId.eq(receiving_node_id))
+            .filter(node_upload_sessions::Column::State.is_in([STATE_OPEN, STATE_DISCARDING])),
+        &[
+            node_upload_sessions::Column::CreatedAt,
+            node_upload_sessions::Column::UploadId,
+        ],
+        crate::store::keyset::KeyOrder::Ascending,
+        UPLOAD_SWEEP_SCAN,
+    )
+    .await?;
     let mut out = Vec::new();
     for row in rows {
         let session = session_from_model(row)?;
