@@ -386,7 +386,10 @@ Saving the new password, signing every device out and using the link up
 happen in one atomic write that repeats the second-factor check, so a
 failure leaves the link working and the password unchanged, and an
 authenticator or passkey added after the link was opened makes saving
-fail without using the link up.
+fail without using the link up. The password-changed notice is queued
+after that write, on a best-effort basis: if it cannot be queued, the
+reset, the sign-outs and the audit row still stand, and the failure is
+logged.
 
 An administrator can still reset a password from **Settings → Users**:
 **Reset password** signs the user out and shows a link to send them, and
