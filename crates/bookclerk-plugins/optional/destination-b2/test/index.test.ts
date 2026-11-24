@@ -16,7 +16,8 @@ import { FakeB2, installDigestStream } from "./fake-b2.ts";
 
 installDigestStream();
 
-const { default: Plugin, Storage, RPC_FEATURES, destinationFrom } = await import("../src/index.ts");
+const { default: Plugin, Storage } = await import("../src/index.ts");
+const { RPC_FEATURES, destinationFrom } = await import("../src/destination.ts");
 const { B2ChangeFeed, RULE_RECHECK_MS } = await import("../src/feed.ts");
 const { B2Store } = await import("../src/backend.ts");
 const { B2SigningSecret } = await import("../src/b2-events.ts");
@@ -253,4 +254,13 @@ test("the feed keeps its rules, delivers changes and withdraws the rules", async
     secret: undefined,
   });
   assert.equal(await off.changes(undefined, 0), null);
+});
+
+test("the main module exports only entrypoint classes", async () => {
+  // workerd reads every named export of the main module as an entrypoint and
+  // refuses to start the isolate when one is not a handler.
+  const exports = await import("../src/index.ts");
+  for (const [name, value] of Object.entries(exports)) {
+    assert.equal(typeof value, "function", `export ${name} is not an entrypoint class`);
+  }
 });
