@@ -54,7 +54,13 @@ class Entrypoint {
 }
 
 mock.module("@bookclerk/plugin-sdk/workerd", {
-  exports: { BookclerkEntrypoint: Entrypoint, IngressEntrypoint: Entrypoint, PluginError },
+  exports: {
+    BookclerkEntrypoint: Entrypoint,
+    IngressEntrypoint: Entrypoint,
+    ProvisioningEntrypoint: Entrypoint,
+    PluginError,
+    provisioned: () => ({}),
+  },
 });
 const { Ingress, default: Plugin } = await import("../src/index.ts");
 const { ECHO_URLS, RECHECK_MS, dnsHealth, learn, liveContext, settingsOf, startDns, stopDns } =
@@ -498,5 +504,5 @@ test("the entrypoint classes call the lifecycle", async () => {
 test("the manifest's module list matches src/", () => {
   const manifest = readFileSync(new URL("../plugin.toml", import.meta.url), "utf8");
   const listed = [...manifest.matchAll(/^name = "([a-z-]+)\.js"$/gm)].map((m) => m[1]).sort();
-  assert.deepEqual(listed, ["address", "dns", "index", "lifecycle"]);
+  assert.deepEqual(listed, ["address", "dns", "index", "lifecycle", "provision", "tokens"]);
 });

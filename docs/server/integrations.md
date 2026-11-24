@@ -46,7 +46,8 @@ plugin that runs in `workerd`, in
 The plugin does Audiobookshelf work only: scans, listening sync, sign-in
 with Audiobookshelf credentials, and watching users through `pollEvents`.
 Claim tickets and the Accounts page are part of Bookclerk itself; the host
-polls `pollEvents` and starts those workflows.
+polls `pollEvents`, mints each user's claim ticket, and then acknowledges
+the users it minted (`ackEvents`) so the plugin stops reporting them.
 
 ### Set it up
 
@@ -154,10 +155,14 @@ only polls.
 
 The plugin keeps the users it has reported in its `LISTENING_STATE`
 database, as a hash of each user id. So a user created while the plugin
-slept is still reported by the next poll. If recording a new user fails,
-the next poll reports that user again and the host mints a second
-ticket. A poll reply lost on its way to the host is not retried, so a
-user the plugin had already recorded gets no ticket.
+slept is still reported by the next poll.
+
+Each reported user also stays pending until the host acknowledges it.
+The host acknowledges a user only after its claim ticket is minted, so a
+poll reply lost on its way to the host, or a ticket that could not be
+minted, is answered again by the next poll. The plugin records an
+acknowledged user as known before it clears the pending entry; if that
+write fails, the user stays pending rather than being reported as new.
 
 > [!NOTE]
 > Without the `LISTENING_STATE` database grant, the plugin cannot keep
@@ -244,7 +249,13 @@ book's ISBN. A provider that fails, or gives no answer within 30 seconds, is
 logged and skipped, and the next one is asked.
 
 The acquire overlay asks the providers deployed on the node that runs the
-download, so in a library deploy them wherever acquires run.
+download, so an acquire is routed to a node that runs a provider with the
+guest up, alongside the acquire's `local` outputs, whenever one does. When
+none does (the provider is down, or deployed only on other nodes than the
+outputs), the acquire still runs, without the overlay. The preference also
+lapses for an acquire that waits in the queue past the requirements grace
+period, so a node without the provider may then run it. In a library, deploy
+providers on the nodes that hold your `local` outputs.
 
 These plugins are optional, so they aren't installed by default. Install
 the plugin first, as [Installing plugins](plugins.md#installing-plugins)

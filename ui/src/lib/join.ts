@@ -813,27 +813,6 @@ export function windowLibraries(view: Pick<WindowBooks, "libraries" | "cards">):
 }
 
 /**
- * The entries matching a Library search: `q` (trimmed, case-insensitive)
- * appears in an edition's title, subtitle, authors, narrators or series.
- * An empty search keeps every entry.
- *
- * @param books - The merged window entries.
- * @param q - The Library search text.
- * @returns The entries to show, in their order.
- */
-export function filterWindowBooks(books: WindowEntryView[], q: string): WindowEntryView[] {
-  const needle = q.trim().toLowerCase();
-  if (!needle) return books;
-  return books.filter((entry) =>
-    entry.editions.some((edition) =>
-      [edition.title, edition.subtitle, edition.authors, edition.narrators, edition.series].some(
-        (field) => typeof field === "string" && field.toLowerCase().includes(needle),
-      ),
-    ),
-  );
-}
-
-/**
  * True when any edition of the entry is this server's person's own.
  *
  * @param entry - A window entry.
@@ -841,24 +820,6 @@ export function filterWindowBooks(books: WindowEntryView[], q: string): WindowEn
  */
 export function windowEntryIsYours(entry: WindowEntryView): boolean {
   return entry.editions.some((edition) => edition.yours);
-}
-
-/**
- * The entries to show: those matching the Library search, and with
- * `onlyYours` only the person's own.
- *
- * @param books - The merged window entries.
- * @param q - The Library search text.
- * @param onlyYours - Keep only entries with an edition of the person's.
- * @returns The entries to show, in their order.
- */
-export function shownWindowBooks(
-  books: WindowEntryView[],
-  q: string,
-  onlyYours: boolean,
-): WindowEntryView[] {
-  const found = filterWindowBooks(books, q);
-  return onlyYours ? found.filter(windowEntryIsYours) : found;
 }
 
 /**

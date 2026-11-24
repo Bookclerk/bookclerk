@@ -29,7 +29,7 @@ import re
 import struct
 import time
 from collections.abc import AsyncIterable, AsyncIterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -2202,6 +2202,10 @@ class ScheduledController:
         attempt: Failure attempt, starting at 1.
         deadline_unix_ms: Deadline hint in Unix milliseconds; the host fence
             is authoritative.
+
+    Once the host stops awaiting the fire (fence loss or operator cancel),
+    :attr:`cancelled` turns ``True`` and :meth:`wait_cancelled` returns; stop
+    side effects then.
     """
 
     cron: str = ""
@@ -2209,6 +2213,22 @@ class ScheduledController:
     fire_id: str = ""
     attempt: int = 0
     deadline_unix_ms: int = 0
+    _cancelled: asyncio.Event = field(
+        default_factory=asyncio.Event, repr=False, compare=False, hash=False
+    )
+
+    @property
+    def cancelled(self) -> bool:
+        """Whether the host has cancelled this fire."""
+        return self._cancelled.is_set()
+
+    async def wait_cancelled(self) -> None:
+        """Return once the host cancels this fire (never, when it sent no probe)."""
+        await self._cancelled.wait()
+
+    def _cancel(self) -> None:
+        """Host-side cancellation observed (adapter-internal)."""
+        self._cancelled.set()
 
     @classmethod
     def from_wire(cls, wire: Any) -> ScheduledController:
@@ -2228,6 +2248,20 @@ class ScheduledController:
             attempt=int(_get(wire, "attempt", 0) or 0),
             deadline_unix_ms=int(_get(wire, "deadlineUnixMs", 0) or 0),
         )
+
+
+async def _watch_cancel(cancel: Any, controller: ScheduledController) -> None:
+    """Mark ``controller`` cancelled once the host's cancel watch resolves.
+
+    Args:
+        cancel: The adapter's cancel watch (``wait()`` resolves on cancel).
+        controller: The fire to mark.
+    """
+    try:
+        await _await_maybe(cancel.wait())
+    except Exception:  # noqa: BLE001 - a failed watch never cancels the fire
+        return
+    controller._cancel()
 
 
 # ---------------------------------------------------------------------------
@@ -2305,11 +2339,18 @@ class BookclerkEntrypoint(WorkerEntrypoint):
             return js(queue_batch_results(batch, err))
         return js(queue_batch_results(batch, None))
 
-    async def bookclerkScheduled(self, context: Any = None, wire_controller: Any = None) -> None:
+    async def bookclerkScheduled(
+        self, context: Any = None, wire_controller: Any = None, cancel: Any = None
+    ) -> None:
         """Adapter dispatch: run one cron fire through ``scheduled(controller)``.
 
         The handler receives a :class:`ScheduledController`. Returning
         completes the fire; raising has the host retry the same fire.
+
+        Args:
+            context: Granted bindings for this invocation.
+            wire_controller: Wire ``ScheduledController``.
+            cancel: Host cancel watch for this fire, when the host sent one.
 
         Raises:
             PluginError: ``unsupported`` when the author defines no ``scheduled``.
@@ -2318,7 +2359,17 @@ class BookclerkEntrypoint(WorkerEntrypoint):
         if not callable(handler):
             raise _unsupported("scheduled")
         _apply_invocation_env(self, context)
-        await _await_maybe(handler(ScheduledController.from_wire(wire_controller)))
+        controller = ScheduledController.from_wire(wire_controller)
+        watch = (
+            asyncio.ensure_future(_watch_cancel(cancel, controller))
+            if cancel is not None and callable(getattr(cancel, "wait", None))
+            else None
+        )
+        try:
+            await _await_maybe(handler(controller))
+        finally:
+            if watch is not None:
+                watch.cancel()
 
     def _socket_handle(self, context: Any, wire: Any) -> HostWebSocket:
         """The :class:`HostWebSocket` a socket event names."""
@@ -2757,6 +2808,7 @@ REMOTE_LIBRARY_METHODS: tuple[str, ...] = (
     "scanLibrary",
     "syncListening",
     "pollEvents",
+    "ackEvents",
 )
 """RPC surface of the ``remoteLibrary`` entrypoint."""
 
@@ -2790,9 +2842,61 @@ class RemoteLibraryEntrypoint(NamedEntrypoint):
         """Push / pull listening progress (list of ``ListeningProgress``)."""
         raise _unsupported("syncListening")
 
-    async def pollEvents(self):
-        """``ExternalUser`` records observed since the last poll."""
+    async def pollEvents(self, _params: abi.EventPollParams | None = None):
+        """``ExternalUser`` records observed since the last poll.
+
+        Args:
+            _params: ``{"ackFollows": True}`` when the host calls
+                :meth:`ackEvents` with every user it passes on, so a user
+                should be returned again until it is acknowledged. ``None``
+                or ``False`` from hosts that predate ``ackEvents``.
+        """
         raise _unsupported("pollEvents")
+
+    async def ackEvents(self, _params: abi.EventAckParams) -> None:
+        """The host passed these users on; stop returning them.
+
+        Args:
+            _params: ``{"externalUserIds": [...]}``, the
+                ``externalUserId`` of each user the host received.
+        """
+        return None
+
+    async def bookclerkInvoke(self, context=None, method="", *args):
+        """Dispatch as the base adapter does, keeping old ``pollEvents`` overrides working.
+
+        A ``pollEvents`` written before it took params (``async def
+        pollEvents(self)``) is called without them, as it was before.
+
+        Args:
+            context: The invocation context.
+            method: The method name.
+            *args: The method's wire arguments.
+
+        Returns:
+            The method's wire result.
+        """
+        if str(method) == "pollEvents" and args and not _takes_positional(self.pollEvents):
+            args = ()
+        return await super().bookclerkInvoke(context, method, *args)
+
+
+def _takes_positional(fn: Any) -> bool:
+    """Whether ``fn`` (a bound method) accepts at least one positional argument.
+
+    Args:
+        fn: The callable.
+
+    Returns:
+        ``True`` when one positional argument can be passed.
+    """
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return True
+    return any(
+        p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD, p.VAR_POSITIONAL) for p in params
+    )
 
 
 _ADAPTER_SESSIONS: dict[str, Any] = {}

@@ -656,6 +656,7 @@ async fn branches_show_their_sharing_and_the_owner_removes_what_a_branch_left() 
             key: "A/p1.m4b".into(),
             size: 1,
             content_type: None,
+            version: None,
         }],
     };
     assert!(matches!(

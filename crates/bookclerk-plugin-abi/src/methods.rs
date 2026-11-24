@@ -28,6 +28,7 @@ pub const METHOD_NAMES: &[&str] = &[
     send::NAME,
     send_batch::NAME,
     poll_events::NAME,
+    ack_events::NAME,
     scan_library::NAME,
     sync_listening::NAME,
     authenticate_user::NAME,
@@ -55,6 +56,7 @@ pub const METHOD_NAMES: &[&str] = &[
     parse::NAME,
     render::NAME,
     validate_destination::NAME,
+    check_deliverability::NAME,
     raise::NAME,
     models::NAME,
     run::NAME,
@@ -163,10 +165,18 @@ pub mod send_batch {
 
 /// Poll for plugin-observed external users after [`start`].
 ///
-/// Result: [`crate::EventPollResult`].
+/// Params: [`crate::EventPollParams`]. Result: [`crate::EventPollResult`].
 pub mod poll_events {
     /// Wire method name `"pollEvents"`.
     pub const NAME: &str = "pollEvents";
+}
+
+/// Acknowledge users a [`poll_events`] reply handed over.
+///
+/// Params: [`crate::EventAckParams`].
+pub mod ack_events {
+    /// Wire method name `"ackEvents"`.
+    pub const NAME: &str = "ackEvents";
 }
 
 /// Trigger an integration library scan against a remote server (e.g. ABS).
@@ -257,6 +267,16 @@ pub mod render {
 pub mod validate_destination {
     /// Wire method name `"validateDestination"`.
     pub const NAME: &str = "validateDestination";
+}
+
+/// Run the operator's deliverability check on a notifier (Cap'n Proto
+/// `Notifier.checkDeliverability`).
+///
+/// Params: [`crate::NotifyDeliverabilityParams`]. Result:
+/// [`crate::NotifyDeliverabilityReport`].
+pub mod check_deliverability {
+    /// Wire method name `"checkDeliverability"`.
+    pub const NAME: &str = "checkDeliverability";
 }
 
 /// Raise a notification type the plugin declared (Cap'n Proto

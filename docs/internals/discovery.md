@@ -78,7 +78,17 @@ operator, a household user, or a portal identity) has a **subject key**
    `discover_candidates` rows are references to those listings plus what
    is personal to them: the seed that found the title, how the store found
    it and the starter genre.
-   `storefront_max_remote_calls` is split across the stores, so all stores
+   A storefront deployed only on other nodes is asked there: the subject's
+   job asks the stores this node runs, then queues one `discover_candidates`
+   job pinned to each other store's plugin instance, which routing sends to
+   a node that runs it (when the job queue is full, the subject's job fails
+   after its other work so a retry queues the rest). Each pinned job saves that store's rows and queues
+   the subject's ranking 5 s later, so several stores finishing together
+   fold into one ranking. Rows of a store no node deploys any more are
+   dropped when the subject's job runs, so a retired store's titles leave
+   the shelves.
+   `storefront_max_remote_calls` is split across all deployed stores, on
+   this node and the others, so all stores
    together never make more calls than it allows (deals count as one call,
    and a store whose share is zero is not asked). Only calls the store
    actually answers count: an answer read from the 24-hour store-call cache
@@ -241,7 +251,8 @@ announces it with `holding_added`. A catalog answer that fills or relinks a
 stored edition announces that change as a scan would.
 
 The `discover_candidates` and `discover_feed` jobs are deduplicated per
-subject, so a burst of triggers folds into
+subject (a pinned `discover_candidates` job per subject and plugin
+instance), so a burst of triggers folds into
 the job already waiting.
 
 `GET /api/discover/recommendations` reads the stored feed and returns at once,
@@ -726,7 +737,7 @@ title is **not** in the household library.
   title-meta gap-fills from storefront `catalog_detail` (narrator, runtime,
   description, publisher, genres, abridged): the request carries the title's
   `store_editions` (at most 16), and the host asks each listing store that
-  declares `catalog.detailByProductId` (Audible, Libro.fm, GraphicAudio) for its own
+  declares `catalog.detailByProductId` (Audible, Chirp, Libro.fm, GraphicAudio) for its own
   product (two at most), then the stores that declare `catalog.detailByIsbn`
   (Libro.fm) for the ISBN, three lookups and 3.5 s at most. No plugin id is
   named. The server caches each answer under the set of deployed metadata
@@ -748,15 +759,20 @@ title is **not** in the household library.
   `search_catalog`. See
   [Catalog search capabilities](../plugins/abi.md#catalog-search-capabilities).
 - **Samples.** The dialog's **Sample** control plays a short preview that
-  never counts as listening. For a held edition it is cut from the file
-  (`GET /api/library/editions/{id}/sample`). Otherwise
-  `POST /api/discover/title-sample` takes the title-meta body, asks the
-  same stores in the same order for a catalog record with a `sampleUrl`
-  (10 s at most), and answers a same-origin
-  `/api/samples/{token}` path the daemon serves. The first store's sample,
-  or every store answering that it has none, is cached six hours; after a
-  timeout, a store error or a URL the daemon cannot sign nothing is
-  cached, so the next press asks again. See
+  never counts as listening, and is shown only when there is one to play.
+  When the dialog opens it sends `POST /api/discover/title-sample` the
+  title-meta body plus the held `edition_id`, if any. When the caller may
+  hear that edition and this node reaches its audio, the answer is its
+  `edition_sample_path` (`GET /api/library/editions/{id}/sample`, cut from
+  the file) and no store is asked. Otherwise the route asks the same
+  stores in the same order for a catalog record with a `sampleUrl` (10 s
+  at most) and answers a same-origin `/api/samples/{token}` path as
+  `sample_path`. With no confined media worker, or no source, it answers
+  neither and the dialog shows no control. If an edition sample fails to
+  play, the control asks again without the edition for a store's. The
+  first store's sample, or every store answering that it has none, is
+  cached six hours; after a timeout, a store error or a URL the daemon
+  cannot sign nothing is cached, so the next dialog asks again. See
   [Book samples](../adr/book-samples.md).
 
 Multi-region storefronts are deferred (US default for now).
@@ -831,9 +847,12 @@ A row is one recording, never one title. Two stores' hits share a row when
 they share an ISBN or ASIN, or when the shared listing pool resolved both
 store products into the same expression (`LibraryStore::listing_expressions`).
 
-Stores rarely share a record number, so hits from two different stores that
-share none of those still share a row when all of these hold
-(`same_recording_by_runtime` in `bookclerk-discover`):
+Stores rarely share a record number, so hits that share none of those still
+share a row when all of these hold (`same_recording_by_runtime` in
+`bookclerk-discover`). This also joins one store's two products of one
+recording, which happens when two distributors deliver it: Chirp lists Cyril
+Taylor-Carr's *Aleister Crowley* from both Icon Audio Arts and Author's
+Republic, 2 seconds apart, and search shows one row.
 
 1. Both report a runtime, and the runtimes differ by at most 1 minute
    (stores round a recording's length differently, by less than a minute).
@@ -843,10 +862,11 @@ share none of those still share a row when all of these hold
 3. They credit the same, non-empty set of narrators.
 4. Nothing tells them apart: no two different ISBNs or ASINs, no abridged
    against unabridged, no two different languages, and no two different
-   expressions in the pool.
+   expressions in the pool. For two products of one store, no two different
+   subtitles either (stores word subtitles differently, so this is not
+   checked across stores).
 
-Two products of one store never merge this way, and title and authors alone
-never merge hits. A narration and a dramatisation of one book, or an
+Title and authors alone never merge hits. A narration and a dramatisation of one book, or an
 unabridged and an abridged recording, stay separate rows with their own
 cover, narrators and price. Each merged row keeps every store's edition, so
 every store's price is still offered, and a field one store left out (a
@@ -860,6 +880,18 @@ a tie the first one stays.
 > David Baldacci's *First Family*, read by Ron McLarty, is the reference
 > case: Audible, Chirp and Libro.fm each list an unabridged (871 minutes)
 > and an abridged (370 minutes) recording, and search shows two rows.
+
+Search is a store browser, so unlike the shelves it keeps books the library
+already holds and marks them instead (`in_library` on each hit, filled by
+`join_search_library_copies` when a page is read, never stored):
+
+- `this_edition` ("In your library"): one of the hit's ASIN, ISBN or store
+  products belongs to an edition an account or a branch holds.
+- `other_edition` ("Another edition in your library"): none of those is
+  held, but the hit's work is. The work is that of a store listing the
+  shared listing pool holds for the hit, or else the work the library's
+  resolver would place the hit in, as it places a scanned listing. That is
+  another recording of the book, or the same recording from another store.
 
 Stores give ISBNs where they can: Audible's catalog `isbn` attribute and
 Libro.fm's product ids are ISBNs, and Chirp, which lists none, names a

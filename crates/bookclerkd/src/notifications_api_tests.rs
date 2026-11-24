@@ -687,3 +687,26 @@ fn a_long_notifier_name_still_makes_a_label_the_store_takes() {
     assert_eq!(super::fallback_label("Tele\u{202e}gram\n"), "Telegram");
     assert_eq!(super::fallback_label("\u{202a}\t "), "Notifier");
 }
+
+#[tokio::test]
+async fn the_deliverability_check_needs_an_administrator_and_a_notifier() {
+    let (_state, app, library) = crate::auth::tests::phase2_harness(TOKEN).await;
+    let member = crate::auth::tests::portal_cookie_for(&library, "test", "member-ext").await;
+    let uri = "/api/notifications/notifiers/smtp-1/deliverability";
+    let (status, _) = call(&app, Some(&member), "POST", uri, Some("{}")).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // No notifier plugin is installed in the harness, so the instance is
+    // not one.
+    let (status, body) = call(&app, None, "POST", uri, Some("{}")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("not a notifier")),
+        "{body}"
+    );
+    assert!(super::is_deliverability_path(uri));
+    assert!(!super::is_deliverability_path(
+        "/api/notifications/notifiers/smtp-1/test"
+    ));
+}

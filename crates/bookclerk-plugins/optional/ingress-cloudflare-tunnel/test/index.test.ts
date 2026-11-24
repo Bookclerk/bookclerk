@@ -80,7 +80,13 @@ class Entrypoint {
 }
 
 mock.module("@bookclerk/plugin-sdk/workerd", {
-  exports: { BookclerkEntrypoint: Entrypoint, IngressEntrypoint: Entrypoint, PluginError },
+  exports: {
+    BookclerkEntrypoint: Entrypoint,
+    IngressEntrypoint: Entrypoint,
+    ProvisioningEntrypoint: Entrypoint,
+    PluginError,
+    provisioned: () => ({}),
+  },
 });
 const { Ingress, default: Plugin } = await import("../src/index.ts");
 const {

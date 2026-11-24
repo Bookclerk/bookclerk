@@ -28,6 +28,12 @@ const NOTIFY_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 /// on the answer, so it stays inside the daemon's default 8 s API deadline.
 const NOTIFY_VALIDATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
 
+/// Longest a notifier's `checkDeliverability` may run (the ABI's
+/// `deliverabilityCheckDeadlineMs`): checkers that read a delivered message
+/// wait for it to arrive. Sends on the same session wait behind it.
+const NOTIFY_DELIVERABILITY_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_millis(bookclerk_plugin_abi::DELIVERABILITY_CHECK_DEADLINE_MS as u64);
+
 /// External integration backed by a discovered plugin binary.
 pub struct ExternalIntegration {
     /// Cap'n Proto session (never given `library.db`); opened once with the
@@ -210,8 +216,16 @@ impl ExternalIntegration {
     ///
     /// # Errors
     ///
-    /// Returns an error when an entrypoint's health reports not ok.
+    /// Returns an error when an entrypoint's health reports not ok, or a
+    /// `deadline_exceeded` error when the guest does not answer within
+    /// 30 seconds.
     pub async fn check_health(&self) -> Result<()> {
+        super::bounded_health(super::HEALTH_PROBE_DEADLINE, self.probe_health()).await
+    }
+
+    /// Probes every health-bearing entrypoint the guest exports, unbounded;
+    /// [`Self::check_health`] puts the deadline on it.
+    async fn probe_health(&self) -> Result<()> {
         if self
             .session
             .has_entrypoint(crate::Entrypoint::RemoteLibrary)
@@ -326,9 +340,11 @@ fn combine_health(reports: Vec<bookclerk_plugin_sdk::HealthOk>) -> (bool, Option
 async fn poll_session_users(
     session: &PluginSession,
 ) -> bookclerk_integrations::Result<Vec<ExternalUser>> {
-    let users = session
-        .remote_library(|stub| async move { stub.poll_events().await })
-        .await?;
+    let users = bounded_remote_library(session, "pollEvents", |stub| async move {
+        stub.poll_events(bookclerk_plugin_abi::EventPollParams { ack_follows: true })
+            .await
+    })
+    .await?;
     Ok(users
         .into_iter()
         .map(|user| ExternalUser {
@@ -340,7 +356,92 @@ async fn poll_session_users(
         .collect())
 }
 
+/// Acknowledges users a [`poll_session_users`] reply handed over, so the
+/// guest stops returning them.
+///
+/// # Errors
+///
+/// Returns the guest's `ackEvents` failure, or a missing entrypoint.
+async fn ack_session_users(
+    session: &PluginSession,
+    external_user_ids: Vec<String>,
+) -> bookclerk_integrations::Result<()> {
+    bounded_remote_library(session, "ackEvents", |stub| async move {
+        stub.ack_events(bookclerk_plugin_abi::EventAckParams { external_user_ids })
+            .await
+    })
+    .await?;
+    Ok(())
+}
+
+/// Longest the user poll waits for one `pollEvents` or `ackEvents` answer,
+/// so a guest that stays alive but never answers cannot stall the loop.
+const USER_POLL_CALL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Runs one `remoteLibrary` call for the user poll, bounded by
+/// [`USER_POLL_CALL_DEADLINE`].
+///
+/// On the deadline the call's cancel flag is set, so the session releases
+/// it, and a `deadline_exceeded` error is returned; the users stay pending
+/// on the guest for the next poll.
+///
+/// # Arguments
+///
+/// * `session` - The guest's session.
+/// * `method` - Method name for the deadline error.
+/// * `call` - The call against the guest's `remoteLibrary` stub.
+///
+/// # Errors
+///
+/// Returns the call's error, or `deadline_exceeded` when it does not answer
+/// in time.
+async fn bounded_remote_library<T, F, Fut>(
+    session: &PluginSession,
+    method: &str,
+    call: F,
+) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce(Box<dyn bookclerk_plugin_sdk::RemoteLibrary>) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = std::result::Result<T, bookclerk_plugin_sdk::PluginError>>
+        + 'static,
+{
+    let cancel = Arc::new(AtomicBool::new(false));
+    let pending = session.remote_library_cancelable(Arc::clone(&cancel), call);
+    match tokio::time::timeout(USER_POLL_CALL_DEADLINE, pending).await {
+        Ok(result) => result,
+        Err(_) => {
+            cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+            Err(crate::PluginError::from_abi(
+                Some("deadline_exceeded"),
+                format!(
+                    "{method} did not answer within {} s",
+                    USER_POLL_CALL_DEADLINE.as_secs()
+                ),
+            ))
+        }
+    }
+}
+
 impl ExternalIntegration {
+    /// Acknowledges users a poll handed over.
+    ///
+    /// # Errors
+    ///
+    /// Returns the guest's `ackEvents` failure.
+    pub(crate) async fn ack_external_users(
+        &self,
+        external_user_ids: Vec<String>,
+    ) -> bookclerk_integrations::Result<()> {
+        if !self
+            .session
+            .has_entrypoint(crate::Entrypoint::RemoteLibrary)
+        {
+            return Ok(());
+        }
+        ack_session_users(&self.session, external_user_ids).await
+    }
+
     /// Asks this integration's resident poll loop, when one runs, to poll
     /// the guest's new users now.
     pub(crate) fn poll_users_now(&self) {
@@ -447,9 +548,16 @@ impl Integration for ExternalIntegration {
                     crate::user_poll::RESIDENT_USER_POLL_INTERVAL,
                     self.id().to_string(),
                     on_user,
-                    move || {
+                    {
                         let session = Arc::clone(&session);
-                        async move { Some(poll_session_users(&session).await) }
+                        move || {
+                            let session = Arc::clone(&session);
+                            async move { Some(poll_session_users(&session).await) }
+                        }
+                    },
+                    move |ids| {
+                        let session = Arc::clone(&session);
+                        async move { ack_session_users(&session, ids).await }
                     },
                 );
             }
@@ -793,6 +901,33 @@ impl Integration for ExternalIntegration {
                     Err(bookclerk_plugin_abi::PluginError::unavailable(format!(
                         "validateDestination took longer than {} s",
                         NOTIFY_VALIDATE_TIMEOUT.as_secs()
+                    )))
+                }))
+            })
+            .await?)
+    }
+
+    async fn notify_check_deliverability(
+        &self,
+        params: bookclerk_plugin_abi::NotifyDeliverabilityParams,
+    ) -> bookclerk_integrations::Result<
+        std::result::Result<
+            bookclerk_plugin_abi::NotifyDeliverabilityReport,
+            bookclerk_plugin_abi::PluginError,
+        >,
+    > {
+        Ok(self
+            .session
+            .notifier(move |notifier| async move {
+                Ok(tokio::time::timeout(
+                    NOTIFY_DELIVERABILITY_TIMEOUT,
+                    notifier.check_deliverability(params),
+                )
+                .await
+                .unwrap_or_else(|_| {
+                    Err(bookclerk_plugin_abi::PluginError::unavailable(format!(
+                        "checkDeliverability took longer than {} s",
+                        NOTIFY_DELIVERABILITY_TIMEOUT.as_secs()
                     )))
                 }))
             })

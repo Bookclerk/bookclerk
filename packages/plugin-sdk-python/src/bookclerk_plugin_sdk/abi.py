@@ -208,6 +208,9 @@ close incidents.
 NotifyDestinationKind = Literal["channel", "personal"]
 """Kind of destination a `Notifier` sends to."""
 
+NotifyCheckOutcome = Literal["passed", "warning", "failed", "skipped"]
+"""How one deliverability check or piece of advice came out."""
+
 AiTask = Literal["textEmbeddings"]
 """What a model does. A model has exactly one task, and the task fixes the
 shape of `AiRunParams.input` and of the reply.
@@ -2621,11 +2624,13 @@ class ScheduledHandler(Protocol):
     `fireId`, so handlers dedupe on `fireId`.
     """
 
-    async def scheduled(self, controller: ScheduledController) -> EmptyReply:
+    async def scheduled(self, controller: ScheduledController, cancel: Cancellation) -> EmptyReply:
         """Run one cron fire to completion.
 
         Args:
             controller: The fire being delivered.
+            cancel: Fires once the host cancels the fire (fence loss or operator
+                cancel); null from hosts that predate it.
 
         Returns:
             ``EmptyReply``
@@ -3260,11 +3265,28 @@ class RemoteLibrary(Protocol):
         """
         ...
 
-    async def poll_events(self) -> EventPollReply:
-        """Drain external users the remote side observed since the last poll.
+    async def poll_events(self, params: EventPollParams) -> EventPollReply:
+        """External users the remote side observed and the host has not
+        acknowledged. Without `params.ackFollows` (hosts that predate
+        `ackEvents`) a returned user counts as delivered.
+
+        Args:
+            params: Whether the host acknowledges what it receives.
 
         Returns:
             ``EventPollReply``
+        """
+        ...
+
+    async def ack_events(self, params: EventAckParams) -> EmptyReply:
+        """Acknowledge users a `pollEvents` reply handed over: the host has passed
+        them on, so the guest stops returning them.
+
+        Args:
+            params: The acknowledged users.
+
+        Returns:
+            ``EmptyReply``
         """
         ...
 
@@ -3480,6 +3502,21 @@ class Notifier(Protocol):
 
         Returns:
             ``NotifyValidateReply``
+        """
+        ...
+
+    async def check_deliverability(self, params: NotifyDeliverabilityParams) -> NotifyDeliverabilityReply:
+        """Operator's deliverability check: send a sample the way real messages go,
+        ask checker services how it scores, and merge their findings into
+        advice. Only plugins that declare `[notifier].deliverability_check`
+        implement it (others answer `unsupported`); it may run up to
+        `deliverabilityCheckDeadlineMs`.
+
+        Args:
+            params: Sample message to check.
+
+        Returns:
+            ``NotifyDeliverabilityReply``
         """
         ...
 
@@ -6455,6 +6492,9 @@ class NotificationMessage(TypedDict):
             `none`. Omitted when absent (wire zero value).
         sensitive: True when the body carries a secret (an account-mail link): the
             plugin and SDKs must never log it.
+        libraryOrigin: The library's home page (`https://library.example.com/`), built
+            from its public origin like `link`; absent when no public origin is set.
+            Email footers link to it. Omitted when absent (wire zero value).
     """
 
     notificationId: str
@@ -6470,6 +6510,7 @@ class NotificationMessage(TypedDict):
     alertAction: NotificationAlertAction
     alertKey: NotRequired[str]
     sensitive: bool
+    libraryOrigin: NotRequired[str]
 
 
 class NotifyDestination(TypedDict):
@@ -6607,6 +6648,100 @@ NotifyValidateReply = Union[
 """Result union of `Notifier.validateDestination`. An address the plugin
 refuses is `invalid_params`.
 """
+
+
+class NotifyDeliverabilityParams(TypedDict):
+    """Params of `Notifier.checkDeliverability`.
+
+    Attributes:
+        message: The host's `test` notification, rendered as a real one is, so the
+            checkers score the plugin's real output.
+    """
+
+    message: NotificationMessage
+
+
+class NotifyDeliverabilityCheck(TypedDict):
+    """One checker's result.
+
+    Attributes:
+        service: Service name (`Postmark spam check`); at most
+            `maxNotificationTitleBytes`.
+        outcome: How it came out.
+        summary: One-line result (`SpamAssassin score 0.8; under 5 passes`); at most
+            `maxNotificationFieldBytes`.
+        reportUrl: Absolute `https` link to the service's full report, when it has one.
+            Omitted when absent (wire zero value).
+    """
+
+    service: str
+    outcome: NotifyCheckOutcome
+    summary: str
+    reportUrl: NotRequired[str]
+
+
+class NotifyDeliverabilityAdvice(TypedDict):
+    """One thing the operator can do, merged from every check.
+
+    Attributes:
+        outcome: `failed` is a fix, `warning` an improvement, `passed` what is already
+            right; never `skipped`.
+        title: Short heading; at most `maxNotificationTitleBytes`.
+        detail: What to change and where; at most `maxNotificationFieldBytes`.
+        sources: The `service` names of the checks that raised it.
+    """
+
+    outcome: NotifyCheckOutcome
+    title: str
+    detail: str
+    sources: list[str]
+
+
+class NotifyDeliverabilityReport(TypedDict):
+    """Success payload of `Notifier.checkDeliverability`.
+
+    Attributes:
+        checks: One entry per checker, at most `maxDeliverabilityChecks`.
+        advice: Merged advice, most urgent first; at most `maxDeliverabilityAdvice`.
+    """
+
+    checks: list[NotifyDeliverabilityCheck]
+    advice: list[NotifyDeliverabilityAdvice]
+
+
+class NotifyDeliverabilityReplyOk(TypedDict):
+    """``NotifyDeliverabilityReply`` member ``ok``.
+
+    The report.
+
+    Attributes:
+        kind: Always ``"ok"``.
+        value: The report.
+    """
+
+    kind: Literal["ok"]
+    value: NotifyDeliverabilityReport
+
+
+class NotifyDeliverabilityReplyErr(TypedDict):
+    """``NotifyDeliverabilityReply`` member ``err``.
+
+    Typed failure; `unsupported` when the plugin has no check.
+
+    Attributes:
+        kind: Always ``"err"``.
+        value: Typed failure; `unsupported` when the plugin has no check.
+    """
+
+    kind: Literal["err"]
+    value: PluginError
+
+
+NotifyDeliverabilityReply = Union[
+    NotifyDeliverabilityReplyOk,
+    NotifyDeliverabilityReplyErr,
+]
+"""Result union of `Notifier.checkDeliverability`."""
 
 
 class NotifyRaiseParams(TypedDict):
@@ -7658,6 +7793,28 @@ class DeprovisionRequest(TypedDict):
     """
 
     grant: ProvisionGrant
+
+
+class EventPollParams(TypedDict):
+    """Params of `RemoteLibrary.pollEvents`.
+
+    Attributes:
+        ackFollows: The host calls `ackEvents` with every user it passes on, so the
+            guest keeps returning a user until it is acknowledged. False from hosts that
+            predate `ackEvents`: the guest then treats a returned user as delivered.
+    """
+
+    ackFollows: bool
+
+
+class EventAckParams(TypedDict):
+    """Params of `RemoteLibrary.ackEvents`.
+
+    Attributes:
+        externalUserIds: `ExternalUser.externalUserId` of each user the host passed on.
+    """
+
+    externalUserIds: list[str]
 
 
 class DbValueNull(TypedDict):
@@ -9031,6 +9188,7 @@ __all__ = [
     "NotificationAudience",
     "NotificationAlertAction",
     "NotifyDestinationKind",
+    "NotifyCheckOutcome",
     "AiTask",
     "AiTextRole",
     "ProvisionGrantKind",
@@ -9404,6 +9562,13 @@ __all__ = [
     "NotifyValidateReplyOk",
     "NotifyValidateReplyErr",
     "NotifyValidateReply",
+    "NotifyDeliverabilityParams",
+    "NotifyDeliverabilityCheck",
+    "NotifyDeliverabilityAdvice",
+    "NotifyDeliverabilityReport",
+    "NotifyDeliverabilityReplyOk",
+    "NotifyDeliverabilityReplyErr",
+    "NotifyDeliverabilityReply",
     "NotifyRaiseParams",
     "NotifyRaised",
     "NotifyRaiseReplyOk",
@@ -9482,6 +9647,8 @@ __all__ = [
     "ProvisionReplyErr",
     "ProvisionReply",
     "DeprovisionRequest",
+    "EventPollParams",
+    "EventAckParams",
     "DbValueNull",
     "DbValueBoolean",
     "DbValueInt64",

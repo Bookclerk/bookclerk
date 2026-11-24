@@ -106,6 +106,35 @@ async fn the_plugin_schema_is_applied_and_queried_under_every_profile() {
 }
 
 #[tokio::test]
+async fn a_retry_token_over_the_sql_as_written_is_accepted_under_every_profile() {
+    // The SDKs hash the request they send; the binding desugars `ORDER BY`
+    // before it hashes. A token over the as-sent request still names it.
+    for profile in Profile::ALL {
+        let db = BindingDatabase::open(profile, migrations()).await.unwrap();
+        db.execute(request(vec![insert_note(1, "first")]))
+            .await
+            .unwrap();
+        let ordered = || ExecuteRequest {
+            operation_id: "retry-ordered-read".into(),
+            ..request(vec![query("SELECT id FROM notes ORDER BY id", vec![], 0)])
+        };
+        let mut retry = ordered();
+        retry.request_hash = bookclerk_plugin_abi::canonical_execute_request_hash(&retry).unwrap();
+        let reply = db.execute(retry).await.unwrap();
+        assert_eq!(
+            reply.statements[0].rows[0].values,
+            vec![DbValue::Int64(1)],
+            "{profile:?}"
+        );
+        let mut forged = ordered();
+        forged.operation_id = "retry-forged".into();
+        forged.request_hash = "0".repeat(64);
+        let err = db.execute(forged).await.unwrap_err();
+        assert_eq!(err.code, PluginErrorCode::InvalidParams, "{profile:?}");
+    }
+}
+
+#[tokio::test]
 async fn the_binding_only_reaches_its_own_tables() {
     let db = BindingDatabase::open(Profile::FirstParty, migrations())
         .await

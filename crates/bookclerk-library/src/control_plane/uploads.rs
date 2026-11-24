@@ -67,8 +67,23 @@ pub const UPLOAD_TOKEN_TTL_SECS: i64 = 60 * 60;
 const STATE_OPEN: &str = "open";
 /// Session state: the title was committed.
 pub(super) const STATE_COMMITTED: &str = "committed";
-/// Session state: abandoned (superseded, failed, or its fence lost).
+/// Session state: abandoned (superseded, failed, or its fence lost), and
+/// nothing of it is left on the receiving node.
 const STATE_ABORTED: &str = "aborted";
+/// Session state: abandoned with files on the receiving node still to
+/// delete. Only the receiving node can reach its own destinations, so it
+/// deletes them ([`uploads_to_sweep`]) and then marks the upload aborted
+/// ([`mark_discarded`]), wherever the abort ran (#292).
+const STATE_DISCARDING: &str = "discarding";
+
+/// How many uploads one sweep ([`uploads_to_sweep`]) answers.
+pub const UPLOAD_SWEEP_BATCH: usize = 64;
+
+/// How many open or discarding uploads one sweep reads, oldest first, to
+/// find those to answer: well under the smallest guest result-row cap.
+/// Uploads still live are skipped, so a node receiving more open uploads
+/// than this at once sweeps the rest once older ones commit or end.
+const UPLOAD_SWEEP_SCAN: u64 = 256;
 
 /// The declared files of an upload, as stored in `manifest_json`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -78,6 +93,11 @@ struct Manifest {
     /// granted, the primary first.
     #[serde(default)]
     destinations: Vec<String>,
+    /// Each of `destinations`' configuration revision at grant, in the
+    /// same order (#313); empty for an upload granted before they were
+    /// pinned.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    destination_revisions: Vec<i64>,
     /// Every file, in upload order.
     files: Vec<UploadFile>,
     /// Storage key of the title's companion PDF, when one is uploaded.
@@ -90,6 +110,12 @@ struct Manifest {
     /// holding's listing sold at grant, whose keys the upload claimed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     catalog_edition: Option<String>,
+    /// True when the upload replaces its edition's copy with a better one
+    /// ([`upload_upgrades_edition`]): its files are staged beside their
+    /// keys and moved into place only at the commit
+    /// ([`UploadSession::write_key`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    upgrade: bool,
 }
 
 /// In a [`TitleNames::part_patterns`] pattern: one or more characters of a
@@ -124,6 +150,34 @@ pub struct UploadDestination {
     /// titles (or is the root): every key must then also be one of them.
     /// `None` when the folder is the title's own.
     pub title_names: Option<TitleNames>,
+    /// The destination's instance document revision on the receiving node
+    /// at grant. The grant records it, and the receiving node writes no
+    /// further file and refuses the commit (`destinations_changed`) once
+    /// the destination runs another, so a moved root or bucket never
+    /// splits a title across two backends (#313).
+    pub config_revision: i64,
+}
+
+/// One output destination of the receiving shared node as a grant pins
+/// it: its id and the instance document revision its guest runs
+/// ([`UploadDestination::config_revision`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrantedDestination {
+    /// The destination's id (`local`, `s3`).
+    pub id: String,
+    /// The instance document revision its guest was opened with.
+    pub config_revision: i64,
+}
+
+impl GrantedDestination {
+    /// A destination `id` at `config_revision`.
+    #[must_use]
+    pub fn new(id: impl Into<String>, config_revision: i64) -> Self {
+        Self {
+            id: id.into(),
+            config_revision,
+        }
+    }
 }
 
 impl UploadDestination {
@@ -316,6 +370,10 @@ pub struct UploadSession {
     /// The receiving node's destination ids at grant, the primary first;
     /// the files are written only while the node still has exactly these.
     pub destinations: Vec<String>,
+    /// Each of [`Self::destinations`]' configuration revision at grant, in
+    /// the same order ([`UploadDestination::config_revision`]); empty for
+    /// an upload granted before revisions were pinned.
+    pub destination_revisions: Vec<i64>,
     /// The declared files.
     pub files: Vec<UploadFile>,
     /// Indexes of the files every destination has.
@@ -329,9 +387,36 @@ pub struct UploadSession {
     /// sold at grant. The upload writes under that edition's keys, so it
     /// is recorded as delivered only while the listing still sells it.
     pub catalog_edition: Option<String>,
+    /// True when the upload replaces its edition's copy with a better one
+    /// (#300): each file is written under its staged key
+    /// ([`Self::write_key`]) and moved onto its granted key only when the
+    /// upload commits, so an upload that never commits leaves the copy it
+    /// would have replaced as it was.
+    pub upgrade: bool,
 }
 
 impl UploadSession {
+    /// Where the receiving node writes the copy granted at `key`: `key`
+    /// itself, or for a better copy of the edition ([`Self::upgrade`]) a
+    /// staged key beside it, unique to this upload, that the commit moves
+    /// onto `key` ([`Self::staged_key`]).
+    #[must_use]
+    pub fn write_key<'a>(&self, key: &'a str) -> std::borrow::Cow<'a, str> {
+        if self.upgrade {
+            std::borrow::Cow::Owned(self.staged_key(key))
+        } else {
+            std::borrow::Cow::Borrowed(key)
+        }
+    }
+
+    /// The staged key of the copy granted at `key`: `key` with a suffix
+    /// naming this upload. It ends in no audio, PDF or sidecar extension
+    /// of the title, and no other upload writes it.
+    #[must_use]
+    pub fn staged_key(&self, key: &str) -> String {
+        format!("{key}.bookclerk-staged-{}", self.upload_id)
+    }
+
     /// True for a branch's catalog upload, bound to the node's catalog
     /// fence instead of a job's.
     #[must_use]
@@ -540,6 +625,73 @@ pub(super) fn manifest_problem(req: &UploadGrantRequest<'_>) -> Option<&'static 
     None
 }
 
+/// What the sender states about `file`'s audio ([`UploadFile::probe`] and
+/// its media type), as the library stores a probe; `None` when it states
+/// nothing usable.
+fn stated_probe(file: &UploadFile) -> Option<FileProbe> {
+    let (stated, content_type) = (file.probe.as_ref()?, file.content_type.as_ref()?);
+    let probe = FileProbe {
+        content_type: content_type.clone(),
+        bitrate_kbps: stated.bitrate_kbps,
+        lossless: stated.lossless,
+        source_store: stated.source_store.clone(),
+    };
+    probe.is_well_formed().then_some(probe)
+}
+
+/// True when the upload replaces the library's copy of `edition_id` with a
+/// better one (#300): its primary audio key on the primary destination is
+/// already a recorded file of that edition, the library knows what that
+/// copy is (its probe), and the upload states a probe that is better
+/// ([`FileProbe::is_better_than`]: lossless over lossy, then the higher
+/// bitrate). The upload may then take over every key of the edition,
+/// whoever wrote it; an equal or worse copy, or one the library cannot
+/// compare, leaves the edition's files to their writers.
+///
+/// The replacement is in place, under the copy's own primary key, so the
+/// edition's acquisition record still names its audio. It lands only at
+/// the commit: the files are staged beside their keys until then
+/// ([`UploadSession::write_key`]), and the claim keeps each existing
+/// record describing the file still there, so an upload that never commits
+/// leaves the copy and what the library knows of it unchanged. The stated
+/// probe is
+/// trusted as the protocol trusts it ([`bookclerk_node_proto::UploadProbe`]):
+/// the sender is a node trusted with the title, and the probe decides only
+/// which of two copies of one edition is kept.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub(super) async fn upload_upgrades_edition(
+    store: &LibraryStore,
+    edition_id: &str,
+    req: &UploadGrantRequest<'_>,
+) -> Result<bool> {
+    let Some(primary) = req.destinations.first() else {
+        return Ok(false);
+    };
+    let Some(stated) = req
+        .files
+        .iter()
+        .find(|file| {
+            file.copies
+                .iter()
+                .any(|copy| copy.destination == primary.id && copy.key == req.primary_key)
+        })
+        .and_then(stated_probe)
+    else {
+        return Ok(false);
+    };
+    let held = store.edition_file(&primary.id, req.primary_key).await?;
+    if !held.is_some_and(|held| held.owner == FileOwner::Edition(edition_id.to_string())) {
+        return Ok(false);
+    }
+    Ok(store
+        .edition_file_probe(&primary.id, req.primary_key)
+        .await?
+        .is_some_and(|recorded| stated.is_better_than(&recorded)))
+}
+
 /// Key probes per read of [`claims_another_titles_key`]: each binds once on
 /// both key columns, well under the smallest guest bind cap.
 const KEY_PROBES_PER_READ: usize = 32;
@@ -552,6 +704,10 @@ pub(super) struct OwnTitle<'a> {
     pub edition_id: &'a str,
     /// The account holding (`holdings.id`).
     pub holding_id: &'a str,
+    /// True when the upload replaces the edition's copy with a better one
+    /// ([`upload_upgrades_edition`]): every key of the edition is then its
+    /// own to replace, whichever holding or acquire wrote it (#300).
+    pub upgrade: bool,
 }
 
 /// True when a copy of `files` would land on a file another library title
@@ -567,7 +723,8 @@ pub(super) struct OwnTitle<'a> {
 /// `own` is the title whose keys are the uploader's own: its edition's
 /// audio or PDF key counts as its own only while that holding is the one
 /// that acquired it (another account's holding of the same edition shares
-/// its files but is not this node's to replace). A catalog upload passes
+/// its files but is not this node's to replace), or when the upload is a
+/// better copy of the edition ([`OwnTitle::upgrade`]). A catalog upload passes
 /// `None`: every recorded key is another title's.
 ///
 /// Only the keys that could match are read, so the read stays small (and
@@ -615,7 +772,9 @@ pub(super) async fn claims_another_titles_key(
         }))
         .collect();
     let mine = |edition: &str, holding: Option<&str>| {
-        own.is_some_and(|own| own.edition_id == edition && holding == Some(own.holding_id))
+        own.is_some_and(|own| {
+            own.edition_id == edition && (own.upgrade || holding == Some(own.holding_id))
+        })
     };
     let mut exact = BTreeSet::new();
     let mut stems = BTreeSet::new();
@@ -696,6 +855,10 @@ struct UploadClaim<'a> {
     owner: &'a FileOwner,
     /// Whether this is a branch's catalog upload rather than a job's.
     catalog: bool,
+    /// Whether the upload replaces the edition's copy with a better one
+    /// ([`upload_upgrades_edition`]), so it may take over any key of its
+    /// edition, whoever wrote it.
+    upgrade: bool,
     /// The upload's primary audio key, which gives each file its role.
     primary: &'a str,
     /// The upload recorded as each claimed key's writer.
@@ -731,6 +894,7 @@ async fn claim_upload_keys<'a>(
         holding_id,
         owner,
         catalog,
+        upgrade,
         primary,
         upload_id,
     } = *upload;
@@ -764,6 +928,7 @@ async fn claim_upload_keys<'a>(
                     prior.as_ref(),
                     holding_id,
                     catalog,
+                    upgrade,
                 )
                 .await?
             {
@@ -784,7 +949,9 @@ async fn claim_upload_keys<'a>(
 
 /// Stores the probes a committed upload stated for its audio files on the
 /// rows it wrote ([`LibraryStore::set_uploaded_file_probe`]), so the
-/// library knows what copy it holds without reading the files back.
+/// library knows what copy it holds without reading the files back. A
+/// better copy's rows first drop what they said of the copy it replaced
+/// ([`LibraryStore::describe_uploaded_file`]).
 ///
 /// Done once the upload is committed, when every file has arrived whole:
 /// an open or aborted upload's rows stay unprobed. A file with no probe or
@@ -800,19 +967,21 @@ async fn store_committed_probes(store: &LibraryStore, upload_id: &str) -> Result
     let Some(session) = load_upload(store, upload_id).await? else {
         return Ok(());
     };
-    for file in &session.files {
-        let (Some(stated), Some(content_type)) = (&file.probe, &file.content_type) else {
-            continue;
-        };
-        let probe = FileProbe {
-            content_type: content_type.clone(),
-            bitrate_kbps: stated.bitrate_kbps,
-            lossless: stated.lossless,
-            source_store: stated.source_store.clone(),
-        };
-        if !probe.is_well_formed() {
-            continue;
+    if session.upgrade {
+        // The better copy is in place now: its rows still described the
+        // copy it replaced ([`LibraryStore::claim_edition_file`]).
+        for file in &session.files {
+            for copy in &file.copies {
+                store
+                    .describe_uploaded_file(&copy.destination, &copy.key, upload_id, &file.sha256)
+                    .await?;
+            }
         }
+    }
+    for file in &session.files {
+        let Some(probe) = stated_probe(file) else {
+            continue;
+        };
         for copy in &file.copies {
             match FileRole::for_key(&copy.key, Some(&session.primary_key)) {
                 FileRole::Audio | FileRole::Part | FileRole::Chapter => {}
@@ -892,6 +1061,26 @@ pub(super) async fn upload_holds_its_keys(
         return Ok(true);
     }
     Ok(store.count_edition_files_by(&session.upload_id).await? == granted_key_count(session))
+}
+
+/// True while every key `session` holds is recorded under the edition
+/// its title's listing resolves to now ([`LibraryStore::file_owner_of_holding`]).
+/// A rescan that moved the listing to another edition, or left the title
+/// unresolved, since the grant answers false: the commit is then refused
+/// (`edition_changed`) and the Host's next attempt is granted against the
+/// title's current edition (#688).
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+async fn upload_keys_follow_edition(store: &LibraryStore, session: &UploadSession) -> Result<bool> {
+    let Some(owner) = store.file_owner_of_holding(&session.holding_id).await? else {
+        return Ok(false);
+    };
+    Ok(store
+        .count_edition_files_by_owner(&session.upload_id, &owner)
+        .await?
+        == granted_key_count(session))
 }
 
 /// True while `key` on `destination` is still `session`'s own: its
@@ -1015,13 +1204,39 @@ pub async fn grant_upload(
         }
         // Only the title's own keys: the edition's files another account's
         // holding acquired are not this node's to replace.
+        let upgrade = upload_upgrades_edition(store, &title.edition_id, req).await?;
+        // Another account's title of the edition was committed since the
+        // plan (two hosts, or two plans, raced for one edition): the files
+        // are in the library already, so the host counts this title as
+        // shared instead of failing it on the edition's keys (#689). A
+        // better copy still replaces them.
+        if title.status == AcquireStatus::Acquired && !title.acquired_here() && !upgrade {
+            return Ok(UploadGrant::Refused("edition_acquired"));
+        }
         let own = OwnTitle {
             edition_id: &title.edition_id,
             holding_id: &title.holding_id,
+            upgrade,
         };
         if claims_another_titles_key(store, Some(own), req.files).await? {
             return Ok(UploadGrant::Refused("key_of_another_title"));
         }
+        return open_upload_session(
+            store,
+            node_id,
+            job_id,
+            generation,
+            receiving_node_id,
+            req,
+            OpenAs::Job {
+                copy: if upgrade {
+                    EditionCopy::Better
+                } else {
+                    EditionCopy::Shared
+                },
+            },
+        )
+        .await;
     }
     open_upload_session(
         store,
@@ -1030,9 +1245,36 @@ pub async fn grant_upload(
         generation,
         receiving_node_id,
         req,
-        None,
+        OpenAs::Job {
+            copy: EditionCopy::Shared,
+        },
     )
     .await
+}
+
+/// How a copy an upload delivers compares with the edition's copy in the
+/// library ([`upload_upgrades_edition`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EditionCopy {
+    /// Better: it may replace the edition's files, whoever wrote them.
+    Better,
+    /// Not known to be better: the edition's files stay with their writers.
+    Shared,
+}
+
+/// What [`open_upload_session`] opens.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum OpenAs<'a> {
+    /// A job's upload of one title (or its closing upload).
+    Job {
+        /// How its copy compares with the edition's.
+        copy: EditionCopy,
+    },
+    /// A branch's catalog upload of a title it shares.
+    Catalog {
+        /// The title's manifest digest at grant.
+        digest: &'a str,
+    },
 }
 
 /// Inserts an open upload (its token hashed) after an earlier open upload
@@ -1050,11 +1292,15 @@ pub(super) async fn open_upload_session(
     generation: i64,
     receiving_node_id: &str,
     req: &UploadGrantRequest<'_>,
-    catalog_digest: Option<&str>,
+    open_as: OpenAs<'_>,
 ) -> Result<UploadGrant> {
     if let Some(reason) = manifest_problem(req) {
         return Ok(UploadGrant::Refused(reason));
     }
+    let (catalog_digest, upgrade) = match open_as {
+        OpenAs::Job { copy } => (None, copy == EditionCopy::Better),
+        OpenAs::Catalog { digest } => (Some(digest), false),
+    };
     let catalog = job_id == bookclerk_node_proto::CATALOG_ITEM;
     // A holding's keys are its edition's, an account holding's or a node
     // holding's alike. Resolved before the row goes in, so a catalog upload
@@ -1078,10 +1324,16 @@ pub(super) async fn open_upload_session(
         } else {
             req.destinations.iter().map(|d| d.id.clone()).collect()
         },
+        destination_revisions: if req.holding_id.is_empty() {
+            Vec::new()
+        } else {
+            req.destinations.iter().map(|d| d.config_revision).collect()
+        },
         files: req.files.to_vec(),
         pdf_key: req.pdf_key.map(str::to_string),
         catalog_digest: catalog_digest.map(str::to_string),
         catalog_edition,
+        upgrade,
     })
     .map_err(|err| LibraryError::Other(anyhow::anyhow!("upload manifest encode: {err}")))?;
     let upload_id = uuid::Uuid::new_v4().hyphenated().to_string();
@@ -1121,6 +1373,7 @@ pub(super) async fn open_upload_session(
                 holding_id: req.holding_id,
                 owner,
                 catalog,
+                upgrade,
                 primary: req.primary_key,
                 upload_id: &upload_id,
             },
@@ -1215,6 +1468,7 @@ pub(super) async fn open_upload_session(
                 holding_id: req.holding_id,
                 owner,
                 catalog,
+                upgrade,
                 primary: req.primary_key,
                 upload_id: &upload_id,
             },
@@ -1302,11 +1556,13 @@ fn session_from_model(row: node_upload_sessions::Model) -> Result<UploadSession>
         primary_key: row.primary_key,
         pdf_key: manifest.pdf_key,
         destinations: manifest.destinations,
+        destination_revisions: manifest.destination_revisions,
         files: manifest.files,
         received,
         state: row.state,
         catalog_digest: manifest.catalog_digest,
         catalog_edition: manifest.catalog_edition,
+        upgrade: manifest.upgrade,
     })
 }
 
@@ -1459,12 +1715,19 @@ pub async fn abort_upload(store: &LibraryStore, upload_id: &str) -> Result<Optio
         if row.state != STATE_OPEN {
             return Ok(None);
         }
+        // An upload that received files waits for its receiving node to
+        // delete them; one that received none is done.
+        let next = if row.received_json == "[]" {
+            STATE_ABORTED
+        } else {
+            STATE_DISCARDING
+        };
         // Compare-and-swap on the receipts, so the answer lists every file
         // recorded before the abort.
         let updated = node_upload_sessions::Entity::update_many()
             .col_expr(
                 node_upload_sessions::Column::State,
-                sea_orm::sea_query::Expr::value(STATE_ABORTED),
+                sea_orm::sea_query::Expr::value(next),
             )
             .filter(node_upload_sessions::Column::UploadId.eq(upload_id))
             .filter(node_upload_sessions::Column::State.eq(STATE_OPEN))
@@ -1474,13 +1737,80 @@ pub async fn abort_upload(store: &LibraryStore, upload_id: &str) -> Result<Optio
             .map_err(LibraryError::Orm)?;
         if updated.rows_affected == 1 {
             let mut session = session_from_model(row)?;
-            session.state = STATE_ABORTED.into();
+            session.state = next.into();
             return Ok(Some(session));
         }
     }
     Err(LibraryError::Unavailable(
         "upload receipts kept changing".into(),
     ))
+}
+
+/// Marks an aborted upload's files on its receiving node deleted: a
+/// `discarding` upload becomes `aborted`. Called by the receiving node once
+/// it has deleted (or found it cannot ever reach) what the upload had
+/// received; a no-op for any other state.
+///
+/// # Errors
+///
+/// Returns an error when the write fails.
+pub async fn mark_discarded(store: &LibraryStore, upload_id: &str) -> Result<()> {
+    node_upload_sessions::Entity::update_many()
+        .col_expr(
+            node_upload_sessions::Column::State,
+            sea_orm::sea_query::Expr::value(STATE_ABORTED),
+        )
+        .filter(node_upload_sessions::Column::UploadId.eq(upload_id))
+        .filter(node_upload_sessions::Column::State.eq(STATE_DISCARDING))
+        .exec(store.db())
+        .await
+        .map_err(LibraryError::Orm)?;
+    Ok(())
+}
+
+/// The uploads `receiving_node_id` should sweep (#292), at most
+/// [`UPLOAD_SWEEP_BATCH`]: each open upload it receives whose fence is no
+/// longer live ([`upload_fence_live`]: the Host vanished mid-title and its
+/// lease ran out or moved, so no further file, commit, renewal or finish
+/// will arrive), and each upload aborted elsewhere whose files it still
+/// holds (`discarding`). The caller aborts the first ([`abort_upload`]) and
+/// deletes the files of both, then marks them done ([`mark_discarded`]).
+/// An open upload whose fence is still live is left alone, however long
+/// it has been idle: its job may still send the rest.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub async fn uploads_to_sweep(
+    store: &LibraryStore,
+    receiving_node_id: &str,
+) -> Result<Vec<UploadSession>> {
+    // Read in pages the database plugin's result limits allow.
+    let rows = crate::store::keyset::read_keyset_limit(
+        store,
+        node_upload_sessions::Entity::find()
+            .filter(node_upload_sessions::Column::ReceivingNodeId.eq(receiving_node_id))
+            .filter(node_upload_sessions::Column::State.is_in([STATE_OPEN, STATE_DISCARDING])),
+        &[
+            node_upload_sessions::Column::CreatedAt,
+            node_upload_sessions::Column::UploadId,
+        ],
+        crate::store::keyset::KeyOrder::Ascending,
+        UPLOAD_SWEEP_SCAN,
+    )
+    .await?;
+    let mut out = Vec::new();
+    for row in rows {
+        let session = session_from_model(row)?;
+        if session.state == STATE_OPEN && upload_fence_live(store, &session).await? {
+            continue;
+        }
+        out.push(session);
+        if out.len() >= UPLOAD_SWEEP_BATCH {
+            break;
+        }
+    }
+    Ok(out)
 }
 
 /// Aborts every open upload of `job_id` that `keep` selects; answers the
@@ -1730,6 +2060,11 @@ async fn commit_upload_checked(
     if !upload_holds_its_keys(store, &session).await? {
         return Ok(UploadCommit::Refused("key_taken"));
     }
+    // The keys were claimed under the edition the title resolved to at the
+    // grant; a rescan may have moved it since. The batch re-checks this.
+    if !session.holding_id.is_empty() && !upload_keys_follow_edition(store, &session).await? {
+        return Ok(UploadCommit::Refused("edition_changed"));
+    }
     // The owner decides the job's success itself.
     match (session.holding_id.is_empty(), finish) {
         (false, Some(_)) => return Ok(UploadCommit::Refused("not_a_closing_upload")),
@@ -1787,11 +2122,25 @@ async fn commit_upload_checked(
     let keys_sql = if session.holding_id.is_empty() {
         "1 = 1"
     } else {
+        let granted = i64::try_from(granted_key_count(&session)).unwrap_or(i64::MAX);
         binds.extend([
             text(upload_id),
-            batch::int(i64::try_from(granted_key_count(&session)).unwrap_or(i64::MAX)),
+            batch::int(granted),
+            text(upload_id),
+            text(&session.holding_id),
+            batch::int(granted),
         ]);
-        "(SELECT COUNT(*) FROM edition_files WHERE writer = ?) = ?"
+        // Every key is still recorded under the edition the title sells
+        // now: a rescan that moved the title's listing to another edition
+        // (or left it unresolved) since the grant refuses the commit, so a
+        // title is never marked acquired over files filed under an edition
+        // it no longer has (#688).
+        "(SELECT COUNT(*) FROM edition_files WHERE writer = ?) = ? \
+           AND (SELECT COUNT(*) FROM edition_files WHERE writer = ? \
+                  AND owner_kind = 'edition' AND owner_id IN \
+                    (SELECT store_listings.edition_id FROM store_listings \
+                      WHERE store_listings.id IN (SELECT holdings.listing_id \
+                        FROM holdings WHERE holdings.id = ?))) = ?"
     };
     let mut statements = vec![exec(
         &format!(

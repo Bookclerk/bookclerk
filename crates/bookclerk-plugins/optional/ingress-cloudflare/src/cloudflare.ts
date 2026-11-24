@@ -9,6 +9,7 @@
  */
 
 import { RELAY_MODULES } from "./relay-source.ts";
+import { SetupError } from "./tokens.ts";
 
 /** Cloudflare API base URL. */
 export const API_BASE = "https://api.cloudflare.com/client/v4";
@@ -313,4 +314,26 @@ function checkTarget(target: RelayTarget): void {
 export async function findRelayHost(fetch: Fetch, target: RelayTarget): Promise<string> {
   checkTarget(target);
   return relayHost(target.workerName, await accountSubdomain(fetch, target));
+}
+
+/** What the account holds under the relay's name. */
+export type ScriptState = "absent" | "relay" | "other";
+
+/**
+ * Finds the Worker named `name` in a Worker list.
+ *
+ * @param result - The list's `result`.
+ * @param name - The Worker's name.
+ * @returns `absent`, `relay` when it carries the relay's migration tag, or
+ *   `other`.
+ * @throws {SetupError} When the result is not a list.
+ */
+export function parseScriptState(result: unknown, name: string): ScriptState {
+  if (!Array.isArray(result)) throw new SetupError("Cloudflare's Worker list is not a list");
+  for (const entry of result as unknown[]) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const script = entry as { id?: unknown; migration_tag?: unknown };
+    if (script.id === name) return script.migration_tag === MIGRATION_TAG ? "relay" : "other";
+  }
+  return "absent";
 }

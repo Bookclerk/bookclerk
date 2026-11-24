@@ -130,6 +130,34 @@ export function titleDetailFromCatalog(
   });
 }
 
+/** Most store editions a title-meta or title-sample query may name. */
+const MAX_STORE_EDITIONS = 16;
+
+/**
+ * The stores that list a library work, by their own product ids, so the
+ * details' title-meta and sample lookups can ask each store for its own
+ * record (and its sample) rather than only the stores that answer by ISBN.
+ *
+ * @param listings - The listings of the work's editions, best edition first.
+ * @returns Distinct store editions, at most {@link MAX_STORE_EDITIONS}.
+ */
+export function storeEditionsOf(
+  listings: readonly { plugin_key: string; product_id: string }[],
+): StoreEdition[] {
+  const seen = new Set<string>();
+  const out: StoreEdition[] = [];
+  for (const l of listings) {
+    const source = l.plugin_key.trim();
+    const product_id = l.product_id.trim();
+    const key = `${source}\u0000${product_id}`;
+    if (!source || !product_id || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ source, product_id });
+    if (out.length === MAX_STORE_EDITIONS) break;
+  }
+  return out;
+}
+
 /**
  * Builds a {@link TitleDetail} from a library work's detail.
  *
@@ -185,6 +213,7 @@ export function titleDetailFromWork(work: WorkDetail, status: AcquireStatus): Ti
     marketplace: listing?.marketplace ?? null,
     product_id: listing?.product_id ?? null,
     content_kind: work.kind,
+    store_editions: storeEditionsOf(listings),
     showCommerce: false,
   };
 }

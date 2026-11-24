@@ -120,6 +120,21 @@ pub enum OwnerCallError {
     Unavailable,
 }
 
+/// The owner's answer to an `acquire.plan` ([`HostJobCtx::acquire_plan`]).
+#[derive(Debug, Clone)]
+pub struct AcquirePlan {
+    /// Titles still to acquire, in holding-id order, each after the plan's
+    /// cursor.
+    pub targets: Vec<AcquireTarget>,
+    /// Every output destination deployed on the answering shared node,
+    /// the primary first.
+    pub destinations: Vec<PlanDestination>,
+    /// Where to ask again from when the owner stopped before looking at
+    /// every title of the job, even with no target; `None` once it looked
+    /// at them all.
+    pub next: Option<String>,
+}
+
 /// An open upload of one title: its id and bearer token. The token is
 /// zeroized on drop and never shown by `Debug`.
 pub struct HostUpload {
@@ -461,10 +476,7 @@ impl HostJobCtx {
     /// # Errors
     ///
     /// Returns [`OwnerCallError`]; `Lost` also cancels the job.
-    pub async fn acquire_plan(
-        &self,
-        after: Option<&str>,
-    ) -> Result<(Vec<AcquireTarget>, Vec<PlanDestination>), OwnerCallError> {
+    pub async fn acquire_plan(&self, after: Option<&str>) -> Result<AcquirePlan, OwnerCallError> {
         self.shared
             .acquire_plan(&self.job.job.id, self.job.fence, after)
             .await

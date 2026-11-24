@@ -29,6 +29,7 @@ import {
   deleteUser,
   isApiError,
   listUsers,
+  emailUserInvite,
   mintUserClaimTicket,
   patchProfile,
   patchUser,
@@ -411,6 +412,8 @@ export function UserManagementPanel({
   const [impersonateBusy, setImpersonateBusy] = useState(false);
   const [menuOpenId, setMenuOpenId] = useState<number | null>(null);
   const [inviteCopied, setInviteCopied] = useState(false);
+  // What was last mailed, shown in place of a link to copy.
+  const [mailed, setMailed] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [avatarKey, setAvatarKey] = useState(0);
   const [branchFor, setBranchFor] = useState<ListedUser | null>(null);
@@ -628,13 +631,22 @@ export function UserManagementPanel({
         password: createForm.password || undefined,
         mint_invite: createForm.mint_invite,
       });
-      if (res.claim_ticket) {
-        setClaimTicket({
-          ticket: res.claim_ticket,
-          inviteUrl: res.invite_url,
-          label: `Invite for ${res.user.display_name || res.user.login_name || res.user.email || `user #${res.user.id}`}`,
-        });
-      }
+      setMailed(
+        res.invite_emailed
+          ? `Invite emailed to ${res.user.email ?? "the new user"}. It works once and for 7 days.`
+          : null,
+      );
+      // A creation without a ticket clears the last one, so another
+      // user's invite link is never shown beside this user's notice.
+      setClaimTicket(
+        res.claim_ticket
+          ? {
+              ticket: res.claim_ticket,
+              inviteUrl: res.invite_url,
+              label: `Invite for ${res.user.display_name || res.user.login_name || res.user.email || `user #${res.user.id}`}`,
+            }
+          : null,
+      );
       setCreateForm(EMPTY_USER_FORM);
       await onUsersChanged();
     } catch (err) {
@@ -705,6 +717,22 @@ export function UserManagementPanel({
     }
   }
 
+  async function onEmailInvite(u: ListedUser) {
+    setBusy(true);
+    setError(null);
+    try {
+      await emailUserInvite(u.id);
+      setClaimTicket(null);
+      setMailed(
+        `Invite emailed to ${u.email ?? "the user"}. Earlier invites for this user stop working once it is sent.`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not email the invite");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onDeleteUser(u: ListedUser) {
     if (
       !window.confirm(
@@ -743,6 +771,15 @@ export function UserManagementPanel({
       {error ? (
         <p className="text-sm font-medium text-brick-text" role="alert">
           {error}
+        </p>
+      ) : null}
+
+      {mailed ? (
+        <p
+          className="rounded-md border border-teal/25 bg-teal/10 px-3 py-2 text-sm text-ink"
+          role="status"
+        >
+          {mailed}
         </p>
       ) : null}
 
@@ -1082,6 +1119,20 @@ export function UserManagementPanel({
                         >
                           Remint invite
                         </button>
+                        {u.email ? (
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className={MENU_ITEM_CLASS}
+                            disabled={busy || u.status === "disabled" || !canMutate(u)}
+                            onClick={() => {
+                              setMenuOpenId(null);
+                              void onEmailInvite(u);
+                            }}
+                          >
+                            Email invite
+                          </button>
+                        ) : null}
                         {canAddBranchFor(u) ? (
                           <button
                             type="button"
@@ -1390,6 +1441,11 @@ export function UserManagementPanel({
 
               <p className="text-xs text-ink/70">
                 Password: {selected.has_password ? "set" : "not set"}
+                {selected.email ? (
+                  <>
+                    {" · "}Email: {selected.email_verified ? "verified" : "not verified"}
+                  </>
+                ) : null}
                 {" · "}
                 Last seen{" "}
                 {selected.last_seen_at || selected.last_active_at

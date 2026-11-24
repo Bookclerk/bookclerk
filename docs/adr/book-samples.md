@@ -97,7 +97,16 @@ next store's.
 - Audible implements `catalogDetail` by ASIN and declares
   `detailByProductId`, so title-meta's store fill may now ask Audible too.
 - Other storefronts gain samples by filling `sampleUrl`; the host does not
-  change.
+  change. Libro.fm (`sample_url` of its details), Chirp (`sampleUrl`, by a
+  `catalogDetail` it declares with `detailByProductId`) and GraphicAudio
+  (the product page's sample player) do.
+- The details show the sample control only when a sample can be played
+  here: `POST /api/discover/title-sample` also takes the held edition and
+  answers its sample path when this node reaches its audio, else a
+  store's, else none. Opening a title's details therefore asks the
+  listing stores for a sample when the library holds no playable copy;
+  answers are cached as above. A library whose editions have no audio on
+  this node (the hosted demo's seeded books) offers the stores' samples.
 - Samples use cache space (bounded) and media worker time on first play.
 - The desktop window plays samples in its web view, not through its
   native audio engine.

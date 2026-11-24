@@ -506,6 +506,7 @@ export interface EventPublisherReadResults {
  */
 export interface ScheduledHandlerScheduledParams {
   controller: T.ScheduledController;
+  cancel?: T.Cancellation | null;
 }
 
 /**
@@ -1366,6 +1367,7 @@ export interface RemoteLibrarySyncListeningResults {
  * @internal
  */
 export interface RemoteLibraryPollEventsParams {
+  params: T.EventPollParams;
 }
 
 /**
@@ -1375,6 +1377,24 @@ export interface RemoteLibraryPollEventsParams {
  */
 export interface RemoteLibraryPollEventsResults {
   result: T.EventPollReply;
+}
+
+/**
+ * Params envelope of `RemoteLibrary.ackEvents`.
+ *
+ * @internal
+ */
+export interface RemoteLibraryAckEventsParams {
+  params: T.EventAckParams;
+}
+
+/**
+ * Results envelope of `RemoteLibrary.ackEvents`.
+ *
+ * @internal
+ */
+export interface RemoteLibraryAckEventsResults {
+  result: T.EmptyReply;
 }
 
 /**
@@ -1658,6 +1678,24 @@ export interface NotifierValidateDestinationParams {
  */
 export interface NotifierValidateDestinationResults {
   result: T.NotifyValidateReply;
+}
+
+/**
+ * Params envelope of `Notifier.checkDeliverability`.
+ *
+ * @internal
+ */
+export interface NotifierCheckDeliverabilityParams {
+  params: T.NotifyDeliverabilityParams;
+}
+
+/**
+ * Results envelope of `Notifier.checkDeliverability`.
+ *
+ * @internal
+ */
+export interface NotifierCheckDeliverabilityResults {
+  result: T.NotifyDeliverabilityReply;
 }
 
 /**
@@ -9494,13 +9532,13 @@ export const NotificationFieldCodec: StructCodec<T.NotificationField> = {
 };
 
 /**
- * Wire codec for `NotificationMessage` (1 data words, 10 pointers).
+ * Wire codec for `NotificationMessage` (1 data words, 11 pointers).
  *
  * @internal
  */
 export const NotificationMessageCodec: StructCodec<T.NotificationMessage> = {
   dataWords: 1,
-  pointerCount: 10,
+  pointerCount: 11,
   write(s, v, caps) {
     s.setText(0, v.notificationId ?? "");
     s.setText(1, v.notificationType ?? "");
@@ -9531,6 +9569,9 @@ export const NotificationMessageCodec: StructCodec<T.NotificationMessage> = {
       s.setText(9, v.alertKey ?? "");
     }
     s.setBool(32, v.sensitive ?? false);
+    if (v.libraryOrigin !== undefined) {
+      s.setText(10, v.libraryOrigin ?? "");
+    }
   },
   read(s, caps) {
     const out: T.NotificationMessage = {
@@ -9562,6 +9603,10 @@ export const NotificationMessageCodec: StructCodec<T.NotificationMessage> = {
     const alertKeyValue = s.getText(9);
     if (!(alertKeyValue === "")) {
       out.alertKey = alertKeyValue;
+    }
+    const libraryOriginValue = s.getText(10);
+    if (!(libraryOriginValue === "")) {
+      out.libraryOrigin = libraryOriginValue;
     }
     return out;
   },
@@ -9601,7 +9646,7 @@ export const NotifySendParamsCodec: StructCodec<T.NotifySendParams> = {
   pointerCount: 2,
   write(s, v, caps) {
     if (v.message != null) {
-      NotificationMessageCodec.write(s.initStruct(0, 1, 10), v.message, caps);
+      NotificationMessageCodec.write(s.initStruct(0, 1, 11), v.message, caps);
     }
     if (v.destination != null) {
       NotifyDestinationCodec.write(s.initStruct(1, 1, 2), v.destination, caps);
@@ -9609,7 +9654,7 @@ export const NotifySendParamsCodec: StructCodec<T.NotifySendParams> = {
   },
   read(s, caps) {
     return {
-      message: NotificationMessageCodec.read(s.getStruct(0, 1, 10), caps),
+      message: NotificationMessageCodec.read(s.getStruct(0, 1, 11), caps),
       destination: NotifyDestinationCodec.read(s.getStruct(1, 1, 2), caps),
     };
   },
@@ -9763,6 +9808,155 @@ export const NotifyValidateReplyCodec: StructCodec<T.NotifyValidateReply> = {
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("NotifyValidateReply", disc);
+    }
+  },
+};
+
+/**
+ * Wire codec for `NotifyDeliverabilityParams` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const NotifyDeliverabilityParamsCodec: StructCodec<T.NotifyDeliverabilityParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.message != null) {
+      NotificationMessageCodec.write(s.initStruct(0, 1, 11), v.message, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      message: NotificationMessageCodec.read(s.getStruct(0, 1, 11), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for `NotifyDeliverabilityCheck` (1 data words, 3 pointers).
+ *
+ * @internal
+ */
+export const NotifyDeliverabilityCheckCodec: StructCodec<T.NotifyDeliverabilityCheck> = {
+  dataWords: 1,
+  pointerCount: 3,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.service ?? "");
+    s.setUint16(0, ord(A.NOTIFY_CHECK_OUTCOMES, v.outcome ?? A.NOTIFY_CHECK_OUTCOMES[0]!, "NotifyCheckOutcome"));
+    s.setText(1, v.summary ?? "");
+    if (v.reportUrl !== undefined) {
+      s.setText(2, v.reportUrl ?? "");
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const out: T.NotifyDeliverabilityCheck = {
+      service: s.getText(0),
+      outcome: fromOrd(A.NOTIFY_CHECK_OUTCOMES, s.getUint16(0), "NotifyCheckOutcome"),
+      summary: s.getText(1),
+    };
+    const reportUrlValue = s.getText(2);
+    if (!(reportUrlValue === "")) {
+      out.reportUrl = reportUrlValue;
+    }
+    return out;
+  },
+};
+
+/**
+ * Wire codec for `NotifyDeliverabilityAdvice` (1 data words, 3 pointers).
+ *
+ * @internal
+ */
+export const NotifyDeliverabilityAdviceCodec: StructCodec<T.NotifyDeliverabilityAdvice> = {
+  dataWords: 1,
+  pointerCount: 3,
+  write(s, v, caps) {
+    void caps;
+    s.setUint16(0, ord(A.NOTIFY_CHECK_OUTCOMES, v.outcome ?? A.NOTIFY_CHECK_OUTCOMES[0]!, "NotifyCheckOutcome"));
+    s.setText(0, v.title ?? "");
+    s.setText(1, v.detail ?? "");
+    s.setTextList(2, v.sources ?? []);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      outcome: fromOrd(A.NOTIFY_CHECK_OUTCOMES, s.getUint16(0), "NotifyCheckOutcome"),
+      title: s.getText(0),
+      detail: s.getText(1),
+      sources: s.getTextList(2),
+    };
+  },
+};
+
+/**
+ * Wire codec for `NotifyDeliverabilityReport` (0 data words, 2 pointers).
+ *
+ * @internal
+ */
+export const NotifyDeliverabilityReportCodec: StructCodec<T.NotifyDeliverabilityReport> = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    {
+      const list = v.checks ?? [];
+      const items = s.initStructList(0, list.length, 1, 3);
+      for (let i = 0; i < items.length; i++) {
+        NotifyDeliverabilityCheckCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+    {
+      const list = v.advice ?? [];
+      const items = s.initStructList(1, list.length, 1, 3);
+      for (let i = 0; i < items.length; i++) {
+        NotifyDeliverabilityAdviceCodec.write(items[i]!, list[i]!, caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      checks: s.getStructList(0, 1, 3).map((item) => NotifyDeliverabilityCheckCodec.read(item, caps)),
+      advice: s.getStructList(1, 1, 3).map((item) => NotifyDeliverabilityAdviceCodec.read(item, caps)),
+    };
+  },
+};
+
+/**
+ * Wire codec for `NotifyDeliverabilityReply` (1 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const NotifyDeliverabilityReplyCodec: StructCodec<T.NotifyDeliverabilityReply> = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          NotifyDeliverabilityReportCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("NotifyDeliverabilityReply", (v as { kind: string }).kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: NotifyDeliverabilityReportCodec.read(s.getStruct(0, 0, 2), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("NotifyDeliverabilityReply", disc);
     }
   },
 };
@@ -11270,6 +11464,46 @@ export const DeprovisionRequestCodec: StructCodec<T.DeprovisionRequest> = {
   read(s, caps) {
     return {
       grant: ProvisionGrantCodec.read(s.getStruct(0, 2, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for `EventPollParams` (1 data words, 0 pointers).
+ *
+ * @internal
+ */
+export const EventPollParamsCodec: StructCodec<T.EventPollParams> = {
+  dataWords: 1,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void caps;
+    s.setBool(0, v.ackFollows ?? false);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      ackFollows: s.getBool(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for `EventAckParams` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const EventAckParamsCodec: StructCodec<T.EventAckParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setTextList(0, v.externalUserIds ?? []);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      externalUserIds: s.getTextList(0),
     };
   },
 };
@@ -13580,22 +13814,30 @@ export const EventPublisherReadResultsCodec: StructCodec<EventPublisherReadResul
 };
 
 /**
- * Wire codec for the `ScheduledHandler.scheduled` params envelope (0 data words, 1 pointers).
+ * Wire codec for the `ScheduledHandler.scheduled` params envelope (0 data words, 2 pointers).
  *
  * @internal
  */
 export const ScheduledHandlerScheduledParamsCodec: StructCodec<ScheduledHandlerScheduledParams> = {
   dataWords: 0,
-  pointerCount: 1,
+  pointerCount: 2,
   write(s, v, caps) {
     if (v.controller != null) {
       ScheduledControllerCodec.write(s.initStruct(0, 3, 2), v.controller, caps);
     }
+    if (v.cancel != null) {
+      s.setCap(1, caps.exportCap(v.cancel));
+    }
   },
   read(s, caps) {
-    return {
+    const out: ScheduledHandlerScheduledParams = {
       controller: ScheduledControllerCodec.read(s.getStruct(0, 3, 2), caps),
     };
+    const cancelValue = caps.importCap(s.getCapIndex(1)) as T.Cancellation;
+    if (!(cancelValue == null)) {
+      out.cancel = cancelValue;
+    }
+    return out;
   },
 };
 
@@ -15528,22 +15770,22 @@ export const RemoteLibrarySyncListeningResultsCodec: StructCodec<RemoteLibrarySy
 };
 
 /**
- * Wire codec for the `RemoteLibrary.pollEvents` params envelope (0 data words, 0 pointers).
+ * Wire codec for the `RemoteLibrary.pollEvents` params envelope (0 data words, 1 pointers).
  *
  * @internal
  */
 export const RemoteLibraryPollEventsParamsCodec: StructCodec<RemoteLibraryPollEventsParams> = {
   dataWords: 0,
-  pointerCount: 0,
+  pointerCount: 1,
   write(s, v, caps) {
-    void s;
-    void v;
-    void caps;
+    if (v.params != null) {
+      EventPollParamsCodec.write(s.initStruct(0, 1, 0), v.params, caps);
+    }
   },
   read(s, caps) {
-    void caps;
-    void s;
-    return {};
+    return {
+      params: EventPollParamsCodec.read(s.getStruct(0, 1, 0), caps),
+    };
   },
 };
 
@@ -15563,6 +15805,46 @@ export const RemoteLibraryPollEventsResultsCodec: StructCodec<RemoteLibraryPollE
   read(s, caps) {
     return {
       result: EventPollReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `RemoteLibrary.ackEvents` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const RemoteLibraryAckEventsParamsCodec: StructCodec<RemoteLibraryAckEventsParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      EventAckParamsCodec.write(s.initStruct(0, 0, 1), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: EventAckParamsCodec.read(s.getStruct(0, 0, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `RemoteLibrary.ackEvents` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const RemoteLibraryAckEventsResultsCodec: StructCodec<RemoteLibraryAckEventsResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps),
     };
   },
 };
@@ -16211,6 +16493,46 @@ export const NotifierValidateDestinationResultsCodec: StructCodec<NotifierValida
   read(s, caps) {
     return {
       result: NotifyValidateReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Notifier.checkDeliverability` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const NotifierCheckDeliverabilityParamsCodec: StructCodec<NotifierCheckDeliverabilityParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      NotifyDeliverabilityParamsCodec.write(s.initStruct(0, 0, 1), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: NotifyDeliverabilityParamsCodec.read(s.getStruct(0, 0, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `Notifier.checkDeliverability` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const NotifierCheckDeliverabilityResultsCodec: StructCodec<NotifierCheckDeliverabilityResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      NotifyDeliverabilityReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: NotifyDeliverabilityReplyCodec.read(s.getStruct(0, 1, 1), caps),
     };
   },
 };

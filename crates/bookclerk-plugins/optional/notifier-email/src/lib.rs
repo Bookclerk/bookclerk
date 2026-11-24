@@ -12,7 +12,9 @@
 //! - [`client`]: moves a session's bytes over a connection.
 //! - [`notifier`]: the settings and the `notifier` entrypoint.
 
+pub mod checkers;
 pub mod client;
 pub mod compose;
+pub mod deliverability;
 pub mod notifier;
 pub mod smtp;

@@ -16,9 +16,9 @@ desktop/app--book-details--dark.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
 
 desktop/app--book-details--light.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
 
-desktop/app--change-picture--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+desktop/app--change-picture--dark.png 04774c479aab654d9a0276d38d21e25dc5b36771
 
-desktop/app--change-picture--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+desktop/app--change-picture--light.png 04774c479aab654d9a0276d38d21e25dc5b36771
 
 desktop/app--clerk-approve--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
@@ -52,9 +52,9 @@ desktop/app--library--dark.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
 
 desktop/app--library--light.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
 
-desktop/app--library-other-libraries--dark.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
+desktop/app--library-other-libraries--dark.png 2e978c4b280ee9ba1314f2b6a2910d5c8caca725
 
-desktop/app--library-other-libraries--light.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
+desktop/app--library-other-libraries--light.png 2e978c4b280ee9ba1314f2b6a2910d5c8caca725
 
 desktop/app--now-playing--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
@@ -80,9 +80,9 @@ desktop/app--second-factor-app--dark.png 8d05420908dfd07e138cb0fc8cc825be243b008
 
 desktop/app--second-factor-app--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
-desktop/app--settings-account--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+desktop/app--settings-account--dark.png 04774c479aab654d9a0276d38d21e25dc5b36771
 
-desktop/app--settings-account--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+desktop/app--settings-account--light.png 04774c479aab654d9a0276d38d21e25dc5b36771
 
 desktop/app--settings-branches--dark.png b179a075afd9fec03ea4714797e0be8fa0796948
 
@@ -128,9 +128,9 @@ desktop/app--settings-sign-in--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 desktop/app--settings-sign-in--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
-desktop/app--settings-users--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+desktop/app--settings-users--dark.png 04774c479aab654d9a0276d38d21e25dc5b36771
 
-desktop/app--settings-users--light.png b179a075afd9fec03ea4714797e0be8fa0796948
+desktop/app--settings-users--light.png 04774c479aab654d9a0276d38d21e25dc5b36771
 
 desktop/app--sign-in--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
@@ -143,6 +143,10 @@ desktop/app--sign-in-sso--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 desktop/app--status--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 desktop/app--status--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--verify-email--dark.png 04774c479aab654d9a0276d38d21e25dc5b36771
+
+desktop/app--verify-email--light.png 04774c479aab654d9a0276d38d21e25dc5b36771
 
 desktop/app--welcome--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
@@ -392,6 +396,18 @@ desktop/primitives-input--invalid--dark.png 8d05420908dfd07e138cb0fc8cc825be243b
 
 desktop/primitives-input--invalid--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
+desktop/settings-deliverabilitypanel--ready--dark.png 1969675861f9d38e9c653ba5d00bafb588f0f0ef
+
+desktop/settings-deliverabilitypanel--ready--light.png 1969675861f9d38e9c653ba5d00bafb588f0f0ef
+
+desktop/settings-deliverabilityreport--all-passed--dark.png 1969675861f9d38e9c653ba5d00bafb588f0f0ef
+
+desktop/settings-deliverabilityreport--all-passed--light.png 1969675861f9d38e9c653ba5d00bafb588f0f0ef
+
+desktop/settings-deliverabilityreport--needs-work--dark.png 1969675861f9d38e9c653ba5d00bafb588f0f0ef
+
+desktop/settings-deliverabilityreport--needs-work--light.png 1969675861f9d38e9c653ba5d00bafb588f0f0ef
+
 desktop/settings-modelpicker--does-not-fit--dark.png 5684cc82b1014a654f90dab8e48896eb065314c3
 
 desktop/settings-modelpicker--does-not-fit--light.png 5684cc82b1014a654f90dab8e48896eb065314c3
@@ -524,9 +540,9 @@ phone/app--book-details--dark.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
 
 phone/app--book-details--light.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
 
-phone/app--change-picture--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+phone/app--change-picture--dark.png 04774c479aab654d9a0276d38d21e25dc5b36771
 
-phone/app--change-picture--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+phone/app--change-picture--light.png 04774c479aab654d9a0276d38d21e25dc5b36771
 
 phone/app--clerk-approve--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
@@ -560,9 +576,9 @@ phone/app--library--dark.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
 
 phone/app--library--light.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
 
-phone/app--library-other-libraries--dark.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
+phone/app--library-other-libraries--dark.png 2e978c4b280ee9ba1314f2b6a2910d5c8caca725
 
-phone/app--library-other-libraries--light.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
+phone/app--library-other-libraries--light.png 2e978c4b280ee9ba1314f2b6a2910d5c8caca725
 
 phone/app--now-playing--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
@@ -588,9 +604,9 @@ phone/app--second-factor-app--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 phone/app--second-factor-app--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
-phone/app--settings-account--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+phone/app--settings-account--dark.png 04774c479aab654d9a0276d38d21e25dc5b36771
 
-phone/app--settings-account--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+phone/app--settings-account--light.png 04774c479aab654d9a0276d38d21e25dc5b36771
 
 phone/app--settings-branches--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
@@ -636,9 +652,9 @@ phone/app--settings-sign-in--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 phone/app--settings-sign-in--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
-phone/app--settings-users--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+phone/app--settings-users--dark.png 04774c479aab654d9a0276d38d21e25dc5b36771
 
-phone/app--settings-users--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+phone/app--settings-users--light.png 04774c479aab654d9a0276d38d21e25dc5b36771
 
 phone/app--sign-in--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
@@ -651,6 +667,10 @@ phone/app--sign-in-sso--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 phone/app--status--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 phone/app--status--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--verify-email--dark.png 04774c479aab654d9a0276d38d21e25dc5b36771
+
+phone/app--verify-email--light.png 04774c479aab654d9a0276d38d21e25dc5b36771
 
 phone/app--welcome--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
@@ -899,6 +919,18 @@ phone/primitives-input--filled--light.png 8d05420908dfd07e138cb0fc8cc825be243b00
 phone/primitives-input--invalid--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 phone/primitives-input--invalid--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/settings-deliverabilitypanel--ready--dark.png 1969675861f9d38e9c653ba5d00bafb588f0f0ef
+
+phone/settings-deliverabilitypanel--ready--light.png 1969675861f9d38e9c653ba5d00bafb588f0f0ef
+
+phone/settings-deliverabilityreport--all-passed--dark.png 1969675861f9d38e9c653ba5d00bafb588f0f0ef
+
+phone/settings-deliverabilityreport--all-passed--light.png 1969675861f9d38e9c653ba5d00bafb588f0f0ef
+
+phone/settings-deliverabilityreport--needs-work--dark.png 1969675861f9d38e9c653ba5d00bafb588f0f0ef
+
+phone/settings-deliverabilityreport--needs-work--light.png 1969675861f9d38e9c653ba5d00bafb588f0f0ef
 
 phone/settings-modelpicker--does-not-fit--dark.png 5684cc82b1014a654f90dab8e48896eb065314c3
 

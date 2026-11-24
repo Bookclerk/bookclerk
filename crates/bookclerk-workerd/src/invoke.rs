@@ -162,6 +162,7 @@ const INTERFACES: &[InterfaceEntry] = &[
             "scanLibrary",
             "syncListening",
             "pollEvents",
+            "ackEvents",
         ],
     },
     InterfaceEntry {
@@ -182,7 +183,12 @@ const INTERFACES: &[InterfaceEntry] = &[
     InterfaceEntry {
         id: <plugin_capnp::notifier::Client as HasTypeId>::TYPE_ID,
         name: "Notifier",
-        methods: &["health", "send", "validateDestination"],
+        methods: &[
+            "health",
+            "send",
+            "validateDestination",
+            "checkDeliverability",
+        ],
     },
     InterfaceEntry {
         id: <plugin_capnp::ingress::Client as HasTypeId>::TYPE_ID,

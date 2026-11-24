@@ -2,29 +2,37 @@ import { useEffect, useRef, useState } from "react";
 import { Headphones, Loader2, Pause, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { TitleMetaQuery } from "@/lib/api";
-import { pauseBookFor, sampleSourceKey, sampleSources } from "@/lib/sample";
+import {
+  findSample,
+  pauseBookFor,
+  sampleSourceKey,
+  storeSampleFallback,
+  type FoundSample,
+} from "@/lib/sample";
 import { webPlayer } from "@/lib/webPlayer";
 
 /**
- * Where the sample control is: nothing tried yet, finding audio, playing,
- * paused, none offered, or failed (the store lookup or the audio itself
- * could not be fetched; pressing again retries).
+ * Where the sample control is: ready to play, starting, playing, paused,
+ * or failed (the audio could not be loaded; pressing again retries).
  */
-type SampleStatus = "idle" | "loading" | "playing" | "paused" | "none" | "failed";
+type SampleStatus = "ready" | "loading" | "playing" | "paused" | "failed";
 
 /**
  * The "Sample" control of a title's details: plays a short preview, cut
  * from the edition this library holds or offered by a storefront that
  * listed the title.
  *
+ * The control is shown only once the daemon has said a sample can be
+ * played here; a title with none (no store offers one, or nothing here can
+ * cut one) shows no control at all.
+ *
  * The preview plays in this control's own audio element, never the book
  * player, so it reports no listening position and does not count toward
  * recommendations. Starting it pauses a book that is playing.
  *
- * Key it by the open title's identity, so another title starts over while
- * enrichment of the same title does not. The query is read when the
- * control is pressed, so an ASIN or ISBN that title-meta adds later is
- * used without restarting a sample.
+ * Key it by the open title's identity, so another title starts over. When
+ * enrichment of the same title adds a held edition or an identifier, the
+ * sample is looked up again, unless one is playing or paused.
  *
  * @param props - `editionId` is the held edition, when there is one;
  *   `query` is the title as title-meta sees it.
@@ -36,25 +44,52 @@ export function SampleButton({
   editionId?: string | null;
   query: TitleMetaQuery;
 }) {
-  const [stored, setStatus] = useState<SampleStatus>("idle");
-  // The sources a "none" answer was for. Enrichment can add a held edition
-  // or an identifier later; the answer then no longer holds and the control
-  // is offered again, while a playing or paused sample carries on.
   const sourceKey = sampleSourceKey(editionId, query);
-  const [noneFor, setNoneFor] = useState<string | null>(null);
-  const askedForRef = useRef(sourceKey);
-  const status: SampleStatus = stored === "none" && noneFor !== sourceKey ? "idle" : stored;
+  // The sample found for `sourceKey`; `null` while looking or when there
+  // is none.
+  const [found, setFound] = useState<{ key: string; sample: FoundSample } | null>(null);
+  const [status, setStatus] = useState<SampleStatus>("ready");
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const sourcesRef = useRef<AsyncGenerator<string, void, undefined> | null>(null);
-  // Whether a source's audio failed to load in this attempt, so running
-  // out of sources then reads as a failure to retry, not as no sample.
-  const audioFailedRef = useRef(false);
+  // The sample the audio element holds, and whether the store fallback was
+  // already tried for it.
+  const currentRef = useRef<FoundSample | null>(null);
+  const fellBackRef = useRef(false);
+  const queryRef = useRef(query);
+  const active = status === "playing" || status === "paused" || status === "loading";
+  const activeRef = useRef(active);
+  // The latest title and state, for the lookup and the audio handlers.
+  // Declared before the lookup effect, so it runs first.
+  useEffect(() => {
+    queryRef.current = query;
+    activeRef.current = active;
+  });
+
+  // Looks the sample up when the title's sources change; a sample that is
+  // playing or paused carries on.
+  useEffect(() => {
+    if (activeRef.current) return;
+    let live = true;
+    findSample(editionId, queryRef.current)
+      .then((sample) => {
+        if (!live) return;
+        setFound(sample ? { key: sourceKey, sample } : null);
+        setStatus("ready");
+      })
+      .catch(() => {
+        // Offline or a server error: offer nothing rather than a control
+        // that cannot play.
+        if (live) setFound(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, [sourceKey, editionId]);
+
   // Unmounting (closing the dialog, or another title: the parent keys this
   // control by title) stops the sample.
   useEffect(() => {
     const audio = audioRef.current;
     return () => {
-      sourcesRef.current = null;
       if (audio) {
         audio.pause();
         audio.removeAttribute("src");
@@ -63,44 +98,50 @@ export function SampleButton({
     };
   }, []);
 
-  /**
-   * Moves to the next source, settling on "failed" when the store lookup
-   * failed or the last source's audio did, and on "none" when every source
-   * was asked and none offered a sample.
-   */
-  const playNext = async () => {
+  /** Loads `sample` into the audio element and starts it. */
+  const start = async (sample: FoundSample) => {
     const audio = audioRef.current;
-    const sources = sourcesRef.current;
-    if (!audio || !sources) return;
+    if (!audio) return;
+    currentRef.current = sample;
     setStatus("loading");
-    let next: IteratorResult<string, void>;
-    try {
-      next = await sources.next();
-    } catch {
-      if (sourcesRef.current !== sources) return;
-      sourcesRef.current = null;
-      setStatus("failed");
-      return;
-    }
-    if (sourcesRef.current !== sources) return;
-    if (next.done) {
-      sourcesRef.current = null;
-      setNoneFor(askedForRef.current);
-      setStatus(audioFailedRef.current ? "failed" : "none");
-      return;
-    }
-    // The book may have resumed (a media key) while the lookup ran; pause
-    // it again so the two never play over each other.
+    // The book may have resumed (a media key) meanwhile; pause it again so
+    // the two never play over each other.
     pauseBookFor(webPlayer());
-    audio.src = next.value;
+    audio.src = sample.url;
     try {
       await audio.play();
     } catch {
-      // A source that cannot play raises `error` too, which moves on; a
-      // blocked autoplay leaves the control paused.
+      // A source that cannot play raises `error` too, which is handled
+      // there; a blocked autoplay leaves the control paused.
       if (!audio.error) setStatus("paused");
     }
   };
+
+  /**
+   * The audio failed: a held edition's sample falls back once to a
+   * store's; anything else settles on "failed", which retries.
+   */
+  const onAudioError = async () => {
+    const current = currentRef.current;
+    if (!current) return;
+    if (current.kind === "edition" && !fellBackRef.current) {
+      fellBackRef.current = true;
+      try {
+        const store = await storeSampleFallback(queryRef.current);
+        if (store && currentRef.current === current) {
+          void start(store);
+          return;
+        }
+      } catch {
+        // Settles on "failed" below.
+      }
+    }
+    if (currentRef.current === current) setStatus("failed");
+  };
+
+  const sample = found && found.key === sourceKey ? found.sample : null;
+  // Nothing to offer, and nothing playing: no control.
+  const shown = sample !== null || active;
 
   const onClick = () => {
     const audio = audioRef.current;
@@ -110,51 +151,50 @@ export function SampleButton({
       return;
     }
     pauseBookFor(webPlayer());
-    if (status === "paused") {
+    if (status === "paused" && currentRef.current) {
       void audio.play().catch(() => setStatus("paused"));
       return;
     }
-    audioFailedRef.current = false;
-    askedForRef.current = sourceKey;
-    sourcesRef.current = sampleSources(editionId, query);
-    void playNext();
+    if (!sample) return;
+    fellBackRef.current = false;
+    void start(sample);
   };
 
   const label =
     status === "playing"
       ? "Pause sample"
       : status === "loading"
-        ? "Finding sample…"
-        : status === "none"
-          ? "No sample"
-          : status === "failed"
-            ? "Retry sample"
-            : "Sample";
+        ? "Loading sample…"
+        : status === "failed"
+          ? "Retry sample"
+          : "Sample";
 
   return (
     <>
-      <Button
-        variant="secondary"
-        onClick={onClick}
-        disabled={status === "loading" || status === "none"}
-        aria-pressed={status === "playing"}
-        title={
-          status === "failed"
-            ? "The sample could not be loaded; press to try again"
-            : "A short preview; it does not count as listening"
-        }
-      >
-        {status === "playing" ? (
-          <Pause className="h-4 w-4" />
-        ) : status === "loading" ? (
-          <Loader2 className="h-4 w-4 animate-spin" />
-        ) : status === "failed" ? (
-          <RotateCcw className="h-4 w-4" />
-        ) : (
-          <Headphones className="h-4 w-4" />
-        )}
-        {label}
-      </Button>
+      {shown ? (
+        <Button
+          variant="secondary"
+          onClick={onClick}
+          disabled={status === "loading"}
+          aria-pressed={status === "playing"}
+          title={
+            status === "failed"
+              ? "The sample could not be loaded; press to try again"
+              : "A short preview; it does not count as listening"
+          }
+        >
+          {status === "playing" ? (
+            <Pause className="h-4 w-4" />
+          ) : status === "loading" ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : status === "failed" ? (
+            <RotateCcw className="h-4 w-4" />
+          ) : (
+            <Headphones className="h-4 w-4" />
+          )}
+          {label}
+        </Button>
+      ) : null}
       <audio
         ref={audioRef}
         preload="none"
@@ -162,11 +202,7 @@ export function SampleButton({
         onPlaying={() => setStatus("playing")}
         onPause={() => setStatus((s) => (s === "playing" ? "paused" : s))}
         onEnded={() => setStatus("paused")}
-        onError={() => {
-          if (!sourcesRef.current) return;
-          audioFailedRef.current = true;
-          void playNext();
-        }}
+        onError={() => void onAudioError()}
       />
     </>
   );

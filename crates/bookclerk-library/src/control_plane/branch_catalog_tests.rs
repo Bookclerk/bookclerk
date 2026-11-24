@@ -93,6 +93,7 @@ fn title(product: &str, size: u64) -> CatalogTitle {
             key,
             size,
             content_type: Some("audio/mp4".into()),
+            version: None,
         }],
     }
 }
@@ -226,7 +227,7 @@ async fn a_second_marketplace_copy_of_a_product_is_its_own_title() {
     wanted.sort();
     assert_eq!(wanted, vec![uk_ref.clone(), reference("p1")]);
     // The upload of the UK copy is checked against the UK manifest.
-    let destinations = vec!["local".to_string()];
+    let destinations = vec![GrantedDestination::new("local", 0)];
     let files = vec![UploadFile {
         copies: vec![FileCopy {
             destination: "local".into(),
@@ -688,12 +689,15 @@ async fn a_catalog_upload_commits_only_under_the_live_fence() {
     let (store, _member) = world(dir.path()).await;
     let session = open(&store, true, true).await;
     accepted(&store, session.fence, "c", false, &[title("p1", 3)]).await;
-    let destinations = vec!["local".to_string(), "s3".to_string()];
+    let destinations = vec![
+        GrantedDestination::new("local", 0),
+        GrantedDestination::new("s3", 0),
+    ];
     let file = |key: &str, size: u64| UploadFile {
         copies: destinations
             .iter()
             .map(|destination| FileCopy {
-                destination: destination.clone(),
+                destination: destination.id.clone(),
                 key: key.into(),
             })
             .collect(),
@@ -1005,6 +1009,7 @@ async fn a_catalog_upload_never_overwrites_another_titles_files() {
             key: key.into(),
             size: 1,
             content_type: None,
+            version: None,
         }],
         ..title(product, 1)
     };
@@ -1015,7 +1020,7 @@ async fn a_catalog_upload_never_overwrites_another_titles_files() {
     ];
     let session = open(&store, true, true).await;
     accepted(&store, session.fence, "c", false, &titles).await;
-    let destinations = vec!["local".to_string()];
+    let destinations = vec![GrantedDestination::new("local", 0)];
     let grant = |branch: &'static str, fence: i64, product: &'static str, key: &'static str| {
         let store = store.clone();
         let destinations = destinations.clone();
@@ -1043,10 +1048,35 @@ async fn a_catalog_upload_never_overwrites_another_titles_files() {
             .unwrap()
         }
     };
+    let asked = || {
+        let store = store.clone();
+        async move {
+            pending_deliveries(&store, BRANCH, 10)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|r| r.product_id)
+                .collect::<Vec<_>>()
+        }
+    };
+    assert!(asked().await.contains(&"same-stem".to_string()));
     assert!(matches!(
         grant(BRANCH, session.fence, "same-stem", "Author/own/own.m4b").await,
         UploadGrant::Refused("key_in_use")
     ));
+    // Refused for good: not asked for again on every session (#321)...
+    assert!(!asked().await.contains(&"same-stem".to_string()));
+    // ...until a day has passed (or the manifest changes).
+    holdings::Entity::update_many()
+        .col_expr(
+            holdings::Column::RefusedAt,
+            sea_orm::sea_query::Expr::value("2000-01-01T00:00:00Z"),
+        )
+        .filter(holdings::Column::RefusedDigest.is_not_null())
+        .exec(store.db())
+        .await
+        .unwrap();
+    assert!(asked().await.contains(&"same-stem".to_string()));
     assert!(matches!(
         grant(BRANCH, session.fence, "wild", "Author/o_n/o_n.m4b").await,
         UploadGrant::Granted { .. }
@@ -1107,6 +1137,7 @@ async fn overlapping_grants_of_one_edition_grant_one() {
             key: key.into(),
             size: 1,
             content_type: None,
+            version: None,
         }],
         ..title("free", 1)
     };
@@ -1133,6 +1164,7 @@ async fn overlapping_grants_of_one_edition_grant_one() {
         id: "local".into(),
         title_folders: vec!["Author/free2".into()],
         title_names: None,
+        config_revision: 0,
     }];
     let request = UploadGrantRequest {
         holding_id: &row_c.id,
@@ -1149,7 +1181,7 @@ async fn overlapping_grants_of_one_edition_grant_one() {
         fence_c,
         "shared-node",
         &request,
-        Some(&digest),
+        super::super::uploads::OpenAs::Catalog { digest: &digest },
     )
     .await
     .unwrap();
@@ -1231,6 +1263,7 @@ fn title_with(product: &str, primary: &str, extra: &[&str]) -> CatalogTitle {
                 key: key.into(),
                 size: 1,
                 content_type: None,
+                version: None,
             })
             .collect(),
         ..title(product, 1)
@@ -1278,7 +1311,7 @@ async fn grant_branch_local(
         "shared-node",
         &reference(product),
         &local_files(keys),
-        &["local".to_string()],
+        &[GrantedDestination::new("local", 0)],
     )
     .await
     .unwrap()
@@ -1539,6 +1572,7 @@ async fn a_shared_titles_keys_stay_its_own() {
                     held.as_ref(),
                     title,
                     catalog,
+                    false,
                 )
                 .await
                 .unwrap(),
@@ -1557,6 +1591,7 @@ async fn a_shared_titles_keys_stay_its_own() {
                 None,
                 held.as_ref(),
                 same.as_str(),
+                false,
                 false,
             )
             .await
@@ -2263,7 +2298,7 @@ async fn a_catalog_upload_is_refused_once_its_listing_sells_another_edition() {
         &[title("p1", 3), title("p2", 3)],
     )
     .await;
-    let destinations = vec!["local".to_string()];
+    let destinations = vec![GrantedDestination::new("local", 0)];
     let files = [UploadFile {
         copies: vec![FileCopy {
             destination: "local".into(),
@@ -2364,7 +2399,7 @@ async fn a_delivered_title_whose_listing_moves_is_asked_for_again() {
         "shared-node",
         &reference("p1"),
         &files,
-        &["local".to_string()],
+        &[GrantedDestination::new("local", 0)],
     )
     .await
     .unwrap() else {
@@ -2470,6 +2505,132 @@ async fn a_branchs_two_listings_of_one_edition_are_delivered_once() {
             .is_empty(),
         "p2's edition already has p1's audio"
     );
+}
+
+/// A branch whose title was suppressed by another branch's delivery of the
+/// same edition is delivered by the files that branch left behind once it
+/// stops sharing, when they are exactly its manifest (#942), so the title
+/// can still be passed on. Files that are not its manifest are not adopted.
+#[tokio::test]
+async fn a_deduplicated_title_is_delivered_by_files_its_writer_left() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, member) = world(dir.path()).await;
+    add_node(&store, "branch-c", "branch", Some(member)).await;
+    add_node(&store, "branch-d", "branch", Some(member)).await;
+    let key = "Author/p1/p1.m4b";
+    let fence = open_branch(&store, BRANCH, &[title_with("p1", key, &[])]).await;
+    deliver_local(&store, BRANCH, fence, "p1", &[key]).await;
+    open_branch(&store, "branch-c", &[title_with("p1", key, &[])]).await;
+    open_branch(&store, "branch-d", &[title_with("p1", "Other/p1.m4b", &[])]).await;
+    let delivered = |node: &'static str| {
+        let store = store.clone();
+        async move {
+            list_branch_titles(&store, None, 10)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|row| row.node_id == node)
+                .unwrap()
+                .delivered
+        }
+    };
+    // While the writer delivers, the others are suppressed and adopt
+    // nothing.
+    assert!(pending_deliveries(&store, "branch-c", 10)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(!delivered("branch-c").await);
+    assert!(forwardable_branch_titles_delivered(&store).await == 1);
+
+    // The writer stops sharing; its files stay for the edition.
+    open(&store, false, true).await;
+    assert!(pending_deliveries(&store, "branch-c", 10)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(
+        delivered("branch-c").await,
+        "the same manifest adopts the files"
+    );
+    assert!(pending_deliveries(&store, "branch-d", 10)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(!delivered("branch-d").await, "another manifest does not");
+    assert!(forwardable_branch_titles_delivered(&store).await == 1);
+}
+
+/// Files are adopted only when the branch that wrote them left them
+/// behind: not while its holding is still held under a changed manifest,
+/// and never when the edition's audio was written by an acquire.
+#[tokio::test]
+async fn files_still_held_or_acquired_are_not_adopted() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, member) = world(dir.path()).await;
+    add_node(&store, "branch-c", "branch", Some(member)).await;
+    let key = "Author/p1/p1.m4b";
+    let fence = open_branch(&store, BRANCH, &[title_with("p1", key, &[])]).await;
+    deliver_local(&store, BRANCH, fence, "p1", &[key]).await;
+    open_branch(&store, "branch-c", &[title_with("p1", key, &[])]).await;
+    let delivered = || {
+        let store = store.clone();
+        async move {
+            list_branch_titles(&store, None, 10)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|row| row.node_id == "branch-c")
+                .unwrap()
+                .delivered
+        }
+    };
+
+    // The writer still shares the title, under a manifest it has not
+    // delivered yet: its files are not left behind.
+    holdings::Entity::update_many()
+        .col_expr(
+            holdings::Column::ShareDigest,
+            sea_orm::sea_query::Expr::value("changed"),
+        )
+        .filter(holdings::Column::NodeId.eq(BRANCH))
+        .exec(store.db())
+        .await
+        .unwrap();
+    assert!(pending_deliveries(&store, "branch-c", 10)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(!delivered().await, "a held writer's files are not adopted");
+
+    // The writer leaves, but the edition's audio is an acquire's.
+    open(&store, false, true).await;
+    edition_files::Entity::update_many()
+        .col_expr(
+            edition_files::Column::Writer,
+            sea_orm::sea_query::Expr::value(crate::store::ACQUIRE_WRITER),
+        )
+        .filter(edition_files::Column::StorageKey.eq(key))
+        .exec(store.db())
+        .await
+        .unwrap();
+    assert!(pending_deliveries(&store, "branch-c", 10)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(!delivered().await, "an acquire's files are not adopted");
+}
+
+/// How many branch holdings may be passed on now.
+async fn forwardable_branch_titles_delivered(store: &LibraryStore) -> usize {
+    forwardable_branch_title_keys_page(store, None, 100)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|key| key.delivered)
+        .count()
 }
 
 /// Keys claimed by another branch's upload that was abandoned hold no

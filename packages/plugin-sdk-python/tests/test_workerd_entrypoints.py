@@ -23,6 +23,7 @@ from bookclerk_plugin_sdk.workerd import (
     NotifierEntrypoint,
     PluginError,
     ProvisioningEntrypoint,
+    RemoteLibraryEntrypoint,
     ScheduledController,
     StorageEntrypoint,
     StorefrontEntrypoint,
@@ -157,6 +158,26 @@ class BookclerkEntrypointTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(AttributeError):
             seen[0].attempt = 3  # type: ignore[misc]
         self.assertEqual(ScheduledController.from_wire({}), ScheduledController())
+
+    async def test_scheduled_sees_the_host_cancel(self) -> None:
+        """The host's cancel watch marks the fire cancelled while the handler runs."""
+        released = asyncio.Event()
+        observed: list[bool] = []
+
+        class Watch:
+            async def wait(self) -> None:
+                await released.wait()
+
+        class Default(BookclerkEntrypoint):
+            async def scheduled(self, controller: ScheduledController) -> None:
+                observed.append(controller.cancelled)
+                released.set()
+                await controller.wait_cancelled()
+                observed.append(controller.cancelled)
+
+        await Default().bookclerkScheduled({}, {"cron": "* * * * *"}, Watch())
+        self.assertEqual(observed, [False, True])
+        self.assertFalse(ScheduledController().cancelled)
 
     async def test_scheduled_errors_propagate_and_missing_is_unsupported(self) -> None:
         class Default(BookclerkEntrypoint):
@@ -302,6 +323,45 @@ class PurchaseHintsDefaultTests(unittest.IsolatedAsyncioTestCase):
 
 
 class NamedEntrypointTests(unittest.IsolatedAsyncioTestCase):
+    async def test_remote_library_poll_and_ack(self) -> None:
+        class Acking(RemoteLibraryEntrypoint):
+            def __init__(self) -> None:
+                super().__init__()
+                self.pending = ["ada"]
+                self.seen: list[object] = []
+
+            async def pollEvents(
+                self, params: dict[str, object] | None = None
+            ) -> list[dict[str, str]]:
+                self.seen.append(params)
+                return [
+                    {"provider": "test", "externalUserId": user, "displayName": ""}
+                    for user in self.pending
+                ]
+
+            async def ackEvents(self, params: dict[str, list[str]]) -> None:
+                self.pending = [u for u in self.pending if u not in params["externalUserIds"]]
+
+        plugin = Acking()
+        polled = await plugin.bookclerkInvoke({}, "pollEvents", {"ackFollows": True})
+        self.assertEqual([u["externalUserId"] for u in polled], ["ada"])
+        self.assertEqual(plugin.seen, [{"ackFollows": True}])
+        await plugin.bookclerkInvoke({}, "ackEvents", {"externalUserIds": ["ada"]})
+        self.assertEqual(await plugin.bookclerkInvoke({}, "pollEvents", {"ackFollows": True}), [])
+
+        class Legacy(RemoteLibraryEntrypoint):
+            async def pollEvents(self) -> list[dict[str, str]]:
+                return [{"provider": "test", "externalUserId": "old", "displayName": ""}]
+
+        legacy = await Legacy().bookclerkInvoke({}, "pollEvents", {"ackFollows": True})
+        self.assertEqual([u["externalUserId"] for u in legacy], ["old"])
+        self.assertIsNone(
+            await Legacy().bookclerkInvoke({}, "ackEvents", {"externalUserIds": ["old"]})
+        )
+        with self.assertRaises(PluginError) as ctx:
+            await RemoteLibraryEntrypoint().bookclerkInvoke({}, "pollEvents", {})
+        self.assertEqual(ctx.exception.code, "unsupported")
+
     async def test_cli_invoke_allowlisted(self) -> None:
         class Cli(CliEntrypoint):
             async def invoke(self, params):

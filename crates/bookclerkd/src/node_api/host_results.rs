@@ -47,6 +47,12 @@ use super::work::{error, lost, HostContext};
 /// for the rest.
 const MAX_PLAN_TARGETS: usize = 100;
 
+/// Most titles one `acquire.plan` looks at (#689): a title another
+/// account's title already acquired adds no target, so the target cap
+/// alone does not bound a plan's work. A plan that stops here says where
+/// to ask again (`next`).
+const MAX_PLAN_TITLES_CHECKED: usize = 500;
+
 /// One `scan.results` batch as the host sent it.
 pub(super) struct ScanBatch<'a> {
     /// Plugin whose scan produced the rows.
@@ -321,10 +327,18 @@ pub(super) async fn acquire_plan(
         return Ok(lost(id, job_id, fence));
     };
     let mut targets = Vec::new();
-    for title in plan_order(titles, after, |title| title.holding_id.as_str()) {
-        if targets.len() >= MAX_PLAN_TARGETS {
+    // The last title looked at, and whether any was left unlooked at.
+    let mut last_checked: Option<String> = None;
+    let mut stopped_early = false;
+    for (checked, title) in plan_order(titles, after, |title| title.holding_id.as_str())
+        .into_iter()
+        .enumerate()
+    {
+        if targets.len() >= MAX_PLAN_TARGETS || checked >= MAX_PLAN_TITLES_CHECKED {
+            stopped_early = true;
             break;
         }
+        last_checked = Some(title.holding_id.clone());
         // Only titles whose audio is not acquired on their edition, exactly
         // what the closing commit waits for and what a local acquire
         // visits: an edition another account's title acquired is already
@@ -374,17 +388,20 @@ pub(super) async fn acquire_plan(
         Body::AcquireTargets {
             targets,
             destinations,
+            next: last_checked.filter(|_| stopped_early),
         },
     );
-    // Cut the list until it fits a frame; the host asks again for the rest.
+    // Cut the list until it fits a frame; the host asks again for the rest,
+    // from the last target left in it.
     while frame.to_text().len() > MAX_FRAME_BYTES {
-        let Body::AcquireTargets { targets, .. } = &mut frame.body else {
+        let Body::AcquireTargets { targets, next, .. } = &mut frame.body else {
             break;
         };
         if targets.len() <= 1 {
             return Ok(error(id, "refused", "title_too_large"));
         }
         targets.truncate(targets.len() / 2);
+        *next = targets.last().map(|target| target.holding_id.clone());
     }
     Ok(frame)
 }
@@ -429,6 +446,7 @@ async fn title_destinations(
             id: destination.id.clone(),
             title_folders,
             title_names,
+            config_revision: destination.config_revision,
         });
     }
     out

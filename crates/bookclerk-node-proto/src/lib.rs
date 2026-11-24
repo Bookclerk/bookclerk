@@ -118,8 +118,8 @@ pub use accounts::{
 pub use catalog::{
     is_ancestry, is_library_id, is_marketplace, is_product_id, is_store_id, CatalogFile,
     CatalogMetadata, CatalogRef, CatalogTitle, CATALOG_ITEM, MAX_ANCESTRY,
-    MAX_CATALOG_BATCH_TITLES, MAX_CATALOG_CURSOR_BYTES, MAX_CATALOG_TITLE_BYTES,
-    MAX_CATALOG_WANTED, MAX_MARKETPLACE_BYTES,
+    MAX_CATALOG_BATCH_TITLES, MAX_CATALOG_CURSOR_BYTES, MAX_CATALOG_FILE_VERSION_BYTES,
+    MAX_CATALOG_TITLE_BYTES, MAX_CATALOG_WANTED, MAX_MARKETPLACE_BYTES,
 };
 pub use clerk::{
     clerk_exchange_matches, clerk_request_problem, is_clerk_name, is_clerk_token,

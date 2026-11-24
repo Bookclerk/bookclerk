@@ -3132,15 +3132,32 @@ impl remote_library_capnp::Server for RemoteLibraryServer {
 
     async fn poll_events(
         self: Rc<Self>,
-        _params: remote_library_capnp::PollEventsParams,
+        params: remote_library_capnp::PollEventsParams,
         mut results: remote_library_capnp::PollEventsResults,
     ) -> capnp::Result<()> {
+        // A host that predates the params sends none: a null pointer reads
+        // as the default, `ackFollows = false`.
+        let params = crate::generated::read_event_poll_params(params.get()?.get_params()?)?;
         let outcome = self
             .inner
-            .poll_events()
+            .poll_events(params)
             .await
             .map(|users| EventPollResult { users });
         write_event_poll_reply(results.get().init_result(), &outcome)
+    }
+
+    async fn ack_events(
+        self: Rc<Self>,
+        params: remote_library_capnp::AckEventsParams,
+        mut results: remote_library_capnp::AckEventsResults,
+    ) -> capnp::Result<()> {
+        let params = crate::generated::read_event_ack_params(params.get()?.get_params()?)?;
+        let mut result = results.get().init_result();
+        match self.inner.ack_events(params).await {
+            Ok(()) => result.set_ok(()),
+            Err(err) => write_error(result.init_err(), &err),
+        }
+        Ok(())
     }
 }
 
@@ -3272,6 +3289,17 @@ impl notifier_capnp::Server for NotifierServer {
         let params = crate::generated::read_notify_validate_params(params.get()?.get_params()?)?;
         let outcome = self.inner.validate_destination(params).await;
         crate::generated::write_notify_validate_reply(results.get().init_result(), &outcome)
+    }
+
+    async fn check_deliverability(
+        self: Rc<Self>,
+        params: notifier_capnp::CheckDeliverabilityParams,
+        mut results: notifier_capnp::CheckDeliverabilityResults,
+    ) -> capnp::Result<()> {
+        let params =
+            crate::generated::read_notify_deliverability_params(params.get()?.get_params()?)?;
+        let outcome = self.inner.check_deliverability(params).await;
+        crate::generated::write_notify_deliverability_reply(results.get().init_result(), &outcome)
     }
 }
 
@@ -3606,10 +3634,17 @@ impl scheduled_handler_capnp::Server for ScheduledHandlerServer {
         params: scheduled_handler_capnp::ScheduledParams,
         mut results: scheduled_handler_capnp::ScheduledResults,
     ) -> capnp::Result<()> {
-        let controller =
-            crate::generated::read_scheduled_controller(params.get()?.get_controller()?)?;
+        let params = params.get()?;
+        let controller = crate::generated::read_scheduled_controller(params.get_controller()?)?;
+        let cancel: Box<dyn Cancellation> = if params.has_cancel() {
+            Box::new(CancellationClient {
+                client: params.get_cancel()?,
+            })
+        } else {
+            Box::new(NeverCancel)
+        };
         let mut result = results.get().init_result();
-        match self.inner.scheduled(controller).await {
+        match self.inner.scheduled(controller, cancel).await {
             Ok(()) => result.set_ok(()),
             Err(err) => write_error(result.init_err(), &err),
         }
@@ -4903,12 +4938,21 @@ impl RemoteLibrary for RemoteLibraryClient {
             .map_err(from_capnp)?
             .map(|ok| ok.items)
     }
-    async fn poll_events(&self) -> Result<Vec<ExternalUser>> {
-        let req = self.client.poll_events_request();
+    async fn poll_events(&self, params: crate::EventPollParams) -> Result<Vec<ExternalUser>> {
+        let mut req = self.client.poll_events_request();
+        crate::generated::write_event_poll_params(req.get().init_params(), &params)
+            .map_err(from_capnp)?;
         let reply = req.send().promise.await.map_err(from_capnp)?;
         read_event_poll_reply(reply_result!(reply))
             .map_err(from_capnp)?
             .map(|ok| ok.users)
+    }
+    async fn ack_events(&self, params: crate::EventAckParams) -> Result<()> {
+        let mut req = self.client.ack_events_request();
+        crate::generated::write_event_ack_params(req.get().init_params(), &params)
+            .map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        read_empty(reply_result!(reply))
     }
 }
 
@@ -5042,7 +5086,8 @@ impl MetadataFiles for MetadataFilesClient {
 /// ([`crate::notifications::check_send_params`]) and each
 /// `validateDestination` answer before the caller sees it
 /// ([`crate::notifications::check_validated`]): a malformed address is an
-/// `internal` error. A `send` reply comes back as the notifier said it;
+/// `internal` error. A deliverability report is bounded and cut
+/// ([`crate::notifications::check_deliverability_report`]) the same way. A `send` reply comes back as the notifier said it;
 /// the caller turns it into an outcome with
 /// [`crate::notifications::classify_send_reply`].
 #[derive(Clone)]
@@ -5103,6 +5148,21 @@ impl Notifier for NotifierClient {
             address_json: address.to_json(),
             label: validated.label,
         })
+    }
+
+    async fn check_deliverability(
+        &self,
+        params: crate::NotifyDeliverabilityParams,
+    ) -> Result<crate::NotifyDeliverabilityReport> {
+        crate::notifications::check_message(&params.message)?;
+        let mut req = self.client.check_deliverability_request();
+        crate::generated::write_notify_deliverability_params(req.get().init_params(), &params)
+            .map_err(from_capnp)?;
+        let reply = req.send().promise.await.map_err(from_capnp)?;
+        let report = crate::generated::read_notify_deliverability_reply(reply_result!(reply))
+            .map_err(from_capnp)??;
+        crate::notifications::check_deliverability_report(report)
+            .map_err(|err| PluginError::internal(format!("checkDeliverability: {err}")))
     }
 }
 
@@ -5709,11 +5769,22 @@ impl ScheduledHandlerClient {
     pub fn new(client: scheduled_handler_capnp::Client) -> Self {
         Self { client }
     }
-}
 
-#[async_trait::async_trait(?Send)]
-impl ScheduledHandler for ScheduledHandlerClient {
-    async fn scheduled(&self, controller: crate::ScheduledController) -> Result<()> {
+    /// Delivers one fire with a caller-built cancellation client.
+    ///
+    /// Transports that do not host a local vat (the bookclerk-workerd
+    /// `/invoke` hook, where the probe is a grant-token descriptor) build
+    /// the client themselves.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginError::payload_too_large`] when the cron is longer
+    /// than [`crate::MAX_CRON_BYTES`], or the handler's error.
+    pub async fn scheduled_with_cancel(
+        &self,
+        controller: &crate::ScheduledController,
+        cancel: cancellation::Client,
+    ) -> Result<()> {
         if controller.cron.len() > crate::MAX_CRON_BYTES as usize {
             return Err(PluginError::payload_too_large(format!(
                 "cron of {} bytes exceeds {}",
@@ -5722,8 +5793,9 @@ impl ScheduledHandler for ScheduledHandlerClient {
             )));
         }
         let mut req = self.client.scheduled_request();
-        crate::generated::write_scheduled_controller(req.get().init_controller(), &controller)
+        crate::generated::write_scheduled_controller(req.get().init_controller(), controller)
             .map_err(from_capnp)?;
+        req.get().set_cancel(cancel);
         let reply = req.send().promise.await.map_err(from_capnp)?;
         let result = reply
             .get()
@@ -5734,6 +5806,23 @@ impl ScheduledHandler for ScheduledHandlerClient {
             empty_reply::Ok(()) => Ok(()),
             empty_reply::Err(err) => Err(read_error(err.map_err(from_capnp)?)),
         }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl ScheduledHandler for ScheduledHandlerClient {
+    async fn scheduled(
+        &self,
+        controller: crate::ScheduledController,
+        cancel: Box<dyn Cancellation>,
+    ) -> Result<()> {
+        self.scheduled_with_cancel(
+            &controller,
+            capnp_rpc::new_client(CancellationServer {
+                inner: Arc::from(cancel),
+            }),
+        )
+        .await
     }
 }
 
@@ -7980,7 +8069,14 @@ mod tests {
 
     #[async_trait::async_trait(?Send)]
     impl ScheduledHandler for CronEcho {
-        async fn scheduled(&self, controller: crate::ScheduledController) -> Result<()> {
+        async fn scheduled(
+            &self,
+            controller: crate::ScheduledController,
+            cancel: Box<dyn Cancellation>,
+        ) -> Result<()> {
+            if cancel.poll().await? {
+                return Err(PluginError::cancelled("fire cancelled"));
+            }
             if controller.cron != "*/30 * * * *" {
                 return Err(PluginError::invalid_params(format!(
                     "unexpected cron {}",
@@ -8030,17 +8126,29 @@ mod tests {
                 attempt: 1,
                 deadline_unix_ms: at + 60_000,
             };
+            let live = || -> Box<dyn Cancellation> { Box::new(NeverCancel) };
             handler
-                .scheduled(fire("*/30 * * * *", 1_800_000))
+                .scheduled(fire("*/30 * * * *", 1_800_000), live())
                 .await
                 .expect("fire ok");
+            let cancelled = handler
+                .scheduled(
+                    fire("*/30 * * * *", 1_800_000),
+                    Box::new(TestCancel(Arc::new(AtomicBool::new(true)))),
+                )
+                .await
+                .expect_err("the handler sees the host's cancel");
+            assert_eq!(cancelled.code, crate::PluginErrorCode::Cancelled);
             let err = handler
-                .scheduled(fire("0 0 * * *", 1_800_000))
+                .scheduled(fire("0 0 * * *", 1_800_000), live())
                 .await
                 .expect_err("wrong cron");
             assert_eq!(err.code, crate::PluginErrorCode::InvalidParams);
             let too_long = handler
-                .scheduled(fire(&"1".repeat(crate::MAX_CRON_BYTES as usize + 1), 0))
+                .scheduled(
+                    fire(&"1".repeat(crate::MAX_CRON_BYTES as usize + 1), 0),
+                    live(),
+                )
                 .await
                 .expect_err("cron too long");
             assert_eq!(too_long.code, crate::PluginErrorCode::PayloadTooLarge);
@@ -8461,6 +8569,20 @@ mod tests {
                 let opened = open_default(&client).await;
                 let remote = opened.remote_library.expect("remoteLibrary");
                 assert!(remote.health().await.expect("health").ok);
+                let unsupported = remote
+                    .poll_events(crate::EventPollParams { ack_follows: true })
+                    .await
+                    .expect_err("the default pollEvents is unsupported");
+                assert!(
+                    unsupported.message.contains("pollEvents"),
+                    "{unsupported:?}"
+                );
+                remote
+                    .ack_events(crate::EventAckParams {
+                        external_user_ids: vec!["u1".into()],
+                    })
+                    .await
+                    .expect("the default ackEvents accepts and does nothing");
                 let consumer = opened.event_consumer.expect("eventConsumer");
                 assert_eq!(
                     deliver(&consumer, sample_event("book_acquired"))

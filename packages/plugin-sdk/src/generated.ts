@@ -43,6 +43,7 @@ import type {
   NotificationAudience,
   NotificationAlertAction,
   NotifyDestinationKind,
+  NotifyCheckOutcome,
   AiTask,
   AiTextRole,
   ProvisionGrantKind,
@@ -84,6 +85,7 @@ export type {
   NotificationAudience,
   NotificationAlertAction,
   NotifyDestinationKind,
+  NotifyCheckOutcome,
   AiTask,
   AiTextRole,
   ProvisionGrantKind,
@@ -1472,9 +1474,10 @@ export interface ScheduledHandler {
    * Run one cron fire to completion.
    *
    * @param controller - The fire being delivered.
+   * @param cancel - Fires once the host cancels the fire (fence loss or operator cancel); null from hosts that predate it.
    * @returns {@link EmptyReply}
    */
-  scheduled(controller: ScheduledController): Promise<EmptyReply>;
+  scheduled(controller: ScheduledController, cancel: Cancellation): Promise<EmptyReply>;
 }
 
 /**
@@ -1947,11 +1950,22 @@ export interface RemoteLibrary {
    */
   syncListening(): Promise<SyncListeningReply>;
   /**
-   * Drain external users the remote side observed since the last poll.
+   * External users the remote side observed and the host has not
+   * acknowledged. Without `params.ackFollows` (hosts that predate
+   * `ackEvents`) a returned user counts as delivered.
    *
+   * @param params - Whether the host acknowledges what it receives.
    * @returns {@link EventPollReply}
    */
-  pollEvents(): Promise<EventPollReply>;
+  pollEvents(params: EventPollParams): Promise<EventPollReply>;
+  /**
+   * Acknowledge users a `pollEvents` reply handed over: the host has passed
+   * them on, so the guest stops returning them.
+   *
+   * @param params - The acknowledged users.
+   * @returns {@link EmptyReply}
+   */
+  ackEvents(params: EventAckParams): Promise<EmptyReply>;
 }
 
 /** `cli` entrypoint: guest commands under `bookclerk plugins <id> <command>`. */
@@ -2120,6 +2134,17 @@ export interface Notifier {
    * @returns {@link NotifyValidateReply}
    */
   validateDestination(params: NotifyValidateParams): Promise<NotifyValidateReply>;
+  /**
+   * Operator's deliverability check: send a sample the way real messages go,
+   * ask checker services how it scores, and merge their findings into
+   * advice. Only plugins that declare `[notifier].deliverability_check`
+   * implement it (others answer `unsupported`); it may run up to
+   * `deliverabilityCheckDeadlineMs`.
+   *
+   * @param params - Sample message to check.
+   * @returns {@link NotifyDeliverabilityReply}
+   */
+  checkDeliverability(params: NotifyDeliverabilityParams): Promise<NotifyDeliverabilityReply>;
 }
 
 /**
@@ -4342,6 +4367,13 @@ export interface NotificationMessage {
    * and SDKs must never log it.
    */
   sensitive: boolean;
+  /**
+   * The library's home page (`https://library.example.com/`), built from its
+   * public origin like `link`; absent when no public origin is set. Email
+   * footers link to it.
+   * Omitted when absent (wire zero value).
+   */
+  libraryOrigin?: string;
 }
 
 /** Where a `Notifier.send` goes. */
@@ -4410,6 +4442,61 @@ export interface NotifyValidated {
 export type NotifyValidateReply =
   | { kind: "ok"; value: NotifyValidated } // Accepted, normalised address.
   | { kind: "err"; value: PluginError }; // Typed failure; `code` is a `PluginErrorCode` wire string.
+
+/** Params of `Notifier.checkDeliverability`. */
+export interface NotifyDeliverabilityParams {
+  /**
+   * The host's `test` notification, rendered as a real one is, so the
+   * checkers score the plugin's real output.
+   */
+  message: NotificationMessage;
+}
+
+/** One checker's result. */
+export interface NotifyDeliverabilityCheck {
+  /** Service name (`Postmark spam check`); at most `maxNotificationTitleBytes`. */
+  service: string;
+  /** How it came out. */
+  outcome: NotifyCheckOutcome;
+  /**
+   * One-line result (`SpamAssassin score 0.8; under 5 passes`); at most
+   * `maxNotificationFieldBytes`.
+   */
+  summary: string;
+  /**
+   * Absolute `https` link to the service's full report, when it has one.
+   * Omitted when absent (wire zero value).
+   */
+  reportUrl?: string;
+}
+
+/** One thing the operator can do, merged from every check. */
+export interface NotifyDeliverabilityAdvice {
+  /**
+   * `failed` is a fix, `warning` an improvement, `passed` what is already
+   * right; never `skipped`.
+   */
+  outcome: NotifyCheckOutcome;
+  /** Short heading; at most `maxNotificationTitleBytes`. */
+  title: string;
+  /** What to change and where; at most `maxNotificationFieldBytes`. */
+  detail: string;
+  /** The `service` names of the checks that raised it. */
+  sources: string[];
+}
+
+/** Success payload of `Notifier.checkDeliverability`. */
+export interface NotifyDeliverabilityReport {
+  /** One entry per checker, at most `maxDeliverabilityChecks`. */
+  checks: NotifyDeliverabilityCheck[];
+  /** Merged advice, most urgent first; at most `maxDeliverabilityAdvice`. */
+  advice: NotifyDeliverabilityAdvice[];
+}
+
+/** Result union of `Notifier.checkDeliverability`. */
+export type NotifyDeliverabilityReply =
+  | { kind: "ok"; value: NotifyDeliverabilityReport } // The report.
+  | { kind: "err"; value: PluginError }; // Typed failure; `unsupported` when the plugin has no check.
 
 /** Params of `NotificationRaiser.raise`. */
 export interface NotifyRaiseParams {
@@ -4978,6 +5065,22 @@ export type ProvisionReply =
 export interface DeprovisionRequest {
   /** The operator's grant, or kind `none` to use the stored secrets. */
   grant: ProvisionGrant;
+}
+
+/** Params of `RemoteLibrary.pollEvents`. */
+export interface EventPollParams {
+  /**
+   * The host calls `ackEvents` with every user it passes on, so the guest
+   * keeps returning a user until it is acknowledged. False from hosts that
+   * predate `ackEvents`: the guest then treats a returned user as delivered.
+   */
+  ackFollows: boolean;
+}
+
+/** Params of `RemoteLibrary.ackEvents`. */
+export interface EventAckParams {
+  /** `ExternalUser.externalUserId` of each user the host passed on. */
+  externalUserIds: string[];
 }
 
 /** One typed SQL cell or bind parameter. */

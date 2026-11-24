@@ -335,6 +335,7 @@ async fn own_files(
                 object.key.clone(),
                 CatalogFile {
                     content_type: content_type(&object.key),
+                    version: file_version(&object),
                     key: object.key,
                     size: object.size,
                 },
@@ -346,6 +347,32 @@ async fn own_files(
         "the primary file {primary:?} is not on this install's destination"
     );
     Ok(files.into_values().take(MAX_UPLOAD_FILES).collect())
+}
+
+/// A marker that changes with `object`'s content, for
+/// [`CatalogFile::version`]: the storage change signature, else the entity
+/// tag, else the modification time, so a file replaced in place under the
+/// same key and size changes the title's manifest digest. A marker longer
+/// than [`bookclerk_node_proto::MAX_CATALOG_FILE_VERSION_BYTES`] is sent as
+/// its SHA-256; `None` when the storage reports none of them.
+fn file_version(object: &bookclerk_storage::ObjectInfo) -> Option<String> {
+    use sha2::Digest as _;
+    let marker = object
+        .signature
+        .clone()
+        .or_else(|| object.etag.clone())
+        .or_else(|| object.modified_at_ms.map(|ms| format!("mtime:{ms}")))?;
+    if marker.len() <= bookclerk_node_proto::MAX_CATALOG_FILE_VERSION_BYTES
+        && !marker.chars().any(char::is_control)
+    {
+        return Some(marker);
+    }
+    Some(
+        sha2::Sha256::digest(marker.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect(),
+    )
 }
 
 /// One file on a branch's shelf as an upload source, read from any

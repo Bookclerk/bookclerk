@@ -1,0 +1,1 @@
+{"success":true,"errors":[],"result":[{"id":"0123456789abcdef0123456789abcdef","name":"example.com","status":"active","account":{"id":"3f4b7e3dcab231cbfdaa90a6a28bd548","name":"Home"}}]}

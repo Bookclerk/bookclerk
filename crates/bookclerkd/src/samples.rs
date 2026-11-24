@@ -4,7 +4,7 @@
 //! | Route | What it does |
 //! |---|---|
 //! | `GET /api/library/editions/{id}/sample` | A sample cut from an edition this node holds |
-//! | `POST /api/discover/title-sample` | The same-origin path of a storefront's sample for a title, when a store offers one |
+//! | `POST /api/discover/title-sample` | Which sample a title's details can play: the held edition's path when this node can cut one, else a storefront's, else none |
 //! | `GET /api/samples/{token}` | That storefront sample's audio |
 //!
 //! - **Never listening.** No route here opens a play session, reads or
@@ -51,7 +51,7 @@ use bookclerk_library::COPY_RUNTIME_TOLERANCE_MS;
 use bookclerk_media::{ByteSpan, MediaError, RangeSource};
 use bookclerk_node_proto::{parse_copy_range, CopyRange};
 use bookclerk_storage::{ByteRange, StorageBackend};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 
@@ -695,11 +695,35 @@ async fn cut_stored(
     Ok(sample.mp3)
 }
 
-/// `POST /api/discover/title-sample` answer.
+/// `POST /api/discover/title-sample` request: the title as title-meta
+/// sees it, and the edition this library holds of it, when it holds one.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub(crate) struct TitleSampleQuery {
+    /// The title, its identifiers and the stores that list it.
+    #[serde(flatten)]
+    title: bookclerk_discover::TitleMetaQuery,
+    /// The library edition the caller would hear a sample of (an `id` in a
+    /// work's `editions`); the stores are asked only when this node cannot
+    /// cut a sample from it.
+    #[serde(default)]
+    #[schema(example = "5d2c8e1a-7b3f-4a6e-9c0d-1e2f3a4b5c6d")]
+    edition_id: Option<String>,
+}
+
+/// `POST /api/discover/title-sample` answer. At most one path is given;
+/// none means no sample can be played here, so the app shows no sample
+/// control.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub(crate) struct TitleSampleJson {
+    /// Same-origin path of a sample cut from the held edition
+    /// (`GET /api/library/editions/{id}/sample`); present when the caller
+    /// may hear that edition and this node reaches its audio.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "/api/library/editions/5d2c8e1a-7b3f-4a6e-9c0d-1e2f3a4b5c6d/sample")]
+    edition_sample_path: Option<String>,
     /// Same-origin path of a storefront's sample of the title, to play
-    /// with `GET`; absent when no store that lists it offers one.
+    /// with `GET`; absent when an edition sample is offered instead, or no
+    /// store that lists the title offers one.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(
         example = "/api/samples/aHR0cHM6Ly9zYW1wbGVzLmV4YW1wbGUvYS5tcDM.q2fW1n4bJm0Rg9xV3kTzPA"
@@ -707,27 +731,69 @@ pub(crate) struct TitleSampleJson {
     sample_path: Option<String>,
 }
 
-/// Finds a storefront's sample of a title.
+/// The edition sample path for edition `id`, when the caller may hear it
+/// and this node can cut a sample from it: the playback plan's rights
+/// check passes and one of this node's destinations holds its audio. Cuts
+/// nothing.
+async fn edition_sample_here(state: &AppState, headers: &HeaderMap, id: &str) -> Option<String> {
+    const ROUTE: &str = "POST /api/discover/title-sample";
+    let user_id = listener(state, headers).await.ok()?;
+    let library = state.library_snapshot().await;
+    let edition = edition_in_scope(state, &library, headers, id, ROUTE)
+        .await
+        .ok()?;
+    let plan = plan_playback(&library, user_id, &edition.edition_id)
+        .await
+        .ok()??;
+    let destinations = owner_destinations(state).await.ok()?;
+    playable_here(&plan, &destinations)?;
+    Some(format!(
+        "/api/library/editions/{}/sample",
+        edition.edition_id
+    ))
+}
+
+/// Finds the sample a title's details can play: one cut from the held
+/// edition when this node can, else a storefront's.
 #[utoipa::path(
     post,
     path = "/api/discover/title-sample",
-    request_body = bookclerk_discover::TitleMetaQuery,
+    request_body = TitleSampleQuery,
     responses(
-        (status = 200, description = "The sample's same-origin path, or none when no listing store offers one.", body = TitleSampleJson),
+        (status = 200, description = "The path of the sample to play: the held edition's, else a store's; neither when no sample can be played here (no confined media worker, or no source offers one).", body = TitleSampleJson),
         (status = 400, description = "The query is malformed or too large.", body = String, content_type = "text/plain", example = json!("title, asin, or isbn is required")),
     ),
 )]
 pub(crate) async fn post_title_sample(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<bookclerk_discover::TitleMetaQuery>,
+    headers: HeaderMap,
+    Json(body): Json<TitleSampleQuery>,
 ) -> Result<Json<TitleSampleJson>, (StatusCode, String)> {
-    crate::api::validate_title_meta_query(&body)?;
+    crate::api::validate_title_meta_query(&body.title)?;
+    let none = TitleSampleJson {
+        edition_sample_path: None,
+        sample_path: None,
+    };
+    // Every sample is cut by the confined worker: without one, none plays.
+    if !bookclerk_media::pool().is_isolated() {
+        return Ok(Json(none));
+    }
+    if let Some(id) = body.edition_id.as_deref().map(str::trim) {
+        if let Some(path) = edition_sample_here(&state, &headers, id).await {
+            // A held book's own sample never calls out to a store.
+            return Ok(Json(TitleSampleJson {
+                edition_sample_path: Some(path),
+                sample_path: None,
+            }));
+        }
+    }
     let sources = state.sources.read().await;
     // Only a URL this node can sign is worth taking: a store whose record
     // carries another kind gives way to the next store's.
-    let url = bookclerk_discover::resolve_title_sample(&body, &sources, is_coverable).await;
+    let url = bookclerk_discover::resolve_title_sample(&body.title, &sources, is_coverable).await;
     Ok(Json(TitleSampleJson {
         sample_path: url.and_then(|url| state.samples.path_for(&url)),
+        ..none
     }))
 }
 

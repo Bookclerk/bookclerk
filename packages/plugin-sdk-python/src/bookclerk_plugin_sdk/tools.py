@@ -1192,7 +1192,9 @@ def _validate_metadata_files(m: dict[str, Any]) -> None:
             raise ValueError(f"{row}.credit_roles needs `credits` in `fields`")
 
 
-_NOTIFIER_KEYS = frozenset(("destinations", "account_mail", "formats", "address_fields"))
+_NOTIFIER_KEYS = frozenset(
+    ("destinations", "account_mail", "deliverability_check", "formats", "address_fields")
+)
 """Keys ``[notifier]`` may carry (the host's fields)."""
 
 _ADDRESS_FIELD_KEYS = frozenset(("key", "label", "required", "secret"))
@@ -1239,6 +1241,8 @@ def _validate_notifier(m: dict[str, Any]) -> None:
             raise ValueError(f"plugin.toml: `[notifier]` has unknown key `{key}`")
     if "account_mail" in table and not isinstance(table["account_mail"], bool):
         raise ValueError("plugin.toml: `[notifier].account_mail` must be a boolean")
+    if "deliverability_check" in table and not isinstance(table["deliverability_check"], bool):
+        raise ValueError("plugin.toml: `[notifier].deliverability_check` must be a boolean")
     destinations = list(table.get("destinations") or [])
     for kind in destinations:
         if kind not in ("channel", "personal"):

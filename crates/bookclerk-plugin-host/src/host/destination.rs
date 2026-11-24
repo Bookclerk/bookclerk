@@ -118,6 +118,11 @@ pub struct DestinationSettings {
     pub prefix: String,
     /// Naming overrides; unset values inherit global `[output]`.
     pub naming: DestinationNaming,
+    /// The instance document revision the guest was opened with (0 when
+    /// unknown). A branch upload's grant pins it, so a configuration change
+    /// between the grant's files (a moved `root`, another bucket) refuses
+    /// the rest instead of splitting the title across two backends.
+    pub config_revision: i64,
 }
 
 impl DestinationSettings {
@@ -142,6 +147,7 @@ impl DestinationSettings {
                 file_template: text("file_template"),
                 chapter_file_template: text("chapter_file_template"),
             },
+            config_revision: 0,
         }
     }
 }
@@ -511,7 +517,10 @@ pub(crate) async fn spawn_deployed_storage(
     instance_id: Option<&bookclerk_library::control_plane::PluginInstanceId>,
     prepared: crate::instance_bindings::PreparedOpen,
 ) -> PluginResult<SpawnedDestination> {
-    let settings = DestinationSettings::from_granted_config(&prepared.granted_config);
+    let settings = DestinationSettings {
+        config_revision: prepared.config_revision,
+        ..DestinationSettings::from_granted_config(&prepared.granted_config)
+    };
     // First-party identity is the PluginKey plus verified provenance, never
     // the manifest alias: an `s3` or `local` alias twin spawns as a generic
     // storage guest with no implied endpoint grant or typed context.

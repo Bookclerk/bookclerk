@@ -16,6 +16,8 @@ import type { CapTable } from "./db-capnp.js";
 import { MAX_BATCH_KEYS, MAX_SCALAR_BYTES } from "./abi.js";
 import { PluginError } from "./errors.js";
 import type {
+  NotifyDeliverabilityAdvice,
+  NotifyDeliverabilityCheck,
   AdapterDatabaseSession as WireAdapterDatabaseSession,
   AdapterExecuteRequest,
   AiModel,
@@ -54,6 +56,7 @@ import type {
   EntrypointName,
   EventOutcome,
   GrantedContext,
+  CancelWatchLike,
   GrantedJobCapabilities,
   JobOutcomeRecord,
   ChangesRequest,
@@ -415,6 +418,21 @@ const okNotifyValidated = (value: unknown) => {
   }
   const label = typeof v.label === "string" ? v.label : "";
   return okValue(label ? { addressJson: v.addressJson, label } : { addressJson: v.addressJson });
+};
+/**
+ * Wraps a notifier's `checkDeliverability` return as
+ * `NotifyDeliverabilityReport`. The Rust client bounds the lists and cuts
+ * the text.
+ *
+ * @param value - The author method's return value.
+ * @returns The `ok` arm carrying the checks and advice.
+ */
+const okNotifyDeliverabilityReport = (value: unknown) => {
+  const v = (value ?? {}) as { checks?: unknown; advice?: unknown };
+  return okValue({
+    checks: asList<NotifyDeliverabilityCheck>(v.checks),
+    advice: asList<NotifyDeliverabilityAdvice>(v.advice),
+  });
 };
 const okLines = (value: unknown) =>
   okValue({ lines: asList<unknown>(value).map((l) => String(l)) });
@@ -968,12 +986,19 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       W.RemoteLibrarySyncListeningResultsCodec,
       (value) => okValue({ items: asList<ListeningProgress>(value) }),
     ),
-    pollEvents: withoutParams(
+    pollEvents: withParams(
       "remoteLibrary",
       "pollEvents",
       W.RemoteLibraryPollEventsParamsCodec,
       W.RemoteLibraryPollEventsResultsCodec,
       (value) => okValue({ users: asList<ExternalUser>(value) }),
+    ),
+    ackEvents: withParams(
+      "remoteLibrary",
+      "ackEvents",
+      W.RemoteLibraryAckEventsParamsCodec,
+      W.RemoteLibraryAckEventsResultsCodec,
+      okEmpty,
     ),
   },
   EventConsumer: {
@@ -1010,7 +1035,11 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       results: W.ScheduledHandlerScheduledResultsCodec,
       stub: "author",
       call: (s, p, cx) =>
-        (s as AuthorStub).bookclerkScheduled(cx.host.bindContext(cx.ctx), p.controller ?? {}),
+        (s as AuthorStub).bookclerkScheduled(
+          cx.host.bindContext(cx.ctx),
+          p.controller ?? {},
+          (p.cancel ?? null) as CancelWatchLike | null,
+        ),
       ok: okEmpty,
     }),
   },
@@ -1204,6 +1233,13 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       W.NotifierValidateDestinationParamsCodec,
       W.NotifierValidateDestinationResultsCodec,
       okNotifyValidated,
+    ),
+    checkDeliverability: withParams(
+      "notifier",
+      "checkDeliverability",
+      W.NotifierCheckDeliverabilityParamsCodec,
+      W.NotifierCheckDeliverabilityResultsCodec,
+      okNotifyDeliverabilityReport,
     ),
   },
   MetadataFiles: {

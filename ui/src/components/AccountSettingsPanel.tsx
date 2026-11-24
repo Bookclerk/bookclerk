@@ -42,6 +42,7 @@ import {
   passkeyRegisterBegin,
   passkeyRegisterFinish,
   patchProfile,
+  requestEmailVerification,
   setPassword,
   totpEnrollBegin,
   totpEnrollFinish,
@@ -419,6 +420,20 @@ export function AccountSettingsPanel({
     }
   }
 
+  async function sendVerification() {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await requestEmailVerification();
+      setNotice("Check your inbox for a link that verifies this address.");
+    } catch (err) {
+      setError(isApiError(err) ? err.message : "Could not send a verification link");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function onProfileFieldKey(e: KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Escape") {
       e.preventDefault();
@@ -638,6 +653,31 @@ export function AccountSettingsPanel({
                   (isOperatorOnly ? "Daemon operator token session" : "No email")}
               </p>
             )}
+            {user?.email?.trim() && editingField !== "email" ? (
+              <div className="flex flex-wrap items-center gap-2 text-sm">
+                {user.email_verified ? (
+                  <Badge className="bg-teal/15 text-ink normal-case tracking-normal">
+                    Verified
+                  </Badge>
+                ) : (
+                  <>
+                    <Badge className="bg-ink/10 text-ink normal-case tracking-normal">
+                      Not verified
+                    </Badge>
+                    {canEditProfile ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        disabled={busy}
+                        onClick={() => void sendVerification()}
+                      >
+                        Send verification link
+                      </Button>
+                    ) : null}
+                  </>
+                )}
+              </div>
+            ) : null}
           </div>
         </div>
       </section>

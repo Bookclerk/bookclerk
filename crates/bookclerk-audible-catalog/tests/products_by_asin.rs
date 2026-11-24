@@ -16,7 +16,8 @@ fn answer() -> String {
             {"ladder":[{"name":"Science Fiction & Fantasy"},{"name":"Science Fiction"}],"root":"Genres"},
             {"ladder":[{"name":"Literature & Fiction"},{"name":"Historical Fiction"}],"root":"Genres"}
         ]},
-        {"asin":"B019P7DVPE","title":"Calamity"}
+        {"asin":"B019P7DVPE","title":"Calamity",
+         "sample_url":"https://samples.audible.com/bk/adbl/000001/bk_adbl_000001_sample.mp3"}
     ]}"#
     .to_string()
 }
@@ -28,6 +29,11 @@ async fn titles_carry_each_top_level_genre_once() {
     Mock::given(method("GET"))
         .and(path("/1.0/catalog/products"))
         .and(query_param("asins", "B086WMZ9WR,B019P7DVPE"))
+        // `sample_url` comes only with the `sample` group, not `media`.
+        .and(query_param(
+            "response_groups",
+            "product_attrs,product_desc,contributors,series,product_extended_attrs,media,category_ladders,sample",
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_string(answer()))
         .expect(1)
         .mount(&server)
@@ -43,6 +49,11 @@ async fn titles_carry_each_top_level_genre_once() {
         ["Literature & Fiction", "Science Fiction & Fantasy"]
     );
     assert!(titles[1].genre_roots.is_empty());
+    assert_eq!(titles[0].sample_url, None);
+    assert_eq!(
+        titles[1].sample_url.as_deref(),
+        Some("https://samples.audible.com/bk/adbl/000001/bk_adbl_000001_sample.mp3")
+    );
 }
 
 #[tokio::test]

@@ -1,0 +1,1 @@
+{"success":true,"errors":[],"result":[{"id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb1","type":"CNAME","name":"books.example.com","content":"f70ff985-a4ef-4643-bbbc-4a0ed4fc8415.cfargotunnel.com","proxied":true,"comment":"Kept by Bookclerk (cloudflare_tunnel)"},{"id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2","type":"TXT","name":"books.example.com","content":"x"}]}

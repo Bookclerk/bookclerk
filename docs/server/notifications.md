@@ -8,10 +8,11 @@ The design is in the [notifications ADR](../adr/notifications.md).
 > [!NOTE]
 > Routing, the delivery log, the inbox, the web app's bell with browser
 > and desktop notifications, the web API, the
-> [webhook notifier](#the-webhook-notifier) and the
-> [email notifier](#the-email-notifier) are built. The chat, paging and
-> push notifiers, and account mail (invites and password resets), come
-> later.
+> [webhook notifier](#the-webhook-notifier), the
+> [email notifier](#the-email-notifier) and
+> [account mail](#account-mail) (emailed invites and verified addresses)
+> are built. Self-service password reset, second-factor recovery and the
+> chat, paging and push notifiers come later.
 
 ## How a notification travels
 
@@ -183,8 +184,21 @@ The receiver's answer decides what happens next:
 
 The first-party `email` plugin sends each notification as an email
 through a mail server you already use (your provider's SMTP submission
-server, or your own). Each message has a plain text part and, when the
-notification has one, an HTML part.
+server, or your own). Each message has a plain text part and a branded
+HTML part, both quoted-printable so they stay readable in any mail
+client.
+
+The HTML part is laid out with [MJML](https://mjml.io), compiled inside
+the plugin, so it renders the same in mail clients that strip styles
+from the document head. It shows the Bookclerk mark and name, then a card
+with the From name, the title, the body and the link as a button labelled
+"Open" followed by the From name ("Open your library" when the From name
+is `Bookclerk`). The mark travels inside the message as an inline image,
+so nothing is fetched when the mail is opened. The footer links your
+library's home page (from its public origin) and bookclerk.app. Invites
+also carry a short introduction to Bookclerk, for recipients who have not
+heard of it. When the HTML a notification brings cannot be laid out, the
+plugin sends a plain HTML document instead.
 
 To set up a channel:
 
@@ -218,6 +232,36 @@ roots, signs in only after TLS (`AUTH PLAIN`, or `AUTH LOGIN` when that is
 all the server offers), and marks every message `Auto-Submitted:
 auto-generated` so mail clients do not answer it.
 
+### Checking deliverability
+
+An email instance's settings page has a **Check deliverability** button.
+It sends the `test` notification, built as a real one is, through up to
+three checkers and turns what they find into a list of recommendations,
+most urgent first:
+
+- **Postmark spam check** (`spamcheck.postmarkapp.com`) scores the message
+  with SpamAssassin. Rules about the sending domain are left to the DNS
+  check, since an unsent message has no signature yet.
+- **DNS records** (Cloudflare's DNS-over-HTTPS resolver,
+  `cloudflare-dns.com`) looks up the SPF record of the `from_address`
+  domain and its DMARC record at `_dmarc`.
+- **mail-tester.com** (`www.mail-tester.com`) is used only when you set
+  `mail_tester_account` to your mail-tester account name. The plugin
+  sends a real test message through your mail server to a mail-tester
+  address, waits up to a minute for the score, and links the full report.
+  It uses one of the account's test credits.
+
+Each checker's host is a network grant you approve in the plugin's network
+settings; a checker whose grant is not approved is shown as not run. The
+check uses the saved settings and takes at most about 100 seconds; when
+mail-tester has not scored the message by then, the report links its
+page so you can read the score there. The instance handles one call at a
+time, so sends and patrons' address checks wait while a check runs. An
+invalid `mail_tester_account` never stops mail: only the check reports
+it. Only administrators can run it.
+
+### When a send fails
+
 What the server answers decides what happens next:
 
 - Accepted: delivered.
@@ -229,6 +273,66 @@ What the server answers decides what happens next:
 - The network grant for `server` not approved yet: the message fails
   until an administrator approves it.
 - Any other `5xx`: the message fails.
+
+## Account mail
+
+Account mail is what the library sends about a patron's own account:
+invites and links that verify an email address. It is never routed and
+patrons cannot turn it off. It goes through one notifier instance an
+administrator chooses, and only plugins that say they can carry it (the
+[email notifier](#the-email-notifier) does) can be chosen.
+
+To turn it on:
+
+1. Set up the email notifier as above. Its `server`, sign-in and
+   `from_address` settings are all account mail needs; `to` is only for
+   channels.
+2. Set the library's public address, `integrations.public_origin`. Every
+   link in account mail is built from it, never from the address a
+   request happened to use.
+3. Open **Settings → Notifications → Account mail**, pick the instance
+   and select **Send a test** to mail your own address. The page says
+   whether account mail is ready and when a test last arrived.
+
+Once it is ready:
+
+- **Invites go by email.** Creating a user with an email address mails
+  them the invite instead of handing you a link. **Email invite** on a
+  user sends a new one. An invite works once and for 7 days, and only
+  the newest one works: each send voids the user's other unused invites.
+  Using an emailed invite verifies that address.
+- **Addresses are verified.** When a patron sets or changes their address,
+  or an administrator changes it, the library mails a link that verifies
+  it. The link works once, for 24 hours, and only while the patron still
+  has that address; changing the address marks it unverified again. A
+  patron who lost the message can ask for a new one from their profile,
+  once every five minutes; requests that overlap record one message,
+  and the rest are answered `429` with `Retry-After`. Opening the link
+  needs no sign-in.
+
+Each message's link is made by its send job at the moment it is sent.
+Only a hash of the token is stored, the link is written nowhere but the
+message, and the message is marked sensitive so notifiers never log it.
+A send that is retried makes a new link and voids the last.
+
+Account mail retries like any other send (see below). A message whose
+user was deleted or disabled, whose address changed before it went out
+(checked again in the same write that makes its link), whose notifier no
+longer opts into account mail, or that has no public address to link to
+is dropped. Records of sent
+account mail, without their links, are kept for 30 days.
+
+The web API:
+
+- `GET` and `PUT /api/notifications/account-mail` read and choose the
+  instance (`{"plugin_instance_id": "…"}`, or `null` to turn account mail
+  off), with whether it is ready, why not, and when a test last arrived.
+- `POST /api/notifications/account-mail/test` mails the caller's own
+  address.
+- `POST /api/users/{id}/invite-email` sends a user a new invite.
+- `POST /api/auth/profile/email/verification` sends the caller a new verification
+  link.
+- `POST /api/auth/verify-email` with `{"token": "…"}` uses a link.
 
 ## Retries, pausing and the delivery log
 
@@ -273,4 +377,5 @@ optionally for one destination.
   line each, cut with `…` at 16 KiB; the fields themselves are kept whole.
 - Notifications, their delivery log and inbox rows are deleted after 30
   days by the record retention pass (see
-  [Jobs and scheduling](../internals/jobs.md)).
+  [Jobs and scheduling](../internals/jobs.md)). So are records of sent
+  account mail, and expired verification links.

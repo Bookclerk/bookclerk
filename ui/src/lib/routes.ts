@@ -15,6 +15,9 @@ export const CLERK_CALLBACK_PATH = "/clerk/callback";
 /** The library's consent page for a player app's browser sign-in. */
 export const PLAYER_APPROVE_PATH = "/apps/approve";
 
+/** The page a mailed link that verifies an email address opens. */
+export const VERIFY_EMAIL_PATH = "/verify-email";
+
 /** Document paths the React app owns (served as `index.html` by bookclerkd). */
 const APP_PATHS = new Set([
   "/",
@@ -35,6 +38,8 @@ const APP_PATHS = new Set([
   CLERK_CALLBACK_PATH,
   // A player app's browser sign-in: the library's consent page.
   PLAYER_APPROVE_PATH,
+  // A mailed link that verifies an email address; needs no sign-in.
+  VERIFY_EMAIL_PATH,
 ]);
 
 /**
@@ -191,6 +196,16 @@ export function normalizeAppView(v: string | undefined): AppView {
  */
 export function isInvitePath(pathname: string = window.location.pathname): boolean {
   return normalizePathname(pathname) === "/invite";
+}
+
+/**
+ * True when this document is the page a mailed verification link opens.
+ *
+ * @param pathname - Document pathname.
+ * @returns True for `/verify-email` (trailing slash ignored).
+ */
+export function isVerifyEmailPath(pathname: string = window.location.pathname): boolean {
+  return normalizePathname(pathname) === VERIFY_EMAIL_PATH;
 }
 
 /**

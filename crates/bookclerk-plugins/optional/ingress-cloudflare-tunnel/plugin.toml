@@ -3,7 +3,7 @@ id = "cloudflare_tunnel"
 name = "Cloudflare Tunnel"
 version = "0.1.0"
 runtime = "workerd"
-entrypoints = ["ingress"]
+entrypoints = ["ingress", "provisioning"]
 
 [workerd]
 compatibility_date = "2026-08-01"
@@ -35,6 +35,11 @@ path = "ca.js"
 type = "js"
 
 [[modules]]
+name = "cfapi.js"
+path = "cfapi.js"
+type = "js"
+
+[[modules]]
 name = "capnp.js"
 path = "capnp.js"
 type = "js"
@@ -52,6 +57,11 @@ type = "js"
 [[modules]]
 name = "lifecycle.js"
 path = "lifecycle.js"
+type = "js"
+
+[[modules]]
+name = "provision.js"
+path = "provision.js"
 type = "js"
 
 [[modules]]
@@ -79,6 +89,9 @@ kind = "relay"
 
 [capabilities.network]
 mode = "outbound"
+# The Cloudflare API, for the guided setup only: creating the tunnel, its
+# route and its DNS record, and reading the tunnel's token.
+domains = ["api.cloudflare.com"]
 # Cloudflare's tunnel edge, as one TLS stream the host holds (`tls://`); the
 # edge's certificate names `h2.cftunnel.com`, which the stream asks for.
 tcp = [
@@ -91,6 +104,22 @@ tcp = [
 # the host holds them while the plugin waits.
 [sockets]
 
+# Guided setup: with a pasted Cloudflare API token it creates (or finds) a
+# tunnel, routes the host name to it and points the host name's DNS at it,
+# then keeps only the tunnel's own token. The pasted token is not stored.
+[provisioning]
+provider = "cloudflare"
+grants = ["api_token"]
+token_url = "https://dash.cloudflare.com/profile/api-tokens"
+token_permissions = [
+    "Account > Cloudflare Tunnel > Edit",
+    "Zone > Zone > Read",
+    "Zone > DNS > Edit",
+]
+inputs = ["account_id", "hostname"]
+outputs = ["account_id", "hostname", "token"]
+deprovision = true
+
 [vars]
 
 [[settings]]
@@ -98,12 +127,18 @@ key = "hostname"
 label = "Public hostname"
 type = "string"
 required = true
-description = "The public hostname you routed to this tunnel in the Cloudflare dashboard (such as books.example.com)."
+description = "The public hostname routed to this tunnel (such as books.example.com). The guided setup routes it for you."
 
 [[settings]]
 key = "token"
 label = "Tunnel token"
 type = "secret"
-description = "The tunnel's token from the Cloudflare dashboard (the long value after `cloudflared service install`)."
+description = "The tunnel's token: filled in by the guided setup, or the long value after `cloudflared service install` in the Cloudflare dashboard."
+
+[[settings]]
+key = "account_id"
+label = "Cloudflare account id"
+type = "string"
+description = "The account that holds the tunnel. The guided setup fills it in; set it only when your token reaches more than one account."
 
 [secrets]

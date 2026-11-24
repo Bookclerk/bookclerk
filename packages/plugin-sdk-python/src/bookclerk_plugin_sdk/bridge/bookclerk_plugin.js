@@ -70,6 +70,7 @@ var METADATA_FIELDS = ["title", "subtitle", "description", "publisher", "publish
 var NOTIFICATION_SEVERITYS = ["info", "warning", "critical"];
 var NOTIFICATION_ALERT_ACTIONS = ["none", "trigger", "resolve"];
 var NOTIFY_DESTINATION_KINDS = ["channel", "personal"];
+var NOTIFY_CHECK_OUTCOMES = ["passed", "warning", "failed", "skipped"];
 var AI_TASKS = ["textEmbeddings"];
 var AI_TEXT_ROLES = ["document", "query"];
 var PROVISION_GRANT_KINDS = ["none", "apiToken", "oauthAccessToken"];
@@ -5542,7 +5543,7 @@ var NotificationFieldCodec = {
 };
 var NotificationMessageCodec = {
   dataWords: 1,
-  pointerCount: 10,
+  pointerCount: 11,
   write(s, v, caps) {
     s.setText(0, v.notificationId ?? "");
     s.setText(1, v.notificationType ?? "");
@@ -5573,6 +5574,9 @@ var NotificationMessageCodec = {
       s.setText(9, v.alertKey ?? "");
     }
     s.setBool(32, v.sensitive ?? false);
+    if (v.libraryOrigin !== void 0) {
+      s.setText(10, v.libraryOrigin ?? "");
+    }
   },
   read(s, caps) {
     const out = {
@@ -5605,6 +5609,10 @@ var NotificationMessageCodec = {
     if (!(alertKeyValue === "")) {
       out.alertKey = alertKeyValue;
     }
+    const libraryOriginValue = s.getText(10);
+    if (!(libraryOriginValue === "")) {
+      out.libraryOrigin = libraryOriginValue;
+    }
     return out;
   }
 };
@@ -5631,7 +5639,7 @@ var NotifySendParamsCodec = {
   pointerCount: 2,
   write(s, v, caps) {
     if (v.message != null) {
-      NotificationMessageCodec.write(s.initStruct(0, 1, 10), v.message, caps);
+      NotificationMessageCodec.write(s.initStruct(0, 1, 11), v.message, caps);
     }
     if (v.destination != null) {
       NotifyDestinationCodec.write(s.initStruct(1, 1, 2), v.destination, caps);
@@ -5639,7 +5647,7 @@ var NotifySendParamsCodec = {
   },
   read(s, caps) {
     return {
-      message: NotificationMessageCodec.read(s.getStruct(0, 1, 10), caps),
+      message: NotificationMessageCodec.read(s.getStruct(0, 1, 11), caps),
       destination: NotifyDestinationCodec.read(s.getStruct(1, 1, 2), caps)
     };
   }
@@ -5762,6 +5770,125 @@ var NotifyValidateReplyCodec = {
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
         throw unknownUnion("NotifyValidateReply", disc);
+    }
+  }
+};
+var NotifyDeliverabilityParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.message != null) {
+      NotificationMessageCodec.write(s.initStruct(0, 1, 11), v.message, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      message: NotificationMessageCodec.read(s.getStruct(0, 1, 11), caps)
+    };
+  }
+};
+var NotifyDeliverabilityCheckCodec = {
+  dataWords: 1,
+  pointerCount: 3,
+  write(s, v, caps) {
+    void caps;
+    s.setText(0, v.service ?? "");
+    s.setUint16(0, ord(NOTIFY_CHECK_OUTCOMES, v.outcome ?? NOTIFY_CHECK_OUTCOMES[0], "NotifyCheckOutcome"));
+    s.setText(1, v.summary ?? "");
+    if (v.reportUrl !== void 0) {
+      s.setText(2, v.reportUrl ?? "");
+    }
+  },
+  read(s, caps) {
+    void caps;
+    const out = {
+      service: s.getText(0),
+      outcome: fromOrd(NOTIFY_CHECK_OUTCOMES, s.getUint16(0), "NotifyCheckOutcome"),
+      summary: s.getText(1)
+    };
+    const reportUrlValue = s.getText(2);
+    if (!(reportUrlValue === "")) {
+      out.reportUrl = reportUrlValue;
+    }
+    return out;
+  }
+};
+var NotifyDeliverabilityAdviceCodec = {
+  dataWords: 1,
+  pointerCount: 3,
+  write(s, v, caps) {
+    void caps;
+    s.setUint16(0, ord(NOTIFY_CHECK_OUTCOMES, v.outcome ?? NOTIFY_CHECK_OUTCOMES[0], "NotifyCheckOutcome"));
+    s.setText(0, v.title ?? "");
+    s.setText(1, v.detail ?? "");
+    s.setTextList(2, v.sources ?? []);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      outcome: fromOrd(NOTIFY_CHECK_OUTCOMES, s.getUint16(0), "NotifyCheckOutcome"),
+      title: s.getText(0),
+      detail: s.getText(1),
+      sources: s.getTextList(2)
+    };
+  }
+};
+var NotifyDeliverabilityReportCodec = {
+  dataWords: 0,
+  pointerCount: 2,
+  write(s, v, caps) {
+    {
+      const list = v.checks ?? [];
+      const items = s.initStructList(0, list.length, 1, 3);
+      for (let i = 0; i < items.length; i++) {
+        NotifyDeliverabilityCheckCodec.write(items[i], list[i], caps);
+      }
+    }
+    {
+      const list = v.advice ?? [];
+      const items = s.initStructList(1, list.length, 1, 3);
+      for (let i = 0; i < items.length; i++) {
+        NotifyDeliverabilityAdviceCodec.write(items[i], list[i], caps);
+      }
+    }
+  },
+  read(s, caps) {
+    return {
+      checks: s.getStructList(0, 1, 3).map((item) => NotifyDeliverabilityCheckCodec.read(item, caps)),
+      advice: s.getStructList(1, 1, 3).map((item) => NotifyDeliverabilityAdviceCodec.read(item, caps))
+    };
+  }
+};
+var NotifyDeliverabilityReplyCodec = {
+  dataWords: 1,
+  pointerCount: 1,
+  write(s, v, caps) {
+    switch (v.kind) {
+      case "ok":
+        s.setUint16(0, 0);
+        if (v.value != null) {
+          NotifyDeliverabilityReportCodec.write(s.initStruct(0, 0, 2), v.value, caps);
+        }
+        break;
+      case "err":
+        s.setUint16(0, 1);
+        if (v.value != null) {
+          PluginErrorCodec.write(s.initStruct(0, 0, 3), v.value, caps);
+        }
+        break;
+      default:
+        throw unknownUnion("NotifyDeliverabilityReply", v.kind);
+    }
+  },
+  read(s, caps) {
+    const disc = s.getUint16(0);
+    switch (disc) {
+      case 0:
+        return { kind: "ok", value: NotifyDeliverabilityReportCodec.read(s.getStruct(0, 0, 2), caps) };
+      case 1:
+        return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
+      default:
+        throw unknownUnion("NotifyDeliverabilityReply", disc);
     }
   }
 };
@@ -6373,6 +6500,34 @@ var DeprovisionRequestCodec = {
   read(s, caps) {
     return {
       grant: ProvisionGrantCodec.read(s.getStruct(0, 2, 1), caps)
+    };
+  }
+};
+var EventPollParamsCodec = {
+  dataWords: 1,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void caps;
+    s.setBool(0, v.ackFollows ?? false);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      ackFollows: s.getBool(0)
+    };
+  }
+};
+var EventAckParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setTextList(0, v.externalUserIds ?? []);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      externalUserIds: s.getTextList(0)
     };
   }
 };
@@ -7885,16 +8040,24 @@ var EventConsumerEventResultsCodec = {
 };
 var ScheduledHandlerScheduledParamsCodec = {
   dataWords: 0,
-  pointerCount: 1,
+  pointerCount: 2,
   write(s, v, caps) {
     if (v.controller != null) {
       ScheduledControllerCodec.write(s.initStruct(0, 3, 2), v.controller, caps);
     }
+    if (v.cancel != null) {
+      s.setCap(1, caps.exportCap(v.cancel));
+    }
   },
   read(s, caps) {
-    return {
+    const out = {
       controller: ScheduledControllerCodec.read(s.getStruct(0, 3, 2), caps)
     };
+    const cancelValue = caps.importCap(s.getCapIndex(1));
+    if (!(cancelValue == null)) {
+      out.cancel = cancelValue;
+    }
+    return out;
   }
 };
 var ScheduledHandlerScheduledResultsCodec = {
@@ -8781,16 +8944,16 @@ var RemoteLibrarySyncListeningResultsCodec = {
 };
 var RemoteLibraryPollEventsParamsCodec = {
   dataWords: 0,
-  pointerCount: 0,
+  pointerCount: 1,
   write(s, v, caps) {
-    void s;
-    void v;
-    void caps;
+    if (v.params != null) {
+      EventPollParamsCodec.write(s.initStruct(0, 1, 0), v.params, caps);
+    }
   },
   read(s, caps) {
-    void caps;
-    void s;
-    return {};
+    return {
+      params: EventPollParamsCodec.read(s.getStruct(0, 1, 0), caps)
+    };
   }
 };
 var RemoteLibraryPollEventsResultsCodec = {
@@ -8804,6 +8967,34 @@ var RemoteLibraryPollEventsResultsCodec = {
   read(s, caps) {
     return {
       result: EventPollReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var RemoteLibraryAckEventsParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      EventAckParamsCodec.write(s.initStruct(0, 0, 1), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: EventAckParamsCodec.read(s.getStruct(0, 0, 1), caps)
+    };
+  }
+};
+var RemoteLibraryAckEventsResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps)
     };
   }
 };
@@ -9260,6 +9451,34 @@ var NotifierValidateDestinationResultsCodec = {
   read(s, caps) {
     return {
       result: NotifyValidateReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var NotifierCheckDeliverabilityParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      NotifyDeliverabilityParamsCodec.write(s.initStruct(0, 0, 1), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: NotifyDeliverabilityParamsCodec.read(s.getStruct(0, 0, 1), caps)
+    };
+  }
+};
+var NotifierCheckDeliverabilityResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      NotifyDeliverabilityReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: NotifyDeliverabilityReplyCodec.read(s.getStruct(0, 1, 1), caps)
     };
   }
 };
@@ -11430,6 +11649,13 @@ var okNotifyValidated = (value) => {
   const label = typeof v.label === "string" ? v.label : "";
   return okValue(label ? { addressJson: v.addressJson, label } : { addressJson: v.addressJson });
 };
+var okNotifyDeliverabilityReport = (value) => {
+  const v = value ?? {};
+  return okValue({
+    checks: asList(v.checks),
+    advice: asList(v.advice)
+  });
+};
 var okLines = (value) => okValue({ lines: asList(value).map((l) => String(l)) });
 var okHealth = (value) => {
   const v = value ?? {};
@@ -11750,7 +11976,8 @@ var METHODS = {
     diagnose: withoutParams("remoteLibrary", "diagnose", RemoteLibraryDiagnoseParamsCodec, RemoteLibraryDiagnoseResultsCodec, okLines),
     scanLibrary: withParams("remoteLibrary", "scanLibrary", RemoteLibraryScanLibraryParamsCodec, RemoteLibraryScanLibraryResultsCodec, okEmpty),
     syncListening: withoutParams("remoteLibrary", "syncListening", RemoteLibrarySyncListeningParamsCodec, RemoteLibrarySyncListeningResultsCodec, (value) => okValue({ items: asList(value) })),
-    pollEvents: withoutParams("remoteLibrary", "pollEvents", RemoteLibraryPollEventsParamsCodec, RemoteLibraryPollEventsResultsCodec, (value) => okValue({ users: asList(value) }))
+    pollEvents: withParams("remoteLibrary", "pollEvents", RemoteLibraryPollEventsParamsCodec, RemoteLibraryPollEventsResultsCodec, (value) => okValue({ users: asList(value) })),
+    ackEvents: withParams("remoteLibrary", "ackEvents", RemoteLibraryAckEventsParamsCodec, RemoteLibraryAckEventsResultsCodec, okEmpty)
   },
   EventConsumer: {
     event: spec({
@@ -11780,7 +12007,7 @@ var METHODS = {
       params: ScheduledHandlerScheduledParamsCodec,
       results: ScheduledHandlerScheduledResultsCodec,
       stub: "author",
-      call: (s, p, cx) => s.bookclerkScheduled(cx.host.bindContext(cx.ctx), p.controller ?? {}),
+      call: (s, p, cx) => s.bookclerkScheduled(cx.host.bindContext(cx.ctx), p.controller ?? {}, p.cancel ?? null),
       ok: okEmpty
     })
   },
@@ -11882,7 +12109,8 @@ var METHODS = {
   Notifier: {
     health: withoutParams("notifier", "health", NotifierHealthParamsCodec, NotifierHealthResultsCodec, okHealth),
     send: withParams("notifier", "send", NotifierSendParamsCodec, NotifierSendResultsCodec, okNotifySent),
-    validateDestination: withParams("notifier", "validateDestination", NotifierValidateDestinationParamsCodec, NotifierValidateDestinationResultsCodec, okNotifyValidated)
+    validateDestination: withParams("notifier", "validateDestination", NotifierValidateDestinationParamsCodec, NotifierValidateDestinationResultsCodec, okNotifyValidated),
+    checkDeliverability: withParams("notifier", "checkDeliverability", NotifierCheckDeliverabilityParamsCodec, NotifierCheckDeliverabilityResultsCodec, okNotifyDeliverabilityReport)
   },
   MetadataFiles: {
     health: withoutParams("metadataFiles", "health", MetadataFilesHealthParamsCodec, MetadataFilesHealthResultsCodec, okHealth),
@@ -13629,15 +13857,16 @@ var BookclerkEntrypoint = class extends WorkerEntrypoint {
    *
    * @param context - Granted bindings for this invocation.
    * @param wire - Wire `ScheduledController`.
+   * @param cancel - Host cancellation watch for this fire, when the host sent one.
    * @returns Resolves when the author's handler completes.
    * @internal
    */
-  async bookclerkScheduled(context, wire) {
+  async bookclerkScheduled(context, wire, cancel) {
     if (typeof this.scheduled !== "function") {
       throw unsupported("scheduled");
     }
     applyInvocationEnv(this, context);
-    await this.scheduled(scheduledControllerOf(wire));
+    await this.scheduled(scheduledControllerOf(wire, cancel));
   }
   /**
    * Adapter dispatch for `SocketHandler.message`.
@@ -14158,7 +14387,8 @@ var REMOTE_LIBRARY_METHODS = Object.freeze([
   "stop",
   "scanLibrary",
   "syncListening",
-  "pollEvents"
+  "pollEvents",
+  "ackEvents"
 ]);
 var RemoteLibraryEntrypoint = class extends NamedEntrypoint {
   static bookclerkMethods = REMOTE_LIBRARY_METHODS;
@@ -14212,12 +14442,28 @@ var RemoteLibraryEntrypoint = class extends NamedEntrypoint {
     return Promise.reject(unsupported("syncListening"));
   }
   /**
-   * Drains external users observed since the last poll.
+   * External users observed and not yet acknowledged. When
+   * `params.ackFollows` is true the host calls {@link ackEvents} with every
+   * user it passes on: keep returning a user until then, so a lost reply
+   * does not lose it. When it is false (a host that predates `ackEvents`),
+   * a returned user counts as delivered.
    *
-   * @returns Newly observed users.
+   * @param _params - Whether the host acknowledges what it receives.
+   * @returns Users the host has not acknowledged.
    */
-  pollEvents() {
+  pollEvents(_params) {
     return Promise.reject(unsupported("pollEvents"));
+  }
+  /**
+   * Acknowledges users a {@link pollEvents} reply handed over: stop
+   * returning them. The default does nothing, which suits a plugin that
+   * treats every returned user as delivered.
+   *
+   * @param _params - The acknowledged `externalUserId`s.
+   * @returns Resolves once recorded.
+   */
+  ackEvents(_params) {
+    return Promise.resolve();
   }
 };
 var ADAPTER_SESSIONS = /* @__PURE__ */ new Map();
@@ -14518,7 +14764,12 @@ function provisioned(answer) {
   };
 }
 var NotifierEntrypoint = class extends NamedEntrypoint {
-  static bookclerkMethods = Object.freeze(["health", "send", "validateDestination"]);
+  static bookclerkMethods = Object.freeze([
+    "health",
+    "send",
+    "validateDestination",
+    "checkDeliverability"
+  ]);
   /**
    * Reports whether the service can be reached with the current settings.
    *
@@ -14549,6 +14800,19 @@ var NotifierEntrypoint = class extends NamedEntrypoint {
    */
   validateDestination(params) {
     return Promise.resolve({ addressJson: params.addressJson });
+  }
+  /**
+   * Runs the operator's deliverability check: sends `params.message` the
+   * way real messages go, asks checker services how it scores and merges
+   * their findings into advice, most urgent first. Only plugins that declare
+   * `[notifier] deliverability_check = true` implement it; the default
+   * throws `unsupported`.
+   *
+   * @param _params - The host's rendered `test` notification.
+   * @returns One entry per checker and the merged advice.
+   */
+  checkDeliverability(_params) {
+    return Promise.reject(unsupported("checkDeliverability"));
   }
 };
 var IngressEntrypoint = class extends NamedEntrypoint {
@@ -15615,14 +15879,20 @@ var TRIGGER_FAMILIES = Object.freeze({
   socketHandler: "socketHandler",
   webhookHandler: "webhookHandler"
 });
-function scheduledControllerOf(wire) {
+function scheduledControllerOf(wire, cancel) {
   const w = wire && typeof wire === "object" ? wire : {};
+  const abort = new AbortController();
+  if (cancel && typeof cancel.wait === "function") {
+    Promise.resolve().then(() => cancel.wait()).then(() => abort.abort(PluginError.fromWire("cancelled", "cron fire cancelled by host")), () => {
+    });
+  }
   return Object.freeze({
     cron: String(w.cron ?? ""),
     scheduledTime: Number(w.scheduledTime ?? 0) || 0,
     fireId: String(w.fireId ?? ""),
     attempt: Number(w.attempt ?? 0) || 0,
-    deadlineUnixMs: Number(w.deadlineUnixMs ?? 0) || 0
+    deadlineUnixMs: Number(w.deadlineUnixMs ?? 0) || 0,
+    signal: abort.signal
   });
 }
 function allowedEntrypointFamilies(capabilities, requested) {

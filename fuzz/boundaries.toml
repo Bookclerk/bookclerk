@@ -658,6 +658,13 @@ input_from = "signed-in user"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.account_mail_request]
+crate = "bookclerk-library"
+boundary = "Account mail's notifier from PUT /api/notifications/account-mail, and the token of a verification link from POST /api/auth/verify-email"
+input_from = "Administrator, Owner or operator (settings); anyone who can reach the library (verify)"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.window_policy]
 crate = "bookclerk-window-policy"
 boundary = "Requests a page sends on the desktop window's custom scheme, which reach the router with the operator token unless refused, the URLs the window is asked to open, and which pages may start the window's live updates"
@@ -701,6 +708,13 @@ artifacts = ["bookclerk"]
 [targets.graphicaudio_catalog]
 crate = "bookclerk-plugin-source-graphicaudio"
 boundary = "GraphicAudio product pages from the public Magento store"
+input_from = "store"
+side = "guest"
+artifacts = ["bookclerk"]
+
+[targets.chirp_catalog_detail]
+crate = "bookclerk-plugin-source-chirp"
+boundary = "Chirp title detail answers from its public GraphQL catalog"
 input_from = "store"
 side = "guest"
 artifacts = ["bookclerk"]
@@ -761,4 +775,12 @@ crate = "bookclerk-node-proto"
 boundary = "The opened shared-branch bootstrap a joining node reads from its library: the [database] section, the database credential and its id, and the data key"
 input_from = "peer"
 side = "host"
+artifacts = ["bookclerk"]
+
+[targets.checker_answers]
+crate = "bookclerk-plugin-notifier-email"
+boundary = "What the email notifier's deliverability check reads from Postmark's spam check, Cloudflare's DNS-over-HTTPS resolver and mail-tester.com"
+input_from = "outside services the operator approved (Postmark, Cloudflare, mail-tester.com)"
+# Only the email guest reads them.
+side = "guest"
 artifacts = ["bookclerk"]

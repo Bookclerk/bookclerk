@@ -158,6 +158,36 @@ impl ChirpSource {
             .collect())
     }
 
+    /// The catalog record of one Chirp title, with its audio sample
+    /// (`catalogDetail` by product id).
+    ///
+    /// # Arguments
+    ///
+    /// * `product_id` - Chirp's numeric audiobook id.
+    ///
+    /// # Returns
+    ///
+    /// `None` when the id is not numeric or Chirp does not list it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the request fails or Chirp's answer is not a
+    /// catalog record.
+    pub async fn catalog_detail(
+        &self,
+        product_id: &str,
+    ) -> bookclerk_storefront::Result<Option<CatalogHit>> {
+        let id = product_id.trim();
+        if id.is_empty() || id.len() > 20 || !id.bytes().all(|b| b.is_ascii_digit()) {
+            return Ok(None);
+        }
+        let client = ChirpClient::new(&self.graphql_url);
+        match client.audiobook_detail(id).await? {
+            Some(answer) => audiobook_detail_record(&answer),
+            None => Ok(None),
+        }
+    }
+
     /// Finds up to `limit` titles related to `seed` (same author, series, …).
     ///
     /// # Errors
@@ -656,6 +686,35 @@ fn chirp_purchase_title_matches(query: &str, hit_title: &str) -> bool {
             || longer.contains(&format!(" {shorter} ")))
 }
 
+/// Reads Chirp's answer to a title detail query (`audiobook(id:)`) as a
+/// catalog record with its audio sample. Sans-IO, so the fuzz target and
+/// the tests drive the same code as [`ChirpSource::catalog_detail`].
+///
+/// # Arguments
+///
+/// * `answer` - The GraphQL answer (`{"data": {"audiobook": …}}`).
+///
+/// # Returns
+///
+/// `None` when the answer names no audiobook.
+///
+/// # Errors
+///
+/// Returns an error when the audiobook object is not a catalog record (no
+/// string `id`, or a field of the wrong type).
+pub fn audiobook_detail_record(
+    answer: &serde_json::Value,
+) -> bookclerk_storefront::Result<Option<CatalogHit>> {
+    match answer.pointer("/data/audiobook") {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(book) => serde_json::from_value::<CatalogAudiobook>(book.clone())
+            .map(|book| Some(catalog_hit(&book, String::from("details"))))
+            .map_err(|err| {
+                bookclerk_storefront::SourceError::api(format!("chirp detail parse: {err}"))
+            }),
+    }
+}
+
 /// Maps a Chirp catalog audiobook onto a [`CatalogHit`], including duration in minutes.
 fn catalog_hit(book: &CatalogAudiobook, origin: String) -> CatalogHit {
     let categories = chirp_genres(book);
@@ -719,6 +778,7 @@ fn catalog_hit(book: &CatalogAudiobook, origin: String) -> CatalogHit {
             .into_iter()
             .collect(),
         is_abridged: book.abridged,
+        sample_url: book.sample_url.as_deref().and_then(records::sample_url),
         work_kind: bookclerk_storefront::records::WorkKind::Book,
         expression_kind: bookclerk_storefront::records::ExpressionKind::Narration,
         media_kind: bookclerk_storefront::records::MediaKind::Audio,
@@ -982,6 +1042,9 @@ mod tests {
             released_on: None,
             language: Some("English".into()),
             abridged: Some(false),
+            sample_url: Some(
+                "https://audio.chirpbooks.com/audio/1/2.m4a?Expires=1&Signature=x".into(),
+            ),
             promoted_tags: vec![
                 CatalogTag {
                     display_name: Some("Thrillers".into()),
@@ -999,6 +1062,10 @@ mod tests {
         assert_eq!(hit.language.as_deref(), Some("English"));
         assert_eq!(hit.is_abridged, Some(false));
         assert_eq!(hit.length_minutes, Some(671));
+        assert_eq!(
+            hit.sample_url.as_deref(),
+            Some("https://audio.chirpbooks.com/audio/1/2.m4a?Expires=1&Signature=x")
+        );
     }
 
     #[test]
@@ -1052,6 +1119,7 @@ mod tests {
             language: Some("English".into()),
             abridged: Some(false),
             promoted_tags: Vec::new(),
+            sample_url: None,
         };
         let hit = catalog_hit(&book, "search".into());
         assert_eq!(hit.isbn().as_deref(), Some("9781600245497"));

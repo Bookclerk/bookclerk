@@ -30,18 +30,19 @@ use bookclerk_plugin_abi::{
     Result as AbiResult,
 };
 use bookclerk_plugin_abi::{
-    serve_plugin_stdio, Bindings, ByteRange, ContentSource, ContentSourceClient, CopyResult,
-    CoverFetchParams, CoverFetcher, CoverFetcherClient, CoverImage, Database, DatabaseClient,
-    Destination, DestinationClient, Entrypoint, Entrypoints, EventConsumer, EventConsumerClient,
-    ExtensibleConfig, GuestDatabase, HealthOk, HostBindings, Ingress, IngressClient, Invocation,
-    JobController, JobOutcome, JobRunner, JobRunnerClient, ListOptions, ListPage, MetadataFiles,
-    MetadataFilesClient, MetadataProvider, MetadataProviderClient, Notifier, NotifierClient,
-    ObjectMetadata, Oidc, OidcClient, OpenedEntrypoints, PluginCapabilities, PluginCli,
-    PluginCliClient, PluginClient, PluginDescribe, PluginMigration, PluginWorker, Provisioning,
-    ProvisioningClient, PutResult, QueueConsumer, QueueConsumerClient, ReadResult, RemoteLibrary,
-    RemoteLibraryClient, ScheduledHandler, ScheduledHandlerClient, SocketHandler,
-    SocketHandlerClient, WebhookHandler, WebhookHandlerClient, WriteOptions, MAX_SCALAR_BYTES,
-    MAX_STREAM_WINDOW_BYTES, PRODUCT_API_VERSION,
+    serve_plugin_stdio, Bindings, ByteRange, Cancellation, ContentSource, ContentSourceClient,
+    CopyResult, CoverFetchParams, CoverFetcher, CoverFetcherClient, CoverImage, Database,
+    DatabaseClient, Destination, DestinationClient, Entrypoint, Entrypoints, EventConsumer,
+    EventConsumerClient, ExtensibleConfig, GuestDatabase, HealthOk, HostBindings, Ingress,
+    IngressClient, Invocation, JobController, JobOutcome, JobRunner, JobRunnerClient, ListOptions,
+    ListPage, MetadataFiles, MetadataFilesClient, MetadataProvider, MetadataProviderClient,
+    Notifier, NotifierClient, ObjectMetadata, Oidc, OidcClient, OpenedEntrypoints,
+    PluginCapabilities, PluginCli, PluginCliClient, PluginClient, PluginDescribe, PluginMigration,
+    PluginWorker, Provisioning, ProvisioningClient, PutResult, QueueConsumer, QueueConsumerClient,
+    ReadResult, RemoteLibrary, RemoteLibraryClient, ScheduledController, ScheduledHandler,
+    ScheduledHandlerClient, SocketHandler, SocketHandlerClient, WebhookHandler,
+    WebhookHandlerClient, WriteOptions, MAX_SCALAR_BYTES, MAX_STREAM_WINDOW_BYTES,
+    PRODUCT_API_VERSION,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -521,8 +522,10 @@ impl WorkerdRoot {
             exported.queue_consumer = Some(Box::new(QueueConsumerClient::new(invoke.typed())));
         }
         if !self.capabilities.crons.is_empty() {
-            exported.scheduled_handler =
-                Some(Box::new(ScheduledHandlerClient::new(invoke.typed())));
+            exported.scheduled_handler = Some(Box::new(InvokeScheduledHandler {
+                typed: ScheduledHandlerClient::new(invoke.typed()),
+                table: Rc::clone(&self.table),
+            }));
         }
         if self.exports(Entrypoint::Oidc) {
             exported.oidc = Some(Box::new(OidcClient::new(invoke.typed())));
@@ -1018,6 +1021,46 @@ impl JobRunner for InvokeJobRunner {
                 GrantCap::client(CapDescriptor::Destination { token: token() }),
                 GrantCap::client(CapDescriptor::Progress { token: token() }),
                 GrantCap::client(CapDescriptor::Cancellation { token: token() }),
+            )
+            .await
+    }
+}
+
+/// `scheduled` trigger of an author isolate. Each fire mints one
+/// cancel-only grant for the host's probe, which travels in the
+/// `scheduled$Params` capability table as a [`GrantCap`] descriptor; the
+/// isolate long-polls the granted `GET /cancel` route and aborts the
+/// controller's signal when it answers.
+struct InvokeScheduledHandler {
+    /// Typed client over `/invoke`.
+    typed: ScheduledHandlerClient,
+    /// Granted-channel table the cancel grant lives in.
+    table: GrantedTable,
+}
+
+#[async_trait(?Send)]
+impl ScheduledHandler for InvokeScheduledHandler {
+    async fn scheduled(
+        &self,
+        controller: ScheduledController,
+        cancel: Box<dyn Cancellation>,
+    ) -> AbiResult<()> {
+        let grant = format!("{:032x}", rand::random::<u128>());
+        self.table.borrow_mut().insert(
+            grant.clone(),
+            GrantedSlot::cancel_only(
+                cancel,
+                std::time::Instant::now() + std::time::Duration::from_secs(3600),
+            ),
+        );
+        let _revoke = RevokeGrant {
+            table: Rc::clone(&self.table),
+            grant: grant.clone(),
+        };
+        self.typed
+            .scheduled_with_cancel(
+                &controller,
+                GrantCap::client(CapDescriptor::Cancellation { token: grant }),
             )
             .await
     }

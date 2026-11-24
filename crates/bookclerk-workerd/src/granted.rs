@@ -292,6 +292,34 @@ impl GrantedSlot {
         }
     }
 
+    /// A grant that only answers the `GET /cancel` long poll for one host
+    /// cancellation probe (a cron fire's).
+    #[must_use]
+    pub fn cancel_only(cancel: Box<dyn Cancellation>, expires: std::time::Instant) -> Self {
+        Self {
+            input: None,
+            output: None,
+            progress: None,
+            cancel: Some(cancel),
+            expires,
+            allow_open: false,
+            allow_put: false,
+            allow_progress: false,
+            database: None,
+            allow_database: false,
+            sql_policy: GuestSqlPolicy::host_authoritative(),
+            max_request_bytes: 0,
+            events: None,
+            queue: None,
+            kv: None,
+            sockets: None,
+            webhooks: None,
+            notify: None,
+            origin: None,
+            ai: None,
+        }
+    }
+
     /// A grant that only sends into one queue (no streams, no database).
     #[must_use]
     pub fn queue_only(producer: Rc<dyn QueueProducer>, expires: std::time::Instant) -> Self {
@@ -1289,6 +1317,13 @@ fn authorize_granted_request(
     // hash, so the broker hashes the same request: hashed as written, a
     // statement the desugaring rewrites (`ORDER BY` null placement, `/` and
     // `%` by zero) would reach the session with a hash it cannot reproduce.
+    // A retry token the SDK minted over the request as it sent it is still
+    // accepted: that form names the same desugared request.
+    let as_sent = if req.request_hash.is_empty() {
+        None
+    } else {
+        canonical_execute_request_hash(req).ok()
+    };
     bookclerk_plugin_abi::desugar_execute_request(req);
     for stmt in &mut req.statements {
         stmt.kind = guest_statement_kind(&stmt.sql);
@@ -1297,7 +1332,10 @@ fn authorize_granted_request(
         req.operation_id = format!("{:032x}", rand::random::<u128>());
     }
     let computed = canonical_execute_request_hash(req)?;
-    if !req.request_hash.is_empty() && req.request_hash != computed {
+    if !req.request_hash.is_empty()
+        && req.request_hash != computed
+        && as_sent.as_deref() != Some(req.request_hash.as_str())
+    {
         return Err(PluginError::invalid_params(
             "retry token requestHash does not match the canonical request",
         ));
@@ -3672,6 +3710,31 @@ mod tests {
         assert!(unknown.contains("unknown or revoked"), "{unknown}");
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancel_only_grant_answers_the_cancel_poll_and_nothing_else() {
+        let flag = Rc::new(std::cell::Cell::new(true));
+        let slot = GrantedSlot::cancel_only(
+            Box::new(FlagCancel {
+                cancelled: Rc::clone(&flag),
+                fail: false,
+            }),
+            Instant::now() + Duration::from_secs(60),
+        );
+        assert!(slot.input.is_none() && slot.output.is_none() && slot.progress.is_none());
+        assert!(!slot.allow_open && !slot.allow_put && !slot.allow_progress);
+        assert!(!slot.allow_database && slot.database.is_none());
+        assert_eq!(slot.max_request_bytes, 0);
+        assert!(slot.events.is_none() && slot.queue.is_none() && slot.kv.is_none());
+        assert!(slot.sockets.is_none() && slot.webhooks.is_none() && slot.notify.is_none());
+        assert!(slot.origin.is_none() && slot.ai.is_none());
+        let table: GrantedTable = Rc::new(RefCell::new(HashMap::new()));
+        table.borrow_mut().insert("g-cron".into(), slot);
+        let fired = dispatch_cancel_poll(&table, "g-cron".into(), CANCEL_POLL_INTERVAL * 3)
+            .await
+            .expect("poll ok");
+        assert!(fired, "a cancelled fire surfaces on the cron grant's poll");
+    }
+
     struct FlagSession {
         called: std::cell::Cell<bool>,
     }
@@ -3841,6 +3904,34 @@ mod tests {
         retry.request_hash = req.request_hash.clone();
         authorize_granted_request(&mut retry, 0, &GuestSqlPolicy::host_authoritative())
             .expect("retry token matches the desugared request");
+        // So is one an SDK computed over the request as it sent it.
+        let mut as_sent = bookclerk_plugin_abi::decode_execute_request_bytes(&guest_sql_bytes(
+            raw,
+            vec![],
+            DbPlanStatementKind::Select,
+            DbResultSelection::Rows,
+            10,
+        ))
+        .expect("decode");
+        as_sent.request_hash = canonical_execute_request_hash(&as_sent).expect("hash");
+        authorize_granted_request(&mut as_sent, 0, &GuestSqlPolicy::host_authoritative())
+            .expect("retry token matches the request as sent");
+        assert_eq!(
+            as_sent.request_hash, req.request_hash,
+            "stamps the canonical hash"
+        );
+        // A token naming neither form is refused.
+        let mut forged = bookclerk_plugin_abi::decode_execute_request_bytes(&guest_sql_bytes(
+            raw,
+            vec![],
+            DbPlanStatementKind::Select,
+            DbResultSelection::Rows,
+            10,
+        ))
+        .expect("decode");
+        forged.request_hash = "0".repeat(64);
+        authorize_granted_request(&mut forged, 0, &GuestSqlPolicy::host_authoritative())
+            .expect_err("a token over another request is refused");
     }
 
     #[test]
