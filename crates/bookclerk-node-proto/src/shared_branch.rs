@@ -296,8 +296,9 @@ pub fn open_shared_branch_bootstrap(
 ///
 /// [`SealError::Bundle`] for bytes over [`MAX_SHARED_BRANCH_BOOTSTRAP_BYTES`],
 /// bytes that are not a bootstrap, another version, a DEK that is not 32
-/// bytes, other ids, a Postgres URL or credential secret that is not a
-/// [valid credential](valid_credential_secret), a credential id longer than
+/// bytes, other ids, a Postgres URL or credential secret that is empty,
+/// longer than [`MAX_BOOTSTRAP_CREDENTIAL_BYTES`] or holds anything but
+/// UTF-8 without whitespace or control characters, a credential id longer than
 /// [`MAX_BOOTSTRAP_CREDENTIAL_ID_BYTES`] or holding anything but ASCII
 /// letters, digits, `-` and `_`, or a credential sent with a Postgres
 /// database.
