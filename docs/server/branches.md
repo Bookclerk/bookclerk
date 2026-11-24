@@ -1091,9 +1091,9 @@ C is B's.
   title's files: every key the title lists is on record for the edition,
   every audio key on record is in the title's list, and their media types
   agree. That title can still be passed on to A's own library. Only
-  files a branch left behind count this way: not files A acquired
-  itself, not a job's upload, and not files whose branch still holds the
-  title. A title that was delivered before under another file list
+  files a branch left behind when it stopped sharing count this way: not
+  files A acquired itself, not a job's upload, not files of a branch that
+  was removed, and not files whose branch still holds the title. A title that was delivered before under another file list
   doesn't take them over either. If A has no output deployed, it records
   the titles without files. If a title A already has the files of later
   moves to another edition (an Administrator pins its listing there, or

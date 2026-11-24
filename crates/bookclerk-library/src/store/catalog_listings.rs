@@ -761,12 +761,29 @@ impl LibraryStore {
         if row.edition_id != edition_id {
             return Ok(None);
         }
+        // The listing is marked observed in the same batch as its detail, so
+        // the catalog prune can't remove it in between; a listing removed
+        // or moved since the read writes nothing and is not reported.
+        statements.push(batch::exec(
+            "UPDATE store_listings SET observed_at = ?, updated_at = ? \
+              WHERE id = ? AND edition_id = ?",
+            vec![
+                batch::text(&now_text),
+                batch::text(&now_text),
+                batch::text(&row.id),
+                batch::text(edition_id),
+            ],
+        ));
+        let observed = statements.len() - 1;
         statements.extend(detail_writes(&row.id, &listing.detail, &now_text));
         for offer in listing.offers.iter().filter(|o| !o.is_empty()) {
             statements.extend(offer_upsert(&row.id, offer));
         }
-        self.run_catalog_batch(statements).await?;
-        Ok(Some(row.id))
+        let operation_id = format!("catalog-listings-{}", uuid::Uuid::new_v4());
+        let reply = self
+            .execute_host_batch(batch::request(&operation_id, statements))
+            .await?;
+        Ok((batch::rows_affected(&reply, observed) == 1).then_some(row.id))
     }
 
     /// Stores prices a store quoted for listings already in the pool.

@@ -1132,13 +1132,7 @@ pub async fn pending_deliveries(
         after.clone_from(&last.id);
         let full = u64::try_from(page.len()).unwrap_or(u64::MAX) >= page_rows;
         for row in page {
-            if out.len() >= limit
-                || row.delivered_digest == row.share_digest
-                || row
-                    .share_digest
-                    .as_deref()
-                    .is_some_and(|digest| refusal_stands(&row, digest, now))
-            {
+            if out.len() >= limit || row.delivered_digest == row.share_digest {
                 continue;
             }
             let Some(reference) = row.share_ref.as_deref() else {
@@ -1157,6 +1151,15 @@ pub async fn pending_deliveries(
                     adopt_left_behind_files(store, &row, &listing.edition_id).await?;
                     continue;
                 }
+            }
+            // A standing refusal only stops the title being asked for; it
+            // doesn't keep it from adopting left-behind files above.
+            if row
+                .share_digest
+                .as_deref()
+                .is_some_and(|digest| refusal_stands(&row, digest, now))
+            {
+                continue;
             }
             out.push(split_share_ref(reference));
         }
@@ -1207,36 +1210,31 @@ async fn refused_for_good(
 
 /// Records a lasting refusal of node holding `row`'s current manifest, as
 /// one write guarded on the same digest. Nothing is recorded while the
-/// holding has an open upload of an unexpired token: that upload may still
-/// commit, and a refusal recorded beside it would only hide its title.
+/// holding has an open upload of an unexpired token (checked in the same
+/// write): that upload may still commit, and a refusal recorded beside it
+/// would only hide its title.
 ///
 /// # Errors
 ///
-/// Returns the read or write error.
+/// Returns the write error.
 async fn record_refusal(store: &LibraryStore, row: &holdings::Model) -> Result<()> {
     let Some(digest) = row.share_digest.as_deref() else {
         return Ok(());
     };
     let now = stamp();
-    let open = node_upload_sessions::Entity::find()
-        .filter(node_upload_sessions::Column::HoldingId.eq(row.id.as_str()))
-        .filter(node_upload_sessions::Column::State.eq("open"))
-        .filter(node_upload_sessions::Column::ExpiresAt.gt(now.as_str()))
-        .count(store.db())
-        .await
-        .map_err(LibraryError::Orm)?;
-    if open > 0 {
-        return Ok(());
-    }
     let statements = vec![exec(
         "UPDATE holdings SET refused_digest = ?, refused_at = ?, updated_at = ? \
-          WHERE id = ? AND holder_kind = 'node' AND share_digest = ?",
+          WHERE id = ? AND holder_kind = 'node' AND share_digest = ? \
+            AND NOT EXISTS (SELECT 1 FROM node_upload_sessions AS upload \
+                 WHERE upload.holding_id = holdings.id AND upload.state = 'open' \
+                   AND upload.expires_at > ?)",
         vec![
             text(digest),
             text(&now),
             text(&now),
             text(&row.id),
             text(digest),
+            text(&now),
         ],
     )];
     batch::execute_host_batch(
@@ -1263,9 +1261,9 @@ async fn record_refusal(store: &LibraryStore, row: &holdings::Model) -> Result<(
 ///
 /// Only files a branch left behind are adopted: every audio file on record
 /// must have been written by a committed catalog upload whose holding is
-/// gone, or by an upload whose session is gone with its node. Audio of an
-/// acquire, of an upload for a job, of an aborted or open upload, or of a
-/// holding still held (its branch still shares the title, under any
+/// gone (its branch stopped sharing the title). Audio of an acquire, of an
+/// upload for a job, of an aborted or open upload, of a branch that was
+/// removed (its upload sessions go with it), or of a holding still held (its branch still shares the title, under any
 /// digest) is never adopted. A holding delivered before under another
 /// digest is not either: its own earlier files are not the left-behind
 /// ones.
@@ -1375,9 +1373,10 @@ async fn edition_delivered_elsewhere(
 }
 
 /// True when every audio file in `recorded` is one a branch left behind,
-/// as [`adopt_left_behind_files`] requires: its writer is not an acquire,
-/// and its upload session is either gone (removed with its node) or a
-/// committed catalog upload whose holding no longer exists.
+/// as [`adopt_left_behind_files`] requires: its writer is a committed
+/// catalog upload whose holding no longer exists. A writer with no upload
+/// session on record (an acquire, a pruned job upload, an upload of a
+/// removed node) never is.
 ///
 /// # Errors
 ///
@@ -1400,6 +1399,12 @@ async fn left_behind(store: &LibraryStore, recorded: &[edition_files::Model]) ->
         .all(store.db())
         .await
         .map_err(LibraryError::Orm)?;
+    // A writer with no session can't be shown to be a catalog upload: a
+    // job's upload session is pruned while its files stay, and a removed
+    // node takes its sessions with it.
+    if sessions.len() != writers.len() {
+        return Ok(false);
+    }
     for session in &sessions {
         if session.job_id != CATALOG_ITEM || session.state != "committed" {
             return Ok(false);

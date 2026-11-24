@@ -991,33 +991,36 @@ async fn isbn_only_edition(
     else {
         return Ok(None);
     };
-    let carrying: BTreeSet<String> = edition_identifiers::Entity::find()
+    // Only editions of the asked work are read, and two are enough to tell
+    // one from several, so a widely shared ISBN never makes a large read.
+    let of_work: Vec<String> = edition_identifiers::Entity::find()
         .filter(edition_identifiers::Column::Scheme.eq(resolve::IdentifierScheme::Isbn.as_str()))
         .filter(edition_identifiers::Column::Value.eq(isbn))
+        .filter(
+            edition_identifiers::Column::EditionId.in_subquery(
+                sea_orm::sea_query::Query::select()
+                    .column(editions::Column::Id)
+                    .from(editions::Entity)
+                    .and_where(
+                        editions::Column::ExpressionId.in_subquery(
+                            sea_orm::sea_query::Query::select()
+                                .column(expressions::Column::Id)
+                                .from(expressions::Entity)
+                                .and_where(expressions::Column::WorkId.eq(work_id))
+                                .to_owned(),
+                        ),
+                    )
+                    .to_owned(),
+            ),
+        )
+        .order_by_asc(edition_identifiers::Column::EditionId)
+        .limit(2)
         .all(store.db())
         .await
         .map_err(LibraryError::Orm)?
         .into_iter()
         .map(|row| row.edition_id)
         .collect();
-    let mut of_work = Vec::new();
-    for edition_id in carrying {
-        let Some(row) = editions::Entity::find_by_id(edition_id.clone())
-            .one(store.db())
-            .await
-            .map_err(LibraryError::Orm)?
-        else {
-            continue;
-        };
-        let in_work = expressions::Entity::find_by_id(row.expression_id)
-            .one(store.db())
-            .await
-            .map_err(LibraryError::Orm)?
-            .is_some_and(|expression| expression.work_id == work_id);
-        if in_work {
-            of_work.push(edition_id);
-        }
-    }
     Ok(match of_work.as_slice() {
         [only] => Some(only.clone()),
         _ => None,
