@@ -1061,15 +1061,21 @@ impl LibraryStore {
     ///
     /// Returns the read error.
     pub async fn edition_asins(&self, edition_id: &str) -> Result<Vec<(String, String)>> {
-        let mut rows = edition_identifiers::Entity::find()
-            .filter(edition_identifiers::Column::EditionId.eq(edition_id))
-            .filter(
-                edition_identifiers::Column::Scheme
-                    .eq(bookclerk_resolve::IdentifierScheme::Asin.as_str()),
-            )
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+        let mut rows = crate::store::keyset::read_keyset(
+            self,
+            edition_identifiers::Entity::find()
+                .filter(edition_identifiers::Column::EditionId.eq(edition_id))
+                .filter(
+                    edition_identifiers::Column::Scheme
+                        .eq(bookclerk_resolve::IdentifierScheme::Asin.as_str()),
+                ),
+            &[
+                edition_identifiers::Column::Scheme,
+                edition_identifiers::Column::Marketplace,
+                edition_identifiers::Column::Value,
+            ],
+        )
+        .await?;
         rows.sort_by(|a, b| {
             (a.strength != "strong", &a.value, &a.marketplace).cmp(&(
                 b.strength != "strong",

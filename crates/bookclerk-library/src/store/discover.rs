@@ -436,25 +436,15 @@ impl LibraryStore {
         subject: &DiscoverSubject,
     ) -> Result<Vec<StoredCandidate>> {
         let key = subject.key();
-        let mut rows = Vec::new();
-        let mut after: i64 = 0;
-        loop {
-            let page = discover_candidates::Entity::find()
-                .filter(discover_candidates::Column::SubjectKey.eq(key.as_str()))
-                .filter(discover_candidates::Column::Id.gt(after))
-                .order_by_asc(discover_candidates::Column::Id)
-                .limit(DISCOVER_READ_PAGE)
-                .all(&self.db)
-                .await
-                .map_err(LibraryError::Orm)?;
-            let Some(last) = page.last() else { break };
-            after = last.id;
-            let full = u64::try_from(page.len()).is_ok_and(|n| n >= DISCOVER_READ_PAGE);
-            rows.extend(page);
-            if !full {
-                break;
-            }
-        }
+        let mut page = super::keyset::result_page(self).min(DISCOVER_READ_PAGE);
+        let rows = super::keyset::read_keyset_pages(
+            self,
+            discover_candidates::Entity::find()
+                .filter(discover_candidates::Column::SubjectKey.eq(key.as_str())),
+            &[discover_candidates::Column::Id],
+            &mut page,
+        )
+        .await?;
         let ids: Vec<String> = rows.iter().map(|m| m.listing_id.clone()).collect();
         let mut listings: std::collections::HashMap<String, CatalogListingRecord> = self
             .catalog_listings(&ids)
@@ -698,13 +688,15 @@ impl LibraryStore {
         if !row.is_some_and(|m| parse_dt(&m.fetched_at) + max_age > Utc::now()) {
             return Ok(None);
         }
-        let hits = discover_store_call_hits::Entity::find()
-            .filter(discover_store_call_hits::Column::CallKey.eq(call_key))
-            .order_by_asc(discover_store_call_hits::Column::Position)
-            .limit(STORE_CALL_MAX_HITS)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+        let hits = crate::store::keyset::read_keyset_limit(
+            self,
+            discover_store_call_hits::Entity::find()
+                .filter(discover_store_call_hits::Column::CallKey.eq(call_key)),
+            &[discover_store_call_hits::Column::Position],
+            crate::store::keyset::KeyOrder::Ascending,
+            STORE_CALL_MAX_HITS,
+        )
+        .await?;
         Ok(Some(
             hits.into_iter()
                 .map(|m| StoreCallHit {
@@ -1073,6 +1065,7 @@ impl LibraryStore {
     pub async fn list_discover_feed_subjects(&self) -> Result<Vec<DiscoverSubject>> {
         let mut out = Vec::new();
         let mut after: i64 = 0;
+        let page = super::keyset::result_page(self).min(DISCOVER_READ_PAGE);
         loop {
             // Only the id and key: a feed body can be large, and this walk
             // touches every subject.
@@ -1082,14 +1075,14 @@ impl LibraryStore {
                 .column(discover_feeds::Column::SubjectKey)
                 .filter(discover_feeds::Column::Id.gt(after))
                 .order_by_asc(discover_feeds::Column::Id)
-                .limit(DISCOVER_READ_PAGE)
+                .limit(page)
                 .into_model::<FeedSubjectRow>()
                 .all(&self.db)
                 .await
                 .map_err(LibraryError::Orm)?;
             let Some(last) = rows.last() else { break };
             after = last.id;
-            let full = u64::try_from(rows.len()).is_ok_and(|n| n >= DISCOVER_READ_PAGE);
+            let full = u64::try_from(rows.len()).is_ok_and(|n| n >= page);
             out.extend(
                 rows.iter()
                     .filter_map(|row| DiscoverSubject::parse(&row.subject_key)),
@@ -1536,13 +1529,13 @@ mod tests {
                 .unwrap();
             let feed = store.get_discover_feed(&alice).await.unwrap().unwrap();
             assert_eq!(feed.feed_json, newer, "{name}");
-            let versions: std::collections::BTreeSet<String> = discover_feed_parts::Entity::find()
-                .all(store.db())
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|piece| piece.version)
-                .collect();
+            let versions: std::collections::BTreeSet<String> =
+                crate::test_support::uncapped(discover_feed_parts::Entity::find().all(store.db()))
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|piece| piece.version)
+                    .collect();
             assert_eq!(versions.len(), 1, "{name}: the older pieces are dropped");
 
             store

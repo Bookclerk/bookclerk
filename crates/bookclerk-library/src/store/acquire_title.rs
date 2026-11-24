@@ -10,6 +10,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use chrono::{DateTime, Utc};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 
+use super::keyset::read_keyset;
 use super::LibraryStore;
 use crate::entities::{
     accounts, edition_acquisitions, edition_identifiers, editions, expressions, holdings,
@@ -211,26 +212,27 @@ impl LibraryStore {
     /// account_id)`: every account whose id or label is `needle`, ignoring
     /// ASCII case, the way the scan executor and the job trust checks
     /// resolve a job's account. A library has few accounts, so they are
-    /// read in one query.
+    /// read whole, in keyset pages sized to the database plugin's result
+    /// limits.
     ///
     /// # Errors
     ///
-    /// Returns [`LibraryError::Orm`] when the read fails.
+    /// Returns the read error.
     async fn accounts_matching(&self, needle: &str) -> Result<BTreeSet<(String, String)>> {
-        Ok(accounts::Entity::find()
-            .all(self.db())
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .filter(|row| {
-                row.account_id.eq_ignore_ascii_case(needle)
-                    || row
-                        .label
-                        .as_deref()
-                        .is_some_and(|label| label.eq_ignore_ascii_case(needle))
-            })
-            .map(|row| (row.plugin_key, row.account_id))
-            .collect())
+        Ok(
+            read_keyset(self, accounts::Entity::find(), &[accounts::Column::Id])
+                .await?
+                .into_iter()
+                .filter(|row| {
+                    row.account_id.eq_ignore_ascii_case(needle)
+                        || row
+                            .label
+                            .as_deref()
+                            .is_some_and(|label| label.eq_ignore_ascii_case(needle))
+                })
+                .map(|row| (row.plugin_key, row.account_id))
+                .collect(),
+        )
     }
 
     /// The title `account_id` holds at a store, as acquire reads it.
@@ -329,24 +331,33 @@ impl LibraryStore {
             .map(|(_, account)| account.clone())
             .collect();
         let variants = case_variants(&id);
-        let mut edition_ids: Vec<String> = edition_identifiers::Entity::find()
-            .filter(edition_identifiers::Column::Scheme.is_in(["asin", "isbn"]))
-            .filter(edition_identifiers::Column::Value.is_in(variants.clone()))
-            .all(self.db())
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(|m| m.edition_id)
-            .collect();
+        let mut edition_ids: Vec<String> = read_keyset(
+            self,
+            edition_identifiers::Entity::find()
+                .filter(edition_identifiers::Column::Scheme.is_in(["asin", "isbn"]))
+                .filter(edition_identifiers::Column::Value.is_in(variants.clone())),
+            &[
+                edition_identifiers::Column::EditionId,
+                edition_identifiers::Column::Scheme,
+                edition_identifiers::Column::Marketplace,
+                edition_identifiers::Column::Value,
+            ],
+        )
+        .await?
+        .into_iter()
+        .map(|m| m.edition_id)
+        .collect();
         edition_ids = distinct(edition_ids.into_iter());
-        let mut listing_ids: Vec<String> = store_listings::Entity::find()
-            .filter(store_listings::Column::ProductId.is_in(variants.clone()))
-            .all(self.db())
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(|m| m.id)
-            .collect();
+        let mut listing_ids: Vec<String> = read_keyset(
+            self,
+            store_listings::Entity::find()
+                .filter(store_listings::Column::ProductId.is_in(variants.clone())),
+            &[store_listings::Column::Id],
+        )
+        .await?
+        .into_iter()
+        .map(|m| m.id)
+        .collect();
         listing_ids.extend(
             find_chunked::<store_listings::Entity, _>(self, &edition_ids, |part| {
                 store_listings::Entity::find()
@@ -378,14 +389,16 @@ impl LibraryStore {
         )
         .await?;
         holdings.extend(
-            account(
-                super::holdings::find_holdings()
-                    .filter(holdings::Column::HolderKind.eq("account"))
-                    .filter(holdings::Column::Id.is_in(holding_ids)),
+            read_keyset(
+                self,
+                account(
+                    super::holdings::find_holdings()
+                        .filter(holdings::Column::HolderKind.eq("account"))
+                        .filter(holdings::Column::Id.is_in(holding_ids)),
+                ),
+                &[holdings::Column::Id],
             )
-            .all(self.db())
-            .await
-            .map_err(LibraryError::Orm)?,
+            .await?,
         );
         if let Some(named) = &named {
             // The same id on another store is another account.
@@ -498,7 +511,7 @@ impl LibraryStore {
         account_id: Option<&str>,
         plugin_key: Option<&str>,
     ) -> Result<BTreeSet<(String, String)>> {
-        let mut query = accounts::Entity::find().order_by_asc(accounts::Column::Id);
+        let mut query = accounts::Entity::find();
         if let Some(plugin_key) = plugin_key {
             query = query.filter(accounts::Column::PluginKey.eq(plugin_key));
         }
@@ -509,7 +522,7 @@ impl LibraryStore {
         let mut out = BTreeSet::new();
         // One indexed existence read per account: a library has few
         // accounts, and each may hold more titles than one read returns.
-        for account in query.all(self.db()).await.map_err(LibraryError::Orm)? {
+        for account in read_keyset(self, query, &[accounts::Column::Id]).await? {
             if named.as_ref().is_some_and(|named| {
                 !named.contains(&(account.plugin_key.clone(), account.account_id.clone()))
             }) {

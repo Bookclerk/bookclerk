@@ -35,6 +35,8 @@ export const MISSING_KEY =
 export interface GuestState {
   /** Keys of the users already reported, used only without the plugin database. */
   readonly knownUsers: Set<string>;
+  /** Keys of the users reported but not yet acknowledged, used only without the plugin database. */
+  readonly pendingUsers: Set<string>;
   /** Tail of the call chain; calls that touch the watch or the memory run one at a time. */
   tail: Promise<unknown>;
 }
@@ -45,7 +47,7 @@ export interface GuestState {
  * @returns Empty state.
  */
 export function newState(): GuestState {
-  return { knownUsers: new Set(), tail: Promise.resolve() };
+  return { knownUsers: new Set(), pendingUsers: new Set(), tail: Promise.resolve() };
 }
 
 /**
@@ -232,29 +234,56 @@ export async function start(state: GuestState, ctx: Context): Promise<void> {
  * Opens the pushed-event socket when it is closed, then lists the server's
  * users and returns those the watch has not reported. When the watch was
  * never seeded (the seed at start failed), this poll seeds it and reports
- * nobody.
+ * nobody. When the host acknowledges polls, users it has not acknowledged
+ * yet are reported again.
  *
  * @param state - The isolate state.
  * @param ctx - Settings and bindings.
+ * @param ackFollows - Whether the host acknowledges what it receives
+ *   (`ackEvents`).
  * @returns The new users.
  * @throws {AbsFailure} When the plugin is misconfigured or the users
  *   cannot be listed; the binding's error when the watch cannot be read.
  */
-export async function pollEvents(state: GuestState, ctx: Context): Promise<ExternalUser[]> {
+export async function pollEvents(
+  state: GuestState,
+  ctx: Context,
+  ackFollows = false,
+): Promise<ExternalUser[]> {
   // Serialized, so a start and a poll that overlap open one socket.
   await serialized(state, () => ensurePushQuietly(ctx));
   if (!ctx.settings.watchUsers) return [];
   const client = clientFor(ctx);
   return serialized(state, async () => {
     const users = await client.listUsers();
-    const watch = new UserWatch(ctx.db, state.knownUsers);
+    const watch = new UserWatch(ctx.db, state.knownUsers, state.pendingUsers);
     if ((await watch.seed(users)) > 0) return [];
-    return (await watch.takeNew(users)).map((user) => {
+    return (await watch.takeNew(users, ackFollows)).map((user) => {
       const external: ExternalUser = { provider: PROVIDER, externalUserId: user.id };
       if (user.username !== "") external.displayName = user.username;
       return external;
     });
   });
+}
+
+/**
+ * `RemoteLibrary.ackEvents`: the host received these users, so polls stop
+ * reporting them.
+ *
+ * @param state - The isolate state.
+ * @param ctx - Bindings.
+ * @param userIds - The acknowledged Audiobookshelf user ids.
+ * @throws The binding's error when the acknowledgement cannot be recorded.
+ */
+export async function ackEvents(
+  state: GuestState,
+  ctx: Context,
+  userIds: readonly string[],
+): Promise<void> {
+  if (userIds.length === 0) return;
+  await serialized(state, () =>
+    new UserWatch(ctx.db, state.knownUsers, state.pendingUsers).ack(userIds),
+  );
 }
 
 /**

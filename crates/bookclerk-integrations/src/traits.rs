@@ -91,11 +91,23 @@ pub struct ScheduledInvocation {
     pub deadline_unix_ms: u64,
 }
 
+/// Future an [`OnExternalUser`] hook returns: it resolves once the user is
+/// durably accepted (its claim ticket minted), or with the failure.
+pub type ExternalUserAccepted =
+    std::pin::Pin<Box<dyn std::future::Future<Output = crate::Result<()>> + Send>>;
+
+/// Daemon hook for an observed external user (claim minting).
+///
+/// A remote library poll acknowledges a user only after its hook resolved
+/// `Ok`, so a user whose ticket could not be minted stays pending on the
+/// guest and is handed over again on the next poll.
+pub type OnExternalUser = Arc<dyn Fn(ExternalUser) -> ExternalUserAccepted + Send + Sync>;
+
 /// Context passed when starting background watchers.
 #[derive(Clone, Default)]
 pub struct IntegrationContext {
     /// Optional callback when an external user is observed (claim minting).
-    pub on_external_user: Option<std::sync::Arc<dyn Fn(ExternalUser) + Send + Sync>>,
+    pub on_external_user: Option<OnExternalUser>,
 }
 
 /// Downstream consumer of acquired books / identity signals (e.g. Audiobookshelf).

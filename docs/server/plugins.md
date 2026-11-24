@@ -133,6 +133,16 @@ A guest that fails health records an `error` observation, and the version
 stays active. Nothing rolls back automatically: use `plugins rollback` to
 activate an earlier version.
 
+A guest gets 30 seconds to answer the health check its deployment runs at
+start. One that stays alive but doesn't answer fails the check with
+`deadline_exceeded`, the same as a guest that reports itself unhealthy.
+
+The health probe that `plugins doctor` and a CLI install run opens the
+guest with its default instance's settings and secrets first, as a
+deployment does. Its line ends with `bindings=instance`, or
+`bindings=none` when there is no instance yet (a first install) or the
+plugin is a database adapter.
+
 ### Staged packages
 
 Platform guests (`local`, `sqlite`, `embedder`) ship with the node, and

@@ -444,15 +444,20 @@ pub async fn account_share_peers(
     account_id: &str,
 ) -> Result<Vec<String>> {
     use crate::entities::account_shares;
-    let peers: BTreeSet<String> = account_shares::Entity::find()
-        .filter(account_shares::Column::PluginKey.eq(plugin_key))
-        .filter(account_shares::Column::AccountId.eq(account_id))
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?
-        .into_iter()
-        .map(|row| row.peer)
-        .collect();
+    let peers: BTreeSet<String> = crate::store::keyset::read_keyset(
+        store,
+        account_shares::Entity::find()
+            .filter(account_shares::Column::PluginKey.eq(plugin_key))
+            .filter(account_shares::Column::AccountId.eq(account_id)),
+        &[
+            account_shares::Column::Peer,
+            account_shares::Column::Direction,
+        ],
+    )
+    .await?
+    .into_iter()
+    .map(|row| row.peer)
+    .collect();
     Ok(peers.into_iter().collect())
 }
 

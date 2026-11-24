@@ -1,0 +1,78 @@
+api_version = 3
+id = "cloudflare_dns"
+name = "Cloudflare DNS"
+version = "0.1.0"
+runtime = "workerd"
+entrypoints = ["ingress"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[workerd.limits]
+cpu_ms = 30000
+subrequests = 50
+
+[[modules]]
+name = "index.js"
+path = "index.js"
+type = "js"
+
+[[modules]]
+name = "address.js"
+path = "address.js"
+type = "js"
+
+[[modules]]
+name = "dns.js"
+path = "dns.js"
+type = "js"
+
+[[modules]]
+name = "lifecycle.js"
+path = "lifecycle.js"
+type = "js"
+
+[vars]
+
+[[settings]]
+key = "hostname"
+label = "Host name"
+type = "string"
+required = true
+description = "The name the library answers on, in a zone on your Cloudflare account, such as books.example.com."
+
+[[settings]]
+key = "ipv4"
+label = "Publish IPv4"
+type = "bool"
+default = true
+description = "Keep an A record pointed at this computer's public IPv4 address (needs port 443 forwarded on the router)."
+
+[[settings]]
+key = "ipv6"
+label = "Publish IPv6"
+type = "bool"
+default = false
+description = "Keep an AAAA record pointed at this computer's public IPv6 address (needs the daemon itself on port 443 and the router's firewall open to it)."
+
+[[settings]]
+key = "api_token"
+label = "Cloudflare API token"
+type = "secret"
+description = "An API token with the Zone: DNS: Edit permission on the host name's zone."
+
+[secrets]
+
+[ingress]
+kind = "direct"
+
+[capabilities.network]
+mode = "outbound"
+domains = [
+    "api.cloudflare.com",
+    "ipv4.icanhazip.com",
+    "ipv6.icanhazip.com",
+]

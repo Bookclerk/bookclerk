@@ -4006,7 +4006,11 @@ fn vat_thread(
                                                     "fence lost",
                                                 ))
                                             }
-                                            out = bookclerk_plugin_abi::ScheduledHandler::scheduled(&handler, controller) => out.map_err(map_abi),
+                                            out = bookclerk_plugin_abi::ScheduledHandler::scheduled(
+                                                &handler,
+                                                controller,
+                                                Box::new(FlagCancel(Arc::clone(&cancel))),
+                                            ) => out.map_err(map_abi),
                                         },
                                     }
                                 } => result,

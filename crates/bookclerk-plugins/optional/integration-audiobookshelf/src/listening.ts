@@ -33,7 +33,7 @@ import {
 } from "./client.ts";
 import { FINGERPRINT_TAG, LISTENING_KEY_TAG, fingerprint64, hexKey } from "./hash.ts";
 import { int64, int64At, readKeyed, text, textAt, writeAll, type Row } from "./keyed.ts";
-import { WATCH_MIGRATION } from "./watch.ts";
+import { WATCH_MIGRATION, WATCH_PENDING_MIGRATION } from "./watch.ts";
 
 /** `[[databases]]` binding the plugin keeps its memory in. */
 export const LISTENING_STATE_BINDING = "LISTENING_STATE";
@@ -80,11 +80,13 @@ export const LISTENING_MIGRATION: PluginMigration = {
  * The `databaseMigrations` answer for `binding`.
  *
  * @param binding - Binding name from `plugin.toml`.
- * @returns The listening memory and the user watch for
+ * @returns The listening memory and the user watch (known and pending) for
  *   {@link LISTENING_STATE_BINDING}, nothing for any other binding.
  */
 export function migrationsFor(binding: string): PluginMigration[] {
-  return binding === LISTENING_STATE_BINDING ? [LISTENING_MIGRATION, WATCH_MIGRATION] : [];
+  return binding === LISTENING_STATE_BINDING
+    ? [LISTENING_MIGRATION, WATCH_MIGRATION, WATCH_PENDING_MIGRATION]
+    : [];
 }
 
 /** What one user's rows looked like when they were last sent. */

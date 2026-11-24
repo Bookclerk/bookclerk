@@ -67,7 +67,7 @@ Environment variables win over `config.toml`. Settings the database owns
 | `BOOKCLERK_DATABASE_PLUGIN` | The database plugin: `sqlite` or `d1` |
 | `BOOKCLERK_DATABASE_SQLITE_PATH` | The SQLite file path |
 | `BOOKCLERK_D1_ACCOUNT_ID`, `BOOKCLERK_D1_DATABASE_ID` | Cloudflare D1 ids |
-| `BOOKCLERK_D1_API_TOKEN` or `CLOUDFLARE_API_TOKEN` | D1 API token (environment only) |
+| `BOOKCLERK_D1_API_TOKEN` or `CLOUDFLARE_API_TOKEN` | D1 API token; overrides the one `bookclerk config database setup d1` stored |
 | `BOOKCLERK_DAEMON_LISTEN` | The daemon's listen addresses |
 | `BOOKCLERK_LOG`, `RUST_LOG` | Log filter |
 | `BOOKCLERK_AUTH_PASSWORD` | Wraps `master.key` at rest (preferred over `[auth].password`); needed for legacy `json-encrypted` rows |
@@ -216,6 +216,7 @@ can read `core.events` and `core.output`:
 | --- | --- |
 | `[database]` and the `BOOKCLERK_DATABASE_*`, D1 and Postgres variables | Which library database to open |
 | `master.key`, with `BOOKCLERK_AUTH_PASSWORD` or `[auth].password` | The library's data-encryption key, or a pointer to the OS keychain item that holds it |
+| `database.credential` | A D1 library's API token, sealed with the data-encryption key, or a pointer to the keychain or `systemd-creds` item that holds it; written by `bookclerk config database setup d1` |
 | `node-identity.json` | This host's stable id, and the library it joined |
 
 **Adding a second host to an existing database:**

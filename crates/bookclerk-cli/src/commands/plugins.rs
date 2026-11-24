@@ -1456,10 +1456,67 @@ async fn spawn_cli_session(
     .await?)
 }
 
-/// Spawns the guest, calls `describe()`, and calls `health` when advertised.
+/// What [`open_instance_bindings`] opened the probe session with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeBindings {
+    /// The default instance's resolved `CONFIG` / `SECRETS`.
+    Instance,
+    /// None: a database adapter (bootstrap config only), or no library or
+    /// instance to read them from yet (a first install).
+    None,
+}
+
+impl ProbeBindings {
+    /// Text of the `bindings=` field in the health line.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Instance => "instance",
+            Self::None => "none",
+        }
+    }
+}
+
+/// Opens `session` with the default instance's `CONFIG` / `SECRETS`, as a
+/// deployment would, so a `health` that reads its settings sees them.
+///
+/// # Errors
+///
+/// Returns an error when the instance exists but its bindings cannot be
+/// resolved (for example a required setting has no value) or `open` fails.
+async fn open_instance_bindings(
+    config: &Config,
+    plugin: &DiscoveredPlugin,
+    session: &PluginSession,
+) -> anyhow::Result<ProbeBindings> {
+    if plugin.manifest.primary_family() == PluginFamily::Database {
+        return Ok(ProbeBindings::None);
+    }
+    let Ok(store) = crate::registry::open_library(config).await else {
+        return Ok(ProbeBindings::None);
+    };
+    let Some(instance) = default_instance_for_key(&store, plugin.plugin_key().canonical()).await?
+    else {
+        return Ok(ProbeBindings::None);
+    };
+    let prepared = bookclerk_plugin_host::prepare_open_for_instance(
+        &store,
+        &config.paths().files_dir,
+        plugin,
+        &instance.id,
+    )
+    .await?;
+    session.open(prepared.bindings).await?;
+    Ok(ProbeBindings::Instance)
+}
+
+/// Spawns the guest, calls `describe()`, opens it with the default
+/// instance's bindings, and calls `health` when advertised.
 async fn health_check_installed(config: &Config, id: &str) -> anyhow::Result<String> {
     let plugin = find_plugin(config, id)?;
     let session = spawn_cli_session(config, &plugin).await?;
+    let bindings = open_instance_bindings(config, &plugin, &session)
+        .await?
+        .label();
     let api = session.describe_snapshot().api_version;
     let entrypoints = session
         .describe_snapshot()
@@ -1534,9 +1591,13 @@ async fn health_check_installed(config: &Config, id: &str) -> anyhow::Result<Str
         probed = true;
     }
     if probed {
-        Ok(format!("health=ok api={api} entrypoints={entrypoints}"))
+        Ok(format!(
+            "health=ok api={api} entrypoints={entrypoints} bindings={bindings}"
+        ))
     } else {
-        Ok(format!("api={api} entrypoints={entrypoints}"))
+        Ok(format!(
+            "api={api} entrypoints={entrypoints} bindings={bindings}"
+        ))
     }
 }
 

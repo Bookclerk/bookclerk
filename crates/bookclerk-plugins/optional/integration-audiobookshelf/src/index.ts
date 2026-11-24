@@ -16,7 +16,9 @@ import {
   PluginError,
   RemoteLibraryEntrypoint,
   type AuthenticateUserParams,
+  type EventAckParams,
   type EventBatch,
+  type EventPollParams,
   type ExternalUser,
   type HealthOk,
   type HostWebSocket,
@@ -161,12 +163,24 @@ export class RemoteLibrary extends RemoteLibraryEntrypoint<Env> {
   }
 
   /**
-   * The users created since the last poll.
+   * The users created since the last poll, plus those the host has not
+   * acknowledged yet when it acknowledges polls.
    *
+   * @param params - Whether an `ackEvents` call follows (absent from older hosts).
    * @returns New users, for claim tickets.
    */
-  override pollEvents(): Promise<ExternalUser[]> {
-    return guarded(() => guest.pollEvents(STATE, contextOf(this.env)));
+  override pollEvents(params?: EventPollParams): Promise<ExternalUser[]> {
+    const ackFollows = params?.ackFollows === true;
+    return guarded(() => guest.pollEvents(STATE, contextOf(this.env), ackFollows));
+  }
+
+  /**
+   * Records that the host received these users, so polls stop reporting them.
+   *
+   * @param params - The acknowledged Audiobookshelf user ids.
+   */
+  override ackEvents(params: EventAckParams): Promise<void> {
+    return guarded(() => guest.ackEvents(STATE, contextOf(this.env), params.externalUserIds));
   }
 }
 

@@ -1,0 +1,1 @@
+{"success":true,"result":[{"id":"0123456789abcdef0123456789abcdef","type":"AAAA","name":"books.example.com","content":"2606:4700::1","proxied":true,"ttl":1,"comment":null},{"id":"x","type":"A","name":"books.example.com","content":"1.1.1.1"}]}

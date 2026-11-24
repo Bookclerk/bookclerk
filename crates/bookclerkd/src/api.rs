@@ -2390,7 +2390,9 @@ pub async fn start_integration_watchers(state: &AppState) {
         on_external_user: Some(Arc::new(move |user| {
             let library_for_tickets = library_for_tickets.clone();
             let config_for_tickets = config_for_tickets.clone();
-            tokio::spawn(async move {
+            // The poll acknowledges the user only once this resolves `Ok`, so
+            // a failed mint leaves the user pending for the next poll.
+            Box::pin(async move {
                 let cfg = config_for_tickets.read().await;
                 let lib = library_for_tickets.read().await.clone();
                 match bookclerk_integrations::mint_for_external_user(
@@ -2410,10 +2412,14 @@ pub async fn start_integration_watchers(state: &AppState) {
                                 "claim ticket minted for ABS user"
                             );
                         }
+                        Ok(())
                     }
-                    Err(err) => tracing::warn!(%err, "failed to mint claim ticket"),
+                    Err(err) => {
+                        tracing::warn!(%err, "failed to mint claim ticket");
+                        Err(err)
+                    }
                 }
-            });
+            })
         })),
     };
     state
@@ -7128,6 +7134,11 @@ async fn discover_catalog_search(
         .collect();
     drop(sources);
     bookclerk_discover::join_search_branch_availability(&library, &mut page.items, |id| {
+        plugin_keys.get(id).cloned()
+    })
+    .await
+    .map_err(internal_err)?;
+    bookclerk_discover::join_search_library_copies(&library, &mut page.items, |id| {
         plugin_keys.get(id).cloned()
     })
     .await

@@ -16,6 +16,7 @@
 pub mod adapter;
 pub mod atomic;
 pub mod d1;
+pub mod provision;
 
 pub use d1::{
     delete_database, ensure_database, lookup_database, open, set_shared_proxy, shared_proxy,

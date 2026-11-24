@@ -59,18 +59,6 @@ pub struct ListeningProgressWrite {
     pub after: NewListeningProgress,
 }
 
-/// One `edition_identifiers` value and the edition carrying it.
-///
-/// Read by column name: an adapter may return a projection's columns in any
-/// order, so positional tuples are not safe here.
-#[derive(Debug, FromQueryResult)]
-struct EditionByValue {
-    /// Normalised identifier value.
-    value: String,
-    /// Edition carrying it.
-    edition_id: String,
-}
-
 /// One portal identity's external user id and row id.
 #[derive(Debug, FromQueryResult)]
 struct IdentityByUser {
@@ -193,16 +181,18 @@ impl LibraryStore {
         let values: Vec<String> = values.iter().cloned().collect();
         let mut found: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for part in values.chunks(self.lookup_chunk()) {
-            let rows = edition_identifiers::Entity::find()
-                .select_only()
-                .column(edition_identifiers::Column::Value)
-                .column(edition_identifiers::Column::EditionId)
-                .filter(edition_identifiers::Column::Scheme.eq(scheme.as_str()))
-                .filter(edition_identifiers::Column::Value.is_in(part.iter().cloned()))
-                .into_model::<EditionByValue>()
-                .all(&self.db)
-                .await
-                .map_err(LibraryError::Orm)?;
+            let rows = super::keyset::read_keyset(
+                self,
+                edition_identifiers::Entity::find()
+                    .filter(edition_identifiers::Column::Scheme.eq(scheme.as_str()))
+                    .filter(edition_identifiers::Column::Value.is_in(part.iter().cloned())),
+                &[
+                    edition_identifiers::Column::Value,
+                    edition_identifiers::Column::EditionId,
+                    edition_identifiers::Column::Marketplace,
+                ],
+            )
+            .await?;
             for row in rows {
                 found.entry(row.value).or_default().insert(row.edition_id);
             }

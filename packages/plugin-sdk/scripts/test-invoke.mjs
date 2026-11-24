@@ -47,6 +47,7 @@ const {
   packEmbeddingVectors,
   unpackEmbeddingVectors,
   PluginError,
+  RemoteLibraryEntrypoint,
   StorageEntrypoint,
   StorefrontEntrypoint,
   dataMigrationOp,
@@ -122,6 +123,11 @@ class Plugin extends BookclerkEntrypoint {
   async scheduled(controller) {
     calls.scheduled.push(controller);
     if (controller.cron === "0 0 * * *") throw new Error("nightly failed");
+    if (controller.cron === "*/5 * * * *") {
+      // Waits for the host to cancel the fire, then reports what it saw.
+      await new Promise((resolve) => controller.signal.addEventListener("abort", resolve));
+      throw controller.signal.reason;
+    }
   }
 
   async queue(batch) {
@@ -1443,7 +1449,9 @@ function decodeReply(reply, resultsCodec, caps) {
     W.ScheduledHandlerScheduledResultsCodec,
   );
   assert.equal(ok.kind, "ok");
-  assert.deepEqual(calls.scheduled[0], fire("*/30 * * * *"));
+  const { signal, ...delivered } = calls.scheduled[0];
+  assert.deepEqual(delivered, fire("*/30 * * * *"));
+  assert.equal(signal.aborted, false, "a fire without a cancel probe never aborts");
   assert.ok(Object.isFrozen(calls.scheduled[0]), "the controller is read-only");
   const failed = decodeReply(
     await invoke("ScheduledHandler", "scheduled", W.ScheduledHandlerScheduledParamsCodec, {
@@ -1453,6 +1461,30 @@ function decodeReply(reply, resultsCodec, caps) {
   );
   assert.equal(failed.kind, "err");
   assert.match(String(failed.value.message), /nightly failed/);
+
+  // The host's cancel probe arrives as a granted long poll and aborts the
+  // fire's signal with a `cancelled` error.
+  granted.requests.length = 0;
+  granted.cancelState = { polls: 0, release: null, mode: "hold" };
+  const release = () => {
+    if (granted.cancelState.release) granted.cancelState.release();
+    else setTimeout(release, 0);
+  };
+  release();
+  const cancelled = decodeReply(
+    await invoke(
+      "ScheduledHandler",
+      "scheduled",
+      W.ScheduledHandlerScheduledParamsCodec,
+      { controller: fire("*/5 * * * *"), cancel: "c" },
+      { caps: [{ kind: "cancellation", token: "tok-fire" }] },
+    ),
+    W.ScheduledHandlerScheduledResultsCodec,
+  );
+  assert.equal(cancelled.kind, "err");
+  assert.equal(cancelled.value.code, "cancelled");
+  const poll = granted.requests.find((r) => r.path === "/cancel");
+  assert.equal(poll.headers.Authorization, "Bearer tok-fire");
 }
 
 // --- SocketHandler: messages and closes reach webSocketMessage / webSocketClose --
@@ -1953,6 +1985,59 @@ const jobParams = (commandType) => ({
   );
   assert.equal(schema.kind, "ok");
   assert.equal(schema.value.commands[0].name, "ping");
+}
+
+// --- RemoteLibrary: pollEvents carries ackFollows; ackEvents reaches the author --
+
+{
+  const seen = { polls: [], acks: [] };
+  class Library extends RemoteLibraryEntrypoint {
+    async pollEvents(params) {
+      seen.polls.push(params);
+      return [{ provider: "", externalUserId: "u1", displayName: "ada" }];
+    }
+    async ackEvents(params) {
+      seen.acks.push(params);
+    }
+  }
+  const withLibrary = new Adapter({}, { ...env, PLUGIN_REMOTE_LIBRARY: new Library({}, {}) });
+  const call = (method, paramsCodec, params) =>
+    withLibrary.invoke(
+      "RemoteLibrary",
+      method,
+      contextJson,
+      null,
+      null,
+      W.encodeMessage(paramsCodec, params),
+    );
+  const polled = decodeReply(
+    await call("pollEvents", W.RemoteLibraryPollEventsParamsCodec, {
+      params: { ackFollows: true },
+    }),
+    W.RemoteLibraryPollEventsResultsCodec,
+  );
+  assert.equal(polled.kind, "ok");
+  assert.deepEqual(
+    polled.value.users.map((u) => u.externalUserId),
+    ["u1"],
+  );
+  // A host that predates the params sends none: ackFollows reads false.
+  await call("pollEvents", W.RemoteLibraryPollEventsParamsCodec, {});
+  assert.deepEqual(
+    seen.polls.map((p) => p?.ackFollows === true),
+    [true, false],
+  );
+  const acked = decodeReply(
+    await call("ackEvents", W.RemoteLibraryAckEventsParamsCodec, {
+      params: { externalUserIds: ["u1"] },
+    }),
+    W.RemoteLibraryAckEventsResultsCodec,
+  );
+  assert.equal(acked.kind, "ok");
+  assert.deepEqual(seen.acks, [{ externalUserIds: ["u1"] }]);
+  // The base class acknowledges nothing and succeeds.
+  class Draining extends RemoteLibraryEntrypoint {}
+  assert.equal(await new Draining({}, {}).ackEvents({ externalUserIds: ["u1"] }), undefined);
 }
 
 // --- MetadataProvider -----------------------------------------------------

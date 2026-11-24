@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   ArrowUpAZ,
   Bookmark,
+  Check,
   Loader2,
   Search,
   SlidersHorizontal,
@@ -68,12 +69,14 @@ import {
   signOut,
   userFacingApiError,
   availableThroughLabel,
+  inLibraryLabel,
   type AuthRole,
   type BranchAvailability,
   type CatalogSearchHit,
   type CatalogSortDir,
   type DiscoverFeed,
   type DiscoverShelf,
+  type LibraryCopy,
   type PurchaseHint,
   type Recommendation,
   type TitleMeta,
@@ -1320,6 +1323,27 @@ function AvailableThrough({
   );
 }
 
+/**
+ * "In your library" / "Another edition in your library" on a search row
+ * for a title the library already holds. Renders nothing otherwise.
+ */
+function InLibrary({
+  copy,
+  className,
+}: {
+  copy: LibraryCopy | null | undefined;
+  className?: string;
+}) {
+  const label = inLibraryLabel(copy);
+  if (!label) return null;
+  return (
+    <p className={cn("flex items-center gap-1 font-medium text-teal-text", className)}>
+      <Check className="h-3.5 w-3.5 shrink-0" aria-hidden />
+      <span className="line-clamp-1">{label}</span>
+    </p>
+  );
+}
+
 function ResultRow({
   title,
   busy,
@@ -1369,6 +1393,7 @@ function ResultRow({
             {secondaryFacts.join(" · ")}
           </p>
         ) : null}
+        <InLibrary copy={title.in_library} className="mt-0.5 text-xs" />
         <AvailableThrough through={title.available_through} className="mt-0.5 text-xs" />
         {uniqueSources.length > 0 || shownGenres.length > 0 ? (
           <div className="mt-1.5 flex items-center gap-1.5 overflow-hidden">
