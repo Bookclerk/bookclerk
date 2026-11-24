@@ -877,6 +877,9 @@ impl LibraryStore {
             lease_generation: i64,
             /// Dedup key; names the delivery the job sends.
             dedup_key: Option<String>,
+            /// The job's payload; read only for a reset request, whose
+            /// notifier is named there rather than by a delivery or mail.
+            payload: String,
         }
         let mut rows = page(limit).min(self.result_row_cap());
         let page_rows = loop {
@@ -886,6 +889,7 @@ impl LibraryStore {
                 .column(jobs::Column::RunAfter)
                 .column(jobs::Column::LeaseGeneration)
                 .column(jobs::Column::DedupKey)
+                .column(jobs::Column::Payload)
                 .filter(jobs::Column::Kind.eq(JobKind::NotifySend.as_str()))
                 .filter(jobs::Column::State.eq(JobState::Pending.as_str()));
             if let Some(after) = after {
@@ -949,6 +953,7 @@ impl LibraryStore {
             .into_iter()
             .map(|row| (row.id.clone(), row))
             .collect();
+        let reset_prefix = crate::models::password_reset_request_dedup_key("");
         let mail_prefix = crate::models::account_mail_dedup_key("");
         let mail_ids: Vec<String> = stalled
             .iter()
@@ -993,12 +998,21 @@ impl LibraryStore {
                         .and_then(|key| key.strip_prefix(mail_prefix.as_str()))
                         .and_then(|id| mails.get(id))
                         .filter(|m| m.job_id.as_deref().is_none_or(|linked| linked == job.id));
+                    // A reset request names its notifier in its payload, so
+                    // the caller checks that instance before cancelling it.
+                    let reset_notifier = job
+                        .dedup_key
+                        .as_deref()
+                        .is_some_and(|key| key.starts_with(reset_prefix.as_str()))
+                        .then(|| serde_json::from_str::<crate::models::JobPayload>(&job.payload))
+                        .and_then(|payload| payload.ok()?.plugin_instance_id);
                     StalledSend {
                         delivery_id: delivery.map(|d| d.id.clone()),
                         account_mail_id: mail.map(|m| m.id.clone()),
                         notifier: delivery
                             .map(|d| d.plugin_instance_id.clone())
-                            .or_else(|| mail.map(|m| m.plugin_instance_id.clone())),
+                            .or_else(|| mail.map(|m| m.plugin_instance_id.clone()))
+                            .or(reset_notifier),
                         job_id: job.id,
                         run_after: job.run_after,
                         lease_generation: job.lease_generation,

@@ -446,8 +446,7 @@ async fn malformed_bodies_are_refused_and_repeated_tries_are_throttled() {
     .await;
     assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
 
-    // Links that do not work count toward the client's throttle, and a
-    // locked-out client cannot ask for links either.
+    // Links that do not work count toward the client's throttle.
     let unknown = format!(r#"{{"token":"{}"}}"#, "0123456789abcdef".repeat(4));
     let mut throttled = None;
     for _ in 0..10 {
@@ -463,8 +462,54 @@ async fn malformed_bodies_are_refused_and_repeated_tries_are_throttled() {
         .parse()
         .expect("seconds");
     assert!(wait >= 1);
-    let (status, _, _) = post(&app, uri, r#"{"email":"a@example.com"}"#).await;
-    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    // Asking for links has a limit of its own, so a client locked out of
+    // checking links can still ask for one, and asking cannot lock a
+    // patron out of the link that arrives.
+    let mut asked = 0;
+    loop {
+        let (status, _, _) = post(&app, uri, r#"{"email":"a@example.com"}"#).await;
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            break;
+        }
+        assert_eq!(status, StatusCode::ACCEPTED);
+        asked += 1;
+        assert!(asked < 10, "asking for links was never limited");
+    }
+    assert!(asked >= 1, "a locked-out link check also blocked asking");
+}
+
+#[tokio::test]
+async fn two_finishes_of_one_link_at_once_set_one_password() {
+    let (state, app, library) = crate::auth::tests::phase2_harness(TOKEN).await;
+    let (_instance, _files) = turn_on(&state, &library).await;
+    let user = patron(&library, "kit@example.com", true).await;
+    let token = link(&library, user, "kit@example.com").await;
+    let first = new_password();
+    let second = format!("{first} again");
+    let finish = |password: &str| {
+        let app = app.clone();
+        let body = format!(r#"{{"token":"{token}","password":"{password}"}}"#);
+        async move { post(&app, "/api/auth/password-reset/finish", &body).await }
+    };
+    let (a, b) = tokio::join!(finish(&first), finish(&second));
+    let won: Vec<&str> = [(&a, first.as_str()), (&b, second.as_str())]
+        .into_iter()
+        .filter(|((status, _, _), _)| *status == StatusCode::OK)
+        .map(|(_, password)| password)
+        .collect();
+    assert_eq!(won.len(), 1, "{a:?} {b:?}");
+    for (status, _, json) in [&a, &b] {
+        if *status != StatusCode::OK {
+            assert_eq!(*status, StatusCode::BAD_REQUEST);
+            assert_eq!(json["error"], "invalid_link");
+        }
+    }
+    let hash = library
+        .get_user_password_hash(user)
+        .await
+        .expect("read")
+        .expect("a password");
+    assert!(bookclerk_library::verify_password(won[0], &hash).expect("verify"));
 }
 
 /// The password the reset sets, assembled at runtime so scanners do not

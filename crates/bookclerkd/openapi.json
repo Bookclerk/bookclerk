@@ -44702,7 +44702,7 @@
           "Auth"
         ],
         "summary": "Asks for a password-reset link. When an enabled account has the\naddress verified, a link that works once for 30 minutes is mailed to\nit, at most one every five minutes. The answer and its timing are the\nsame whether or not an account has the address.",
-        "description": "Access: anyone; each request counts toward the client's sign-in\nthrottle.",
+        "description": "Access: anyone; each request counts toward a per-client limit of its\nown, separate from the one link checks use.",
         "operationId": "post_password_reset",
         "requestBody": {
           "content": {
@@ -44849,6 +44849,31 @@
               }
             }
           },
+          "503": {
+            "description": "The notification queue is full, so nothing was queued (`busy`); ask again after `Retry-After` seconds. The answer is the same for every address.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "busy",
+                  "message": "The library is busy. Ask again in a minute.",
+                  "status": 503
+                }
+              }
+            }
+          },
           "504": {
             "description": "The request ran past the API's time budget.",
             "content": {
@@ -44895,15 +44920,15 @@
             }
           },
           "400": {
-            "description": "The body is malformed, or the link is unknown, used, expired, for an address the account no longer has verified, or for a disabled account (`invalid_link`). As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "`bad_request` when the body is not one object whose only key is `token`; `invalid_link` when the link is unknown, used, expired, for an address the account no longer has verified, or for a disabled account. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "example": {
-                  "error": "bad_request",
-                  "message": "The request could not be understood.",
+                  "error": "invalid_link",
+                  "message": "This reset link is invalid or has expired. Ask for a new one.",
                   "status": 400
                 }
               },
@@ -45049,15 +45074,15 @@
             }
           },
           "400": {
-            "description": "The body is malformed or the link does not work (`invalid_link`), or the daemon's origin is not a valid WebAuthn relying party. As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "`bad_request` when the body is not one object whose only key is `token`; `invalid_link` when the link does not work; or the daemon's origin is not a valid WebAuthn relying party. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "example": {
-                  "error": "bad_request",
-                  "message": "The request could not be understood.",
+                  "error": "invalid_link",
+                  "message": "This reset link is invalid or has expired. Ask for a new one.",
                   "status": 400
                 }
               },
@@ -45218,15 +45243,15 @@
             }
           },
           "400": {
-            "description": "The body is malformed, or the link is unknown, used, expired, for an address the account no longer has verified, or for a disabled account (`invalid_link`). As `text/plain`, when the body is not syntactically valid JSON.",
+            "description": "`bad_request` when the body is malformed, the password is blank or longer than 1024 bytes, or a second factor is sent for an account without one; `invalid_link` when the link is unknown, used, expired, for an address the account no longer has verified, or for a disabled account. As `text/plain`, when the body is not syntactically valid JSON.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorJson"
                 },
                 "example": {
-                  "error": "bad_request",
-                  "message": "The request could not be understood.",
+                  "error": "invalid_link",
+                  "message": "This reset link is invalid or has expired. Ask for a new one.",
                   "status": 400
                 }
               },
@@ -67245,7 +67270,8 @@
             "description": "The address to send a link to.",
             "example": "dana@example.com"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "PasswordResetAvailability": {
         "type": "object",
@@ -67320,7 +67346,8 @@
               }
             ]
           }
-        }
+        },
+        "additionalProperties": false
       },
       "PasswordResetLinkBody": {
         "type": "object",
@@ -67334,7 +67361,8 @@
             "description": "The token from the link: 64 lowercase hex characters.",
             "example": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "PasswordResetLinkState": {
         "type": "object",
@@ -67363,18 +67391,8 @@
             "example": "2c7e4f0a-9b1d-4e3c-a5f6-7d8e9f0a1b2c"
           },
           "credential": {
-            "description": "W3C PublicKeyCredential as the browser serializes it: a registration attestation (`response.attestationObject`) or an authentication assertion (`response.authenticatorData`, `signature`, `userHandle`), binary fields base64url-encoded.",
+            "description": "W3C PublicKeyCredential from `navigator.credentials.get()`, as the browser serializes it: an authentication assertion (`response.authenticatorData`, `clientDataJSON`, `signature`, `userHandle`), binary fields base64url-encoded.",
             "examples": [
-              {
-                "extensions": {},
-                "id": "pQECAyYgASFYIE",
-                "rawId": "pQECAyYgASFYIE",
-                "response": {
-                  "attestationObject": "o2NmbXRkbm9uZWdhdHRTdG10oGhhdXRoRGF0YViU",
-                  "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uY3JlYXRlIiwiY2hhbGxlbmdlIjoiazl1MlhvM2NaMVFwN21UNHZXOHlBMmJDNWRFNmZHN2hJOGpLOWxNMG5PMSIsIm9yaWdpbiI6Imh0dHBzOi8vYm9va3MuZXhhbXBsZS5jb20ifQ"
-                },
-                "type": "public-key"
-              },
               {
                 "extensions": {},
                 "id": "pQECAyYgASFYIE",
@@ -67389,7 +67407,8 @@
               }
             ]
           }
-        }
+        },
+        "additionalProperties": false
       },
       "PasswordSet": {
         "type": "object",

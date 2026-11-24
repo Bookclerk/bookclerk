@@ -30,6 +30,7 @@ use chrono::Utc;
 use serde::Serialize;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
+use crate::account_mail::ResetRequest;
 use crate::api::AppState;
 use crate::auth::{json_auth_error, password_throttle_key, too_many_requests, ClientIp};
 use crate::openapi::{Access, RouteGroup};
@@ -85,6 +86,17 @@ pub(crate) enum ResetFactor {
     Passkey,
 }
 
+impl ResetFactor {
+    /// The same factor as the store's redemption guard checks it.
+    fn stored(self) -> bookclerk_library::notifications::PasswordResetFactor {
+        match self {
+            Self::None => bookclerk_library::notifications::PasswordResetFactor::None,
+            Self::Totp => bookclerk_library::notifications::PasswordResetFactor::Totp,
+            Self::Passkey => bookclerk_library::notifications::PasswordResetFactor::Passkey,
+        }
+    }
+}
+
 /// What a working reset link needs to finish.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub(crate) struct PasswordResetLinkState {
@@ -105,6 +117,7 @@ pub(crate) struct PasswordResetDone {
 
 /// The body of `POST /api/auth/password-reset`.
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 #[allow(dead_code)] // Documents the body; the route reads `PasswordResetAsk`.
 pub(crate) struct PasswordResetAskBody {
     /// The address to send a link to.
@@ -115,6 +128,7 @@ pub(crate) struct PasswordResetAskBody {
 /// The body of `POST /api/auth/password-reset/check` and
 /// `POST /api/auth/password-reset/passkey`.
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 #[allow(dead_code)] // Documents the body; the routes read `PasswordResetLink`.
 pub(crate) struct PasswordResetLinkBody {
     /// The token from the link: 64 lowercase hex characters.
@@ -124,18 +138,20 @@ pub(crate) struct PasswordResetLinkBody {
 
 /// A passkey assertion in the finish body.
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 #[allow(dead_code)] // Documents the body; the route reads `PasswordResetFinish`.
 pub(crate) struct PasswordResetPasskeyBody {
     /// The challenge from `POST /api/auth/password-reset/passkey`.
     #[schema(example = "2c7e4f0a-9b1d-4e3c-a5f6-7d8e9f0a1b2c")]
     challenge_id: String,
     /// The `PublicKeyCredential` from `navigator.credentials.get()`.
-    #[schema(schema_with = crate::passkeys::credential_schema)]
+    #[schema(schema_with = crate::passkeys::assertion_schema)]
     credential: serde_json::Value,
 }
 
 /// The body of `POST /api/auth/password-reset/finish`.
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 #[allow(dead_code)] // Documents the body; the route reads `PasswordResetFinish`.
 pub(crate) struct PasswordResetFinishBody {
     /// The token from the link: 64 lowercase hex characters.
@@ -151,8 +167,9 @@ pub(crate) struct PasswordResetFinishBody {
     passkey: Option<PasswordResetPasskeyBody>,
 }
 
-/// The `400` for a body the JSON extractor or the checks refused, and for
-/// a link that does not work.
+/// The `400` for a link that does not work: unknown, used, expired, for
+/// an address the account no longer has verified, or for a disabled
+/// account. A malformed body gets `bad_request` instead.
 fn invalid_link() -> Response {
     json_auth_error(StatusCode::BAD_REQUEST, "invalid_link", INVALID_LINK)
 }
@@ -174,6 +191,21 @@ fn refused(rejection: &JsonRejection) -> Response {
     }
 }
 
+/// The answer when the notification queue is full: nothing was queued, so
+/// the patron should ask again shortly. It is the same for every address.
+fn busy() -> Response {
+    let mut response = json_auth_error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "busy",
+        "The library is busy. Ask again in a minute.",
+    );
+    response.headers_mut().insert(
+        axum::http::header::RETRY_AFTER,
+        axum::http::HeaderValue::from_static("60"),
+    );
+    response
+}
+
 /// The `500` for a library that could not be read or written.
 fn unavailable() -> Response {
     json_auth_error(
@@ -183,7 +215,15 @@ fn unavailable() -> Response {
     )
 }
 
-/// The client's throttle key for reset requests and link checks.
+/// The client's throttle key for asking for links. It is separate from
+/// [`throttle_key`], so asking for several links cannot lock a patron out
+/// of the link that arrives.
+fn ask_throttle_key(client: &str) -> String {
+    format!("password-reset-ask:{client}")
+}
+
+/// The client's throttle key for link checks, passkey challenges and
+/// finishing.
 fn throttle_key(client: &str) -> String {
     format!("password-reset:{client}")
 }
@@ -250,8 +290,8 @@ pub(crate) async fn get_password_reset(
 /// it, at most one every five minutes. The answer and its timing are the
 /// same whether or not an account has the address.
 ///
-/// Access: anyone; each request counts toward the client's sign-in
-/// throttle.
+/// Access: anyone; each request counts toward a per-client limit of its
+/// own, separate from the one link checks use.
 #[utoipa::path(
     post,
     path = "/api/auth/password-reset",
@@ -263,6 +303,7 @@ pub(crate) async fn get_password_reset(
         (status = 415, description = "The body is not sent as `application/json`.", body = crate::http_error::ErrorJson),
         (status = 429, description = "Too many requests from this client; retry after `Retry-After` seconds.", body = crate::auth::LoginThrottled, headers(("Retry-After" = u64, description = "Seconds to wait before retrying.")), example = json!({"error": "too_many_requests", "message": "Too many failed login attempts. Try again in 45 seconds.", "status": 429, "retry_after_secs": 45})),
         (status = 500, description = "The library could not be read or written.", body = crate::http_error::ErrorJson),
+        (status = 503, description = "The notification queue is full, so nothing was queued (`busy`); ask again after `Retry-After` seconds. The answer is the same for every address.", body = crate::http_error::ErrorJson, headers(("Retry-After" = u64, description = "Seconds to wait before asking again.")), example = json!({"error": "busy", "message": "The library is busy. Ask again in a minute.", "status": 503})),
     ),
 )]
 pub(crate) async fn post_password_reset(
@@ -271,7 +312,7 @@ pub(crate) async fn post_password_reset(
     body: Result<Json<PasswordResetAsk>, JsonRejection>,
 ) -> Response {
     let auth = state.auth_snapshot().await;
-    let key = throttle_key(&client);
+    let key = ask_throttle_key(&client);
     if let Some(retry_after) = auth.login_throttle_check(&key).await {
         return too_many_requests(retry_after);
     }
@@ -288,12 +329,13 @@ pub(crate) async fn post_password_reset(
     };
     let _ = auth.record_login_failure(&key).await;
     match crate::account_mail::queue_reset_request(&state, &address).await {
-        Ok(true) => (
+        Ok(ResetRequest::Queued) => (
             StatusCode::ACCEPTED,
             Json(PasswordResetAccepted { accepted: true }),
         )
             .into_response(),
-        Ok(false) => json_auth_error(
+        Ok(ResetRequest::Busy) => busy(),
+        Ok(ResetRequest::Off) => json_auth_error(
             StatusCode::CONFLICT,
             "reset_unavailable",
             "Password reset by email is not set up. Ask an administrator.",
@@ -313,7 +355,7 @@ pub(crate) async fn post_password_reset(
     request_body = PasswordResetLinkBody,
     responses(
         (status = 200, description = "The link works.", body = PasswordResetLinkState),
-        (status = 400, description = "The body is malformed, or the link is unknown, used, expired, for an address the account no longer has verified, or for a disabled account (`invalid_link`).", body = crate::http_error::ErrorJson),
+        (status = 400, description = "`bad_request` when the body is not one object whose only key is `token`; `invalid_link` when the link is unknown, used, expired, for an address the account no longer has verified, or for a disabled account.", body = crate::http_error::ErrorJson, example = json!({"error": "invalid_link", "message": "This reset link is invalid or has expired. Ask for a new one.", "status": 400})),
         (status = 415, description = "The body is not sent as `application/json`.", body = crate::http_error::ErrorJson),
         (status = 429, description = "Too many failed attempts from this client; retry after `Retry-After` seconds.", body = crate::auth::LoginThrottled, headers(("Retry-After" = u64, description = "Seconds to wait before retrying.")), example = json!({"error": "too_many_requests", "message": "Too many failed login attempts. Try again in 45 seconds.", "status": 429, "retry_after_secs": 45})),
         (status = 500, description = "The library could not be read.", body = crate::http_error::ErrorJson),
@@ -361,7 +403,7 @@ pub(crate) async fn post_password_reset_check(
     request_body = PasswordResetLinkBody,
     responses(
         (status = 200, description = "WebAuthn request options for the account's passkeys.", body = crate::passkeys::PasskeyRequestOptions),
-        (status = 400, description = "The body is malformed or the link does not work (`invalid_link`), or the daemon's origin is not a valid WebAuthn relying party.", body = crate::http_error::ErrorJson),
+        (status = 400, description = "`bad_request` when the body is not one object whose only key is `token`; `invalid_link` when the link does not work; or the daemon's origin is not a valid WebAuthn relying party.", body = crate::http_error::ErrorJson, example = json!({"error": "invalid_link", "message": "This reset link is invalid or has expired. Ask for a new one.", "status": 400})),
         (status = 409, description = "The link does not ask for a passkey (`passkey_not_needed`).", body = crate::http_error::ErrorJson),
         (status = 415, description = "The body is not sent as `application/json`.", body = crate::http_error::ErrorJson),
         (status = 429, description = "Too many failed attempts from this client; retry after `Retry-After` seconds.", body = crate::auth::LoginThrottled, headers(("Retry-After" = u64, description = "Seconds to wait before retrying.")), example = json!({"error": "too_many_requests", "message": "Too many failed login attempts. Try again in 45 seconds.", "status": 429, "retry_after_secs": 45})),
@@ -434,7 +476,7 @@ pub(crate) async fn post_password_reset_passkey(
     request_body = PasswordResetFinishBody,
     responses(
         (status = 200, description = "The password is set and every session signed out.", body = PasswordResetDone),
-        (status = 400, description = "The body is malformed, or the link is unknown, used, expired, for an address the account no longer has verified, or for a disabled account (`invalid_link`).", body = crate::http_error::ErrorJson),
+        (status = 400, description = "`bad_request` when the body is malformed, the password is blank or longer than 1024 bytes, or a second factor is sent for an account without one; `invalid_link` when the link is unknown, used, expired, for an address the account no longer has verified, or for a disabled account.", body = crate::http_error::ErrorJson, example = json!({"error": "invalid_link", "message": "This reset link is invalid or has expired. Ask for a new one.", "status": 400})),
         (status = 401, description = "The account's second factor is missing (`second_factor_required`) or wrong (`invalid_code`).", body = crate::http_error::ErrorJson, example = json!({"error": "second_factor_required", "message": "Enter the code from your authenticator app.", "status": 401})),
         (status = 415, description = "The body is not sent as `application/json`.", body = crate::http_error::ErrorJson),
         (status = 429, description = "Too many failed attempts from this client; retry after `Retry-After` seconds.", body = crate::auth::LoginThrottled, headers(("Retry-After" = u64, description = "Seconds to wait before retrying.")), example = json!({"error": "too_many_requests", "message": "Too many failed login attempts. Try again in 45 seconds.", "status": 429, "retry_after_secs": 45})),
@@ -501,7 +543,7 @@ pub(crate) async fn post_password_reset_finish(
                 credential,
             },
         ) => {
-            if crate::passkeys::finish_step_up(
+            match crate::passkeys::finish_step_up(
                 &state,
                 &headers,
                 user.id,
@@ -510,10 +552,15 @@ pub(crate) async fn post_password_reset_finish(
                 credential.clone(),
             )
             .await
-            .is_err()
             {
-                let _ = auth.record_login_failure(&key).await;
-                return wrong_factor();
+                Ok(_) => {}
+                // A storage fault is not a wrong passkey: it spends no
+                // attempt.
+                Err(StatusCode::INTERNAL_SERVER_ERROR) => return unavailable(),
+                Err(_) => {
+                    let _ = auth.record_login_failure(&key).await;
+                    return wrong_factor();
+                }
             }
         }
         (ResetFactor::Totp, ResetSecondFactor::None | ResetSecondFactor::Passkey { .. }) => {
@@ -541,30 +588,22 @@ pub(crate) async fn post_password_reset_finish(
     let Ok(hash) = hash_password(&finish.password) else {
         return unavailable();
     };
-    match library
-        .take_password_reset(&finish.token, user.id, Utc::now())
+    // One atomic write sets the password, signs every session out and
+    // spends the link, and repeats the factor check: a factor enrolled
+    // since the check above makes it refuse.
+    let revoked = match library
+        .redeem_password_reset(&finish.token, user.id, required.stored(), &hash, Utc::now())
         .await
     {
-        Ok(true) => {}
-        Ok(false) => {
+        Ok(Some(revoked)) => revoked,
+        Ok(None) => {
             let _ = auth.record_login_failure(&key).await;
             return invalid_link();
         }
         Err(_) => return unavailable(),
-    }
-    if library
-        .set_user_password_hash(user.id, Some(&hash))
-        .await
-        .is_err()
-    {
-        return unavailable();
-    }
+    };
     auth.clear_login_failures(&password_throttle_key(user.id))
         .await;
-    let revoked = library
-        .delete_portal_sessions_for_user(user.id)
-        .await
-        .unwrap_or(0);
     let _ = library
         .insert_security_audit_event(
             &format!("user:{}", user.id),

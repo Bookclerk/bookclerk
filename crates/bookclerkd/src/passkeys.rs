@@ -423,6 +423,30 @@ async fn register_begin(
     Ok(creation_options(&challenge_id, &ccr)?)
 }
 
+/// Schema for a passkey authentication assertion, the only credential a
+/// step-up (such as a password reset's passkey check) accepts.
+pub(crate) fn assertion_schema() -> utoipa::openapi::schema::Schema {
+    utoipa::openapi::ObjectBuilder::new()
+        .schema_type(utoipa::openapi::schema::SchemaType::AnyValue)
+        .description(Some(
+            "W3C PublicKeyCredential from `navigator.credentials.get()`, as the browser serializes it: an authentication assertion (`response.authenticatorData`, `clientDataJSON`, `signature`, `userHandle`), binary fields base64url-encoded.",
+        ))
+        .examples([serde_json::json!({
+            "id": "pQECAyYgASFYIE",
+            "rawId": "pQECAyYgASFYIE",
+            "type": "public-key",
+            "response": {
+                "authenticatorData": "SZYN5YgOjGh0NBcPZHZgW4_krrmihjLHmVzzuoMdl2MFAAAAAQ",
+                "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiazl1MlhvM2NaMVFwN21UNHZXOHlBMmJDNWRFNmZHN2hJOGpLOWxNMG5PMSIsIm9yaWdpbiI6Imh0dHBzOi8vYm9va3MuZXhhbXBsZS5jb20ifQ",
+                "signature": "MEUCIQDx8n2Y3kP1qT7vW9zA4bC6dE8fG0hJ2kL4mN6oP8qR0wIgS2tU4vW6xY8zA0bC2dE4fG6hJ8kL0mN2oP4qR6sT8uY",
+                "userHandle": "AAAAAAAAAAAAAAAAAAAABw"
+            },
+            "extensions": {}
+        })])
+        .build()
+        .into()
+}
+
 /// Schema for the `credential` member of [`RegistrationFinish`] and
 /// [`AssertionFinish`]: the browser's
 /// `PublicKeyCredential` serialized to JSON, an attestation after

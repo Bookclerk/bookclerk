@@ -28,8 +28,8 @@ use crate::models::{
 };
 use crate::notifications::{
     AccountMail, AccountMailKind, AccountMailSettings, DeliveryState, FailedAttempt, MintedToken,
-    PasswordResetToken, VerifyEmailToken, ACCOUNT_MAIL_RETENTION_DAYS, EMAIL_VERIFICATION_HOURS,
-    INVITE_DAYS, PASSWORD_RESET_MINUTES,
+    PasswordResetFactor, PasswordResetToken, VerifyEmailToken, ACCOUNT_MAIL_RETENTION_DAYS,
+    EMAIL_VERIFICATION_HOURS, INVITE_DAYS, PASSWORD_RESET_MINUTES,
 };
 use crate::token_hash::hash_token;
 use crate::NotifyQueueLimits;
@@ -989,50 +989,116 @@ impl LibraryStore {
         Ok(verified.then_some(row.user_id))
     }
 
-    /// Uses a password-reset link up: it is deleted when it is live, for
-    /// `user_id`, and the user still has its address verified. The caller
-    /// sets the password only when this returns true, so two uses of one
-    /// link set it at most once.
+    /// Redeems a reset link: sets the new password, signs the account out
+    /// everywhere and spends the link, all in one atomic batch.
+    ///
+    /// Every write is guarded by the same predicate: the link is unexpired,
+    /// is for `user_id`, still names the account's verified address, the
+    /// account is not disabled, and its second factor is still `factor`.
+    /// The link is deleted last, so when the guard fails nothing changes.
+    /// Two redemptions of one link serialize, and only the first applies.
+    ///
+    /// The operation id comes from the link, so a retry after a lost reply
+    /// resumes the same batch instead of finding the link spent.
     ///
     /// # Arguments
     ///
-    /// * `token` - The raw token from the link.
-    /// * `user_id` - The user [`Self::password_reset_user`] named.
+    /// * `token` - The link's token.
+    /// * `user_id` - The account the link was checked for.
+    /// * `factor` - The second factor the account required when checked.
+    /// * `password_hash` - The new Argon2id hash.
     /// * `now` - The current time.
     ///
     /// # Returns
     ///
-    /// Whether this call used the link.
+    /// The number of portal sessions signed out, or `None` when the link
+    /// no longer works for this account and factor (nothing was changed).
     ///
     /// # Errors
     ///
-    /// An error when the batch fails.
-    pub async fn take_password_reset(
+    /// An error when the batch fails; nothing was changed unless the error
+    /// is [`LibraryError::Unavailable`] after a retry.
+    pub async fn redeem_password_reset(
         &self,
         token: &PasswordResetToken,
         user_id: i64,
+        factor: PasswordResetFactor,
+        password_hash: &str,
         now: DateTime<Utc>,
-    ) -> Result<bool> {
+    ) -> Result<Option<u64>> {
+        let token_hash = hash_token(token.expose());
+        let factor_sql = match factor {
+            PasswordResetFactor::None => {
+                "users.totp_enabled = 0 AND NOT EXISTS (SELECT 1 FROM webauthn_credentials \
+                 WHERE webauthn_credentials.user_id = users.id)"
+            }
+            PasswordResetFactor::Totp => "users.totp_enabled <> 0",
+            PasswordResetFactor::Passkey => {
+                "users.totp_enabled = 0 AND EXISTS (SELECT 1 FROM webauthn_credentials \
+                 WHERE webauthn_credentials.user_id = users.id)"
+            }
+        };
         // `expires_at` is always written as UTC RFC 3339, so it compares
         // as text.
-        let reply = self
-            .execute_host_batch(batch::request(
-                &format!("account-mail-reset-used-{}", uuid::Uuid::new_v4()),
-                vec![batch::exec(
-                    "DELETE FROM password_resets WHERE token_hash = ? AND user_id = ? \
-                     AND expires_at > ? AND EXISTS (SELECT 1 FROM users \
-                     WHERE users.id = password_resets.user_id \
-                     AND users.email = password_resets.email \
-                     AND users.email_verified_at IS NOT NULL)",
-                    vec![
-                        batch::text(&hash_token(token.expose())),
-                        batch::int(user_id),
-                        batch::text(&now.to_rfc3339()),
-                    ],
-                )],
-            ))
-            .await?;
-        Ok(batch::rows_affected(&reply, 0) == 1)
+        let guard = format!(
+            "EXISTS (SELECT 1 FROM password_resets JOIN users \
+             ON users.id = password_resets.user_id \
+             WHERE password_resets.token_hash = ? AND password_resets.user_id = ? \
+             AND password_resets.expires_at > ? AND users.email = password_resets.email \
+             AND users.email_verified_at IS NOT NULL AND users.status <> 'disabled' \
+             AND {factor_sql})"
+        );
+        let guard_params = || {
+            vec![
+                batch::text(&token_hash),
+                batch::int(user_id),
+                batch::text(&now.to_rfc3339()),
+            ]
+        };
+        let with_guard = |mut leading: Vec<bookclerk_plugin_abi::DbValue>| {
+            leading.extend(guard_params());
+            leading
+        };
+        let statements = vec![
+            batch::exec(
+                &format!(
+                    "UPDATE users SET password_hash = ?, \
+                     security_version = security_version + 1, updated_at = ? \
+                     WHERE id = ? AND {guard}"
+                ),
+                with_guard(vec![
+                    batch::text(password_hash),
+                    batch::text(&now.to_rfc3339()),
+                    batch::int(user_id),
+                ]),
+            ),
+            batch::exec(
+                &format!(
+                    "DELETE FROM operator_sessions WHERE elevated_from_user_id = ? AND {guard}"
+                ),
+                with_guard(vec![batch::int(user_id)]),
+            ),
+            batch::exec(
+                &format!(
+                    "DELETE FROM portal_sessions WHERE identity_id IN \
+                     (SELECT id FROM portal_identities WHERE user_id = ?) AND {guard}"
+                ),
+                with_guard(vec![batch::int(user_id)]),
+            ),
+            batch::exec(
+                &format!("DELETE FROM password_resets WHERE token_hash = ? AND {guard}"),
+                with_guard(vec![batch::text(&token_hash)]),
+            ),
+        ];
+        // A hash of the stored hash, so the id names the link without
+        // repeating a stored value in logs.
+        let operation_id = format!("password-reset-redeem-{}", &hash_token(&token_hash)[..32]);
+        let request = batch::request(&operation_id, statements);
+        let reply = match self.execute_host_batch(request.clone()).await {
+            Err(LibraryError::Unavailable(_)) => self.execute_host_batch(request).await?,
+            other => other?,
+        };
+        Ok((batch::rows_affected(&reply, 3) == 1).then(|| batch::rows_affected(&reply, 2)))
     }
 
     /// Deletes account-mail records older than

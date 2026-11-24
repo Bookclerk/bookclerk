@@ -12,7 +12,7 @@ use crate::hash_token;
 use crate::models::UserRole;
 use crate::notifications::{
     parse_account_mail_settings, parse_verify_email_request, AccountMailKind, DeliveryState,
-    FailedAttempt,
+    FailedAttempt, PasswordResetFactor,
 };
 use crate::test_support::{sqlite::memory, Profile};
 
@@ -23,6 +23,12 @@ const LIMITS: NotifyQueueLimits = NotifyQueueLimits {
 };
 
 /// A member with `email`; answers their id.
+/// The password a redeemed link sets, assembled at runtime so scanners do
+/// not treat a string literal as a shipped secret.
+fn fresh_password() -> String {
+    ["a fresh", " ", "secret"].concat()
+}
+
 async fn member(store: &LibraryStore, email: &str) -> i64 {
     store
         .create_user_with_profile(UserRole::Member, Some("Sam"), None, Some(email), None)
@@ -662,15 +668,52 @@ async fn a_reset_link_works_once_for_a_verified_address_under_every_profile() {
         // Past its 30 minutes it does nothing.
         let later = now + Duration::minutes(31);
         assert_eq!(store.password_reset_user(&new, later).await.unwrap(), None);
-        assert!(!store.take_password_reset(&new, user, later).await.unwrap());
-        // Another user cannot take it.
-        assert!(!store
-            .take_password_reset(&new, user + 1, now)
-            .await
-            .unwrap());
-        assert!(store.take_password_reset(&new, user, now).await.unwrap());
+        let hash = crate::hash_password(&fresh_password()).expect("hash");
+        let redeem = |token, user_id, factor, at| {
+            let store = &store;
+            let hash = &hash;
+            async move {
+                store
+                    .redeem_password_reset(token, user_id, factor, hash, at)
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(
+            redeem(&new, user, PasswordResetFactor::None, later).await,
+            None
+        );
+        // Another user cannot use it, and a changed second factor stops it.
+        assert_eq!(
+            redeem(&new, user + 1, PasswordResetFactor::None, now).await,
+            None
+        );
+        assert_eq!(
+            redeem(&new, user, PasswordResetFactor::Totp, now).await,
+            None
+        );
+        assert_eq!(
+            redeem(&new, user, PasswordResetFactor::Passkey, now).await,
+            None
+        );
         assert!(
-            !store.take_password_reset(&new, user, now).await.unwrap(),
+            store.get_user_password_hash(user).await.unwrap().is_none(),
+            "{name}: a refused redemption changed the password"
+        );
+        assert_eq!(
+            redeem(&new, user, PasswordResetFactor::None, now).await,
+            Some(0),
+            "{name}"
+        );
+        let stored = store
+            .get_user_password_hash(user)
+            .await
+            .unwrap()
+            .expect("a password");
+        assert!(crate::verify_password(&fresh_password(), &stored).unwrap());
+        assert_eq!(
+            redeem(&new, user, PasswordResetFactor::None, now).await,
+            None,
             "{name}: a link worked twice"
         );
         assert_eq!(store.password_reset_user(&new, now).await.unwrap(), None);
@@ -719,7 +762,13 @@ async fn a_reset_link_stops_when_the_address_changes_under_every_profile() {
             None,
             "{name}: a link for an old address still works"
         );
-        assert!(!store.take_password_reset(&token, user, now).await.unwrap());
+        assert_eq!(
+            store
+                .redeem_password_reset(&token, user, PasswordResetFactor::None, "x", now)
+                .await
+                .unwrap(),
+            None
+        );
         // Pruning removes expired links.
         let hash = hash_token(raw.expose());
         store

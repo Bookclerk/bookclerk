@@ -282,6 +282,11 @@ async fn queue_unless_since(
             _,
         ) => false,
     };
+    // A reset link goes only through a notifier whose test arrived, read
+    // from the same settings that pick it: the notifier may have changed
+    // since the request was accepted.
+    let usable =
+        usable && !(matches!(kind, AccountMailKind::PasswordReset) && status.tested_at.is_none());
     let Some(instance) = status.plugin_instance_id.filter(|_| usable) else {
         return Ok(Err(status.not_ready.unwrap_or(NotReady::NotConfigured)));
     };
@@ -339,16 +344,29 @@ pub(crate) async fn reset_available(
 /// inside it sends nothing.
 pub(crate) const RESET_RESEND_GAP: chrono::Duration = chrono::Duration::minutes(5);
 
+/// What became of a password-reset request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResetRequest {
+    /// The job that answers it is queued (or one for the address already
+    /// was).
+    Queued,
+    /// Self-service reset is off: account mail is not ready or its
+    /// notifier has no delivered test.
+    Off,
+    /// The notification queue is full, so nothing was queued; the same for
+    /// every address.
+    Busy,
+}
+
 /// Enqueues the job that answers a password-reset request for `address`.
-///
-/// # Returns
-///
-/// `false` when self-service reset is off.
 ///
 /// # Errors
 ///
 /// An error answer when the library cannot be read or written.
-pub(crate) async fn queue_reset_request(state: &AppState, address: &str) -> Result<bool, ApiError> {
+pub(crate) async fn queue_reset_request(
+    state: &AppState,
+    address: &str,
+) -> Result<ResetRequest, ApiError> {
     let _permit = crate::jobs::admission_permit(state)
         .await
         .map_err(|err| store_error("password_reset_request", LibraryError::Other(err)))?;
@@ -358,17 +376,19 @@ pub(crate) async fn queue_reset_request(state: &AppState, address: &str) -> Resu
         .plugin_instance_id
         .filter(|_| status.ready && status.tested_at.is_some())
     else {
-        return Ok(false);
+        return Ok(ResetRequest::Off);
     };
     let limits = notify_queue_limits(state).await;
-    if !library
+    if library
         .enqueue_password_reset_request(address, &instance, limits)
         .await
         .map_err(|err| store_error("password_reset_request", err))?
     {
+        Ok(ResetRequest::Queued)
+    } else {
         warn!("the notification queue is full; a password-reset request was not queued");
+        Ok(ResetRequest::Busy)
     }
-    Ok(true)
 }
 
 /// Queues the notice that a user's password was changed through a reset

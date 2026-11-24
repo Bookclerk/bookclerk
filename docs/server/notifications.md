@@ -319,9 +319,19 @@ a link.
    that the password was changed. The change is recorded in the security
    audit log as `password_reset_self`.
 
-Requests, links that do not work and wrong codes count toward the same
-per-client limit as failed sign-ins, so repeated tries are answered
-`429` with `Retry-After`.
+Links that do not work and wrong codes count toward a per-client limit,
+the same one failed sign-ins use, so repeated tries are answered `429`
+with `Retry-After`. Asking for links has a limit of its own, so asking
+several times cannot lock a patron out of the link that arrives. When
+the notification queue is full, a request is answered `503` with
+`Retry-After` and nothing is queued; the answer is the same for every
+address.
+
+Saving the new password, signing every device out and using the link up
+happen in one atomic write that repeats the second-factor check, so a
+failure leaves the link working and the password unchanged, and an
+authenticator or passkey added after the link was opened makes saving
+fail without using the link up.
 
 An administrator can still reset a password from **Settings → Users**:
 **Reset password** signs the user out and shows a link to send them, and
@@ -333,7 +343,8 @@ The web API (no sign-in needed; the link is the proof):
 - `GET /api/auth/password-reset` says whether reset is offered
   (`{"available": true}`).
 - `POST /api/auth/password-reset` with `{"email": "…"}` asks for a link;
-  it answers `202`, or `409` with `reset_unavailable` when reset is off.
+  it answers `202`, `409` with `reset_unavailable` when reset is off, or
+  `503` with `busy` when the notification queue is full.
 - `POST /api/auth/password-reset/check` with `{"token": "…"}` checks a
   link without using it and says which second factor it needs (`none`,
   `totp` or `passkey`).

@@ -405,8 +405,8 @@ export function UserManagementPanel({
     ticket: string;
     label: string;
     inviteUrl?: string | null;
-    /** The user a link can be mailed to instead, when they have an address. */
-    mailTo?: ListedUser;
+    /** The user the reset is for; a link can be mailed instead while they have an address. */
+    userId?: number;
   } | null>(null);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "disabled">("all");
@@ -694,7 +694,7 @@ export function UserManagementPanel({
         ticket: res.claim_ticket,
         inviteUrl: res.invite_url,
         label: `Password reset for ${u.display_name || u.login_name || `user #${u.id}`}`,
-        mailTo: u.email && u.status !== "disabled" ? u : undefined,
+        userId: u.id,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Password reset failed");
@@ -719,6 +719,12 @@ export function UserManagementPanel({
       setBusy(false);
     }
   }
+
+  // Read from the current user list, so an address changed since the
+  // reset is the one shown and mailed.
+  const mailTo = claimTicket?.userId
+    ? users.find((u) => u.id === claimTicket.userId && u.email && u.status !== "disabled")
+    : undefined;
 
   async function onEmailInvite(u: ListedUser) {
     setBusy(true);
@@ -809,19 +815,19 @@ export function UserManagementPanel({
               >
                 {inviteCopied
                   ? "Copied to clipboard."
-                  : claimTicket.mailTo
-                    ? `Copy and send this magic link yourself, or email a new one to ${claimTicket.mailTo.email ?? "the user"}.`
+                  : mailTo
+                    ? `Copy and send this magic link yourself, or email a new one to ${mailTo.email ?? "the user"}.`
                     : "Copy and send this magic link yourself."}
               </p>
             </div>
-            {claimTicket.mailTo ? (
+            {mailTo ? (
               <Button
                 type="button"
                 variant="secondary"
                 className="h-8 shrink-0"
                 disabled={busy}
                 onClick={() => {
-                  if (claimTicket.mailTo) void onEmailInvite(claimTicket.mailTo);
+                  void onEmailInvite(mailTo);
                 }}
               >
                 <Mail className="h-4 w-4" aria-hidden />

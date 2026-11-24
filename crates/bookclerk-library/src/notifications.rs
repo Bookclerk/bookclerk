@@ -419,6 +419,21 @@ fn is_link_token(token: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// The second factor an account required when its reset was checked.
+///
+/// Redeeming a link repeats the check inside the same atomic write, so a
+/// factor enrolled or removed after the check makes the redemption fail
+/// rather than set a password without it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasswordResetFactor {
+    /// No authenticator and no passkey.
+    None,
+    /// An authenticator app (it takes precedence over passkeys).
+    Totp,
+    /// At least one passkey and no authenticator.
+    Passkey,
+}
+
 /// The token of a password-reset link, as the patron's browser sends it
 /// back: exactly [`VERIFY_TOKEN_CHARS`] lowercase hex characters.
 #[derive(Clone, PartialEq, Eq)]
@@ -977,8 +992,9 @@ pub struct StalledSend {
     /// delivery; `None` when the mail is gone, finished or linked to
     /// another job.
     pub account_mail_id: Option<String>,
-    /// The notifier instance the delivery or account mail goes through;
-    /// `None` exactly when both of those are.
+    /// The notifier instance the delivery or account mail goes through,
+    /// or that a password-reset request names; `None` when the job has
+    /// none of those.
     pub notifier: Option<String>,
 }
 
