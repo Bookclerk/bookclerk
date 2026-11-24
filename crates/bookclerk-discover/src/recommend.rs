@@ -941,8 +941,8 @@ struct TasteProfile {
     /// Mean embedding of seed works when embeddings are available.
     seed_centroid: Option<Vec<f32>>,
     /// The taste's axes with their scales in a model's space; empty when
-    /// the taste has none stored, the space is the stand-in's, or fewer
-    /// than [`crate::taste_axes::MIN_TASTE_AXES`] have vectors there.
+    /// the taste has none stored, the space is the stand-in's, or none of
+    /// their works has a vector there.
     axes: Vec<AxisScale>,
 }
 
@@ -972,9 +972,8 @@ impl TasteProfile {
 /// # Returns
 ///
 /// Empty when similarity is off, the space is the stand-in's (hash vectors
-/// do not group by meaning), or fewer than
-/// [`crate::taste_axes::MIN_TASTE_AXES`] axes have a work with a vector
-/// there; the ranking then measures against the one seed centroid.
+/// do not group by meaning), or no axis has a work with a vector there;
+/// the ranking then measures against the one seed centroid.
 ///
 /// # Errors
 ///
@@ -1003,22 +1002,29 @@ async fn stored_axis_scales(
         .iter()
         .map(|(id, bytes)| (id.clone(), bytes_to_vector(bytes)))
         .collect();
-    let scales: Vec<AxisScale> = axis_scales(axes, |id| vectors.get(id).map(Vec::as_slice))
+    Ok(axis_scales(axes, |id| vectors.get(id).map(Vec::as_slice))
         .into_iter()
         .flatten()
-        .collect();
-    Ok(if scales.len() < crate::taste_axes::MIN_TASTE_AXES {
-        Vec::new()
-    } else {
-        scales
-    })
+        .collect())
 }
 
-/// How much one book counts in a taste: 3 when finished, 2 for a rating of
-/// four stars or more (1 for three), half a point for a book the library
-/// holds, times the book's multiplier in `weights`.
+/// How the reason of a title ranked up for sitting near the taste's seed
+/// works starts. The seeds are books finished, rated or held and open
+/// wishes, so it names both. Shelves find such titles by it.
+pub(crate) const SIMILAR_REASON: &str = "similar to your books and wishes";
+
+/// What a book counts in a taste for being in the library, before anyone
+/// finished or rated it: someone chose to buy it. Until this counted only
+/// once the audio was downloaded, a library that had downloaded nothing
+/// had no taste.
+const HELD_BOOK_WEIGHT: f64 = 0.5;
+
+/// How much one book counts in a taste: half a point for being in the
+/// library (every title here is one an account or a branch holds, with
+/// its audio or not), 3 more when finished and 2 more for a rating of four
+/// stars or more (1 for three), times the book's multiplier in `weights`.
 fn book_taste_weight(book: &TasteTitle, weights: &TasteWeights) -> f64 {
-    let mut weight = 0.0;
+    let mut weight = HELD_BOOK_WEIGHT;
     if book.is_finished {
         weight += 3.0;
     }
@@ -1028,9 +1034,6 @@ fn book_taste_weight(book: &TasteTitle, weights: &TasteWeights) -> f64 {
         } else if r >= 3.0 {
             weight += 1.0;
         }
-    }
-    if book.acquired {
-        weight += 0.5;
     }
     weight * taste_multiplier(weights, book)
 }
@@ -1194,10 +1197,7 @@ fn score_work_against_taste(
 
     if let Some(similar) = similar {
         score += similar.score;
-        reasons.push(format!(
-            "similar to titles you finish (sim {:.2})",
-            similar.similarity
-        ));
+        reasons.push(format!("{SIMILAR_REASON} (sim {:.2})", similar.similarity));
         push_shelf_category(&mut categories, "similar_taste");
     }
 

@@ -69,8 +69,8 @@ pub(crate) enum RadarState {
     NoModel,
     /// The library, or this work, is still being embedded with the model.
     Embedding,
-    /// The caller's taste has too few books and wishes that sit together
-    /// to make three axes, or none is stored for them yet.
+    /// Fewer than two of the caller's books and wishes have a vector, or
+    /// no taste is stored for them yet.
     NoTaste,
 }
 
@@ -135,7 +135,7 @@ pub(crate) struct RadarAxis {
 pub(crate) struct TasteRadar {
     /// `ready` when `axes` places the book; otherwise why it is empty.
     state: RadarState,
-    /// Three to six axes, the one that weighs most in the caller's taste
+    /// One to six axes, the one that weighs most in the caller's taste
     /// first. Empty unless `state` is `ready`.
     axes: Vec<RadarAxis>,
 }
@@ -241,8 +241,7 @@ impl AxisCache {
 ///
 /// # Returns
 ///
-/// The axes with a work in `matrix`; none when fewer than
-/// [`bookclerk_discover::MIN_TASTE_AXES`] have one.
+/// The axes with a work in `matrix`.
 ///
 /// # Errors
 ///
@@ -261,7 +260,7 @@ async fn keep_axes(
         .works_by_ids(&ids)
         .await
         .map_err(|err| read_failed(ROUTE, &err).into_response())?;
-    let kept: Vec<KeptAxis> = axis_scales(axes, |id| matrix.vector_of(id))
+    Ok(axis_scales(axes, |id| matrix.vector_of(id))
         .into_iter()
         .zip(axes)
         .filter_map(|(scale, axis)| {
@@ -282,12 +281,7 @@ async fn keep_axes(
                     .collect(),
             })
         })
-        .collect();
-    Ok(if kept.len() < bookclerk_discover::MIN_TASTE_AXES {
-        Vec::new()
-    } else {
-        kept
-    })
+        .collect())
 }
 
 /// The axes of `taste` measured against `matrix`, from the cache when the
@@ -788,7 +782,8 @@ mod tests {
             names,
             ["Cooking", "Fantasy", "Science Fiction"],
             "the books grouped by meaning, each group named by the genre \
-             the others lack; Humor is shared and Poetry is not the caller's"
+             the others lack; Humor is shared, and Poetry is carried by \
+             one book, which nobody finished"
         );
         // The song lands where the dragon books do, and no closer to the
         // others than the caller's books from other axes are.
@@ -796,15 +791,20 @@ mod tests {
         assert!((fantasy.score - 1.0).abs() < 1e-3, "{}", fantasy.score);
         assert!(axis(&answer, "Cooking").score.abs() < 1e-3);
         assert!(axis(&answer, "Science Fiction").score.abs() < 1e-3);
-        assert_eq!(fantasy.books, 2);
+        // The song is in the library, so it is a work of the axis too, at
+        // the half point of a book nobody finished. It is not its own
+        // example.
+        assert_eq!(fantasy.books, 3);
         assert_eq!(examples(fantasy), ["A Dragon Tale", "The Dragon Returns"]);
 
-        // A book is not its own example.
         let tale = radar(&state, work(&library, "A Dragon Tale").await)
             .await
             .unwrap();
-        assert_eq!(examples(axis(&tale, "Fantasy")), ["The Dragon Returns"]);
-        assert_eq!(axis(&tale, "Fantasy").books, 2);
+        assert_eq!(
+            examples(axis(&tale, "Fantasy")),
+            ["Dragon Song", "The Dragon Returns"]
+        );
+        assert_eq!(axis(&tale, "Fantasy").books, 3);
     }
 
     #[tokio::test]
@@ -832,7 +832,7 @@ mod tests {
             .await
             .unwrap();
         let fantasy = axis(&answer, "Fantasy");
-        assert_eq!(fantasy.books, 3);
+        assert_eq!(fantasy.books, 4, "three books and the wish");
         assert_eq!(
             examples(fantasy),
             ["A Dragon Tale", "Dragon Rider", "The Dragon Returns"]
@@ -948,7 +948,10 @@ mod tests {
         assert_eq!(answer.state, RadarState::Ready);
         let fantasy = axis(&answer, "Fantasy");
         assert!((fantasy.score - 1.0).abs() < 1e-3);
-        assert_eq!(examples(fantasy), ["A Dragon Tale", "The Dragon Returns"]);
+        assert_eq!(
+            examples(fantasy),
+            ["A Dragon Tale", "Dragon Song", "The Dragon Returns"]
+        );
         assert_eq!(model.texts_embedded(), embedded + 1);
         radar(&state, flight()).await.unwrap();
         assert_eq!(model.texts_embedded(), embedded + 1, "kept in memory");

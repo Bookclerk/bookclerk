@@ -1447,7 +1447,8 @@ pub async fn refresh_subject_taste(
 ///
 /// With a model's vectors (`opts` names the space), the taste's seed works
 /// and wishes are grouped into its axes first ([`crate::taste_axes`]);
-/// works the model has not embedded yet join at the next store.
+/// works the model has not embedded yet join at the next store, and while
+/// most of them have no vector the next ranking stores the taste again.
 ///
 /// # Errors
 ///
@@ -1467,9 +1468,12 @@ async fn store_taste(
             let weight = seeds.entry(work.clone()).or_default();
             *weight = weight.max(crate::taste_axes::WISH_SEED_WEIGHT);
         }
-        stored.scores.axes =
+        let (axes, settled) =
             crate::taste_axes::build_axes(library, &opts.vectors.space, &seeds).await?;
-        stored.axes_space = Some(crate::stored_taste::space_key(&opts.vectors.space));
+        stored.scores.axes = axes;
+        // Axes built while most seed works had no vector yet are not
+        // recorded as this space's: the next ranking builds them again.
+        stored.axes_space = settled.then(|| crate::stored_taste::space_key(&opts.vectors.space));
     }
     // One bind of one statement: sized to what the database's statements
     // carry, so a database with small statements keeps the heaviest part.
@@ -2392,6 +2396,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn books_nobody_finished_or_downloaded_still_make_a_taste() {
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        library
+            .upsert_account("audible", "acct", "us", Some("Main"), true, "audible")
+            .await
+            .unwrap();
+        let shelf = [
+            ("Dragon Hoard", "Fantasy"),
+            ("Dragon Flight", "Fantasy"),
+            ("The Ledger", "Business"),
+            ("Ledger Lines", "Business"),
+        ];
+        let mut works = Vec::new();
+        for (at, (title, genre)) in shelf.iter().enumerate() {
+            let mut book =
+                bookclerk_library::NewBook::minimal(format!("B00000{at}"), "acct", "us", *title);
+            book.categories = Some((*genre).into());
+            let book = library.upsert_book(&book).await.unwrap();
+            works.push(work_of(&library, &book.holding_id).await);
+        }
+        let space = bookclerk_library::VectorSpace {
+            model: "@embedder/topics".into(),
+            revision: "r1".into(),
+            packs: String::new(),
+        };
+        let subject = DiscoverSubject::Operator;
+        let opts = RecommendOptions {
+            vectors: crate::embed::VectorSource::new(space.clone(), None),
+            ..RecommendOptions::default()
+        };
+        crate::embed::embed_dirty_works(&library, &mut ThreeTopics(space), None)
+            .await
+            .unwrap();
+        let (_, taste) = ranking_taste(&library, &subject, &opts).await.unwrap();
+        // Bought and never opened: each is a seed, at half a point.
+        for work in &works {
+            assert!(taste.scores.seed_work_ids.contains(work), "{work}");
+        }
+        // Four works make two axes, not none.
+        let mut names: Vec<&str> = taste.scores.axes.iter().map(|a| a.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["Business", "Fantasy"]);
+        assert!(taste
+            .scores
+            .axes
+            .iter()
+            .flat_map(|axis| &axis.members)
+            .all(|member| (member.weight - 0.5).abs() < 1e-9));
+    }
+
+    #[tokio::test]
     async fn a_stored_taste_groups_books_and_wishes_into_axes() {
         let library = bookclerk_plugin_database_sqlite::open_store_memory()
             .await
@@ -2470,6 +2527,11 @@ mod tests {
         crate::embed::embed_dirty_works(&library, &mut ThreeTopics(space.clone()), None)
             .await
             .unwrap();
+        // That taste is fresh, but its axes were looked for while no seed
+        // work had a vector: the first ranking after the library is
+        // embedded builds them, with no new fetch.
+        let (_, rebuilt) = ranking_taste(&library, &subject, &opts).await.unwrap();
+        assert_eq!(rebuilt.scores.axes.len(), 3, "{:?}", rebuilt.scores.axes);
         refresh_subject_taste(&library, &subject, &opts)
             .await
             .unwrap();

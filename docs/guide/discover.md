@@ -15,7 +15,7 @@ Discover shows rows of suggestions, each with its reason, for example:
 - **More from** an author, **If you like** an author, or **Narrated by** a
   narrator you like.
 - **Because you like** a genre you finish books in.
-- **Similar to books you finish** and **Top picks for you**.
+- **Similar to your books and wishes** and **Top picks for you**.
 - **Popular in** a genre your books and wishes lean to (or a few common
   genres while Discover is still learning your taste), ranked for you.
 - **Picked for you on** a store: the rest of your matches, each under the
@@ -66,7 +66,9 @@ spokes with <kbd>Tab</kbd>.
 
 The chart appears when your library has an
 [embedding model](../server/configuration.md#model-downloads) and your
-books and wishes make at least three groups of two. A wish counts for more
+books and wishes make at least three groups. With one or two groups, each
+is shown as a row with a bar instead. Every book in the library counts a
+little, so a library nobody has rated yet still has a taste. A wish counts for more
 than a book that is only in the library, and for less than a book you
 finished or rated well.
 

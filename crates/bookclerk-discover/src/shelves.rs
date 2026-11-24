@@ -112,7 +112,7 @@ pub fn shelf_kind_catalog() -> Vec<ShelfKindInfo> {
         kind("narrator", "Narrated by {Narrator}"),
         kind("genre", "Because you like {Genre}"),
         kind("starter_genre", "Popular in {Genre}"),
-        kind("similar_taste", "Similar to books you finish"),
+        kind("similar_taste", "Similar to your books and wishes"),
         kind("chirp_deals", "Chirp deals"),
         kind("from_store", "Picked for you on {Store}"),
         kind("requests", "On the wishlist"),
@@ -324,7 +324,7 @@ pub fn build_discover_feed(
 
     builder.push(
         "similar_taste",
-        "Similar to books you finish",
+        "Similar to your books and wishes",
         Some("Embedding / taste overlap"),
         |r| has_category(r, "similar_taste"),
         SeriesRule::Cap,
@@ -700,7 +700,7 @@ fn because_you_like(r: &Recommendation, liked_author: &str, taste: &ShelfTaste) 
         || has_category(r, "similar_taste")
         || r.reasons
             .iter()
-            .any(|x| x.contains("related") || x.contains("similar to titles you finish")))
+            .any(|x| x.contains("related") || x.contains(crate::recommend::SIMILAR_REASON)))
     {
         return false;
     }
@@ -739,7 +739,7 @@ fn because_you_like(r: &Recommendation, liked_author: &str, taste: &ShelfTaste) 
     let similar = r
         .reasons
         .iter()
-        .any(|x| x.contains("similar to titles you finish") || x.contains("related"));
+        .any(|x| x.contains(crate::recommend::SIMILAR_REASON) || x.contains("related"));
     if similar {
         // Prefer when overall taste includes this author heavily — already gated by shelf.
         return !liked.is_empty();
@@ -1413,7 +1413,7 @@ mod tests {
                 authors: Some("Other Writer".into()),
                 reasons: vec![
                     "libro related to “Seed By Ada”".into(),
-                    "similar to titles you finish (sim 0.40)".into(),
+                    format!("{} (sim 0.40)", crate::recommend::SIMILAR_REASON),
                 ],
                 categories: vec!["similar_taste".into()],
                 ..rec("OtherBook", 18.0, &[])

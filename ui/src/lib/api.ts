@@ -4185,7 +4185,7 @@ export interface TasteRadar {
    * few books and wishes that sit together.
    */
   state: MeaningState | "no_taste";
-  /** Three to six axes; empty unless `state` is `ready`. */
+  /** One to six axes; empty unless `state` is `ready`. */
   axes: TasteRadarAxis[];
 }
 

@@ -4,7 +4,7 @@
 //! One average of everything a person likes sits between their tastes and
 //! is close to none of them: the mean of hard science fiction and cosy
 //! mysteries is neither. So the seed works of a taste are split into
-//! three to six groups whose vectors sit together ([`cluster`]), whatever
+//! one to six groups whose vectors sit together ([`cluster`]), whatever
 //! genre a store files them under. Each group is an axis: it points at the
 //! weighted mean of its works ([`axis_centroid`]) and is named by what its
 //! works have in common and the person's other works lack ([`name_axes`]):
@@ -31,9 +31,15 @@ use crate::stored_taste::StoredTaste;
 /// radar or to touch on a phone.
 pub const MAX_TASTE_AXES: usize = 6;
 
-/// Fewest axes that are worth having: with two, one average already says
-/// most of it, and two points make no shape on a radar.
-pub const MIN_TASTE_AXES: usize = 3;
+/// Fewest axes a taste has. A handful of books that all sit together are
+/// one axis: a ranking still measures against it, with the axis's own
+/// scale deciding what is close, though it takes [`RADAR_MIN_AXES`] to
+/// draw a shape.
+pub const MIN_TASTE_AXES: usize = 1;
+
+/// Fewest axes that make a shape on a radar; a taste with fewer is shown
+/// as a row for each axis.
+pub const RADAR_MIN_AXES: usize = 3;
 
 /// Fewest works on an axis. One book is a book, not a leaning.
 pub const AXIS_MIN_WORKS: usize = 2;
@@ -104,8 +110,8 @@ pub struct TasteAxis {
 pub struct StoredAxes {
     /// When the taste was stored. A newer time means other axes.
     pub computed_at: DateTime<Utc>,
-    /// The axes, the one with the most weight first; empty when the taste
-    /// has too few seed works that sit together.
+    /// The axes, the one with the most weight first; empty when fewer
+    /// than two of the taste's seed works have a vector.
     pub axes: Vec<TasteAxis>,
 }
 
@@ -212,6 +218,11 @@ pub fn axis_centroid<'a>(
 /// close to a centroid would otherwise divide by nothing.
 const AXIS_MIN_BAND: f32 = 0.02;
 
+/// The band of a taste's only axis, which has no other works to be
+/// measured against: a book fits it in full as close as its own works and
+/// not at all this much further off. A first setting, not yet measured.
+const SOLO_AXIS_BAND: f32 = 0.15;
+
 /// How much the second and the third best axis of a book count beside its
 /// best: half, then a quarter. A fourth adds nothing.
 const AXIS_SHARES: [f32; 3] = [1.0, 0.5, 0.25];
@@ -231,7 +242,8 @@ pub struct AxisScale {
     /// this close fits the axis in full.
     pub near: f32,
     /// Weighted mean cosine of the other axes' works to `centroid`: a book
-    /// no closer than this does not fit the axis at all.
+    /// no closer than this does not fit the axis at all. For a taste's
+    /// only axis, a fixed band below `near`.
     pub far: f32,
 }
 
@@ -306,8 +318,7 @@ pub fn axis_scales<'a>(
                 .filter(|(other, _)| *other != at)
                 .flat_map(|(_, other)| other.members.iter());
             let far = mean_closeness(&centroid, others, vector_of)
-                .unwrap_or(near - AXIS_MIN_BAND)
-                .min(near - AXIS_MIN_BAND);
+                .map_or(near - SOLO_AXIS_BAND, |far| far.min(near - AXIS_MIN_BAND));
             Some(AxisScale {
                 centroid,
                 near,
@@ -346,14 +357,40 @@ pub struct AxisSeed {
 }
 
 /// How many groups `seeds` works are first split into: the square root of
-/// their number, within [`MIN_TASTE_AXES`] and [`MAX_TASTE_AXES`], so a
-/// dozen works are not cut into six pairs.
+/// their number, at least [`RADAR_MIN_AXES`] and at most
+/// [`MAX_TASTE_AXES`], so a dozen works are not cut into six pairs; fewer
+/// when there are not [`AXIS_MIN_WORKS`] works for each, down to
+/// [`MIN_TASTE_AXES`].
 fn group_count(seeds: usize) -> usize {
-    let mut k = MIN_TASTE_AXES;
+    let mut k = RADAR_MIN_AXES;
     while k < MAX_TASTE_AXES && (k + 1) * (k + 1) <= seeds {
         k += 1;
     }
-    k
+    k.min(seeds / AXIS_MIN_WORKS).max(MIN_TASTE_AXES)
+}
+
+/// The work among `points` least like every centre in `centres` (the
+/// first such when several are), leaving out those in `barred`; `None`
+/// when every work is barred.
+fn farthest_point(
+    points: &[(usize, Vec<f32>)],
+    centres: impl Iterator<Item = impl AsRef<[f32]>> + Clone,
+    barred: &[bool],
+) -> Option<usize> {
+    let mut farthest: Option<(usize, f32)> = None;
+    for (at, (_, vector)) in points.iter().enumerate() {
+        if barred.get(at).copied().unwrap_or(false) {
+            continue;
+        }
+        let nearest = centres
+            .clone()
+            .map(|centre| dot(centre.as_ref(), vector))
+            .fold(f32::NEG_INFINITY, f32::max);
+        if farthest.is_none_or(|(_, least)| nearest < least) {
+            farthest = Some((at, nearest));
+        }
+    }
+    farthest.map(|(at, _)| at)
 }
 
 /// Splits the seed works of a taste into groups that sit together in the
@@ -363,7 +400,10 @@ fn group_count(seeds: usize) -> usize {
 /// the same groups: the first centre is the heaviest work, each next
 /// centre the work least like the centres so far, and works move to the
 /// centre they are most like until none moves. A group left with fewer
-/// than [`AXIS_MIN_WORKS`] works is dissolved into the others.
+/// than [`AXIS_MIN_WORKS`] works is dissolved into the others: its work
+/// is a book apart, not a leaning. Its place is given once to the work
+/// then least like the remaining centres, so one stray book does not cost
+/// the taste an axis.
 ///
 /// # Arguments
 ///
@@ -375,7 +415,7 @@ fn group_count(seeds: usize) -> usize {
 ///
 /// The groups as positions in `seeds`, the group with the most weight
 /// first and each group's heaviest work first. Empty when fewer than
-/// [`MIN_TASTE_AXES`] groups hold.
+/// [`AXIS_MIN_WORKS`] works have a vector.
 #[must_use]
 pub fn cluster(seeds: &[AxisSeed]) -> Vec<Vec<usize>> {
     let mut order: Vec<usize> = (0..seeds.len()).collect();
@@ -397,22 +437,22 @@ pub fn cluster(seeds: &[AxisSeed]) -> Vec<Vec<usize>> {
         return Vec::new();
     }
     let k = group_count(points.len());
+    // Works that started a group which then dissolved: not started from
+    // again.
+    let mut barred: Vec<bool> = vec![false; points.len()];
     // Farthest-point start: the heaviest work, then the work least like
     // every centre so far (the first such when several are).
     let mut centres: Vec<Vec<f32>> = vec![points[0].1.clone()];
+    let mut started: Vec<usize> = vec![0];
     while centres.len() < k {
-        let mut farthest = (0_usize, f32::INFINITY);
-        for (at, (_, vector)) in points.iter().enumerate() {
-            let nearest = centres
-                .iter()
-                .map(|centre| dot(centre, vector))
-                .fold(f32::NEG_INFINITY, f32::max);
-            if nearest < farthest.1 {
-                farthest = (at, nearest);
-            }
-        }
-        centres.push(points[farthest.0].1.clone());
+        let Some(farthest) = farthest_point(&points, centres.iter(), &barred) else {
+            break;
+        };
+        centres.push(points[farthest].1.clone());
+        started.push(farthest);
     }
+    // Each dissolved group's place is offered to another work once.
+    let mut restarts = k;
     let nearest_centre = |centres: &[Option<Vec<f32>>], vector: &[f32]| {
         let mut best = (0_usize, f32::NEG_INFINITY);
         for (at, centre) in centres.iter().enumerate() {
@@ -468,11 +508,26 @@ pub fn cluster(seeds: &[AxisSeed]) -> Vec<Vec<usize>> {
         let too_small = (0..centres.len())
             .filter(|group| centres[*group].is_some() && sizes[*group] < AXIS_MIN_WORKS)
             .min_by_key(|group| sizes[*group]);
-        match too_small {
-            Some(group) => centres[group] = None,
-            None => break,
+        let Some(group) = too_small else { break };
+        centres[group] = None;
+        for (at, to) in assigned.iter().enumerate() {
+            if *to == group {
+                barred[at] = true;
+            }
         }
-        if centres.iter().flatten().count() < MIN_TASTE_AXES {
+        if let Some(at) = started.get(group) {
+            barred[*at] = true;
+        }
+        if restarts > 0 {
+            restarts -= 1;
+            if let Some(next) = farthest_point(&points, centres.iter().flatten(), &barred) {
+                centres[group] = Some(points[next].1.clone());
+                started[group] = next;
+                // The work that starts a group is not started from twice.
+                barred[next] = true;
+            }
+        }
+        if centres.iter().flatten().count() == 0 {
             return Vec::new();
         }
     }
@@ -732,8 +787,11 @@ pub fn name_axes(groups: &[Vec<usize>], books: &[AxisBook]) -> Vec<String> {
 ///
 /// # Returns
 ///
-/// The axes, the one with the most weight first; none when too few seed
-/// works have a vector or sit together.
+/// The axes, the one with the most weight first (none when fewer than
+/// [`AXIS_MIN_WORKS`] seed works have a vector), and whether they are
+/// settled: at least half of the seed works had a vector. Axes that are
+/// not settled were built while the library was still being embedded and
+/// are built again by the next ranking.
 ///
 /// # Errors
 ///
@@ -742,7 +800,7 @@ pub(crate) async fn build_axes(
     library: &LibraryStore,
     space: &VectorSpace,
     weights: &BTreeMap<String, f64>,
-) -> Result<Vec<TasteAxis>> {
+) -> Result<(Vec<TasteAxis>, bool)> {
     let mut heaviest: Vec<(&String, f64)> = weights
         .iter()
         .filter(|(_, weight)| **weight > 0.0)
@@ -751,8 +809,9 @@ pub(crate) async fn build_axes(
     heaviest.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(b.0)));
     heaviest.truncate(MAX_AXIS_SEEDS);
     if heaviest.len() < MIN_TASTE_AXES * AXIS_MIN_WORKS {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), true));
     }
+    let wanted = heaviest.len();
     let ids: Vec<String> = heaviest.iter().map(|(id, _)| (*id).clone()).collect();
     let stored = library
         .vectors(bookclerk_library::VECTOR_KIND_WORK, space, &ids)
@@ -767,9 +826,10 @@ pub(crate) async fn build_axes(
             })
         })
         .collect();
+    let settled = seeds.len() * 2 >= wanted;
     let groups = cluster(&seeds);
     if groups.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), settled));
     }
     let grouped: Vec<String> = groups
         .iter()
@@ -816,7 +876,7 @@ pub(crate) async fn build_axes(
         })
         .collect();
     let names = name_axes(&groups, &books);
-    Ok(groups
+    let axes = groups
         .into_iter()
         .zip(names)
         .map(|(members, name)| {
@@ -834,7 +894,8 @@ pub(crate) async fn build_axes(
             });
             TasteAxis { name, members }
         })
-        .collect())
+        .collect();
+    Ok((axes, settled))
 }
 
 #[cfg(test)]
@@ -894,17 +955,70 @@ mod tests {
     }
 
     #[test]
-    fn too_few_works_or_groups_make_no_axes() {
+    fn a_small_taste_has_fewer_axes_and_one_work_has_none() {
         let seeds = three_bunches();
-        assert!(
-            cluster(&seeds[..5]).is_empty(),
-            "three pairs need six works"
+        // Five works are two groups: the x's and two of the y's.
+        assert_eq!(
+            ids(&seeds, &cluster(&seeds[..5])),
+            [vec!["x1", "x2", "x3"], vec!["y1", "y2"]]
         );
+        // Two works that sit together are one axis.
+        assert_eq!(ids(&seeds, &cluster(&seeds[..2])), [["x1", "x2"]]);
+        assert!(cluster(&seeds[..1]).is_empty());
         assert!(cluster(&[]).is_empty());
-        // Two bunches and a loner: the loner's group dissolves, two are left.
+    }
+
+    #[test]
+    fn a_stray_work_joins_a_group_and_does_not_cost_an_axis() {
+        // Three bunches and a loner between two of them. The loner is the
+        // work least like the first centres, so it starts a group, ends
+        // alone and is dissolved; its place goes to another work and the
+        // three bunches still come out.
+        let mut seeds = three_bunches();
+        seeds.push(seed("loner", 0.1, [-1.0, -1.0, 0.2]));
+        let groups = ids(&seeds, &cluster(&seeds));
+        assert_eq!(groups.len(), 3, "{groups:?}");
+        for bunch in ["x", "y", "z"] {
+            assert!(
+                groups
+                    .iter()
+                    .any(|group| (1..=3).all(|n| group.contains(&format!("{bunch}{n}")))),
+                "{bunch}: {groups:?}"
+            );
+        }
+        assert_eq!(groups.iter().flatten().count(), 10, "the loner joins one");
+
+        // Two bunches and a loner: two axes, not none.
         let mut two: Vec<AxisSeed> = seeds[..6].to_vec();
         two.push(seed("z1", 0.5, [0.0, 0.0, 1.0]));
-        assert!(cluster(&two).is_empty());
+        let groups = ids(&two, &cluster(&two));
+        assert_eq!(groups.len(), 2, "{groups:?}");
+        assert_eq!(groups.iter().flatten().count(), 7);
+    }
+
+    #[test]
+    fn a_taste_with_one_axis_is_measured_across_a_fixed_band() {
+        let axes = [TasteAxis {
+            name: "Only".into(),
+            members: vec![
+                AxisMember {
+                    work_id: "a".into(),
+                    weight: 1.0,
+                },
+                AxisMember {
+                    work_id: "b".into(),
+                    weight: 1.0,
+                },
+            ],
+        }];
+        let vectors: HashMap<&str, Vec<f32>> =
+            HashMap::from([("a", vec![1.0, 0.1, 0.0]), ("b", vec![1.0, -0.1, 0.0])]);
+        let scales = axis_scales(&axes, |id| vectors.get(id).map(Vec::as_slice));
+        let scale = scales[0].as_ref().unwrap();
+        assert!((scale.near - scale.far - SOLO_AXIS_BAND).abs() < 1e-6);
+        // As close as its own works: in full. At a right angle: not at all.
+        assert!((scale.fit(scale.near) - 1.0).abs() < 1e-6);
+        assert!(scale.fit(0.0).abs() < 1e-6);
     }
 
     #[test]
@@ -926,6 +1040,10 @@ mod tests {
 
     #[test]
     fn a_dozen_works_are_not_cut_into_six_pairs() {
+        assert_eq!(group_count(2), 1);
+        assert_eq!(group_count(3), 1);
+        assert_eq!(group_count(4), 2);
+        assert_eq!(group_count(5), 2);
         assert_eq!(group_count(6), 3);
         assert_eq!(group_count(15), 3);
         assert_eq!(group_count(16), 4);

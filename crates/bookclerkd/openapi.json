@@ -75042,7 +75042,7 @@
             "items": {
               "$ref": "#/components/schemas/RadarAxis"
             },
-            "description": "Three to six axes, the one that weighs most in the caller's taste\nfirst. Empty unless `state` is `ready`."
+            "description": "One to six axes, the one that weighs most in the caller's taste\nfirst. Empty unless `state` is `ready`."
           }
         }
       },

@@ -66,7 +66,7 @@ function spoken(axis: TasteRadarAxis): string {
 
 /** Props of {@link TasteRadarChart}. */
 export interface TasteRadarChartProps {
-  /** Three to six axes, each with the book placed on it. */
+  /** Three to six axes, each with the book placed on it; fewer draw nothing. */
   axes: TasteRadarAxis[];
 }
 
@@ -214,27 +214,68 @@ export function TasteRadarChart({ axes }: TasteRadarChartProps) {
         aria-live="polite"
         className="w-full min-w-0 rounded-md bg-card-mid px-3 py-2 ring-1 ring-ink/5 sm:mt-6 sm:flex-1"
       >
-        <p className="text-sm font-semibold text-ink">{shown.name}</p>
-        <p className="text-sm text-teal-text">
-          {closeness(shown.score)}
-          <span className="text-ink/70"> {yourBooks(shown.books)}</span>
-        </p>
-        {shown.examples.length > 0 ? (
-          <>
-            <p className="mt-2 text-xs font-semibold uppercase tracking-wide text-ink/70">
-              Nearest of yours
-            </p>
-            <ul className="mt-0.5 space-y-0.5">
-              {shown.examples.map((example) => (
-                <li key={example.work_id} className="truncate text-sm text-ink">
-                  {example.title}
-                </li>
-              ))}
-            </ul>
-          </>
-        ) : null}
+        <AxisSummary axis={shown} />
       </div>
     </div>
+  );
+}
+
+/** What is said of one axis: its name, how close the book is, and the nearest of the person's own. */
+function AxisSummary({ axis }: { axis: TasteRadarAxis }) {
+  return (
+    <>
+      <p className="text-sm font-semibold text-ink">{axis.name}</p>
+      <p className="text-sm text-teal-text">
+        {closeness(axis.score)}
+        <span className="text-ink/70"> {yourBooks(axis.books)}</span>
+      </p>
+      {axis.examples.length > 0 ? (
+        <>
+          <p className="mt-2 text-xs font-semibold uppercase tracking-wide text-ink/70">
+            Nearest of yours
+          </p>
+          <ul className="mt-0.5 space-y-0.5">
+            {axis.examples.map((example) => (
+              <li key={example.work_id} className="truncate text-sm text-ink">
+                {example.title}
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
+    </>
+  );
+}
+
+/** Props of {@link TasteAxisRows}. */
+export interface TasteAxisRowsProps {
+  /** One or two axes, each with the book placed on it. */
+  axes: TasteRadarAxis[];
+}
+
+/**
+ * A taste of one or two axes, which make no shape on a radar: a tile for
+ * each axis with a bar that fills as the book lands closer to that group.
+ */
+export function TasteAxisRows({ axes }: TasteAxisRowsProps) {
+  return (
+    <ul className="grid gap-2 sm:grid-cols-2">
+      {axes.map((axis) => (
+        <li
+          key={axis.name}
+          aria-label={spoken(axis)}
+          className="min-w-0 rounded-md bg-card-mid px-3 py-2 ring-1 ring-ink/5"
+        >
+          <AxisSummary axis={axis} />
+          <div className="mt-2 h-1.5 rounded-full bg-ink/10" aria-hidden="true">
+            <div
+              className="h-full rounded-full bg-teal"
+              style={{ width: `${Math.round(Math.min(Math.max(axis.score, 0.04), 1) * 100)}%` }}
+            />
+          </div>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -257,9 +298,10 @@ export interface TasteRadarProps {
 /**
  * "How it fits your taste": the radar of the book a dialog shows. Asks for
  * it once the book's details have held still for a moment, since a dialog
- * fills them in as stores answer. Renders nothing while it loads, when the
- * library has no embedding model, or when the viewer's taste has too few
- * books and wishes that sit together to draw from.
+ * fills them in as stores answer. A taste of one or two groups is shown as
+ * a row for each ({@link TasteAxisRows}). Renders nothing while it loads,
+ * when the library has no embedding model, or when the viewer has fewer
+ * than two books and wishes to measure against.
  */
 export function TasteRadar({
   workId,
@@ -300,11 +342,11 @@ export function TasteRadar({
   // While more details of the same book are on their way, the radar
   // already drawn stays.
   const axes = read?.book === book ? read.axes : [];
-  if (axes.length < 3) return null;
+  if (axes.length === 0) return null;
   return (
     <section className="space-y-2 border-t border-ink/10 pt-3" aria-label="How it fits your taste">
       <h3 className="font-display text-sm font-semibold text-ink">How it fits your taste</h3>
-      <TasteRadarChart axes={axes} />
+      {axes.length < 3 ? <TasteAxisRows axes={axes} /> : <TasteRadarChart axes={axes} />}
     </section>
   );
 }

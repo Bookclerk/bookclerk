@@ -248,7 +248,7 @@ mod integration {
                 .map(|rec| {
                     rec.reasons
                         .iter()
-                        .any(|reason| reason.starts_with("similar to titles you finish"))
+                        .any(|reason| reason.starts_with("similar to your books and wishes"))
                 })
                 .collect::<Vec<bool>>()
         };
@@ -271,7 +271,7 @@ mod integration {
             .filter(|rec| {
                 rec.reasons
                     .iter()
-                    .any(|reason| reason.starts_with("similar to titles you finish"))
+                    .any(|reason| reason.starts_with("similar to your books and wishes"))
             })
             .map(|rec| rec.title.as_str())
             .collect();
@@ -288,7 +288,7 @@ mod integration {
         assert!(plain.iter().all(|rec| {
             !rec.reasons
                 .iter()
-                .any(|reason| reason.starts_with("similar to titles you finish"))
+                .any(|reason| reason.starts_with("similar to your books and wishes"))
         }));
     }
 }

@@ -1,6 +1,6 @@
 /** Stories for {@link TasteRadarChart}: six, four and three axes. */
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { TasteRadarChart } from "./TasteRadar";
+import { TasteAxisRows, TasteRadarChart } from "./TasteRadar";
 
 /** An axis named `name` with `score`, made by `books` books and wishes. */
 function axis(name: string, score: number, books: number, examples: string[]) {
@@ -56,4 +56,16 @@ export const ThreeAxesFarFromAll: Story = {
       axis("Poetry", 0.15, 2, []),
     ],
   },
+};
+
+/** Two axes, too few for a radar: a row for each. */
+export const TwoAxesAsRows: Story = {
+  render: () => (
+    <TasteAxisRows
+      axes={[
+        axis("Epic fantasy", 0.82, 5, ["The Way of Kings", "Mistborn"]),
+        axis("World War II", 0.1, 4, ["Band of Brothers"]),
+      ]}
+    />
+  ),
 };

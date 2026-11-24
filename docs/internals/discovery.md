@@ -160,7 +160,7 @@ operator, a household user, or a portal identity) has a **subject key**
    entries, which move a score the most, its first wish titles and the
    heaviest works of each axis. A ranking with no stored taste, one more
    than a day old, or one whose axes were looked for in another model's
-   space, loads the taste from the library and stores it again. Every [taste event](#taste-events) queues a fetch, which
+   space or before most seed works had a vector, loads the taste from the library and stores it again. Every [taste event](#taste-events) queues a fetch, which
    stores a fresh taste (also with `discovery.storefront_candidates`
    off, when the fetch calls no store), so the day only matters for finishes, ratings and
    tags, which send no event.
@@ -551,9 +551,11 @@ with a weight:
 | --- | --- |
 | Finished | 3 |
 | Rated four stars or more (three) | 2 (1) |
-| Held by the library | 0.5 |
+| In the library (an account or a branch holds it, with its audio or not) | 0.5 |
 | Listening | The listen's engagement, up to 6 |
 | Open wish | 1.5, or the book's own weight when that is more |
+
+The weights add up: a finished book in the library counts 3.5.
 
 A household book blended into a member's taste counts at half, as it
 does everywhere. So a wish outweighs a book that is only in the house
@@ -568,10 +570,15 @@ the work least like the centres so far.
 
 | Rule | Value |
 | --- | --- |
-| Groups tried | The square root of the seed count, within 3 to 6 |
+| Groups tried | The square root of the seed count, within 3 to 6; fewer when there are not 2 works for each (4 works: 2 groups, 2 works: 1) |
 | Works a group needs | 2; a smaller group is dissolved into the others |
-| Fewer than 3 groups hold | No axes; the ranking uses the one centroid |
+| A dissolved group's place | Given once to the work then least like the remaining centres, so a stray book does not cost an axis |
+| Fewer than 2 seed works with a vector | No axes; the ranking uses the one centroid |
 | Order | The group with the most weight first |
+
+A taste can so have one or two axes. They rank the same way; the
+[radar](#the-taste-radar) shows them as rows, since it takes three to
+make a shape.
 
 **Names.** An axis is named by what its works share and the person's
 other works lack, whatever genre a store files them under. A name is a
@@ -597,11 +604,15 @@ their names and member works with weights, not as vectors. A ranking
 reads the members' vectors and takes each axis's centroid (the weighted
 mean of its works' unit vectors) and its scale: the weighted mean cosine
 of its own works to the centroid (a fit of 1) and of the other axes'
-works (a fit of 0). The taste records which model space its axes were
+works (a fit of 0). A taste's only axis has no other works, so its fit
+falls to 0 over a fixed band of 0.15 below its own works (a first
+setting, not yet measured). The taste records which model space its axes were
 looked for in; a ranking that reads another space loads the taste again,
 so axes appear when a model has embedded the library and follow a change
-of model. A work embedded after the taste was stored joins at the next
-store.
+of model. Axes built while fewer than half of the seed works had a
+vector (a fresh library whose first taste is stored before it is
+embedded) are not recorded as that space's, so the next ranking builds
+them again. A work embedded after that joins at the next store.
 
 > [!NOTE]
 > The wish weight, the group counts and the naming thresholds are first
@@ -688,8 +699,9 @@ viewer's taste, as a radar: `POST /api/discover/taste/radar`
 **Axes.** The axes are the viewer's [taste axes](#taste-axes), read from
 their stored taste: the same ones their shelves are ranked against, so
 the chart explains the shelves. They are the viewer's books and open
-wishes grouped by meaning, three to six of them, the one that weighs
-most first.
+wishes grouped by meaning, one to six of them, the one that weighs
+most first. The web app draws three or more as a radar and one or two
+as a row each.
 
 **Score.** A book's score on an axis is how close it lands to the axis's
 centroid, on the axis's own scale: 0 when it is no closer than the
@@ -717,7 +729,7 @@ writes nothing to the database.
 | `state` | Meaning |
 | --- | --- |
 | `ready` | `axes` places the book |
-| `no_taste` | No stored taste yet, or too few books and wishes sit together to make three axes |
+| `no_taste` | No stored taste yet, or fewer than two of the viewer's books and wishes have a vector |
 | `no_model` | No model serves the library (for a store title: none on this node) |
 | `embedding` | The library, or this work, is not embedded with the model yet |
 
@@ -1171,7 +1183,7 @@ queue order; Discover personalizes the feed (including wishlist items).
 | If you like {Author} | `because` | Related/similar titles **not** by that author |
 | Narrated by {Narrator} | `narrator` | Liked-narrator overlap |
 | Because you like {Genre} | `genre` | Category/subject overlap from finished titles |
-| Similar to books you finish | `similar_taste` | Embedding similarity |
+| Similar to your books and wishes | `similar_taste` | Embedding similarity |
 | Popular in {Genre} | `starter_genre` (`starter_genre:fantasy`, …; a label in a non-Latin script also carries eight hex digits of its hash, so two such genres never share an id) | Genre browse: the genres the taste leans to, and the starter genres while it is thin |
 | Chirp deals right now | `chirp_deals` | Chirp top + free deals |
 | Picked for you on {Store} | `from_store` (`from_audible`, …) | Titles no personal shelf took, ranked by taste, under the store where they cost the person least |
