@@ -73,6 +73,17 @@ operator, a household user, or a portal identity) has a **subject key**
    (Science Fiction, Fantasy, Mystery & Thriller, Romance, History &
    Biography, Self-help) through its catalog search, as far as its call
    budget reaches, so a new library still gets shelves.
+   Every taste is also browsed by **its own genres**: the genre labels its
+   seeds carry are counted (labels that differ only in case are one, a
+   label counts once per seed, and labels every store files most of its
+   catalog under, such as Fiction, are left out), and each store is asked
+   for the popular titles of the three most common through the same catalog
+   search. Without this a store's titles come only from what it relates to
+   single books. A store is asked one of these genres after every second
+   seed, so with the default budget of 32 calls and four stores each store
+   answers for its deals, five seeds and two genres. The titles join the
+   ranking like any other candidate and fill the same
+   "Popular in {Genre}" shelves as the starter genres.
    Every title a store returns goes into the **shared listing pool**
    (see [Shared listing pool](#shared-listing-pool)), and the person's
    `discover_candidates` rows are references to those listings plus what
@@ -915,6 +926,7 @@ it.
 | `sort` | `relevance` (default) / `popularity` / `rating` / `title` / `author` / `price` / `length` — storefront rank (`rankHint`, declared by Audible today) for relevance/popularity; host re-ranks price/length/rating/title/author. Rating sort uses a Bayesian average of `rating_overall` with `rating_count` (prior mean 4.0, strength 100) so tiny sample 5.0s do not outrank high-volume 4.8s |
 | `sort_dir` | `asc` / `desc` (defaults: desc for relevance/popularity/rating/price; asc for title/author/length). Relevance ignores direction for ranking |
 | `field` | Optional scoped search: `author` / `narrator` / `series` / `genre` |
+| `rank` | `meaning` (default) / `store` — how a `relevance` page is ordered; see [Ordering a page with its meaning](#ordering-a-page-with-its-meaning) |
 | `lang` | Default language (BCP-47); hard-include when `language` omitted |
 | `language` | Comma-separated language codes to include |
 | `all_languages` | `1` / `true` — no hard language filter |
@@ -930,6 +942,57 @@ purchase-hints round-trip). The UI infinite-scrolls with `next_cursor` and
 dedupes rare cross-page `work_key`s. Facet option lists grow from loaded pages
 (not full upstream facet counts). Typeahead still uses a small first page
 (`page_size=10`).
+
+### Ordering a page with its meaning
+
+A store orders its results by its own relevance, which matches words. When
+the answering node has the library's embedding model, a page sorted by
+`relevance` is also ordered by how close each result is to the query in
+meaning (`crates/bookclerkd/src/search_rerank.rs`):
+
+1. The query is embedded as a query. Its vector is shared with the
+   Library's search by meaning, which keeps the last 32.
+2. Each result on the page is embedded as a document from its title with
+   its subtitle, its authors and its series, and nothing else. A search page
+   carries little more, and short texts keep a page of 24 results never
+   seen before at about 0.7 s on one core with the default model
+   ([Embedding benchmarks](embedding-benchmarks.md)).
+3. Each result has two places: its place in the stores' order and its place
+   by closeness to the query. The page is ordered by the sum of the two,
+   and the stores' order decides between equals. A result must do well in
+   both to lead, so an exact title match the stores put first stays near
+   the top. The equal weights are a first setting, not yet measured on real
+   searches.
+4. A model plugin runs its calls one after another, and a call a search
+   stopped waiting for still runs. The model therefore works for a search
+   in a task of its own that holds one of two slots until the model has
+   answered (up to the model call's own timeout). What it made is kept for
+   the next search of that page. A search that finds both slots taken, and
+   whose vectors are not all in the cache, asks the model for nothing and
+   keeps the stores' order.
+
+The page is ordered before it is returned, so nothing moves after a client
+shows it. Only the results of one page are ordered among themselves: pages
+still follow each other in the stores' order.
+
+Result vectors are never stored. A store's catalog is not the library's, so
+they stay out of the `embeddings` table and live in a cache in memory (the
+last 4,096 texts of the current model). A result seen again, on a later
+search or a repeated page, costs nothing.
+
+The model gets at most 3 seconds, inside what is left of the search's
+15 second budget. The page keeps the stores' order, and the search answers
+as before, when:
+
+- the node has no embedding model (the hash stand-in carries no meaning and
+  is never used here);
+- the model misses the deadline, for example a sleeping model plugin that
+  must first load its model, or fails;
+- the page has one result, or less than 250 ms of the budget is left;
+- the search is scoped with `field`, which asks for a name, or sorted by
+  anything but `relevance`;
+- the client sent `rank=store`. The web app does for the suggestions under
+  the search box, which are asked for while the person types.
 
 Per-user Discover defaults live on `GET`/`PATCH /api/preferences`:
 `discover_sort`, `discover_sort_dir`, `discover_language` (`null` = browser
@@ -981,7 +1044,7 @@ queue order; Discover personalizes the feed (including wishlist items).
 | Narrated by {Narrator} | `narrator` | Liked-narrator overlap |
 | Because you like {Genre} | `genre` | Category/subject overlap from finished titles |
 | Similar to books you finish | `similar_taste` | Embedding similarity |
-| Popular in {Genre} | `starter_genre` (`starter_genre:fantasy`, …) | Starter-genre browse while the taste is thin |
+| Popular in {Genre} | `starter_genre` (`starter_genre:fantasy`, …; a label in a non-Latin script also carries eight hex digits of its hash, so two such genres never share an id) | Genre browse: the genres the taste leans to, and the starter genres while it is thin |
 | Chirp deals right now | `chirp_deals` | Chirp top + free deals |
 | Picked for you on {Store} | `from_store` (`from_audible`, …) | Titles no personal shelf took, ranked by taste, under the store where they cost the person least |
 | Top picks for you | `top_picks` | Fallback when every other shelf is empty |

@@ -425,7 +425,10 @@ export function DiscoverPage({
     const t = window.setTimeout(() => {
       void (async () => {
         try {
-          const page = await searchCatalog(q, { page_size: 10 });
+          const page = await searchCatalog(q, {
+            page_size: 10,
+            rank: "store",
+          });
           if (seq !== searchSeq.current) return;
           setSuggestions(page.items);
           setSearchOpen(true);

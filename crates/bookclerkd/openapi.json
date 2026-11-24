@@ -35198,6 +35198,20 @@
               "type": "integer",
               "format": "int64"
             }
+          },
+          {
+            "name": "rank",
+            "in": "query",
+            "description": "How a page sorted by relevance is ordered: `meaning` (default) or\n`store`.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "How a page of store results sorted by relevance is ordered.",
+              "enum": [
+                "meaning",
+                "store"
+              ]
+            }
           }
         ],
         "responses": {

@@ -8,7 +8,8 @@
 //!    [`OWN_TASTE_THRESHOLD`] of their own), asks **every** deployed
 //!    storefront about them concurrently, and stores each store's answer as
 //!    soon as it arrives. A thin taste also browses each store's
-//!    [`STARTER_GENRES`]. Every title a store returns is resolved into the
+//!    [`STARTER_GENRES`], and every taste the genres it leans to
+//!    ([`taste_genres`]). Every title a store returns is resolved into the
 //!    shared catalog pool (`store_listings`, prices in `listing_offers`);
 //!    the subject's `discover_candidates` rows refer to those listings.
 //!    Storefront answers are cached for a day in `discover_store_calls` as
@@ -96,8 +97,110 @@ pub const STARTER_GENRES: [&str; 6] = [
     "Self-help",
 ];
 
-/// Hits asked of a store for one starter genre.
+/// Hits asked of a store for one browsed genre.
 const STARTER_GENRE_HITS: usize = 24;
+
+/// Most genres of a person's own taste each store is browsed for
+/// ([`taste_genres`]).
+pub const TASTE_GENRES: usize = 3;
+
+/// Seeds a store is asked about before each taste genre, so the genres get
+/// a share of a small call budget without taking it from the first seeds.
+const SEEDS_PER_TASTE_GENRE: usize = 2;
+
+/// Genre labels too broad to browse a store by: every store files most of
+/// its catalog under them.
+const BROAD_GENRES: [&str; 8] = [
+    "fiction",
+    "nonfiction",
+    "non-fiction",
+    "literature & fiction",
+    "audiobooks",
+    "audiobook",
+    "books",
+    "general",
+];
+
+/// The genres a person's taste leans to, most common first: the labels
+/// their seeds (books and wishes) carry, counted, at most [`TASTE_GENRES`].
+///
+/// A label is one comma-, semicolon- or `>`-separated part of a seed's
+/// genres. Labels that differ only in case count as one, a label in
+/// [`BROAD_GENRES`] is left out, and equal counts keep the order the seeds
+/// name them in, so the newest wish and the strongest book lead.
+///
+/// # Arguments
+///
+/// * `seeds` - The seeds of one fetch, in the order they are asked about.
+#[must_use]
+pub fn taste_genres(seeds: &[SeedTitle]) -> Vec<String> {
+    // (label as first written, lowercase key, seeds naming it)
+    let mut counted: Vec<(String, String, usize)> = Vec::new();
+    for seed in seeds {
+        let Some(categories) = seed.categories.as_deref() else {
+            continue;
+        };
+        let mut seen: Vec<String> = Vec::new();
+        for label in categories.split([',', ';', '>']).map(str::trim) {
+            let key = label.to_lowercase();
+            if key.is_empty() || BROAD_GENRES.contains(&key.as_str()) || seen.contains(&key) {
+                continue;
+            }
+            match counted.iter_mut().find(|(_, of, _)| *of == key) {
+                Some((_, _, count)) => *count += 1,
+                None => counted.push((label.to_string(), key.clone(), 1)),
+            }
+            seen.push(key);
+        }
+    }
+    // A stable sort: equal counts keep the order of first mention.
+    counted.sort_by_key(|counted| std::cmp::Reverse(counted.2));
+    counted
+        .into_iter()
+        .take(TASTE_GENRES)
+        .map(|(label, _, _)| label)
+        .collect()
+}
+
+/// One call a store is asked in a fetch, after its deals.
+#[derive(Debug, Clone, Copy)]
+enum Ask<'a> {
+    /// Titles near a seed.
+    Seed(&'a SeedTitle),
+    /// The popular titles of a genre.
+    Genre(&'a str),
+}
+
+/// The calls of one store's fetch in the order they are made: the seeds,
+/// with a taste genre after every [`SEEDS_PER_TASTE_GENRE`] of them, then
+/// the taste genres still left, then the starter genres the taste did not
+/// already name.
+fn planned_asks<'a>(
+    seeds: &'a [SeedTitle],
+    taste_genres: &'a [String],
+    starter_genres: &'a [String],
+) -> Vec<Ask<'a>> {
+    let mut asks = Vec::with_capacity(seeds.len() + taste_genres.len() + starter_genres.len());
+    let mut genres = taste_genres.iter();
+    for (n, seed) in seeds.iter().enumerate() {
+        asks.push(Ask::Seed(seed));
+        if (n + 1) % SEEDS_PER_TASTE_GENRE == 0 {
+            asks.extend(genres.next().map(|genre| Ask::Genre(genre)));
+        }
+    }
+    asks.extend(genres.map(|genre| Ask::Genre(genre)));
+    asks.extend(
+        starter_genres
+            .iter()
+            .filter(|starter| {
+                !taste_genres
+                    .iter()
+                    .any(|genre| genre.eq_ignore_ascii_case(starter))
+            })
+            .map(|genre| Ask::Genre(genre)),
+    );
+    asks
+}
 
 /// Most distinct titles one store is asked to price at the end of a fetch,
 /// in one `purchase_hints` call. Audible and Chirp take this in a few
@@ -466,6 +569,9 @@ pub async fn fetch_subject_candidates(
     } else {
         Vec::new()
     };
+    // Every taste also browses the genres it leans to, so a store's shelf
+    // is not only what the store relates to single books.
+    let genres = taste_genres(&seeds);
     let mut report = FetchReport {
         seeds: seeds.len(),
         ..FetchReport::default()
@@ -489,6 +595,7 @@ pub async fn fetch_subject_candidates(
         }
         let seeds = seeds.clone();
         let starter = starter.clone();
+        let genres = genres.clone();
         let library = library.clone();
         let region = opts.region.clone();
         let exclude_sets = opts.exclude_graphicaudio_series_sets;
@@ -497,11 +604,14 @@ pub async fn fetch_subject_candidates(
             let mut fetched = fetch_one_store(
                 &library,
                 source.as_ref(),
-                &seeds,
-                &starter,
-                &region,
-                per_store,
-                exclude_sets,
+                &FetchPlan {
+                    seeds: &seeds,
+                    taste_genres: &genres,
+                    starter_genres: &starter,
+                    region: &region,
+                    budget: per_store,
+                    exclude_series_sets: exclude_sets,
+                },
             )
             .await;
             let priced = if fetched.answered {
@@ -714,8 +824,26 @@ fn interleave_seeds(books: Vec<SeedTitle>, wishes: Vec<SeedTitle>) -> Vec<SeedTi
     out
 }
 
-/// Asks one store for its deals, then about each seed, then for each
-/// starter genre, making at most `budget` calls to the store.
+/// What one store is asked in a fetch.
+#[derive(Debug, Clone, Copy)]
+struct FetchPlan<'a> {
+    /// The subject's seeds, in the order they are asked about.
+    seeds: &'a [SeedTitle],
+    /// The genres the taste leans to ([`taste_genres`]).
+    taste_genres: &'a [String],
+    /// The starter genres of a thin taste; empty otherwise.
+    starter_genres: &'a [String],
+    /// Storefront region code.
+    region: &'a str,
+    /// Most calls the store is asked.
+    budget: usize,
+    /// Whether GraphicAudio series sets are dropped.
+    exclude_series_sets: bool,
+}
+
+/// Asks one store for its deals, then about each seed and for each genre
+/// in the order of [`planned_asks`], making at most `budget` calls to the
+/// store.
 ///
 /// An answer the store-call cache already holds costs no call, so it never
 /// uses up the budget: a person's new wishes are asked about on top of the
@@ -730,12 +858,16 @@ fn interleave_seeds(books: Vec<SeedTitle>, wishes: Vec<SeedTitle>) -> Vec<SeedTi
 async fn fetch_one_store(
     library: &LibraryStore,
     source: &dyn ContentSource,
-    seeds: &[SeedTitle],
-    starter_genres: &[String],
-    region: &str,
-    budget: usize,
-    exclude_series_sets: bool,
+    plan: &FetchPlan<'_>,
 ) -> StoreFetch {
+    let FetchPlan {
+        seeds,
+        taste_genres,
+        starter_genres,
+        region,
+        budget,
+        exclude_series_sets,
+    } = *plan;
     let id = source.id().to_string();
     let store = StoreRef {
         id: &id,
@@ -778,9 +910,12 @@ async fn fetch_one_store(
     // cached answers are read together up front instead of one by one.
     // Cached answers cost no store call, so every key is read, not only
     // those the budget reaches.
+    let asks = planned_asks(seeds, taste_genres, starter_genres);
     let planned: Vec<String> = std::iter::once(deal_key.clone())
-        .chain(seeds.iter().map(|seed| seed_key(&seed.seed)))
-        .chain(starter_genres.iter().map(|genre| starter_key(genre)))
+        .chain(asks.iter().map(|ask| match ask {
+            Ask::Seed(seed) => seed_key(&seed.seed),
+            Ask::Genre(genre) => starter_key(genre),
+        }))
         .collect();
     let mut cache = AnswerCache::read(library, &id, &planned).await;
     let keep = |p: &PooledCandidate| {
@@ -800,57 +935,54 @@ async fn fetch_one_store(
         out.extend(hits.into_iter().filter(|p| keep(p)));
     }
     let started = std::time::Instant::now();
-    for seed in seeds {
-        let key = seed_key(&seed.seed);
+    for ask in asks {
+        let key = match ask {
+            Ask::Seed(seed) => seed_key(&seed.seed),
+            Ask::Genre(genre) => starter_key(genre),
+        };
         // A cached answer is still read once the budget or the deadline is
         // spent; only a new store call is not made.
         let can_ask = calls < budget && started.elapsed() < STORE_FETCH_DEADLINE;
         if !can_ask && !cache.holds(&key) {
             continue;
         }
-        let s = &seed.seed;
-        let (answer, asked) = cached_or_call(library, &store, &mut cache, &key, || {
-            source.expand_candidates(s, 24)
-        })
-        .await;
-        calls += usize::from(asked);
-        let Some(answer) = answer else { continue };
-        complete &= answer.complete;
-        let hits = answer.candidates;
-        answered += usize::from(!hits.is_empty());
-        for mut p in hits.into_iter().filter(|p| keep(p)) {
-            p.candidate = apply_seed_title(p.candidate, seed);
-            out.push(p);
-        }
-    }
-    for genre in starter_genres {
-        let key = starter_key(genre);
-        let can_ask = calls < budget && started.elapsed() < STORE_FETCH_DEADLINE;
-        if !can_ask && !cache.holds(&key) {
-            continue;
-        }
-        let search = CatalogSearchOpts {
-            query: genre.clone(),
-            region: region.to_string(),
-            limit: STARTER_GENRE_HITS,
-            page: 1,
-            sort: CatalogSearchSort::Popularity,
-            field: Some(CatalogSearchField::Genre),
-            language: None,
+        let (answer, asked) = match ask {
+            Ask::Seed(seed) => {
+                cached_or_call(library, &store, &mut cache, &key, || {
+                    source.expand_candidates(&seed.seed, 24)
+                })
+                .await
+            }
+            Ask::Genre(genre) => {
+                let search = CatalogSearchOpts {
+                    query: genre.to_string(),
+                    region: region.to_string(),
+                    limit: STARTER_GENRE_HITS,
+                    page: 1,
+                    sort: CatalogSearchSort::Popularity,
+                    field: Some(CatalogSearchField::Genre),
+                    language: None,
+                };
+                cached_or_call(library, &store, &mut cache, &key, || {
+                    source.search_catalog(&search)
+                })
+                .await
+            }
         };
-        let (answer, asked) = cached_or_call(library, &store, &mut cache, &key, || {
-            source.search_catalog(&search)
-        })
-        .await;
         calls += usize::from(asked);
         let Some(answer) = answer else { continue };
         complete &= answer.complete;
         let hits = answer.candidates;
         answered += usize::from(!hits.is_empty());
         for mut p in hits.into_iter().filter(|p| keep(p)) {
-            p.candidate.starter_genre = Some(genre.clone());
-            if p.candidate.origin.is_empty() {
-                p.candidate.origin = format!("{id} popular in {genre}");
+            match ask {
+                Ask::Seed(seed) => p.candidate = apply_seed_title(p.candidate, seed),
+                Ask::Genre(genre) => {
+                    p.candidate.starter_genre = Some(genre.to_string());
+                    if p.candidate.origin.is_empty() {
+                        p.candidate.origin = format!("{id} popular in {genre}");
+                    }
+                }
             }
             out.push(p);
         }
@@ -1461,6 +1593,84 @@ mod tests {
             titles(interleave_seeds(Vec::new(), vec![seed("w1"), seed("w2")])),
             vec!["w1", "w2"]
         );
+    }
+
+    /// A seed titled `title` with `categories`.
+    fn seed_with(title: &str, categories: Option<&str>) -> SeedTitle {
+        SeedTitle {
+            seed: bookclerk_source::ExpandSeed {
+                source: "libro".into(),
+                product_id: title.into(),
+                title: title.into(),
+                authors: None,
+                narrators: None,
+                series: None,
+                series_asin: None,
+                asin: None,
+                isbn: None,
+                region: "us".into(),
+            },
+            categories: categories.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn taste_genres_are_the_labels_most_seeds_carry() {
+        let seeds = [
+            seed_with("Dune", Some("Science Fiction, Space Opera, Fiction")),
+            seed_with("Emma", Some("Romance; Classics")),
+            seed_with("Hyperion", Some("science fiction > Space Opera")),
+            seed_with("Untagged", None),
+            seed_with(
+                "Persuasion",
+                Some("Classics, Classics, Romance, Audiobooks"),
+            ),
+            seed_with("Gideon", Some("Fantasy")),
+        ];
+        // Four labels are named by two seeds: the first three named are
+        // kept, in that order. The broad labels and the single mention of
+        // Fantasy drop out, and a label a seed repeats counts once for it.
+        assert_eq!(
+            taste_genres(&seeds),
+            ["Science Fiction", "Space Opera", "Romance"]
+        );
+        assert!(taste_genres(&[seed_with("Untagged", None)]).is_empty());
+    }
+
+    #[test]
+    fn a_store_is_asked_a_taste_genre_after_every_second_seed() {
+        let seeds: Vec<SeedTitle> = ["a", "b", "c", "d", "e"]
+            .iter()
+            .map(|title| seed_with(title, None))
+            .collect();
+        let taste = vec![String::from("Fantasy"), String::from("Horror")];
+        let starter = vec![String::from("fantasy"), String::from("Romance")];
+        let asks: Vec<String> = planned_asks(&seeds, &taste, &starter)
+            .into_iter()
+            .map(|ask| match ask {
+                Ask::Seed(seed) => seed.seed.title.clone(),
+                Ask::Genre(genre) => format!("genre {genre}"),
+            })
+            .collect();
+        // The starter genre the taste already names is not asked twice.
+        assert_eq!(
+            asks,
+            [
+                "a",
+                "b",
+                "genre Fantasy",
+                "c",
+                "d",
+                "genre Horror",
+                "e",
+                "genre Romance"
+            ]
+        );
+        // With fewer seeds than genres, the genres left follow the seeds.
+        let asks = planned_asks(&seeds[..1], &taste, &[]);
+        assert_eq!(asks.len(), 3);
+        assert!(matches!(asks[0], Ask::Seed(_)));
+        assert!(matches!(asks[2], Ask::Genre("Horror")));
     }
 
     #[test]

@@ -130,6 +130,9 @@ it.
   like this" read the index (see
   [Searching by meaning](../internals/discovery.md#searching-by-meaning));
   Discover reads the vectors of one ranking from the table.
+- Store search results are embedded when a page is ordered and kept only
+  in a bounded cache in memory, never in the table (see
+  [Ordering a page with its meaning](../internals/discovery.md#ordering-a-page-with-its-meaning)).
 - Vectors from different model revisions are never compared. Changing
   the model re-embeds in a background job while the old vectors keep
   serving (see

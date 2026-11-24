@@ -16,7 +16,8 @@ Discover shows rows of suggestions, each with its reason, for example:
   narrator you like.
 - **Because you like** a genre you finish books in.
 - **Similar to books you finish** and **Top picks for you**.
-- **Popular in** a genre, while Discover is still learning your taste.
+- **Popular in** a genre your books and wishes lean to (or a few common
+  genres while Discover is still learning your taste), ranked for you.
 - **Picked for you on** a store: the rest of your matches, each under the
   store where it costs you least, and **Chirp deals**.
 
@@ -61,6 +62,12 @@ another recording or from another store.
 
 Prices take the stores you have connected into account, so a member price
 counts where you are a member.
+
+When your library has an embedding model, results sorted by relevance are
+ordered by what you asked for as well as by the stores' own ranking, so a
+description such as "a slow mystery in a small town" brings the closest
+titles of each page forward. The suggestions under the search box keep the
+stores' order.
 
 ## Available through a branch
 
