@@ -992,8 +992,9 @@ async fn isbn_only_edition(
         return Ok(None);
     };
     // Only editions of the asked work are read, and two are enough to tell
-    // one from several, so a widely shared ISBN never makes a large read.
-    let of_work: Vec<String> = edition_identifiers::Entity::find()
+    // one from several, read in pages within the plugin's row limit, so a
+    // widely shared ISBN never makes a large read.
+    let select = edition_identifiers::Entity::find()
         .filter(edition_identifiers::Column::Scheme.eq(resolve::IdentifierScheme::Isbn.as_str()))
         .filter(edition_identifiers::Column::Value.eq(isbn))
         .filter(
@@ -1013,11 +1014,9 @@ async fn isbn_only_edition(
                     .to_owned(),
             ),
         )
-        .order_by_asc(edition_identifiers::Column::EditionId)
-        .limit(2)
-        .all(store.db())
-        .await
-        .map_err(LibraryError::Orm)?
+        .order_by_asc(edition_identifiers::Column::EditionId);
+    let of_work: Vec<String> = read_paged(store, select, Some(2))
+        .await?
         .into_iter()
         .map(|row| row.edition_id)
         .collect();

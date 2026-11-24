@@ -373,6 +373,93 @@ async fn an_isbn_only_answer_lands_on_the_edition_with_that_isbn() {
     );
 }
 
+/// An ISBN two editions of the asked work carry places no answer, read in
+/// pages of one row under a plugin that returns one row per reply.
+#[tokio::test]
+async fn an_isbn_on_two_editions_of_the_work_is_dropped() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, member) = library(dir.path()).await;
+    let mut caps = store.db_capabilities().clone();
+    caps.max_result_rows = 1;
+    let store = store.with_db_capabilities(caps);
+    store
+        .upsert_account(PLUGIN, "riley-acct", "us", None, true, "audible")
+        .await
+        .unwrap();
+    let identity = store
+        .ensure_local_portal_identity(member, None)
+        .await
+        .unwrap();
+    store
+        .link_account(identity.id, PLUGIN, "riley-acct", "test")
+        .await
+        .unwrap();
+    let record = store
+        .upsert_book(&NewBook {
+            isbn: Some("978-0-306-40615-7".into()),
+            ..book("riley-acct", "B0ASIN0001", "Title B0ASIN0001")
+        })
+        .await
+        .unwrap();
+    let work = store
+        .work_of_holding(&record.holding_id)
+        .await
+        .unwrap()
+        .unwrap();
+    // A second edition of the same work carrying the same ISBN.
+    let isbn_row = crate::entities::edition_identifiers::Entity::find()
+        .filter(crate::entities::edition_identifiers::Column::Scheme.eq("isbn"))
+        .one(store.db())
+        .await
+        .unwrap()
+        .unwrap();
+    let mut twin = crate::entities::editions::Entity::find_by_id(isbn_row.edition_id.clone())
+        .one(store.db())
+        .await
+        .unwrap()
+        .unwrap();
+    twin.id = "twin-edition".into();
+    crate::entities::editions::ActiveModel::from(twin)
+        .reset_all()
+        .insert(store.db())
+        .await
+        .unwrap();
+    let mut twin_isbn = isbn_row.clone();
+    twin_isbn.edition_id = "twin-edition".into();
+    crate::entities::edition_identifiers::ActiveModel::from(twin_isbn)
+        .reset_all()
+        .insert(store.db())
+        .await
+        .unwrap();
+
+    ask_branches(&store, std::slice::from_ref(&work))
+        .await
+        .unwrap();
+    pending_questions(&store, BRANCH).await.unwrap().unwrap();
+    let report = recorded(
+        &store,
+        &[LookupAnswer {
+            work: work.clone(),
+            editions: vec![LookupEdition {
+                store: "libro".into(),
+                marketplace: String::new(),
+                product_id: "9780306406157".into(),
+                availability: Availability::Owned,
+                formats: Vec::new(),
+                metadata: CatalogMetadata {
+                    title: "Title B0ASIN0001".into(),
+                    isbn: Some("9780306406157".into()),
+                    ..CatalogMetadata::default()
+                },
+            }],
+        }],
+        &[],
+    )
+    .await;
+    assert_eq!((report.listings, report.dropped), (0, 1));
+}
+
 #[tokio::test]
 async fn an_untrusted_node_gets_no_questions_and_records_nothing() {
     let _lock = master_key_test_lock_async().await;
