@@ -4894,6 +4894,35 @@ export interface CatalogSearchHit {
   purchase_hints?: PurchaseHint[];
   /** Branches of this library that currently list this title. */
   available_through?: BranchAvailability[];
+  /** Whether the library already holds this edition or another edition of the book. */
+  in_library?: LibraryCopy | null;
+}
+
+/**
+ * How the library holds a catalog search hit: `this_edition` when one of
+ * the hit's ASIN, ISBN or store products belongs to a held edition,
+ * `other_edition` when it holds another edition of the book (another
+ * recording, or this one from another store).
+ */
+export type LibraryCopy = "this_edition" | "other_edition";
+
+/**
+ * The line a search row shows for a title the library already holds.
+ *
+ * @param copy - The hit's `in_library` mark.
+ * @returns "In your library", "Another edition in your library", or `null`
+ *   when the library holds neither.
+ */
+export function inLibraryLabel(copy: LibraryCopy | null | undefined): string | null {
+  switch (copy) {
+    case "this_edition":
+      return "In your library";
+    case "other_edition":
+      return "Another edition in your library";
+    case null:
+    case undefined:
+      return null;
+  }
 }
 
 /**

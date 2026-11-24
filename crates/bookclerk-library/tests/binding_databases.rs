@@ -281,6 +281,37 @@ async fn binding_retry_token_replays_without_double_apply() {
 }
 
 #[tokio::test]
+async fn binding_accepts_a_retry_token_minted_over_the_sql_as_written() {
+    // The SDKs hash the request they send; the session desugars `ORDER BY`
+    // before it hashes. A token over the as-written request still names it.
+    let db = binding_db().await;
+    apply_plugin_tables(
+        &db,
+        &["CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY)"],
+    )
+    .await;
+    let read = || {
+        req(
+            "op-ordered",
+            vec![stmt("SELECT id FROM notes ORDER BY id", vec![])],
+        )
+    };
+    let mut retry = read();
+    retry.request_hash =
+        bookclerk_plugin_abi::canonical_execute_request_hash(&retry).expect("as-written hash");
+    run_binding(&db, retry)
+        .await
+        .expect("as-written retry token");
+
+    let mut forged = read();
+    forged.request_hash = "0".repeat(64);
+    let err = run_binding(&db, forged)
+        .await
+        .expect_err("a token naming another request is refused");
+    assert!(err.to_string().contains("requestHash"), "{err}");
+}
+
+#[tokio::test]
 async fn binding_ddl_hash_mismatch_does_not_change_schema() {
     let db = binding_db().await;
     apply_plugin_tables(

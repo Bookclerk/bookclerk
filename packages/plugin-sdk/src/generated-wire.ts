@@ -506,6 +506,7 @@ export interface EventPublisherReadResults {
  */
 export interface ScheduledHandlerScheduledParams {
   controller: T.ScheduledController;
+  cancel?: T.Cancellation | null;
 }
 
 /**
@@ -1366,6 +1367,7 @@ export interface RemoteLibrarySyncListeningResults {
  * @internal
  */
 export interface RemoteLibraryPollEventsParams {
+  params: T.EventPollParams;
 }
 
 /**
@@ -1375,6 +1377,24 @@ export interface RemoteLibraryPollEventsParams {
  */
 export interface RemoteLibraryPollEventsResults {
   result: T.EventPollReply;
+}
+
+/**
+ * Params envelope of `RemoteLibrary.ackEvents`.
+ *
+ * @internal
+ */
+export interface RemoteLibraryAckEventsParams {
+  params: T.EventAckParams;
+}
+
+/**
+ * Results envelope of `RemoteLibrary.ackEvents`.
+ *
+ * @internal
+ */
+export interface RemoteLibraryAckEventsResults {
+  result: T.EmptyReply;
 }
 
 /**
@@ -11275,6 +11295,46 @@ export const DeprovisionRequestCodec: StructCodec<T.DeprovisionRequest> = {
 };
 
 /**
+ * Wire codec for `EventPollParams` (1 data words, 0 pointers).
+ *
+ * @internal
+ */
+export const EventPollParamsCodec: StructCodec<T.EventPollParams> = {
+  dataWords: 1,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void caps;
+    s.setBool(0, v.ackFollows ?? false);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      ackFollows: s.getBool(0),
+    };
+  },
+};
+
+/**
+ * Wire codec for `EventAckParams` (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const EventAckParamsCodec: StructCodec<T.EventAckParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setTextList(0, v.externalUserIds ?? []);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      externalUserIds: s.getTextList(0),
+    };
+  },
+};
+
+/**
  * Wire codec for `DbValue` (2 data words, 1 pointers).
  *
  * @internal
@@ -13580,22 +13640,30 @@ export const EventPublisherReadResultsCodec: StructCodec<EventPublisherReadResul
 };
 
 /**
- * Wire codec for the `ScheduledHandler.scheduled` params envelope (0 data words, 1 pointers).
+ * Wire codec for the `ScheduledHandler.scheduled` params envelope (0 data words, 2 pointers).
  *
  * @internal
  */
 export const ScheduledHandlerScheduledParamsCodec: StructCodec<ScheduledHandlerScheduledParams> = {
   dataWords: 0,
-  pointerCount: 1,
+  pointerCount: 2,
   write(s, v, caps) {
     if (v.controller != null) {
       ScheduledControllerCodec.write(s.initStruct(0, 3, 2), v.controller, caps);
     }
+    if (v.cancel != null) {
+      s.setCap(1, caps.exportCap(v.cancel));
+    }
   },
   read(s, caps) {
-    return {
+    const out: ScheduledHandlerScheduledParams = {
       controller: ScheduledControllerCodec.read(s.getStruct(0, 3, 2), caps),
     };
+    const cancelValue = caps.importCap(s.getCapIndex(1)) as T.Cancellation;
+    if (!(cancelValue == null)) {
+      out.cancel = cancelValue;
+    }
+    return out;
   },
 };
 
@@ -15528,22 +15596,22 @@ export const RemoteLibrarySyncListeningResultsCodec: StructCodec<RemoteLibrarySy
 };
 
 /**
- * Wire codec for the `RemoteLibrary.pollEvents` params envelope (0 data words, 0 pointers).
+ * Wire codec for the `RemoteLibrary.pollEvents` params envelope (0 data words, 1 pointers).
  *
  * @internal
  */
 export const RemoteLibraryPollEventsParamsCodec: StructCodec<RemoteLibraryPollEventsParams> = {
   dataWords: 0,
-  pointerCount: 0,
+  pointerCount: 1,
   write(s, v, caps) {
-    void s;
-    void v;
-    void caps;
+    if (v.params != null) {
+      EventPollParamsCodec.write(s.initStruct(0, 1, 0), v.params, caps);
+    }
   },
   read(s, caps) {
-    void caps;
-    void s;
-    return {};
+    return {
+      params: EventPollParamsCodec.read(s.getStruct(0, 1, 0), caps),
+    };
   },
 };
 
@@ -15563,6 +15631,46 @@ export const RemoteLibraryPollEventsResultsCodec: StructCodec<RemoteLibraryPollE
   read(s, caps) {
     return {
       result: EventPollReplyCodec.read(s.getStruct(0, 1, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `RemoteLibrary.ackEvents` params envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const RemoteLibraryAckEventsParamsCodec: StructCodec<RemoteLibraryAckEventsParams> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      EventAckParamsCodec.write(s.initStruct(0, 0, 1), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: EventAckParamsCodec.read(s.getStruct(0, 0, 1), caps),
+    };
+  },
+};
+
+/**
+ * Wire codec for the `RemoteLibrary.ackEvents` results envelope (0 data words, 1 pointers).
+ *
+ * @internal
+ */
+export const RemoteLibraryAckEventsResultsCodec: StructCodec<RemoteLibraryAckEventsResults> = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps),
     };
   },
 };

@@ -55,14 +55,16 @@ async fn edition(store: &LibraryStore, asin: &str) -> String {
 
 /// How many `edition_updated` events name chapters.
 async fn chapter_events(store: &LibraryStore) -> usize {
-    domain_events::Entity::find()
-        .filter(domain_events::Column::EventType.eq("edition_updated"))
-        .all(store.db())
-        .await
-        .unwrap()
-        .into_iter()
-        .filter(|row| row.dedup_key.contains(":chapters:"))
-        .count()
+    crate::test_support::uncapped(
+        domain_events::Entity::find()
+            .filter(domain_events::Column::EventType.eq("edition_updated"))
+            .all(store.db()),
+    )
+    .await
+    .unwrap()
+    .into_iter()
+    .filter(|row| row.dedup_key.contains(":chapters:"))
+    .count()
 }
 
 /// A bare claim for the pure resolver.

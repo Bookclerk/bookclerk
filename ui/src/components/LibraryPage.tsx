@@ -12,7 +12,7 @@ import { SimilarWorks } from "@/components/SimilarWorks";
 import { WorkRow } from "@/components/WorkRow";
 import { JobsStrip } from "@/components/JobsStrip";
 import { WaveformThrobber } from "@/components/WaveformThrobber";
-import { WindowBooksSection } from "@/components/WindowBooksSection";
+import { ElsewhereNote, RemoteWorkRow } from "@/components/OtherLibraryRows";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -48,7 +48,9 @@ import {
   readFacetValues,
   readWorks,
 } from "@/lib/libraryWorks";
-import { canChangeBranchSharing } from "@/lib/join";
+import { canChangeBranchSharing, windowEntryIsYours, windowLibraries } from "@/lib/join";
+import { mergeLibraryList, type LibraryPlace } from "@/lib/libraryMerge";
+import { useWindowBooks } from "@/lib/useWindowBooks";
 import { isDesktopWindow } from "@/lib/desktop";
 import { useLiveRefresh } from "@/lib/live";
 import { playableEdition } from "@/lib/playTarget";
@@ -100,7 +102,10 @@ const selectClassName =
 /**
  * Library view — the library's works, searchable and filterable, with
  * acquire actions. Each book or podcast is one row however many editions
- * and accounts hold it.
+ * and accounts hold it. For the operator or an Owner, the books of every
+ * library this server is a branch of or holds a library card for are in
+ * the same list: a book this library has too gets an "Also in" line, and
+ * one only they hold gets a row of its own in the list's order.
  *
  * @param props - Logout, acquire permission, nav, optional role, and
  *   whether a patron elevated to the operator.
@@ -174,6 +179,9 @@ export function LibraryPage({
   // Bumped after each successful load so the scroll sentinel checks again
   // whether it is still in view (the list may not have grown).
   const [sentinelCheck, setSentinelCheck] = useState(0);
+  // Books of the libraries this server is a branch of or holds a card for.
+  const otherLibraries = useWindowBooks(canChangeBranchSharing(role));
+  const [place, setPlace] = useState<LibraryPlace>("all");
 
   useEffect(() => {
     // A search by meaning runs the model once per query, so it waits for
@@ -398,6 +406,46 @@ export function LibraryPage({
     [status, works],
   );
 
+  const otherHosts = useMemo(
+    () => (otherLibraries.view ? windowLibraries(otherLibraries.view) : []),
+    [otherLibraries.view],
+  );
+  const anyYoursElsewhere = useMemo(
+    () => (otherLibraries.view?.books ?? []).some(windowEntryIsYours),
+    [otherLibraries.view],
+  );
+  // A place that no longer exists (the library left) shows everything.
+  const shownPlace: LibraryPlace =
+    otherHosts.length === 0 ||
+    (place.startsWith("host:") && !otherHosts.includes(place.slice("host:".length))) ||
+    (place === "yours" && !anyYoursElsewhere)
+      ? "all"
+      : place;
+  const items = useMemo(
+    () =>
+      mergeLibraryList(works, otherLibraries.view?.books ?? [], {
+        sort: sortKey,
+        q: debouncedQ,
+        status: statusFilter,
+        media: mediaFilter,
+        facetApplied: appliedFacet !== "all",
+        place: shownPlace,
+        complete: loaded && nextCursor === null,
+      }),
+    [
+      works,
+      otherLibraries.view,
+      sortKey,
+      debouncedQ,
+      statusFilter,
+      mediaFilter,
+      appliedFacet,
+      shownPlace,
+      loaded,
+      nextCursor,
+    ],
+  );
+
   // The operator is no library user, so it has nothing to play as. In the
   // desktop window a patron who elevated keeps listening as themselves.
   const canListen = (role != null && role !== "operator") || (isDesktopWindow() && elevated);
@@ -545,7 +593,34 @@ export function LibraryPage({
                 </div>
               ) : null}
             </div>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+            <div
+              className={cn(
+                "grid grid-cols-1 gap-2 sm:grid-cols-3",
+                otherHosts.length > 0 ? "lg:grid-cols-6" : "lg:grid-cols-5",
+              )}
+            >
+              {otherHosts.length > 0 ? (
+                <select
+                  value={shownPlace}
+                  onChange={(e) => setPlace(e.target.value as LibraryPlace)}
+                  className={selectClassName}
+                  aria-label="Library"
+                >
+                  <option value="all">Every library</option>
+                  <option value="this">This library</option>
+                  <option value="other">Other libraries</option>
+                  {anyYoursElsewhere ? (
+                    <option value="yours">Yours in other libraries</option>
+                  ) : null}
+                  {otherHosts.length > 1
+                    ? otherHosts.map((host) => (
+                        <option key={host} value={`host:${host}`}>
+                          {host}
+                        </option>
+                      ))
+                    : null}
+                </select>
+              ) : null}
               <select
                 value={facet}
                 onChange={(e) => {
@@ -623,7 +698,7 @@ export function LibraryPage({
             </p>
           ) : (
             <p className="text-xs text-ink/70">
-              Showing {works.length} {works.length === 1 ? "title" : "titles"}
+              Showing {items.length} {items.length === 1 ? "title" : "titles"}
               {nextCursor !== null ? " · scroll for more" : ""}
               {loadingMore ? " · loading more…" : ""}
             </p>
@@ -633,33 +708,58 @@ export function LibraryPage({
 
       <div className="min-h-0 flex-1 overflow-auto">
         <main className={cn("w-full", pageWidthClass)}>
-          {/* On a window: the books the libraries it joined hold for its person. */}
-          {canChangeBranchSharing(role) ? <WindowBooksSection query={debouncedQ} /> : null}
           {/* Only on the unfiltered library: a search is for finding something else. */}
           {canListen && !debouncedQ && appliedFacet === "all" ? <ContinueListening /> : null}
           <div className="animate-[rowIn_500ms_ease-out] bg-card shadow-[inset_0_1px_0_rgba(11,53,83,0.06)]">
-            {works.length === 0 && !loaded ? (
+            {otherLibraries.stale ? (
+              <div
+                className="flex flex-wrap items-center gap-2 border-b border-ink/10 px-3 py-2 text-xs text-ink/70 sm:px-4"
+                role="status"
+              >
+                <span>
+                  Couldn&apos;t refresh the books of {otherHosts.join(", ")}; showing the last ones
+                  read.
+                </span>
+                <Button
+                  variant="secondary"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => void otherLibraries.reload()}
+                >
+                  Try again
+                </Button>
+              </div>
+            ) : null}
+            {items.length === 0 && !loaded ? (
               <div className="flex justify-center px-4 py-16" role="status">
                 <WaveformThrobber size="sm" />
                 <span className="sr-only">Loading the library…</span>
               </div>
-            ) : works.length === 0 && nextCursor === null ? (
+            ) : items.length === 0 && nextCursor === null ? (
               <p className="px-4 py-16 text-center text-sm text-ink/70">
                 No books match this view.
                 {canAcquire ? " Run a scan or adjust filters." : " Link a store under Accounts."}
               </p>
             ) : (
-              works.map((work) => (
-                <WorkRow
-                  key={work.id}
-                  work={work}
-                  busy={busyKey !== null}
-                  showAcquire={canAcquire}
-                  onOpen={setSelected}
-                  onPlay={canListen ? (w) => void onPlayWork(w) : undefined}
-                  onAcquire={(w) => void onAcquireWork(w)}
-                />
-              ))
+              items.map((item) =>
+                item.kind === "remote" ? (
+                  <RemoteWorkRow key={`elsewhere:${item.entry.key}`} entry={item.entry} />
+                ) : (
+                  <WorkRow
+                    key={item.work.id}
+                    work={item.work}
+                    busy={busyKey !== null}
+                    showAcquire={canAcquire}
+                    onOpen={setSelected}
+                    onPlay={canListen ? (w) => void onPlayWork(w) : undefined}
+                    onAcquire={(w) => void onAcquireWork(w)}
+                    note={
+                      item.elsewhere.length > 0 ? (
+                        <ElsewhereNote entries={item.elsewhere} />
+                      ) : undefined
+                    }
+                  />
+                ),
+              )
             )}
             <div ref={sentinelRef} className="h-8" aria-hidden />
           </div>

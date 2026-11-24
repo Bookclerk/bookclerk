@@ -129,11 +129,26 @@ impl LibraryStore {
             sanitize_unreadable_pending_on(&self.db, Some(self), &now_s).await?;
         }
         let limit = limit.max(1);
-        let rows = claim_candidates_query(resource_class, &now_s, after)
-            .limit(limit)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+        // Read in pages of at most one reply's rows, each starting after
+        // the last row of the one before.
+        let page = super::keyset::result_page(self);
+        let mut rows: Vec<jobs::Model> = Vec::new();
+        let mut cursor = after.cloned();
+        loop {
+            let read = u64::try_from(rows.len()).unwrap_or(u64::MAX);
+            let take = page.min(limit.saturating_sub(read));
+            let batch = claim_candidates_query(resource_class, &now_s, cursor.as_ref())
+                .limit(take)
+                .all(&self.db)
+                .await
+                .map_err(LibraryError::Orm)?;
+            let short = u64::try_from(batch.len()).unwrap_or(u64::MAX) < take;
+            cursor = batch.last().map(claim_cursor_of);
+            rows.extend(batch);
+            if short || cursor.is_none() || u64::try_from(rows.len()).unwrap_or(u64::MAX) >= limit {
+                break;
+            }
+        }
         let next = if u64::try_from(rows.len()).unwrap_or(u64::MAX) >= limit {
             rows.last().map(claim_cursor_of)
         } else {
@@ -239,14 +254,19 @@ impl LibraryStore {
         limit: u64,
     ) -> Result<(Vec<JobRecord>, Option<String>)> {
         let limit = limit.max(1);
-        let mut query = jobs::Entity::find()
-            .filter(jobs::Column::State.eq(JobState::Pending.as_str()))
-            .order_by_asc(jobs::Column::Id)
-            .limit(limit);
+        let mut query =
+            jobs::Entity::find().filter(jobs::Column::State.eq(JobState::Pending.as_str()));
         if let Some(after) = after_id {
             query = query.filter(jobs::Column::Id.gt(after.to_string()));
         }
-        let rows = query.all(&self.db).await.map_err(LibraryError::Orm)?;
+        let rows = super::keyset::read_keyset_limit(
+            self,
+            query,
+            &[jobs::Column::Id],
+            super::keyset::KeyOrder::Ascending,
+            limit,
+        )
+        .await?;
         let next = if u64::try_from(rows.len()).unwrap_or(u64::MAX) >= limit {
             rows.last().map(|row| row.id.clone())
         } else {
@@ -1272,12 +1292,14 @@ impl LibraryStore {
     /// Loads job rows, waiting out `SQLITE_BUSY` / `SQLITE_LOCKED` from a peer writer.
     async fn list_job_rows_through_lock(&self, limit: u64) -> Result<Vec<jobs::Model>> {
         super::lock_retry::retry_read_lock(|| async {
-            jobs::Entity::find()
-                .order_by_desc(jobs::Column::CreatedAt)
-                .limit(limit.max(1))
-                .all(&self.db)
-                .await
-                .map_err(LibraryError::from_db_err)
+            super::keyset::read_keyset_limit(
+                self,
+                jobs::Entity::find(),
+                &[jobs::Column::CreatedAt, jobs::Column::Id],
+                super::keyset::KeyOrder::Descending,
+                limit.max(1),
+            )
+            .await
         })
         .await
     }

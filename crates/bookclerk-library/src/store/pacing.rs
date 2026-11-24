@@ -466,10 +466,11 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let rows = crate::entities::account_downloads::Entity::find()
-                .all(&store.db)
-                .await
-                .unwrap();
+            let rows = crate::test_support::uncapped(
+                crate::entities::account_downloads::Entity::find().all(&store.db),
+            )
+            .await
+            .unwrap();
             assert_eq!(rows.len(), 3, "{profile:?}");
         }
     }

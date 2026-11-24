@@ -24,8 +24,6 @@ import {
   parseJoinCallback,
   windowEntryFormats,
   setLinkKeepCopies,
-  filterWindowBooks,
-  shownWindowBooks,
   windowEntryIsYours,
   windowEntryLibraries,
   windowEntryRequest,
@@ -526,33 +524,7 @@ describe("window view helpers", () => {
     ).toBe("not a url");
   });
 
-  it("narrows to the entries matching a Library search", () => {
-    const dune = {
-      key: "work:1",
-      editions: [
-        { ...edition("https://a.example", "audible", []), title: "Dune", authors: "Frank Herbert" },
-      ],
-    };
-    const emma = {
-      key: "work:2",
-      editions: [
-        {
-          ...edition("https://a.example", "audible", []),
-          title: "Emma",
-          series: "Classics",
-          subtitle: null,
-        },
-      ],
-    };
-    const books = [dune, emma];
-    expect(filterWindowBooks(books, "")).toEqual(books);
-    expect(filterWindowBooks(books, "  ")).toEqual(books);
-    expect(filterWindowBooks(books, "HERBERT")).toEqual([dune]);
-    expect(filterWindowBooks(books, " classics ")).toEqual([emma]);
-    expect(filterWindowBooks(books, "nothing")).toEqual([]);
-  });
-
-  it("marks and keeps the person's own books", () => {
+  it("marks the person's own books", () => {
     const theirs = {
       key: "work:1",
       editions: [
@@ -561,12 +533,8 @@ describe("window view helpers", () => {
       ],
     };
     const others = { key: "work:2", editions: [edition("https://a.example", "audible", [])] };
-    const books = [theirs, others];
     expect(windowEntryIsYours(theirs)).toBe(true);
     expect(windowEntryIsYours(others)).toBe(false);
-    expect(shownWindowBooks(books, "", false)).toEqual(books);
-    expect(shownWindowBooks(books, "", true)).toEqual([theirs]);
-    expect(shownWindowBooks(books, "nothing", true)).toEqual([]);
   });
 });
 

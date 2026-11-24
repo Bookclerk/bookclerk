@@ -6376,6 +6376,34 @@ var DeprovisionRequestCodec = {
     };
   }
 };
+var EventPollParamsCodec = {
+  dataWords: 1,
+  pointerCount: 0,
+  write(s, v, caps) {
+    void caps;
+    s.setBool(0, v.ackFollows ?? false);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      ackFollows: s.getBool(0)
+    };
+  }
+};
+var EventAckParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    void caps;
+    s.setTextList(0, v.externalUserIds ?? []);
+  },
+  read(s, caps) {
+    void caps;
+    return {
+      externalUserIds: s.getTextList(0)
+    };
+  }
+};
 var DbValueCodec = {
   dataWords: 2,
   pointerCount: 1,
@@ -7885,16 +7913,24 @@ var EventConsumerEventResultsCodec = {
 };
 var ScheduledHandlerScheduledParamsCodec = {
   dataWords: 0,
-  pointerCount: 1,
+  pointerCount: 2,
   write(s, v, caps) {
     if (v.controller != null) {
       ScheduledControllerCodec.write(s.initStruct(0, 3, 2), v.controller, caps);
     }
+    if (v.cancel != null) {
+      s.setCap(1, caps.exportCap(v.cancel));
+    }
   },
   read(s, caps) {
-    return {
+    const out = {
       controller: ScheduledControllerCodec.read(s.getStruct(0, 3, 2), caps)
     };
+    const cancelValue = caps.importCap(s.getCapIndex(1));
+    if (!(cancelValue == null)) {
+      out.cancel = cancelValue;
+    }
+    return out;
   }
 };
 var ScheduledHandlerScheduledResultsCodec = {
@@ -8781,16 +8817,16 @@ var RemoteLibrarySyncListeningResultsCodec = {
 };
 var RemoteLibraryPollEventsParamsCodec = {
   dataWords: 0,
-  pointerCount: 0,
+  pointerCount: 1,
   write(s, v, caps) {
-    void s;
-    void v;
-    void caps;
+    if (v.params != null) {
+      EventPollParamsCodec.write(s.initStruct(0, 1, 0), v.params, caps);
+    }
   },
   read(s, caps) {
-    void caps;
-    void s;
-    return {};
+    return {
+      params: EventPollParamsCodec.read(s.getStruct(0, 1, 0), caps)
+    };
   }
 };
 var RemoteLibraryPollEventsResultsCodec = {
@@ -8804,6 +8840,34 @@ var RemoteLibraryPollEventsResultsCodec = {
   read(s, caps) {
     return {
       result: EventPollReplyCodec.read(s.getStruct(0, 1, 1), caps)
+    };
+  }
+};
+var RemoteLibraryAckEventsParamsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.params != null) {
+      EventAckParamsCodec.write(s.initStruct(0, 0, 1), v.params, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      params: EventAckParamsCodec.read(s.getStruct(0, 0, 1), caps)
+    };
+  }
+};
+var RemoteLibraryAckEventsResultsCodec = {
+  dataWords: 0,
+  pointerCount: 1,
+  write(s, v, caps) {
+    if (v.result != null) {
+      EmptyReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+    }
+  },
+  read(s, caps) {
+    return {
+      result: EmptyReplyCodec.read(s.getStruct(0, 1, 1), caps)
     };
   }
 };
@@ -11750,7 +11814,8 @@ var METHODS = {
     diagnose: withoutParams("remoteLibrary", "diagnose", RemoteLibraryDiagnoseParamsCodec, RemoteLibraryDiagnoseResultsCodec, okLines),
     scanLibrary: withParams("remoteLibrary", "scanLibrary", RemoteLibraryScanLibraryParamsCodec, RemoteLibraryScanLibraryResultsCodec, okEmpty),
     syncListening: withoutParams("remoteLibrary", "syncListening", RemoteLibrarySyncListeningParamsCodec, RemoteLibrarySyncListeningResultsCodec, (value) => okValue({ items: asList(value) })),
-    pollEvents: withoutParams("remoteLibrary", "pollEvents", RemoteLibraryPollEventsParamsCodec, RemoteLibraryPollEventsResultsCodec, (value) => okValue({ users: asList(value) }))
+    pollEvents: withParams("remoteLibrary", "pollEvents", RemoteLibraryPollEventsParamsCodec, RemoteLibraryPollEventsResultsCodec, (value) => okValue({ users: asList(value) })),
+    ackEvents: withParams("remoteLibrary", "ackEvents", RemoteLibraryAckEventsParamsCodec, RemoteLibraryAckEventsResultsCodec, okEmpty)
   },
   EventConsumer: {
     event: spec({
@@ -11780,7 +11845,7 @@ var METHODS = {
       params: ScheduledHandlerScheduledParamsCodec,
       results: ScheduledHandlerScheduledResultsCodec,
       stub: "author",
-      call: (s, p, cx) => s.bookclerkScheduled(cx.host.bindContext(cx.ctx), p.controller ?? {}),
+      call: (s, p, cx) => s.bookclerkScheduled(cx.host.bindContext(cx.ctx), p.controller ?? {}, p.cancel ?? null),
       ok: okEmpty
     })
   },
@@ -13629,15 +13694,16 @@ var BookclerkEntrypoint = class extends WorkerEntrypoint {
    *
    * @param context - Granted bindings for this invocation.
    * @param wire - Wire `ScheduledController`.
+   * @param cancel - Host cancellation watch for this fire, when the host sent one.
    * @returns Resolves when the author's handler completes.
    * @internal
    */
-  async bookclerkScheduled(context, wire) {
+  async bookclerkScheduled(context, wire, cancel) {
     if (typeof this.scheduled !== "function") {
       throw unsupported("scheduled");
     }
     applyInvocationEnv(this, context);
-    await this.scheduled(scheduledControllerOf(wire));
+    await this.scheduled(scheduledControllerOf(wire, cancel));
   }
   /**
    * Adapter dispatch for `SocketHandler.message`.
@@ -14158,7 +14224,8 @@ var REMOTE_LIBRARY_METHODS = Object.freeze([
   "stop",
   "scanLibrary",
   "syncListening",
-  "pollEvents"
+  "pollEvents",
+  "ackEvents"
 ]);
 var RemoteLibraryEntrypoint = class extends NamedEntrypoint {
   static bookclerkMethods = REMOTE_LIBRARY_METHODS;
@@ -14212,12 +14279,28 @@ var RemoteLibraryEntrypoint = class extends NamedEntrypoint {
     return Promise.reject(unsupported("syncListening"));
   }
   /**
-   * Drains external users observed since the last poll.
+   * External users observed and not yet acknowledged. When
+   * `params.ackFollows` is true the host calls {@link ackEvents} with every
+   * user it passes on: keep returning a user until then, so a lost reply
+   * does not lose it. When it is false (a host that predates `ackEvents`),
+   * a returned user counts as delivered.
    *
-   * @returns Newly observed users.
+   * @param _params - Whether the host acknowledges what it receives.
+   * @returns Users the host has not acknowledged.
    */
-  pollEvents() {
+  pollEvents(_params) {
     return Promise.reject(unsupported("pollEvents"));
+  }
+  /**
+   * Acknowledges users a {@link pollEvents} reply handed over: stop
+   * returning them. The default does nothing, which suits a plugin that
+   * treats every returned user as delivered.
+   *
+   * @param _params - The acknowledged `externalUserId`s.
+   * @returns Resolves once recorded.
+   */
+  ackEvents(_params) {
+    return Promise.resolve();
   }
 };
 var ADAPTER_SESSIONS = /* @__PURE__ */ new Map();
@@ -15615,14 +15698,20 @@ var TRIGGER_FAMILIES = Object.freeze({
   socketHandler: "socketHandler",
   webhookHandler: "webhookHandler"
 });
-function scheduledControllerOf(wire) {
+function scheduledControllerOf(wire, cancel) {
   const w = wire && typeof wire === "object" ? wire : {};
+  const abort = new AbortController();
+  if (cancel && typeof cancel.wait === "function") {
+    Promise.resolve().then(() => cancel.wait()).then(() => abort.abort(PluginError.fromWire("cancelled", "cron fire cancelled by host")), () => {
+    });
+  }
   return Object.freeze({
     cron: String(w.cron ?? ""),
     scheduledTime: Number(w.scheduledTime ?? 0) || 0,
     fireId: String(w.fireId ?? ""),
     attempt: Number(w.attempt ?? 0) || 0,
-    deadlineUnixMs: Number(w.deadlineUnixMs ?? 0) || 0
+    deadlineUnixMs: Number(w.deadlineUnixMs ?? 0) || 0,
+    signal: abort.signal
   });
 }
 function allowedEntrypointFamilies(capabilities, requested) {

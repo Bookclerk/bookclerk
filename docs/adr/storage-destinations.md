@@ -124,6 +124,14 @@ back (`outputs`), and whether it can remove what it created
 - Provisioning runs under the instance's normal network grant. There is no
   provisioning-only egress: the hosts a setup calls are declared in
   `[capabilities.network]` and approved like any other.
+- A database plugin has no library instance: it must work before the
+  library opens, so it is configured in `config.toml`. Its setup runs from
+  the CLI (`bookclerk config database setup d1`) with the configured
+  settings and no secrets. The host writes the returned ids to
+  `config.toml` and seals the returned token with the data-encryption key
+  in `database.credential`, kept in the same store as the master key (the
+  file, the OS keychain or `systemd-creds`), never in the environment or
+  the database it opens.
 
 ## Consequences
 

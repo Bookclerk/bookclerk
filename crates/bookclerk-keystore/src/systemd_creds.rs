@@ -1,4 +1,4 @@
-//! A master-key store sealed with `systemd-creds`, for headless Linux.
+//! A key store sealed with `systemd-creds`, for headless Linux.
 //!
 //! A server usually has no Secret Service, so the OS keychain can't hold its
 //! key. `systemd-creds` can instead seal the key to the machine (its TPM 2.0
@@ -17,6 +17,12 @@
 //! [`CREDENTIAL_NAME`]). That works on any systemd with credentials. The
 //! unit's copy is read from `$CREDENTIALS_DIRECTORY` when no sealed file of
 //! this install's own exists.
+//!
+//! A hosted database's DEK-sealed API credential uses the same store with
+//! its own names ([`ItemKind::DatabaseCredential`]): files
+//! `database-credential-<item>.cred` sealed under
+//! [`DATABASE_CREDENTIAL_NAME`], so neither kind's unit copy or sealed file
+//! is ever read as the other.
 
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -26,12 +32,18 @@ use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
 
 use crate::{
-    check_len, ErrorStore, KeychainItemId, KeystoreError, KeystoreErrorKind, Result, Vault,
+    check_len, ErrorStore, ItemKind, KeychainItemId, KeystoreError, KeystoreErrorKind, Result,
+    Vault,
 };
 
 /// The credential name the key is sealed under, and the name a service
 /// unit hands it in as (`LoadCredentialEncrypted=bookclerk-master-key`).
 pub const CREDENTIAL_NAME: &str = "bookclerk-master-key";
+
+/// The credential name a database credential is sealed under, and the name
+/// a service unit hands one in as
+/// (`LoadCredentialEncrypted=bookclerk-database-credential`).
+pub const DATABASE_CREDENTIAL_NAME: &str = "bookclerk-database-credential";
 
 /// Where the system's `systemd-creds` is looked for, in order. Only fixed
 /// paths: a `PATH` the daemon inherited never chooses the tool that sees
@@ -45,10 +57,11 @@ const RUN_TIMEOUT: Duration = Duration::from_secs(60);
 /// The longest stderr excerpt kept in an error message, in characters.
 const STDERR_EXCERPT_CHARS: usize = 300;
 
-/// A master-key store that seals items with `systemd-creds`.
+/// A key store that seals items with `systemd-creds`.
 ///
 /// Items live in one directory (the files directory) as
-/// `master-key-<item>.cred`. See the module docs.
+/// `master-key-<item>.cred` (or `database-credential-<item>.cred` for
+/// [`ItemKind::DatabaseCredential`]). See the module docs.
 #[derive(Debug, Clone)]
 pub struct SystemdCredsVault {
     /// The directory sealed items are written to.
@@ -58,6 +71,9 @@ pub struct SystemdCredsVault {
     /// The service's credentials directory (`$CREDENTIALS_DIRECTORY`), when
     /// systemd started the process with credentials.
     credentials_dir: Option<PathBuf>,
+    /// The kind of item this store seals, which names its files and its
+    /// credential.
+    kind: ItemKind,
 }
 
 impl SystemdCredsVault {
@@ -97,17 +113,32 @@ impl SystemdCredsVault {
             dir: dir.into(),
             program,
             credentials_dir,
+            kind: ItemKind::MasterKey,
         }
     }
 
-    /// Where `item` is sealed: `<dir>/master-key-<item>.cred`.
+    /// The same store, sealing items of `kind` (its own file prefix and
+    /// credential name) instead of master-key items.
     ///
     /// # Arguments
     ///
-    /// * `item` - the item id `master.key` names.
+    /// * `kind` - the kind of item to seal.
+    #[must_use]
+    pub fn for_kind(mut self, kind: ItemKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// Where `item` is sealed: `<dir>/<prefix>-<item>.cred`, the prefix
+    /// being `master-key` or `database-credential` ([`ItemKind::file_prefix`]).
+    ///
+    /// # Arguments
+    ///
+    /// * `item` - the item id the pointer file names.
     #[must_use]
     pub fn sealed_path(&self, item: KeychainItemId) -> PathBuf {
-        self.dir.join(format!("master-key-{item}.cred"))
+        self.dir
+            .join(format!("{}-{item}.cred", self.kind.file_prefix()))
     }
 
     /// The copy the service unit handed in, when there is one.
@@ -115,7 +146,7 @@ impl SystemdCredsVault {
     pub fn unit_credential(&self) -> Option<PathBuf> {
         self.credentials_dir
             .as_ref()
-            .map(|dir| dir.join(CREDENTIAL_NAME))
+            .map(|dir| dir.join(self.kind.credential_name()))
             .filter(|path| path.is_file())
     }
 
@@ -140,7 +171,7 @@ impl SystemdCredsVault {
     /// Unseals the credential at `sealed`.
     fn decrypt(&self, sealed: &Path) -> Result<Zeroizing<Vec<u8>>> {
         let input = sealed.as_os_str().to_owned();
-        let name = format!("--name={CREDENTIAL_NAME}");
+        let name = format!("--name={}", self.kind.credential_name());
         let out = self.run(
             &[
                 "--user".as_ref(),
@@ -163,7 +194,7 @@ impl SystemdCredsVault {
 
     /// Seals `bytes`, returning the credential's bytes.
     fn encrypt(&self, bytes: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
-        let name = format!("--name={CREDENTIAL_NAME}");
+        let name = format!("--name={}", self.kind.credential_name());
         self.run(
             &[
                 "--user".as_ref(),
@@ -346,8 +377,9 @@ impl SystemdCredsVault {
         Err(KeystoreError::new(
             KeystoreErrorKind::NotFound,
             format!(
-                "neither {} nor a unit credential named {CREDENTIAL_NAME} exists",
-                sealed.display()
+                "neither {} nor a unit credential named {} exists",
+                sealed.display(),
+                self.kind.credential_name()
             ),
         ))
     }
@@ -368,7 +400,9 @@ impl SystemdCredsVault {
         // Staged and read back before it replaces anything: a credential
         // that won't unseal here is no home for the key, and an existing
         // sealed copy (a re-wrap) must survive a failed attempt.
-        let staged = self.dir.join(format!("master-key-{item}.cred.staged"));
+        let staged = self
+            .dir
+            .join(format!("{}-{item}.cred.staged", self.kind.file_prefix()));
         let reject = |path: &Path, err: std::io::Error| {
             KeystoreError::new(
                 KeystoreErrorKind::Rejected,
@@ -611,6 +645,38 @@ esac
         let item = KeychainItemId::random();
         vault.set(item, b"BCK1-own").unwrap();
         assert_eq!(vault.get(item).unwrap().as_slice(), b"BCK1-own");
+    }
+
+    #[test]
+    fn a_database_credential_has_its_own_file_and_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let creds = tempfile::tempdir().unwrap();
+        // The unit hands in a master key; a database credential must never
+        // read it.
+        std::fs::write(creds.path().join(CREDENTIAL_NAME), b"BCK2-from-unit").unwrap();
+        let program = script(
+            dir.path(),
+            "systemd-creds",
+            &FAKE.replace("bookclerk-master-key", DATABASE_CREDENTIAL_NAME),
+        );
+        let vault = SystemdCredsVault::with_program(
+            dir.path(),
+            Some(program),
+            Some(creds.path().to_path_buf()),
+        )
+        .for_kind(ItemKind::DatabaseCredential);
+        let item = KeychainItemId::random();
+        assert_eq!(
+            vault.get(item).map(|_| ()).map_err(|e| e.kind),
+            Err(KeystoreErrorKind::NotFound)
+        );
+        vault.set(item, b"sealed-token").unwrap();
+        let sealed = dir.path().join(format!("database-credential-{item}.cred"));
+        assert_eq!(vault.sealed_path(item), sealed);
+        assert!(sealed.is_file());
+        assert_eq!(vault.get(item).unwrap().as_slice(), b"sealed-token");
+        vault.delete(item).unwrap();
+        assert!(!sealed.exists());
     }
 
     #[test]

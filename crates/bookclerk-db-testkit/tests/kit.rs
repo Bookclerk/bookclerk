@@ -4,7 +4,9 @@
 // Test code: unwrap/expect are fine here.
 #![allow(clippy::unwrap_used)]
 
-use bookclerk_db_testkit::{fixtures, Profile, TestDatabase, INTERACTIVE_TRANSACTIONS_REFUSED};
+use bookclerk_db_testkit::{
+    fixtures, uncapped, Profile, TestDatabase, INTERACTIVE_TRANSACTIONS_REFUSED,
+};
 use bookclerk_plugin_abi::{
     DbPlanStatementKind, DbResultSelection, DbValue, ExecuteRequest, PluginErrorCode,
     TypedDbStatement, HOST_MIN_STATEMENTS,
@@ -58,16 +60,15 @@ fn insert_candidate(key: &str, json: &str) -> TypedDbStatement {
     )
 }
 
-/// Feed keys present, through the connection.
+/// Feed keys present, through the connection (the test's own look, past
+/// the profile's result caps).
 async fn candidate_keys(db: &TestDatabase) -> Vec<String> {
-    let rows = db
-        .connection()
-        .query_all_raw(Statement::from_string(
-            sea_orm::DbBackend::Sqlite,
-            "SELECT subject_key FROM discover_feeds ORDER BY subject_key",
-        ))
-        .await
-        .unwrap();
+    let rows = uncapped(db.connection().query_all_raw(Statement::from_string(
+        sea_orm::DbBackend::Sqlite,
+        "SELECT subject_key FROM discover_feeds ORDER BY subject_key",
+    )))
+    .await
+    .unwrap();
     rows.iter()
         .map(|row| row.try_get::<String>("", "subject_key").unwrap())
         .collect()

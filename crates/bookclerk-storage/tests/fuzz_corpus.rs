@@ -351,12 +351,16 @@ fn cloudflare_seed_reads(name: &str) -> bool {
         .join(name);
     let data = std::fs::read(&path).expect("read seed");
     let (&selector, rest) = data.split_first().expect("non-empty seed");
-    match selector % 6 {
+    match selector % 10 {
         0 => api::parse_envelope(rest).is_ok(),
         1 => api::parse_accounts(rest).is_ok(),
         2 => api::parse_bucket_created(rest).is_ok(),
         3 => api::find_permission_group(rest, api::BUCKET_ITEM_WRITE).is_ok_and(|g| g.is_some()),
         4 => api::parse_minted_token(rest).is_ok(),
+        6 => api::find_d1_database(rest, "books").is_ok_and(|d| d.is_some()),
+        7 => api::parse_d1_created(rest).is_ok(),
+        8 => api::check_d1_database_name(std::str::from_utf8(rest).expect("utf-8")).is_ok(),
+        9 => api::find_permission_group(rest, api::D1_WRITE).is_ok_and(|g| g.is_some()),
         _ => api::check_bucket_name(std::str::from_utf8(rest).expect("utf-8")).is_ok(),
     }
 }
@@ -372,6 +376,10 @@ fn cloudflare_api_seeds_mean_what_they_say() {
         "groups_found",
         "token_minted",
         "bucket_name_ok",
+        "d1_list_found",
+        "d1_created",
+        "d1_name_ok",
+        "d1_group_found",
     ] {
         assert!(cloudflare_seed_reads(name), "{name} reads");
     }
@@ -388,6 +396,12 @@ fn cloudflare_api_seeds_mean_what_they_say() {
         "bucket_name_upper",
         "bucket_name_hyphen_end",
         "bucket_name_short",
+        "d1_list_missing",
+        "d1_list_bad_uuid",
+        "d1_created_no_uuid",
+        "d1_create_limit",
+        "d1_name_upper",
+        "d1_name_underscore_start",
     ] {
         assert!(!cloudflare_seed_reads(name), "{name} is refused");
     }

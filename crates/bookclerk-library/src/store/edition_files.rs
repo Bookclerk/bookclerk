@@ -1378,19 +1378,22 @@ impl LibraryStore {
     /// Returns an error when the read fails.
     pub async fn edition_audio_files(&self, edition_id: &str) -> Result<Vec<ProbedAudioFile>> {
         let owner = FileOwner::Edition(edition_id.to_owned());
-        let rows = edition_files::Entity::find()
-            .filter(edition_files::Column::OwnerKind.eq(owner.kind()))
-            .filter(edition_files::Column::OwnerId.eq(owner.id()))
-            .filter(edition_files::Column::Role.is_in([
-                FileRole::Audio.as_str(),
-                FileRole::Part.as_str(),
-                FileRole::Chapter.as_str(),
-            ]))
-            .order_by_asc(edition_files::Column::Destination)
-            .order_by_asc(edition_files::Column::StorageKey)
-            .all(self.db())
-            .await
-            .map_err(LibraryError::Orm)?;
+        let rows = crate::store::keyset::read_keyset(
+            self,
+            edition_files::Entity::find()
+                .filter(edition_files::Column::OwnerKind.eq(owner.kind()))
+                .filter(edition_files::Column::OwnerId.eq(owner.id()))
+                .filter(edition_files::Column::Role.is_in([
+                    FileRole::Audio.as_str(),
+                    FileRole::Part.as_str(),
+                    FileRole::Chapter.as_str(),
+                ])),
+            &[
+                edition_files::Column::Destination,
+                edition_files::Column::StorageKey,
+            ],
+        )
+        .await?;
         Ok(rows.into_iter().map(probed_audio_file).collect())
     }
 
@@ -1623,19 +1626,20 @@ impl LibraryStore {
     ///
     /// Returns an error when the read fails.
     pub async fn audio_keys_of(&self, destination: &str, owner: &FileOwner) -> Result<Vec<String>> {
-        let rows = edition_files::Entity::find()
-            .filter(edition_files::Column::Destination.eq(destination))
-            .filter(edition_files::Column::OwnerKind.eq(owner.kind()))
-            .filter(edition_files::Column::OwnerId.eq(owner.id()))
-            .filter(edition_files::Column::Role.is_in([
-                FileRole::Audio.as_str(),
-                FileRole::Part.as_str(),
-                FileRole::Chapter.as_str(),
-            ]))
-            .order_by_asc(edition_files::Column::StorageKey)
-            .all(self.db())
-            .await
-            .map_err(LibraryError::Orm)?;
+        let rows = crate::store::keyset::read_keyset(
+            self,
+            edition_files::Entity::find()
+                .filter(edition_files::Column::Destination.eq(destination))
+                .filter(edition_files::Column::OwnerKind.eq(owner.kind()))
+                .filter(edition_files::Column::OwnerId.eq(owner.id()))
+                .filter(edition_files::Column::Role.is_in([
+                    FileRole::Audio.as_str(),
+                    FileRole::Part.as_str(),
+                    FileRole::Chapter.as_str(),
+                ])),
+            &[edition_files::Column::StorageKey],
+        )
+        .await?;
         Ok(rows.into_iter().map(|row| row.storage_key).collect())
     }
 

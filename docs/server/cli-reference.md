@@ -1411,6 +1411,7 @@ bookclerk config database [OPTIONS] <COMMAND>
 Commands:
 
 - [`bookclerk config database migrate`](#bookclerk-config-database-migrate): Copy library data from one `[database].plugin` backend to another
+- [`bookclerk config database setup`](#bookclerk-config-database-setup): Guided setup for a hosted database: reads a Cloudflare API token from stdin (never argv), finds or creates the D1 database, mints a token limited to D1, seals it with the library's key in the master key's store (the file, the OS keychain or systemd-creds), and writes `[database.d1]` to config.toml
 
 #### `bookclerk config database migrate`
 
@@ -1429,6 +1430,26 @@ Options:
 - `--dry-run`: Report row counts only; do not write to the destination
 - `--force`: Allow copying into a destination that already has library rows
 - `--apply`: After a successful migrate, set `[database].plugin` to `--to` and write config.toml
+
+#### `bookclerk config database setup`
+
+Guided setup for a hosted database: reads a Cloudflare API token from stdin (never argv), finds or creates the D1 database, mints a token limited to D1, seals it with the library's key in the master key's store (the file, the OS keychain or systemd-creds), and writes `[database.d1]` to config.toml.
+
+The pasted token is not stored. `[database].plugin` is not changed: move the library with `config database migrate --to d1 --apply`.
+
+```text
+bookclerk config database setup [OPTIONS] <BACKEND>
+```
+
+Arguments:
+
+- `<BACKEND>`: The hosted database to set up (one of `d1`)
+
+Options:
+
+- `--account-id <ACCOUNT_ID>`: Cloudflare account id; found from the token when it sees only one
+- `--database-name <DATABASE_NAME>`: D1 database name (default `bookclerk`); created when missing
+- `--jurisdiction <JURISDICTION>`: Where a new database keeps its data: `default`, `eu` or `fedramp`
 
 ## `bookclerk export`
 

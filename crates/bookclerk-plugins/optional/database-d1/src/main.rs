@@ -8,11 +8,13 @@ use bookclerk_plugin_abi::db::{connect_params_from_bindings, DbConnectParams};
 use bookclerk_plugin_abi::IsolationReq;
 use bookclerk_plugin_abi::{AdapterExecuteRequest, AdapterTransaction, HostAdapterDatabaseSession};
 use bookclerk_plugin_database_d1::adapter::D1Session;
+use bookclerk_plugin_database_d1::provision::D1Provisioning;
 use bookclerk_plugin_sdk::manifest_capabilities;
 use bookclerk_plugin_sdk::{serve, ExecuteReply, PluginError};
 use bookclerk_plugin_sdk::{
     AdapterDatabaseSession, BindingValues, Bindings, Database, Entrypoints, Invocation,
-    PluginDescribe, PluginWorker, ScalarLimits, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+    InvocationPurpose, PluginDescribe, PluginWorker, ScalarLimits, FEATURE_SCALAR_LIMITS,
+    PRODUCT_API_VERSION,
 };
 
 async fn connect_from_bindings(values: &BindingValues) -> Result<(), PluginError> {
@@ -123,9 +125,27 @@ impl PluginWorker for D1Root {
 
     async fn open(
         &self,
-        _invocation: Invocation,
+        invocation: Invocation,
         bindings: Bindings,
     ) -> Result<Entrypoints, PluginError> {
+        match invocation.purpose {
+            // `bookclerk database setup d1`: no database is open yet; serve
+            // only the guided setup, from the host's current settings.
+            InvocationPurpose::Provision => {
+                let config = bindings
+                    .config
+                    .json_value()
+                    .unwrap_or(serde_json::Value::Null);
+                return Ok(Entrypoints {
+                    provisioning: Some(Box::new(D1Provisioning::new(
+                        bookclerk_plugin_database_d1::provision::API_BASE,
+                        config,
+                    )?)),
+                    ..Entrypoints::default()
+                });
+            }
+            InvocationPurpose::Serve => {}
+        }
         let values = bindings.values();
         let admin = d1_admin_from_values(&values)?;
         let database: Box<dyn Database> = if let Some(proxy) = binding_from_values(&values).await? {

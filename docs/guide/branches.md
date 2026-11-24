@@ -118,14 +118,17 @@ download anything extra for this.
 
 ## See the books of the libraries you joined
 
-**Library** shows **Books in other libraries**: every book in each
-library your server joined, as you would see it on that library's own
-Library page, merged into one list.
+**Library** lists every book in each library your server joined
+together with your own, as one list.
 
-- Books on your own store accounts there are marked **Yours**, and
-  **Only yours** shows just those.
-- The same book in two libraries shows once, with both libraries named.
-- The search box on **Library** narrows this list too.
+- A book you have too stays one row, with **Also in** naming the other
+  libraries, and **Yours there** when it is on your own store accounts
+  there.
+- A book only other libraries have gets its own row, saying where it is,
+  marked **Yours** when it is on your own store accounts there.
+- The search box and the format filter narrow these books too. The
+  **Library** filter shows just this library, just the other libraries,
+  just your books in them, or one library.
 - The list is refreshed when your server connects and every 30 minutes.
   If a refresh fails, the last list stays with a **Try again** button.
 
@@ -163,9 +166,9 @@ the library's books, yours marked, and never takes its work.
    account there, and approve the card.
 
 The library sends you back to your server, which says **Signed in to**
-*library*. Within a minute, **Library** shows that library's books under
-**Books in other libraries**, yours marked, beside the books of any library
-your server is a branch of.
+*library*. Within a minute, **Library** lists that library's books with
+your own, yours marked, as it does the books of any library your server is
+a branch of.
 
 To stop, choose **Sign out** beside the library in the same list. Your
 server forgets the card and the books, and asks the library to end the

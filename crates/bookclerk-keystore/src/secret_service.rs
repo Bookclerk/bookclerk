@@ -17,7 +17,7 @@ use futures::StreamExt as _;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
 use zeroize::Zeroizing;
 
-use crate::{KeychainItemId, KeystoreError, KeystoreErrorKind, Result, KEYCHAIN_SERVICE};
+use crate::{ItemKind, KeychainItemId, KeystoreError, KeystoreErrorKind, Result};
 
 /// Bus name of the Secret Service.
 const DEST: &str = "org.freedesktop.secrets";
@@ -55,24 +55,24 @@ enum Bus {
 }
 
 /// Reads an item's bytes.
-pub(crate) fn get(item: KeychainItemId) -> Result<Zeroizing<Vec<u8>>> {
-    get_on(Bus::Session, item)
+pub(crate) fn get(kind: ItemKind, item: KeychainItemId) -> Result<Zeroizing<Vec<u8>>> {
+    get_on(Bus::Session, kind, item)
 }
 
 /// Creates or replaces an item.
-pub(crate) fn set(item: KeychainItemId, bytes: &[u8]) -> Result<()> {
-    set_on(Bus::Session, item, bytes)
+pub(crate) fn set(kind: ItemKind, item: KeychainItemId, bytes: &[u8]) -> Result<()> {
+    set_on(Bus::Session, kind, item, bytes)
 }
 
 /// Deletes an item; a missing item is not an error.
-pub(crate) fn delete(item: KeychainItemId) -> Result<()> {
-    delete_on(Bus::Session, item)
+pub(crate) fn delete(kind: ItemKind, item: KeychainItemId) -> Result<()> {
+    delete_on(Bus::Session, kind, item)
 }
 
 /// Reads an item's bytes over `bus`.
-fn get_on(bus: Bus, item: KeychainItemId) -> Result<Zeroizing<Vec<u8>>> {
+fn get_on(bus: Bus, kind: ItemKind, item: KeychainItemId) -> Result<Zeroizing<Vec<u8>>> {
     run(bus, move |client| async move {
-        let path = client.find(item).await?.ok_or_else(not_found)?;
+        let path = client.find(kind, item).await?.ok_or_else(not_found)?;
         client.unlock(std::slice::from_ref(&path)).await?;
         let proxy = client.proxy(path.as_str(), ITEM_IFACE).await?;
         let (_, _, value, _): Secret = proxy
@@ -84,7 +84,7 @@ fn get_on(bus: Bus, item: KeychainItemId) -> Result<Zeroizing<Vec<u8>>> {
 }
 
 /// Creates or replaces an item over `bus`.
-fn set_on(bus: Bus, item: KeychainItemId, bytes: &[u8]) -> Result<()> {
+fn set_on(bus: Bus, kind: ItemKind, item: KeychainItemId, bytes: &[u8]) -> Result<()> {
     let bytes = Zeroizing::new(bytes.to_vec());
     run(bus, move |client| async move {
         let secret = (
@@ -95,7 +95,7 @@ fn set_on(bus: Bus, item: KeychainItemId, bytes: &[u8]) -> Result<()> {
         );
         // An existing item is updated where it is, whichever collection
         // holds it, so a changed default never leaves two copies.
-        if let Some(path) = client.find(item).await? {
+        if let Some(path) = client.find(kind, item).await? {
             client.unlock(std::slice::from_ref(&path)).await?;
             let proxy = client.proxy(path.as_str(), ITEM_IFACE).await?;
             return proxy
@@ -106,11 +106,9 @@ fn set_on(bus: Bus, item: KeychainItemId, bytes: &[u8]) -> Result<()> {
         let collection = client.default_collection().await?;
         client.unlock(std::slice::from_ref(&collection)).await?;
         let account = item.to_string();
-        let label = format!("Bookclerk library key ({account})");
-        let attributes: HashMap<&str, &str> = HashMap::from([
-            ("service", KEYCHAIN_SERVICE),
-            ("username", account.as_str()),
-        ]);
+        let label = format!("{} ({account})", kind.label());
+        let attributes: HashMap<&str, &str> =
+            HashMap::from([("service", kind.service()), ("username", account.as_str())]);
         let properties: HashMap<&str, Value<'_>> = HashMap::from([
             (
                 "org.freedesktop.Secret.Item.Label",
@@ -131,9 +129,9 @@ fn set_on(bus: Bus, item: KeychainItemId, bytes: &[u8]) -> Result<()> {
 }
 
 /// Deletes an item over `bus`; a missing item is not an error.
-fn delete_on(bus: Bus, item: KeychainItemId) -> Result<()> {
+fn delete_on(bus: Bus, kind: ItemKind, item: KeychainItemId) -> Result<()> {
     run(bus, move |client| async move {
-        let Some(path) = client.find(item).await? else {
+        let Some(path) = client.find(kind, item).await? else {
             return Ok(());
         };
         client.unlock(std::slice::from_ref(&path)).await?;
@@ -221,12 +219,10 @@ impl Client {
     }
 
     /// The item for `item`, locked or not, if there is one.
-    async fn find(&self, item: KeychainItemId) -> Result<Option<OwnedObjectPath>> {
+    async fn find(&self, kind: ItemKind, item: KeychainItemId) -> Result<Option<OwnedObjectPath>> {
         let account = item.to_string();
-        let attributes: HashMap<&str, &str> = HashMap::from([
-            ("service", KEYCHAIN_SERVICE),
-            ("username", account.as_str()),
-        ]);
+        let attributes: HashMap<&str, &str> =
+            HashMap::from([("service", kind.service()), ("username", account.as_str())]);
         let service = self.proxy(SERVICE_PATH, SERVICE_IFACE).await?;
         let (unlocked, locked): (Vec<OwnedObjectPath>, Vec<OwnedObjectPath>) = service
             .call("SearchItems", &(attributes,))

@@ -21,12 +21,11 @@ use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter};
 
 use super::library_model::{find_chunked, find_chunked_by, find_chunked_paged};
 use super::LibraryStore;
-use crate::column_read::SelectColumnExt;
 use crate::entities::{
     credits, edition_identifiers, editions, expressions, holdings, resolution_overrides,
     series_entries, store_listings, work_identifiers, works,
 };
-use crate::error::{LibraryError, Result};
+use crate::error::Result;
 
 /// A listing key as stored: plugin key, stored marketplace, product id.
 type ListingKey = (String, String, String);
@@ -375,11 +374,6 @@ pub(crate) struct SnapshotReader<'a> {
 }
 
 impl SnapshotReader<'_> {
-    /// The connection uncovered reads use.
-    fn db(&self) -> &sea_orm::DatabaseConnection {
-        &self.store.db
-    }
-
     /// The listing stored under `key`, if any.
     pub(crate) async fn listing(
         &self,
@@ -601,13 +595,14 @@ impl SnapshotReader<'_> {
         {
             return Ok(ids.clone());
         }
-        works::Entity::find()
-            .filter(works::Column::MatchKey.eq(match_key))
-            .filter(works::Column::Kind.eq(kind))
-            .into_column::<String, _>(works::Column::Id)
-            .all(self.db())
-            .await
-            .map_err(LibraryError::Orm)
+        super::keyset::read_keyset_column(
+            self.store,
+            works::Entity::find()
+                .filter(works::Column::MatchKey.eq(match_key))
+                .filter(works::Column::Kind.eq(kind)),
+            works::Column::Id,
+        )
+        .await
     }
 
     /// Works whose matcher key is any of `keys`, of every kind, read in

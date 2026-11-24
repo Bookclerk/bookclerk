@@ -628,21 +628,26 @@ impl ExternalSource {
     ///
     /// # Errors
     ///
-    /// Returns an error when the guest has no storefront or health reports not ok.
+    /// Returns an error when the guest has no storefront or health reports
+    /// not ok, or a `deadline_exceeded` error when the guest does not answer
+    /// within 30 seconds.
     pub async fn check_health(&self) -> Result<()> {
-        let ok = self
-            .session
-            .storefront(|src| async move { src.health().await })
-            .await?;
-        if ok.ok {
-            Ok(())
-        } else {
-            Err(crate::PluginError::message(if ok.detail.is_empty() {
-                "health failed".to_string()
+        super::bounded_health(super::HEALTH_PROBE_DEADLINE, async {
+            let ok = self
+                .session
+                .storefront(|src| async move { src.health().await })
+                .await?;
+            if ok.ok {
+                Ok(())
             } else {
-                ok.detail
-            }))
-        }
+                Err(crate::PluginError::message(if ok.detail.is_empty() {
+                    "health failed".to_string()
+                } else {
+                    ok.detail
+                }))
+            }
+        })
+        .await
     }
 
     /// Native guest pid, when the session recorded one.
