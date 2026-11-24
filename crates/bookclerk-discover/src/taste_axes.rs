@@ -103,6 +103,11 @@ pub struct TasteAxis {
     pub name: String,
     /// The works on the axis, heaviest first.
     pub members: Vec<AxisMember>,
+    /// How close an ordinary book on offer sits to where the axis points
+    /// ([`ordinary_closeness`]): the cosine a book must pass to fit the
+    /// axis at all. `None` until the subject's candidates have vectors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ordinary: Option<f32>,
 }
 
 /// The axes of one subject's stored taste.
@@ -231,9 +236,8 @@ const AXIS_SHARES: [f32; 3] = [1.0, 0.5, 0.25];
 ///
 /// A model's vectors all point roughly the same way, so a cosine of 0.8
 /// says nothing by itself. An axis therefore carries its own scale: how
-/// close its own works sit to where it points, and how close the works of
-/// the person's other axes do. A book's fit is where it lands between the
-/// two.
+/// close its own works sit to where it points, and how close an ordinary
+/// book on offer does. A book's fit is where it lands between the two.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AxisScale {
     /// Where the axis points ([`axis_centroid`]).
@@ -241,10 +245,17 @@ pub struct AxisScale {
     /// Weighted mean cosine of the axis's own works to `centroid`: a book
     /// this close fits the axis in full.
     pub near: f32,
-    /// Weighted mean cosine of the other axes' works to `centroid`: a book
-    /// no closer than this does not fit the axis at all. For a taste's
-    /// only axis, a fixed band below `near`.
+    /// The cosine at which a book does not fit the axis at all: how close
+    /// an ordinary book on offer sits ([`TasteAxis::ordinary`]). Until
+    /// that is known, the weighted mean cosine of the other axes' works
+    /// or, for a taste's only axis, a fixed band below `near`.
     pub far: f32,
+    /// How much the axis counts in a ranking beside the taste's other
+    /// axes, above 0 and at most 1: the square root of its works' mean
+    /// weight over the heaviest axis's. An axis of books somebody wished
+    /// for or finished pulls harder than one of books that are only in
+    /// the library.
+    pub strength: f32,
 }
 
 impl AxisScale {
@@ -256,8 +267,8 @@ impl AxisScale {
     }
 
     /// How well a book at cosine `closeness` to the axis fits it: 0 when it
-    /// is no closer than the person's other works, 1 when it is as close as
-    /// the axis's own.
+    /// is no closer than an ordinary book, 1 when it is as close as the
+    /// axis's own.
     #[must_use]
     pub fn fit(&self, closeness: f32) -> f32 {
         let band = (self.near - self.far).max(AXIS_MIN_BAND);
@@ -267,6 +278,77 @@ impl AxisScale {
         } else {
             0.0
         }
+    }
+
+    /// What a book at cosine `closeness` adds to a ranking: its
+    /// [`fit`](Self::fit) times the axis's `strength`.
+    #[must_use]
+    pub fn pull(&self, closeness: f32) -> f32 {
+        self.fit(closeness) * self.strength
+    }
+
+    /// The scale with `ordinary` as the cosine at which a book does not
+    /// fit, kept below `near` by the narrowest band.
+    #[must_use]
+    pub fn against(mut self, ordinary: f32) -> Self {
+        if ordinary.is_finite() {
+            self.far = ordinary.min(self.near - AXIS_MIN_BAND);
+        }
+        self
+    }
+}
+
+/// Fewest books on offer that say how close an ordinary book sits to an
+/// axis.
+pub const ORDINARY_MIN_BOOKS: usize = 12;
+
+/// The share of the books on offer that sit no closer to an axis than an
+/// "ordinary" book does: three quarters. Only the closest quarter fits an
+/// axis at all.
+const ORDINARY_SHARE: (usize, usize) = (3, 4);
+
+/// How close an ordinary book on offer sits to where an axis points.
+///
+/// Nearly every book of a kind sits within a narrow band of cosines to
+/// any centroid, well above the person's own unlike books, so a scale
+/// that starts at those calls nearly every book a fit. The scale starts
+/// instead where three quarters of the books on offer are left behind.
+///
+/// # Arguments
+///
+/// * `centroid` - Where the axis points ([`axis_centroid`]).
+/// * `offered` - The vectors of the books on offer, in the centroid's
+///   space; those of another length are left out.
+///
+/// # Returns
+///
+/// The upper quartile of the books' cosines to `centroid`; `None` with
+/// fewer than [`ORDINARY_MIN_BOOKS`] of them.
+pub fn ordinary_closeness<'a>(
+    centroid: &[f32],
+    offered: impl IntoIterator<Item = &'a [f32]>,
+) -> Option<f32> {
+    let mut cosines: Vec<f32> = offered
+        .into_iter()
+        .filter(|vector| vector.len() == centroid.len())
+        .map(|vector| crate::embed::cosine(centroid, vector))
+        .filter(|cosine| cosine.is_finite())
+        .collect();
+    if cosines.len() < ORDINARY_MIN_BOOKS {
+        return None;
+    }
+    cosines.sort_by(f32::total_cmp);
+    let at = (cosines.len() * ORDINARY_SHARE.0 / ORDINARY_SHARE.1).min(cosines.len() - 1);
+    cosines.get(at).copied()
+}
+
+/// The mean weight of an axis's works; 0 for an axis without works.
+fn mean_weight(axis: &TasteAxis) -> f64 {
+    let total: f64 = axis.members.iter().map(|m| m.weight.max(0.0)).sum();
+    if axis.members.is_empty() {
+        0.0
+    } else {
+        total / count(axis.members.len())
     }
 }
 
@@ -307,6 +389,7 @@ pub fn axis_scales<'a>(
     axes: &'a [TasteAxis],
     vector_of: impl Fn(&str) -> Option<&'a [f32]> + Copy,
 ) -> Vec<Option<AxisScale>> {
+    let heaviest = axes.iter().map(mean_weight).fold(0.0_f64, f64::max);
     axes.iter()
         .enumerate()
         .map(|(at, axis)| {
@@ -319,10 +402,22 @@ pub fn axis_scales<'a>(
                 .flat_map(|(_, other)| other.members.iter());
             let far = mean_closeness(&centroid, others, vector_of)
                 .map_or(near - SOLO_AXIS_BAND, |far| far.min(near - AXIS_MIN_BAND));
-            Some(AxisScale {
+            // A share of the heaviest axis's weight, within 0..=1.
+            #[allow(clippy::cast_possible_truncation)]
+            let strength = if heaviest > 0.0 {
+                (mean_weight(axis) / heaviest).sqrt() as f32
+            } else {
+                1.0
+            };
+            let scale = AxisScale {
                 centroid,
                 near,
                 far,
+                strength,
+            };
+            Some(match axis.ordinary {
+                Some(ordinary) => scale.against(ordinary),
+                None => scale,
             })
         })
         .collect()
@@ -393,17 +488,67 @@ fn farthest_point(
     farthest.map(|(at, _)| at)
 }
 
+/// The works' unit vectors with what they all share taken out: each less
+/// their plain mean, scaled to length 1 again, and how far each sat from
+/// that mean.
+///
+/// A model's vectors all point roughly the same way, and that shared part
+/// drowns what tells one theme from another. Without it, works of a theme
+/// sit together and themes sit apart.
+///
+/// # Returns
+///
+/// `None` when a work sits on the mean itself (all the works are one
+/// point, or there is only one): there is then nothing to take out.
+fn apart(points: &[(usize, Vec<f32>)], dims: usize) -> Option<Vec<(Vec<f32>, f64)>> {
+    let mut mean = vec![0.0_f64; dims];
+    for (_, vector) in points {
+        for (into, x) in mean.iter_mut().zip(vector) {
+            *into += f64::from(*x);
+        }
+    }
+    let n = count(points.len());
+    points
+        .iter()
+        .map(|(_, vector)| {
+            // A difference of numbers within -1..=1.
+            #[allow(clippy::cast_possible_truncation)]
+            let rest: Vec<f32> = vector
+                .iter()
+                .zip(&mean)
+                .map(|(x, m)| (f64::from(*x) - m / n) as f32)
+                .collect();
+            let off = rest
+                .iter()
+                .map(|x| f64::from(*x) * f64::from(*x))
+                .sum::<f64>()
+                .sqrt();
+            (off > 1e-6)
+                .then(|| unit(&rest))
+                .flatten()
+                .map(|v| (v, off))
+        })
+        .collect()
+}
+
 /// Splits the seed works of a taste into groups that sit together in the
 /// embedding space.
 ///
+/// The works are grouped by meaning alone: how much a work counts decides
+/// which works are grouped when there are too many and where an axis
+/// points afterwards ([`axis_centroid`]), never which group a work joins,
+/// so a few heavy works do not pull unlike ones in with them. What the
+/// works all share is taken out first (their plain mean), so themes sit
+/// apart.
+///
 /// Spherical k-means with nothing left to chance, so the same taste gives
-/// the same groups: the first centre is the heaviest work, each next
-/// centre the work least like the centres so far, and works move to the
-/// centre they are most like until none moves. A group left with fewer
-/// than [`AXIS_MIN_WORKS`] works is dissolved into the others: its work
-/// is a book apart, not a leaning. Its place is given once to the work
-/// then least like the remaining centres, so one stray book does not cost
-/// the taste an axis.
+/// the same groups: the first centre is the work least like the rest,
+/// each next centre the work least like the centres so far, and works
+/// move to the centre they are most like until none moves. A group left
+/// with fewer than [`AXIS_MIN_WORKS`] works is dissolved into the others:
+/// its work is a book apart, not a leaning. Its place is given once to
+/// the work then least like the remaining centres, so one stray book does
+/// not cost the taste an axis.
 ///
 /// # Arguments
 ///
@@ -437,13 +582,34 @@ pub fn cluster(seeds: &[AxisSeed]) -> Vec<Vec<usize>> {
         return Vec::new();
     }
     let k = group_count(points.len());
+    // Grouped without what the works all share, when they differ at all.
+    let mut first = 0_usize;
+    let points: Vec<(usize, Vec<f32>)> = match apart(&points, dims) {
+        Some(parted) => {
+            // The work least like the rest: furthest from their mean (the
+            // heaviest such when several are).
+            let mut furthest = f64::NEG_INFINITY;
+            for (at, (_, off)) in parted.iter().enumerate() {
+                if *off > furthest + 1e-9 {
+                    furthest = *off;
+                    first = at;
+                }
+            }
+            points
+                .iter()
+                .zip(parted)
+                .map(|((position, _), (vector, _))| (*position, vector))
+                .collect()
+        }
+        None => points,
+    };
     // Works that started a group which then dissolved: not started from
     // again.
     let mut barred: Vec<bool> = vec![false; points.len()];
-    // Farthest-point start: the heaviest work, then the work least like
-    // every centre so far (the first such when several are).
-    let mut centres: Vec<Vec<f32>> = vec![points[0].1.clone()];
-    let mut started: Vec<usize> = vec![0];
+    // Farthest-point start: the work least like the rest, then the work
+    // least like every centre so far (the first such when several are).
+    let mut centres: Vec<Vec<f32>> = vec![points[first].1.clone()];
+    let mut started: Vec<usize> = vec![first];
     while centres.len() < k {
         let Some(farthest) = farthest_point(&points, centres.iter(), &barred) else {
             break;
@@ -481,18 +647,18 @@ pub fn cluster(seeds: &[AxisSeed]) -> Vec<Vec<usize>> {
                     continue;
                 }
                 let mut sum = vec![0.0_f64; dims];
-                for (at, (position, vector)) in points.iter().enumerate() {
+                for (at, (_, vector)) in points.iter().enumerate() {
                     if assigned[at] == group {
-                        let weight = seeds[*position].weight.max(0.0);
                         for (into, x) in sum.iter_mut().zip(vector) {
-                            *into += weight * f64::from(*x);
+                            *into += f64::from(*x);
                         }
                     }
                 }
-                // Narrowing sums of numbers within the works' weights.
+                // Narrowing sums of at most a few hundred numbers within
+                // -1..=1.
                 #[allow(clippy::cast_possible_truncation)]
                 let mean: Vec<f32> = sum.into_iter().map(|x| x as f32).collect();
-                // A group all of whose works weigh nothing keeps its centre.
+                // A group whose works cancel out keeps its centre.
                 if let Some(mean) = unit(&mean) {
                     *centre = Some(mean);
                 }
@@ -603,8 +769,28 @@ fn description_words(description: &str) -> Vec<String> {
         .collect()
 }
 
+/// `phrase` as an axis shows it: as written, but a phrase written all in
+/// capitals ("NEW YORK TIMES") with only each word's first letter so.
+fn phrase_display(phrase: &str) -> String {
+    let shouted =
+        phrase.chars().any(char::is_alphabetic) && !phrase.chars().any(char::is_lowercase);
+    if !shouted {
+        return phrase.to_string();
+    }
+    phrase
+        .split(' ')
+        .map(|word| {
+            let mut letters = word.chars();
+            letters.next().map_or_else(String::new, |first| {
+                first.to_string() + &letters.as_str().to_lowercase()
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// The phrases of two to four words in a description that neither start
-/// nor end with a stopword, each once, as (phrase as written, lowercase
+/// nor end with a stopword, each once, as (phrase as shown, lowercase
 /// key).
 fn description_phrases(description: &str) -> Vec<(String, String)> {
     let words = description_words(description);
@@ -620,7 +806,7 @@ fn description_phrases(description: &str) -> Vec<(String, String)> {
             }
             let key = lower[start..end].join(" ");
             if seen.insert(key.clone()) {
-                phrases.push((words[start..end].join(" "), key));
+                phrases.push((phrase_display(&words[start..end].join(" ")), key));
             }
         }
     }
@@ -784,6 +970,9 @@ pub fn name_axes(groups: &[Vec<usize>], books: &[AxisBook]) -> Vec<String> {
 /// * `library` - The library store.
 /// * `space` - The model's space whose stored work vectors are grouped.
 /// * `weights` - Each seed work and how much it counts.
+/// * `offered` - The vectors, in `space`, of the books on offer to the
+///   subject: each axis records how close an ordinary one sits
+///   ([`ordinary_closeness`]) when there are enough.
 ///
 /// # Returns
 ///
@@ -800,6 +989,7 @@ pub(crate) async fn build_axes(
     library: &LibraryStore,
     space: &VectorSpace,
     weights: &BTreeMap<String, f64>,
+    offered: &[Vec<f32>],
 ) -> Result<(Vec<TasteAxis>, bool)> {
     let mut heaviest: Vec<(&String, f64)> = weights
         .iter()
@@ -876,6 +1066,10 @@ pub(crate) async fn build_axes(
         })
         .collect();
     let names = name_axes(&groups, &books);
+    let vector_of: HashMap<&str, &[f32]> = seeds
+        .iter()
+        .map(|seed| (seed.work_id.as_str(), seed.vector.as_slice()))
+        .collect();
     let axes = groups
         .into_iter()
         .zip(names)
@@ -887,12 +1081,18 @@ pub(crate) async fn build_axes(
                     weight: seeds[m].weight,
                 })
                 .collect();
+            let ordinary = axis_centroid(&members, |id| vector_of.get(id).copied())
+                .and_then(|centre| ordinary_closeness(&centre, offered.iter().map(Vec::as_slice)));
             members.sort_by(|a, b| {
                 b.weight
                     .total_cmp(&a.weight)
                     .then_with(|| a.work_id.cmp(&b.work_id))
             });
-            TasteAxis { name, members }
+            TasteAxis {
+                name,
+                members,
+                ordinary,
+            }
         })
         .collect();
     Ok((axes, settled))
@@ -1010,6 +1210,7 @@ mod tests {
                     weight: 1.0,
                 },
             ],
+            ordinary: None,
         }];
         let vectors: HashMap<&str, Vec<f32>> =
             HashMap::from([("a", vec![1.0, 0.1, 0.0]), ("b", vec![1.0, -0.1, 0.0])]);
@@ -1081,6 +1282,116 @@ mod tests {
     }
 
     #[test]
+    fn themes_group_by_meaning_whatever_their_works_weigh() {
+        // Every vector shares a large part, as a model's do: unlike works
+        // still have a cosine near 0.9. Three wishes weigh six times what
+        // the six library books do.
+        let work = |id: &str, weight: f64, theme: usize, lean: f32| {
+            let mut vector = vec![3.0, 0.0, 0.0, 0.0, lean];
+            vector[theme] = 1.0;
+            AxisSeed {
+                work_id: id.into(),
+                weight,
+                vector,
+            }
+        };
+        let seeds = vec![
+            work("wish1", 1.5, 1, 0.1),
+            work("wish2", 1.5, 1, -0.1),
+            work("wish3", 1.5, 1, 0.0),
+            work("held1", 0.25, 2, 0.1),
+            work("held2", 0.25, 2, -0.1),
+            work("held3", 0.25, 2, 0.0),
+            work("held4", 0.25, 3, 0.1),
+            work("held5", 0.25, 3, -0.1),
+            work("held6", 0.25, 3, 0.0),
+        ];
+        let groups = ids(&seeds, &cluster(&seeds));
+        assert_eq!(groups.len(), 3, "{groups:?}");
+        let mut wishes = groups[0].clone();
+        wishes.sort_unstable();
+        assert_eq!(wishes, ["wish1", "wish2", "wish3"], "the heaviest first");
+        for group in &groups[1..] {
+            assert_eq!(group.len(), 3, "{groups:?}");
+            let theme = &group[0][..4];
+            assert!(group.iter().all(|id| id.starts_with(theme)));
+        }
+        // Works that are all one point are one group, not an error.
+        let same: Vec<AxisSeed> = (0..4)
+            .map(|at| work(&format!("s{at}"), 1.0, 1, 0.0))
+            .collect();
+        assert_eq!(cluster(&same).len(), 1);
+    }
+
+    #[test]
+    fn an_ordinary_book_is_where_three_quarters_of_the_offer_is_left_behind() {
+        let centroid = [1.0_f32, 0.0];
+        // Cosines 0.00, 0.05, … 0.95 to the centroid.
+        let offered: Vec<Vec<f32>> = (0..20_u8)
+            .map(|at| {
+                let cosine = f32::from(at) * 0.05;
+                vec![cosine, (1.0 - cosine * cosine).sqrt()]
+            })
+            .collect();
+        let ordinary = ordinary_closeness(&centroid, offered.iter().map(Vec::as_slice)).unwrap();
+        assert!((ordinary - 0.75).abs() < 1e-5, "{ordinary}");
+        // Too few books, or books of another space, say nothing.
+        let few = offered
+            .iter()
+            .take(ORDINARY_MIN_BOOKS - 1)
+            .map(Vec::as_slice);
+        assert_eq!(ordinary_closeness(&centroid, few), None);
+        let other = [0.5_f32, 0.5, 0.5];
+        assert_eq!(
+            ordinary_closeness(&other, offered.iter().map(Vec::as_slice)),
+            None
+        );
+    }
+
+    #[test]
+    fn an_axis_of_wishes_pulls_harder_than_one_of_library_books() {
+        let axis = |name: &str, weight: f64, ordinary: Option<f32>| TasteAxis {
+            name: name.into(),
+            members: ["1", "2"]
+                .iter()
+                .map(|n| AxisMember {
+                    work_id: format!("{name}{n}"),
+                    weight,
+                })
+                .collect(),
+            ordinary,
+        };
+        let axes = [axis("w", 1.5, Some(0.6)), axis("h", 0.375, None)];
+        let w = [1.0_f32, 0.0];
+        let h = [0.0_f32, 1.0];
+        let scales = axis_scales(&axes, |id| {
+            Some(if id.starts_with('w') { &w[..] } else { &h[..] })
+        });
+        let wished = scales[0].as_ref().unwrap();
+        let held = scales[1].as_ref().unwrap();
+        assert_eq!((wished.strength, held.strength), (1.0, 0.5));
+        // The wished axis starts at its ordinary book, not at the other
+        // axis's works.
+        assert_eq!((wished.near, wished.far), (1.0, 0.6));
+        assert_eq!((held.near, held.far), (1.0, 0.0));
+        assert_eq!(wished.fit(0.6), 0.0);
+        assert!((wished.pull(0.8) - 0.5).abs() < 1e-5);
+        assert!((held.pull(0.8) - 0.4).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_shouted_phrase_is_shown_in_plain_capitals() {
+        assert_eq!(phrase_display("NEW YORK TIMES"), "New York Times");
+        assert_eq!(phrase_display("New York Times"), "New York Times");
+        assert_eq!(phrase_display("FBI agent"), "FBI agent");
+        let phrases = description_phrases("A NEW YORK TIMES BESTSELLER");
+        assert!(phrases
+            .iter()
+            .any(|(shown, key)| shown == "New York Times Bestseller"
+                && key == "new york times bestseller"));
+    }
+
+    #[test]
     fn a_fit_runs_from_the_other_axes_works_to_the_axis_own() {
         let axis = |name: &str, ids: [&str; 2]| TasteAxis {
             name: name.into(),
@@ -1091,6 +1402,7 @@ mod tests {
                     weight: 1.0,
                 })
                 .collect(),
+            ordinary: None,
         };
         let axes = [
             axis("x", ["x1", "x2"]),
@@ -1118,7 +1430,14 @@ mod tests {
             centroid: vec![1.0, 0.0],
             near: 0.8,
             far: 0.8,
+            strength: 0.5,
         };
+        assert_eq!(flat.pull(0.9), 0.5, "a weaker axis pulls less");
+        assert!((flat.clone().against(0.5).fit(0.65) - 0.5).abs() < 1e-5);
+        assert!(
+            (flat.clone().against(0.95).far - 0.78).abs() < 1e-5,
+            "kept below near"
+        );
         assert_eq!(flat.fit(0.8), 0.0);
         assert_eq!(flat.fit(0.9), 1.0);
     }

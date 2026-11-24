@@ -187,7 +187,7 @@ impl KeptAxes {
         }
         bookclerk_discover::taste_fit(self.axes.iter().filter_map(|axis| {
             let closeness = axis.scale.closeness(vector)?;
-            Some(axis.scale.fit(closeness))
+            Some(axis.scale.pull(closeness))
         }))
     }
 }
@@ -864,6 +864,7 @@ mod tests {
                     centroid: vec![1.0, 0.0, 0.5],
                     near: 1.0,
                     far: 0.2,
+                    strength: 1.0,
                 },
                 books: 2,
                 works: Vec::new(),

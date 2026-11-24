@@ -281,6 +281,7 @@ mod tests {
                     weight: 9.0 - f64::from(u32::try_from(i).unwrap()),
                 })
                 .collect(),
+            ordinary: None,
         };
         let mut taste = wide(1);
         taste.scores.axes = vec![axis("a", 8), axis("b", 4), axis("c", 3), axis("d", 2)];

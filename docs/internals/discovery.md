@@ -518,11 +518,12 @@ the reader's taste has [axes](#taste-axes).
   reader's seed works. Above 0.15 it adds `cosine × 12` points.
 - **Model, taste with axes**: the candidate is measured against every
   axis. Its fit on an axis runs from 0 (no closer to the axis's centroid
-  than the reader's works on their other axes) to 1 (as close as the
-  axis's own works). The fits add up: the best in full, the second at
-  half, the third at a quarter. A total above 0.25 adds `total × 6`
-  points, so a book near one axis ranks high (6 points at a full fit)
-  and a book near several ranks higher (up to 10.5).
+  than an ordinary book on offer) to 1 (as close as the axis's own
+  works), times the axis's strength. The fits add up: the best in full,
+  the second at half, the third at a quarter. A total above 0.25 adds
+  `total × 6` points, so a book near one axis ranks high (6 points at a
+  full fit on the strongest axis) and a book near several ranks higher
+  (up to 10.5). See [the scale of an axis](#the-scale-of-an-axis).
 - **Model, taste without axes**: a model's cosines sit in a narrow, high
   band (unrelated books often score above 0.5), so a fixed threshold
   does not work. The ranking takes the mean and standard deviation of
@@ -565,8 +566,15 @@ everyone's.
 
 **Grouping.** The 400 heaviest seed works with a vector are grouped by
 spherical k-means, with nothing left to chance so the same taste gives
-the same axes: the first centre is the heaviest work, each next centre
-the work least like the centres so far.
+the same axes: the first centre is the work least like the rest, each
+next centre the work least like the centres so far.
+
+Works are grouped by meaning alone. A model's vectors all point roughly
+the same way, which hides what tells one theme from another, so the
+plain mean of the seed works' vectors is taken out of each before they
+are grouped. A work's weight does not decide which group it joins: it
+decides where the axis then points and how much the axis counts. A few
+heavy wishes therefore do not pull unlike wishes into one group.
 
 | Rule | Value |
 | --- | --- |
@@ -599,20 +607,45 @@ carry it less the share of the other axes' works that do.
 
 No two axes of a taste share a name.
 
+A phrase written all in capitals is shown with only each word's first
+letter so ("NEW YORK TIMES" becomes "New York Times").
+
+#### The scale of an axis
+
+Nearly every book sits within a narrow band of cosines to any centroid,
+so a cosine says little by itself. Each axis carries its own scale, and
+a book's fit is where it lands on it.
+
+| End | Value |
+| --- | --- |
+| A fit of 1 | The weighted mean cosine of the axis's own works to its centroid |
+| A fit of 0 | The cosine of an ordinary book on offer: the upper quartile of the cosines of the viewer's stored candidates to the centroid, so only the closest quarter of what is on offer fits an axis at all |
+| Fewer than 12 candidates with a vector | A fit of 0 is the weighted mean cosine of the other axes' works; for a taste's only axis, 0.15 below its own works |
+| Narrowest scale | 0.02 |
+
+A ranking measures against its own candidates whenever it has 12 with a
+vector. The stored value serves the [radar](#the-taste-radar) and the
+[search](#searching-by-meaning), which have no candidates at hand.
+
+An axis also has a strength, used when ranking: the square root of its
+works' mean weight over that of the taste's heaviest axis. An axis of
+wishes (1.5 each) has strength 1 beside an axis of books that are only
+in the house library (0.25 each), which has 0.41. The radar shows the
+fit without the strength.
+
 **Storage.** The axes are stored with the taste (`discover_tastes`) as
-their names and member works with weights, not as vectors. A ranking
-reads the members' vectors and takes each axis's centroid (the weighted
-mean of its works' unit vectors) and its scale: the weighted mean cosine
-of its own works to the centroid (a fit of 1) and of the other axes'
-works (a fit of 0). A taste's only axis has no other works, so its fit
-falls to 0 over a fixed band of 0.15 below its own works (a first
-setting, not yet measured). The taste records which model space its axes were
+their names, member works with weights, and the cosine of an ordinary
+book, not as vectors. A ranking reads the members' vectors and takes
+each axis's centroid (the weighted mean of its works' unit vectors) and
+its scale. The taste records which model space its axes were
 looked for in; a ranking that reads another space loads the taste again,
 so axes appear when a model has embedded the library and follow a change
-of model. Axes built while fewer than half of the seed works had a
-vector (a fresh library whose first taste is stored before it is
-embedded) are not recorded as that space's, so the next ranking builds
-them again. A work embedded after that joins at the next store.
+of model. Axes are not recorded as that space's, so the next ranking
+builds them again, when they were built while fewer than half of the
+seed works had a vector (a fresh library whose first taste is stored
+before it is embedded), or before 12 of the viewer's candidates had one
+(a ranking embeds them) while storefront candidates are on. A work
+embedded after that joins at the next store.
 
 > [!NOTE]
 > The wish weight, the group counts and the naming thresholds are first
@@ -704,9 +737,10 @@ most first. The web app draws three or more as a radar and one or two
 as a row each.
 
 **Score.** A book's score on an axis is how close it lands to the axis's
-centroid, on the axis's own scale: 0 when it is no closer than the
-viewer's works on their other axes, 1 when it is as close as the axis's
-own works. It is the fit a ranking gives a candidate on that axis, read
+centroid, on [the axis's own scale](#the-scale-of-an-axis): 0 when it
+is no closer than an ordinary book on offer, 1 when it is as close as
+the axis's own works. It is the fit a ranking gives a candidate on that
+axis, before the axis's strength, read
 in the space the [search by meaning](#searching-by-meaning) reads.
 
 **The book.** A library work is sent as `work_id` and read from the
@@ -1097,7 +1131,7 @@ meaning (`crates/bookclerkd/src/search_rerank.rs`):
    by closeness to the query. The page is ordered by the sum of the two.
    Between results with the same sum, the one that fits the searcher's
    [taste axes](#taste-axes) better comes first (the fit a ranking gives a
-   candidate, from the vector already made for the result), and the
+   candidate, with each axis's strength, from the vector already made for the result), and the
    stores' order decides between the rest. The taste never passes a better
    match of the query. A result must do well in
    both to lead, so an exact title match the stores put first stays near

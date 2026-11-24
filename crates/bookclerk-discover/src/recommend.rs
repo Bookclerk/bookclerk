@@ -27,7 +27,7 @@ use crate::identity::{
 use crate::purchase::{
     purchase_hints_for, seed_purchase_hint, seed_source_is_trusted, PurchaseHint,
 };
-use crate::taste_axes::{axis_scales, taste_fit, AxisScale, TasteAxis};
+use crate::taste_axes::{axis_scales, ordinary_closeness, taste_fit, AxisScale, TasteAxis};
 
 /// Per open wish on the global queue. Large enough that multi-user demand
 /// dominates typical local taste scores (~1–25) while recommend signals still
@@ -1235,8 +1235,7 @@ const MODEL_MAX_STANDING: f32 = 3.0;
 const MODEL_STANDING_WEIGHT: f64 = 2.5;
 
 /// Least fit to a taste's axes ([`taste_fit`]) for a text to count as
-/// similar: a quarter of the way from the person's other books to an
-/// axis's own.
+/// similar: a quarter of the way from an ordinary book to an axis's own.
 const AXIS_MIN_FIT: f32 = 0.25;
 
 /// Points for a text that lands as close to one axis as the axis's own
@@ -1259,8 +1258,10 @@ const TEXT_EMBED_BUDGET: std::time::Duration = std::time::Duration::from_secs(45
 ///
 /// A taste with axes ([`crate::taste_axes`]) is not one direction, so its
 /// texts are measured against every axis instead: each axis carries its
-/// own scale, from the person's other books to the axis's own
-/// ([`AxisScale::fit`]), and a text's fits add up ([`taste_fit`]), so a
+/// own scale, from where an ordinary text of the ranking sits to the
+/// axis's own books ([`AxisScale::fit`]), an axis of wishes or finished
+/// books counts for more than one of books only in the library
+/// ([`AxisScale::pull`]), and a text's fits add up ([`taste_fit`]), so a
 /// text near one axis scores and a text near several scores more.
 struct TasteSimilarity {
     /// Fit to the taste's axes and cosine to the closest axis, by
@@ -1322,15 +1323,27 @@ impl TasteSimilarity {
         };
         let stand_in = is_stand_in(space);
         if !profile.axes.is_empty() && !stand_in {
+            // Each axis is measured from where the texts of this ranking
+            // ordinarily sit, when there are enough of them to say.
+            let axes: Vec<AxisScale> = profile
+                .axes
+                .iter()
+                .map(|axis| {
+                    let offered = vectors.values().map(Vec::as_slice);
+                    match ordinary_closeness(&axis.centroid, offered) {
+                        Some(ordinary) => axis.clone().against(ordinary),
+                        None => axis.clone(),
+                    }
+                })
+                .collect();
             let fits = vectors
                 .into_iter()
                 .filter_map(|(hash, vector)| {
-                    let closeness: Vec<(f32, f32)> = profile
-                        .axes
+                    let closeness: Vec<(f32, f32)> = axes
                         .iter()
                         .filter_map(|axis| {
                             let closeness = axis.closeness(&vector)?;
-                            Some((axis.fit(closeness), closeness))
+                            Some((axis.pull(closeness), closeness))
                         })
                         .collect();
                     // The cosine shown is to the axis the text fits best.
@@ -1410,7 +1423,7 @@ fn mean_and_deviation(values: impl Iterator<Item = f32> + Clone) -> (f32, f32) {
 }
 
 /// The text embedded for a storefront candidate.
-fn candidate_text(candidate: &crate::candidates::StorefrontCandidate) -> String {
+pub(crate) fn candidate_text(candidate: &crate::candidates::StorefrontCandidate) -> String {
     embed_text(&EmbedFields {
         title: &candidate.title,
         authors: candidate.authors.as_deref(),
@@ -2958,6 +2971,7 @@ mod tests {
             centroid: centroid.to_vec(),
             near: 1.0,
             far: 0.0,
+            strength: 1.0,
         };
         let profile = TasteProfile {
             liked_authors: HashMap::new(),
@@ -2995,6 +3009,40 @@ mod tests {
         assert_eq!(score("never embedded"), None);
         let nearest = similarity.boost("on y, mostly").unwrap().similarity;
         assert!(nearest > 0.99, "the cosine to the best axis: {nearest}");
+
+        // With enough texts to say where an ordinary one sits, an axis is
+        // measured from there: a dozen texts at 0.6 to x no longer score,
+        // though 0.6 of the way from the person's other books.
+        let ordinary: Vec<String> = (0..12).map(|at| format!("ordinary {at}")).collect();
+        let bytes = crate::embed::vector_to_bytes(&[0.6, 0.0, 0.0, 0.8]);
+        let hashes: Vec<String> = ordinary.iter().map(|text| text_hash(text)).collect();
+        let more: Vec<bookclerk_library::NewVector<'_>> = hashes
+            .iter()
+            .map(|hash| bookclerk_library::NewVector {
+                target_id: hash,
+                vector: &bytes,
+                text_hash: hash,
+            })
+            .collect();
+        library
+            .put_vectors(bookclerk_library::VECTOR_KIND_TEXT, &space, 4, &more)
+            .await
+            .unwrap();
+        let crowd: Vec<String> = all.iter().chain(&ordinary).cloned().collect();
+        let among = TasteSimilarity::load(&library, &profile, &opts, &crowd)
+            .await
+            .unwrap();
+        let score = |text: &str| among.boost(text).map(|boost| boost.score);
+        assert_eq!(score("ordinary 0"), None);
+        assert!((score("on x").unwrap() - AXIS_FIT_WEIGHT).abs() < 1e-6);
+        // 0.707 to x is now a quarter of the way from 0.6 to 1.
+        let between = score("between x and y").unwrap();
+        let expected = f64::from(std::f32::consts::FRAC_1_SQRT_2)
+            + (f64::from(std::f32::consts::FRAC_1_SQRT_2) - 0.6) / 0.4 / 2.0;
+        assert!(
+            (between - expected * AXIS_FIT_WEIGHT).abs() < 1e-3,
+            "{between}"
+        );
 
         // The stand-in's hash vectors do not group by meaning: one centroid.
         let stand_in = RecommendOptions {

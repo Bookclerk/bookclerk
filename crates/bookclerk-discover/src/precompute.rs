@@ -1443,12 +1443,50 @@ pub async fn refresh_subject_taste(
     Ok(())
 }
 
+/// The stored vectors, in `space`, of the texts of `subject`'s stored
+/// candidates: the books on offer a taste's axes are measured against.
+/// Nothing is embedded here; a candidate no ranking has embedded yet has
+/// none.
+///
+/// # Errors
+///
+/// Returns the library read error.
+async fn offered_vectors(
+    library: &LibraryStore,
+    subject: &DiscoverSubject,
+    space: &bookclerk_library::VectorSpace,
+) -> Result<Vec<Vec<f32>>> {
+    let now = Utc::now();
+    let hashes: Vec<String> = library
+        .list_discover_candidates(subject)
+        .await?
+        .iter()
+        .map(|row| {
+            crate::embed::text_hash(&crate::recommend::candidate_text(&candidate_from_stored(
+                row, now,
+            )))
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let stored = library
+        .vectors(bookclerk_library::VECTOR_KIND_TEXT, space, &hashes)
+        .await?;
+    // In hash order, so the same candidates give the same measure.
+    Ok(hashes
+        .iter()
+        .filter_map(|hash| stored.get(hash))
+        .map(|bytes| crate::embed::bytes_to_vector(bytes))
+        .collect())
+}
+
 /// Stores the ranking's part of `taste` as `subject`'s taste.
 ///
 /// With a model's vectors (`opts` names the space), the taste's seed works
 /// and wishes are grouped into its axes first ([`crate::taste_axes`]);
 /// works the model has not embedded yet join at the next store, and while
-/// most of them have no vector the next ranking stores the taste again.
+/// most of them have no vector, or the subject's candidates have none to
+/// measure the axes against, the next ranking stores the taste again.
 ///
 /// # Errors
 ///
@@ -1468,12 +1506,17 @@ async fn store_taste(
             let weight = seeds.entry(work.clone()).or_default();
             *weight = weight.max(crate::taste_axes::WISH_SEED_WEIGHT);
         }
+        let offered = offered_vectors(library, subject, &opts.vectors.space).await?;
         let (axes, settled) =
-            crate::taste_axes::build_axes(library, &opts.vectors.space, &seeds).await?;
-        stored.scores.axes = axes;
-        // Axes built while most seed works had no vector yet are not
+            crate::taste_axes::build_axes(library, &opts.vectors.space, &seeds, &offered).await?;
+        // Axes built while most seed works had no vector yet, or before
+        // the candidates had vectors to measure them against, are not
         // recorded as this space's: the next ranking builds them again.
-        stored.axes_space = settled.then(|| crate::stored_taste::space_key(&opts.vectors.space));
+        let measured =
+            !opts.fetch_storefront_candidates || axes.iter().all(|axis| axis.ordinary.is_some());
+        stored.scores.axes = axes;
+        stored.axes_space =
+            (settled && measured).then(|| crate::stored_taste::space_key(&opts.vectors.space));
     }
     // One bind of one statement: sized to what the database's statements
     // carry, so a database with small statements keeps the heaviest part.
@@ -2446,6 +2489,119 @@ mod tests {
             .iter()
             .flat_map(|axis| &axis.members)
             .all(|member| (member.weight - 0.5).abs() < 1e-9));
+    }
+
+    #[tokio::test]
+    async fn axes_are_measured_against_the_candidates_once_those_have_vectors() {
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        library
+            .upsert_account("audible", "acct", "us", Some("Main"), true, "audible")
+            .await
+            .unwrap();
+        for (at, (title, genre)) in [
+            ("Dragon Hoard", "Fantasy"),
+            ("Dragon Flight", "Fantasy"),
+            ("The Ledger", "Business"),
+            ("Ledger Lines", "Business"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let mut book =
+                bookclerk_library::NewBook::minimal(format!("B00000{at}"), "acct", "us", *title);
+            book.categories = Some((*genre).into());
+            library.upsert_book(&book).await.unwrap();
+        }
+        let space = bookclerk_library::VectorSpace {
+            model: "@embedder/topics".into(),
+            revision: "r1".into(),
+            packs: String::new(),
+        };
+        let subject = DiscoverSubject::Operator;
+        let opts = RecommendOptions {
+            vectors: crate::embed::VectorSource::new(space.clone(), None),
+            ..RecommendOptions::default()
+        };
+        crate::embed::embed_dirty_works(&library, &mut ThreeTopics(space.clone()), None)
+            .await
+            .unwrap();
+        let products: Vec<String> = (0..crate::taste_axes::ORDINARY_MIN_BOOKS)
+            .map(|at| format!("p{at}"))
+            .collect();
+        let products: Vec<&str> = products.iter().map(String::as_str).collect();
+        let pooled = pooled_titles(&library, "shop", &products).await;
+        let rows: Vec<CandidateRef> = pooled
+            .iter()
+            .map(|p| CandidateRef {
+                listing_id: p.listing_id.clone(),
+                origin: String::new(),
+                seed_title: None,
+                seed_categories: None,
+                starter_genre: None,
+            })
+            .collect();
+        library
+            .replace_discover_candidates(&subject, "shop", SeedScope::Household, &rows)
+            .await
+            .unwrap();
+
+        // No ranking has embedded the candidates yet: the axes keep the
+        // scale of the person's own books, and are not settled.
+        let (_, first) = ranking_taste(&library, &subject, &opts).await.unwrap();
+        assert_eq!(first.scores.axes.len(), 2);
+        assert!(first.scores.axes.iter().all(|axis| axis.ordinary.is_none()));
+        assert_eq!(first.axes_space, None);
+
+        let now = Utc::now();
+        let texts: Vec<String> = library
+            .list_discover_candidates(&subject)
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| crate::recommend::candidate_text(&candidate_from_stored(row, now)))
+            .collect();
+        crate::embed::text_vectors(
+            &library,
+            &space,
+            Some(&mut ThreeTopics(space.clone())),
+            &texts,
+            None,
+        )
+        .await
+        .unwrap();
+        // The next ranking builds them again, measured against the books
+        // on offer; none of those is about dragons or ledgers, so an
+        // ordinary one sits well short of the axes' own books.
+        let (_, measured) = ranking_taste(&library, &subject, &opts).await.unwrap();
+        for axis in &measured.scores.axes {
+            let ordinary = axis.ordinary.unwrap();
+            assert!((0.8..0.95).contains(&ordinary), "{ordinary}");
+        }
+        assert!(measured.axes_space.is_some());
+        let (_, kept) = ranking_taste(&library, &subject, &opts).await.unwrap();
+        assert_eq!(kept.scores.axes, measured.scores.axes);
+
+        // Without storefront candidates there is nothing to wait for.
+        let alone = RecommendOptions {
+            fetch_storefront_candidates: false,
+            ..opts.clone()
+        };
+        library
+            .replace_discover_candidates(&subject, "shop", SeedScope::Household, &[])
+            .await
+            .unwrap();
+        refresh_subject_taste(&library, &subject, &alone)
+            .await
+            .unwrap();
+        let (_, settled) = ranking_taste(&library, &subject, &alone).await.unwrap();
+        assert!(settled
+            .scores
+            .axes
+            .iter()
+            .all(|axis| axis.ordinary.is_none()));
+        assert!(settled.axes_space.is_some());
     }
 
     #[tokio::test]

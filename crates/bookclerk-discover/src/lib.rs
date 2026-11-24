@@ -95,9 +95,10 @@ pub use shelves::{
     DiscoverShelf, FeedState, ShelfKindInfo, ShelfTaste, SERIES_CAP,
 };
 pub use taste_axes::{
-    axis_centroid, axis_scales, cluster, name_axes, stored_taste_axes, taste_fit, AxisBook,
-    AxisMember, AxisScale, AxisSeed, StoredAxes, TasteAxis, AXIS_MIN_WORKS, MAX_AXIS_SEEDS,
-    MAX_TASTE_AXES, MIN_TASTE_AXES, RADAR_MIN_AXES, WISH_SEED_WEIGHT,
+    axis_centroid, axis_scales, cluster, name_axes, ordinary_closeness, stored_taste_axes,
+    taste_fit, AxisBook, AxisMember, AxisScale, AxisSeed, StoredAxes, TasteAxis, AXIS_MIN_WORKS,
+    MAX_AXIS_SEEDS, MAX_TASTE_AXES, MIN_TASTE_AXES, ORDINARY_MIN_BOOKS, RADAR_MIN_AXES,
+    WISH_SEED_WEIGHT,
 };
 pub use title_meta::{
     check_title_meta_query, plan_title_meta_fill, resolve_title_meta, resolve_title_meta_answer,
