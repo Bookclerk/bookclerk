@@ -604,7 +604,7 @@ fn count(count: usize) -> f64 {
 /// group's works that carry it less the share of the other groups' works
 /// that do; the most distinctive names the group, a genre or series
 /// winning over a phrase unless the phrase is clearly more distinctive
-/// ([`PHRASE_HANDICAP`]), and a longer phrase over the shorter one inside
+/// (`PHRASE_HANDICAP`), and a longer phrase over the shorter one inside
 /// it. A group with nothing distinctive enough is named after its first
 /// work, "Like *title*". No two groups share a name.
 ///
