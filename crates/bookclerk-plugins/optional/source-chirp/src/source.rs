@@ -707,11 +707,19 @@ pub fn audiobook_detail_record(
 ) -> bookclerk_storefront::Result<Option<CatalogHit>> {
     match answer.pointer("/data/audiobook") {
         None | Some(serde_json::Value::Null) => Ok(None),
-        Some(book) => serde_json::from_value::<CatalogAudiobook>(book.clone())
-            .map(|book| Some(catalog_hit(&book, String::from("details"))))
-            .map_err(|err| {
+        Some(book) => {
+            let book = serde_json::from_value::<CatalogAudiobook>(book.clone()).map_err(|err| {
                 bookclerk_storefront::SourceError::api(format!("chirp detail parse: {err}"))
-            }),
+            })?;
+            // The id is the product id and the title's fallback, so a blank
+            // one names no title the host could look up or show.
+            if book.id.trim().is_empty() {
+                return Err(bookclerk_storefront::SourceError::api(
+                    "chirp detail parse: the audiobook has a blank id",
+                ));
+            }
+            Ok(Some(catalog_hit(&book, String::from("details"))))
+        }
     }
 }
 

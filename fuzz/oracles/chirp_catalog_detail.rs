@@ -5,7 +5,8 @@
 //!
 //! Invariants, checked against the answer read as plain JSON:
 //!
-//! - an answer whose `data.audiobook` is missing or null names no record;
+//! - an answer whose `data.audiobook` is missing or null names no record,
+//!   and one whose audiobook has a blank `id` is refused;
 //! - a record keeps the audiobook's `id` as its product id and has a
 //!   non-blank title;
 //! - a record has a sample only when `sampleUrl` is a string, and then it
