@@ -1152,14 +1152,122 @@ mod tests {
             plugin_instance_id: Some(instance.id.to_string()),
             ..JobPayload::default()
         };
-        let summary = run_discover_candidates(&state, &pinned_payload, None)
+        let mut on = discover_options(&state.config.read().await.clone(), None);
+        on.fetch_storefront_candidates = true;
+        let summary = run_pinned_candidates(
+            &state,
+            &library,
+            &subject,
+            instance.id.as_str(),
+            &pinned_payload,
+            on.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(summary.ends_with("not served on this node"), "{summary}");
+        let mut off = on.clone();
+        off.fetch_storefront_candidates = false;
+        let summary = run_pinned_candidates(
+            &state,
+            &library,
+            &subject,
+            instance.id.as_str(),
+            &pinned_payload,
+            off,
+        )
+        .await
+        .unwrap();
+        assert!(summary.ends_with("storefront candidates off"), "{summary}");
+
+        // On the node that serves it, the store is asked and the ranking
+        // queued.
+        state
+            .sources
+            .write()
             .await
-            .unwrap();
+            .register(std::sync::Arc::new(PinnedStore {
+                instance: instance.id.to_string(),
+            }));
+        let summary = run_pinned_candidates(
+            &state,
+            &library,
+            &subject,
+            instance.id.as_str(),
+            &pinned_payload,
+            on,
+        )
+        .await
+        .unwrap();
         assert!(
-            summary.ends_with("not served on this node")
-                || summary.ends_with("storefront candidates off"),
+            summary.starts_with(&format!("subject=operator instance={}", instance.id)),
             "{summary}"
         );
+        assert!(summary.contains("candidates="), "{summary}");
+    }
+
+    /// A storefront double owned by one plugin instance that answers nothing.
+    struct PinnedStore {
+        /// The instance id it reports.
+        instance: String,
+    }
+
+    #[async_trait::async_trait]
+    impl bookclerk_source::ContentSource for PinnedStore {
+        fn id(&self) -> &str {
+            "farstore"
+        }
+
+        fn plugin_instance_id(&self) -> Option<&str> {
+            Some(&self.instance)
+        }
+
+        fn portal_auth_mode(&self) -> bookclerk_source::PortalAuthMode {
+            bookclerk_source::PortalAuthMode::Oauth
+        }
+
+        fn portal_brand(&self) -> bookclerk_source::SourceBrand {
+            bookclerk_source::SourceBrand {
+                id: "farstore",
+                name: "Far store",
+                bg: "#000000",
+                fg: "#ffffff",
+                accent: "#111111",
+                icon_url: "https://example.invalid/icon",
+            }
+        }
+
+        async fn login(
+            &self,
+            _scope: &bookclerk_library::SourceScope,
+            _opts: bookclerk_source::LoginOptions,
+        ) -> bookclerk_source::Result<bookclerk_source::SourceAccount> {
+            Err(bookclerk_source::SourceError::api("not in this test"))
+        }
+
+        async fn list_accounts(
+            &self,
+            _scope: &bookclerk_library::SourceScope,
+        ) -> bookclerk_source::Result<Vec<bookclerk_source::SourceAccount>> {
+            Ok(Vec::new())
+        }
+
+        async fn scan(
+            &self,
+            _scope: &bookclerk_library::SourceScope,
+            _opts: bookclerk_source::ScanOptions,
+        ) -> bookclerk_source::Result<bookclerk_source::ScanSummary> {
+            Err(bookclerk_source::SourceError::api("not in this test"))
+        }
+
+        async fn fetch_title(
+            &self,
+            _scope: &bookclerk_library::SourceScope,
+            _account_id: &str,
+            _title_id: &str,
+            _opts: &bookclerk_source::FetchOptions,
+        ) -> bookclerk_source::Result<bookclerk_source::SourceFetch> {
+            Err(bookclerk_source::SourceError::api("not in this test"))
+        }
     }
 
     /// With no model on the node, a ranking makes the stand-in's work
