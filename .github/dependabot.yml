@@ -124,6 +124,7 @@ updates:
   - package-ecosystem: npm
     directories:
       - "/crates/bookclerk-plugins/optional/covers"
+      - "/crates/bookclerk-plugins/optional/destination-b2"
       - "/crates/bookclerk-plugins/optional/ingress-cloudflare"
       - "/crates/bookclerk-plugins/optional/ingress-cloudflare-dns"
       - "/crates/bookclerk-plugins/optional/ingress-cloudflare-tunnel"

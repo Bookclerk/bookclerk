@@ -152,6 +152,7 @@ export type {
   PluginMigrationOp,
   PutResult,
   ReadOptions,
+  ByteRange,
   ReadResult,
   RetryOptions,
   ScheduledFire,

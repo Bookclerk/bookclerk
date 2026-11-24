@@ -15,13 +15,6 @@
     clippy::cast_sign_loss
 )]
 
-/// Backblaze B2 storage through the native API.
-#[cfg(feature = "b2")]
-mod b2;
-pub mod b2_api;
-pub mod b2_events;
-#[cfg(feature = "b2")]
-mod b2_feed;
 /// Bounded scalar reads, ranges, and digest helpers.
 mod bounded;
 pub mod cloudflare_api;
@@ -47,21 +40,17 @@ mod r2_queue;
 #[cfg(feature = "s3")]
 mod s3;
 pub mod s3_events;
-#[cfg(any(feature = "s3", feature = "b2"))]
+#[cfg(feature = "s3")]
 pub mod s3_guest;
 #[cfg(all(feature = "s3", any(unix, windows)))]
 mod s3_http;
-#[cfg(any(feature = "s3", feature = "b2"))]
+#[cfg(feature = "s3")]
 mod s3_queue;
 /// [`StorageBackend`] trait plus object metadata and audio-key helpers.
 mod traits;
 /// Source-to-destination copy that stays within stream windows.
 mod transfer;
 
-#[cfg(feature = "b2")]
-pub use b2::{B2ApplicationKey, B2Backend, B2Settings, B2_AUTHORIZE_URL};
-#[cfg(feature = "b2")]
-pub use b2_feed::{B2ChangeFeed, RULE_RECHECK_SECS};
 pub use bounded::{
     ensure_scalar_len, normalize_range, parse_sha256_hex, read_scalar_body, reject_scalar_hint,
     sha256_field_from_raw, MAX_LIST_PAGE, MAX_SCALAR_OBJECT_BYTES, MAX_SUPPORTED_OBJECT_BYTES,

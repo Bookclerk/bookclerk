@@ -64,8 +64,6 @@ boundary extends it.
 | `s3_event` | Messages on an S3 bucket's notification queue, which the `s3` guest turns into change-feed entries: S3 event notifications, SNS envelopes and EventBridge events, the percent-encoded keys of S3 and SNS records, buckets and prefixes | `bookclerk-storage::s3_events` |
 | `r2_event` | What the `r2` guest reads from Cloudflare to serve its change feed: Queues HTTP pull replies (the envelope, lease ids and base64 or text bodies) and the R2 event notifications in them, with their accounts, buckets and prefixes | `bookclerk-storage::r2_events` |
 | `cloudflare_api` | What the `r2` and `d1` guests' guided setups read from the Cloudflare API: the v4 envelope and its errors, account lists, bucket create replies, D1 database lists and create replies, permission group lists and token create replies, and the bucket and database names they send | `bookclerk-storage::cloudflare_api` |
-| `b2_reply` | What the `b2` guest reads from Backblaze B2: native API replies (authorization, buckets, upload URLs, file versions, file-name and file-version listings, uploaded parts, errors) and download headers, and the percent-encoding of file names | `bookclerk-storage::b2_api` |
-| `b2_event` | What the `b2` guest reads to serve its change feed: B2 event notification webhook bodies (event types, buckets, object names, times) and `b2_get_bucket_notification_rules` / `b2_set_bucket_notification_rules` replies | `bookclerk-storage::b2_events` |
 | `socket_request` | A plugin's host-brokered socket request (`Sockets.connect`): its URL (`ws://`, `wss://` or `tls://host:port`), headers, subprotocols or ALPN ids, heartbeat pairs, attachment, trust anchors' DER shape and `tls://` server name, and the `SocketMessage` the host delivers to a socket handler | `bookclerk-plugin-abi::sockets` |
 | `origin_request` | What a relay ingress plugin hands the host: the framed `POST /origin/fetch` body on the isolate bridge, request heads (method, target, headers, client address), response heads, and the public origin `Ingress.start` reports | `bookclerk-plugin-abi::origin` |
 | `socket_broker` | What the socket broker does with a remote WebSocket server's frames and closes and a plugin's socket requests: heartbeat answers, deliveries, attachments, the per-instance limit and close reporting | `bookclerk-workerd::socket_table` |
@@ -618,39 +616,6 @@ only that. The others check:
   decoder, JSON; each body is then checked as an event. The reply, each
   message, an event and its object must be JSON objects. The shared oracle
   is `fuzz/oracles/r2_event.rs`, replayed from `bookclerk-storage`.
-- **`b2_reply`**: byte 0 modulo 9 picks the reader: an authorization (0),
-  a bucket list (1), an upload URL (2), one file version (3), a file-name
-  page (4), a file-version page (5), an uploaded part (6), an error reply
-  with bytes 1 and 2 as its status (7), or download headers, one
-  `name: value` per line (8). Reading never panics and answers the same
-  twice. An error reply always reads, with a non-empty code, and code and
-  message cut to 1,024 bytes without control characters. An accepted
-  reply agrees with an independent walk of the same JSON (token, file
-  names and ids, list lengths, part number); its URLs are plain `https`;
-  every file name passes the oracle's own copy of B2's naming rules; a
-  file-name page's continuation is past every listed name; a
-  file-version page continues with a name and a file id together, so it
-  may continue at the last listed name, and lists each name's versions
-  newest first; every SHA-1 is 40 lowercase hex digits; an error code
-  other than `unknown` is exactly the one the error object sent; and accepted download headers name a file id
-  and a body no longer than the file. Percent-encoding any text matches
-  the oracle's own encoder and decodes back to the text. The shared
-  oracle is `fuzz/oracles/b2_reply.rs`, replayed from `bookclerk-storage`.
-- **`b2_event`**: byte 0 picks the boundary (even: one webhook body, with
-  bit 1 picking the destination's key prefix, clear: none, set:
-  `library/`; odd: a notification-rules reply). Parsing never panics and
-  answers the same twice; a body over 1 MiB is refused as too large. An
-  accepted body agrees with an independent walk of the same JSON: the same
-  keys in order, each a non-empty `changed` entry without listing fields,
-  version or sequencer, and the same times; and a body that walk finds
-  well formed is accepted. Events of other types (test events, live
-  reads) or for another bucket, and names outside the prefix, are skipped
-  before the name is checked. An accepted rules reply lists at most 100
-  rules whose names match the walk, in order, are distinct and 1 to 63
-  bytes, every signing secret it reports is 32 letters or digits, and
-  sending back the rules that are not the destination's own keeps each one
-  as listed without B2's computed fields. The shared oracle is
-  `fuzz/oracles/b2_event.rs`, replayed from `bookclerk-storage`.
 - **`cloudflare_api`**: byte 0 modulo 10 picks the reader: the bare
   envelope (0), an account list (1), a bucket create reply (2), a
   permission group list searched for the bucket item group (3), a token
@@ -2081,6 +2046,52 @@ inputs live in `tools/demo/src/routes.ts`, `src/inputs.ts` and
   only its integer error codes. The demo widget only with a printable site
   key and printable, deduplicated, bounded hostnames, and keys only when
   both are printable.
+
+### Storage guests
+
+The `b2` guest reads Backblaze B2's replies and webhook bodies inside the
+jailed isolate. What reaches the host is the storage reply that
+`storage_reply` already covers, so these readers guard what the guest
+stores, lists and reports. `test/fuzz.test.ts` in
+`crates/bookclerk-plugins/optional/destination-b2` replays its corpora
+under `fuzz/` and runs seeded mutation fuzzing, on the bytes and on the
+parsed JSON tree, against independent oracles, in `npm test` (the
+`workerd_guests` check). `FUZZ_SEED` and `FUZZ_ITERATIONS` pick another
+run.
+
+- **`b2_reply`**: byte 0 modulo 9 picks the reader: an authorization (0),
+  a bucket list (1), an upload URL (2), one file version (3), a file-name
+  page (4), a file-version page (5), an uploaded part (6), an error reply
+  with bytes 1 and 2 as its status (7), or download headers, one
+  `name: value` per line (8). Reading throws only its own reply error and answers the same
+  twice. An error reply always reads, with a non-empty code, and code and
+  message cut to 1,024 bytes without control characters. An accepted
+  reply agrees with an independent walk of the same JSON (token, file
+  names and ids, list lengths, part number); its URLs are plain `https`;
+  every file name passes the oracle's own copy of B2's naming rules; a
+  file-name page's continuation is past every listed name; a
+  file-version page continues with a name and a file id together, so it
+  may continue at the last listed name, and lists each name's versions
+  newest first; every SHA-1 is 40 lowercase hex digits; an error code
+  other than `unknown` is exactly the one the error object sent; and accepted download headers name a file id
+  and a body no longer than the file. Percent-encoding any text matches
+  the oracle's own encoder and decodes back to the text.
+  Readers in `src/b2-api.ts`; corpus `fuzz/b2_reply/`.
+- **`b2_event`**: byte 0 picks the boundary (even: one webhook body, with
+  bit 1 picking the destination's key prefix, clear: none, set:
+  `library/`; odd: a notification-rules reply). Parsing throws only its own parse error
+  and answers the same twice; a body over 1 MiB is refused as too large. An
+  accepted body agrees with an independent walk of the same JSON: the same
+  keys in order, each a non-empty `changed` entry without listing fields,
+  version or sequencer, and the same times; and a body that walk finds
+  well formed is accepted. Events of other types (test events, live
+  reads) or for another bucket, and names outside the prefix, are skipped
+  before the name is checked. An accepted rules reply lists at most 100
+  rules whose names match the walk, in order, are distinct and 1 to 63
+  bytes, every signing secret it reports is 32 letters or digits, and
+  sending back the rules that are not the destination's own keeps each one
+  as listed without B2's computed fields.
+  Readers in `src/b2-events.ts`; corpus `fuzz/b2_event/`.
 
 ### Metadata provider guests
 

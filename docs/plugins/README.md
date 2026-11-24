@@ -364,13 +364,13 @@ Audible, Libro.fm, Chirp, GraphicAudio and Audiobookshelf ship as
 The Audiobookshelf integration, the Open Library and Audnexus metadata
 providers, the `covers` fetcher, the `metadata_files` reader, the
 `cloudflare_relay`, `ngrok`, `cloudflare_tunnel` and `cloudflare_dns`
-ingresses and the
+ingresses, the `b2` destination and the
 `webhook` notifier are
 first-party **workerd TypeScript** guests in the same tree
 (`crates/bookclerk-plugins/optional/integration-audiobookshelf`,
 `metadata-openlibrary`, `metadata-audnexus`, `covers`, `metadata-files`,
 `ingress-cloudflare`, `ingress-ngrok`, `ingress-cloudflare-tunnel`,
-`ingress-cloudflare-dns` and
+`ingress-cloudflare-dns`, `destination-b2` and
 `notifier-webhook`). The
 `email` notifier (`notifier-email`) is a native Rust guest instead,
 because a workerd socket cannot start TLS. The workerd guests have no

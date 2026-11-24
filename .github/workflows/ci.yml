@@ -436,6 +436,7 @@ jobs:
             tools/lint/package-lock.json
             ui/package-lock.json
             packages/plugin-sdk/package-lock.json
+            crates/bookclerk-plugins/optional/destination-b2/package-lock.json
             crates/bookclerk-plugins/optional/ingress-cloudflare-dns/package-lock.json
             crates/bookclerk-plugins/optional/ingress-cloudflare-tunnel/package-lock.json
             crates/bookclerk-plugins/optional/ingress-ngrok/package-lock.json
