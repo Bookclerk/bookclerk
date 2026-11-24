@@ -2414,10 +2414,13 @@ mod tests {
         };
 
         // The baseline is taken before the guest starts, as the call does.
-        let start = |stop: FetchStop| async move {
+        /// Takes the fetch's scratch baseline and races its stop on a task.
+        async fn start(
+            stop: FetchStop,
+        ) -> tokio::task::JoinHandle<bookclerk_plugin_sdk::PluginError> {
             let baseline = stop.baseline().await;
             tokio::spawn(stop.wait(baseline))
-        };
+        }
 
         let stop = start(FetchStop::new(&opts(Some(16)), dir.path().to_path_buf())).await;
         tokio::time::sleep(FETCH_STOP_POLL * 3).await;
