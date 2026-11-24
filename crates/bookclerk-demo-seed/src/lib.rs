@@ -955,6 +955,7 @@ fn catalog_title(sample: &SampleTitle, hit: Option<&CatalogHit>) -> CatalogTitle
                 .unwrap_or(0)
                 .saturating_mul(480_000),
             content_type: Some("audio/mp4".into()),
+            version: None,
         }],
     }
 }

@@ -27,6 +27,7 @@ bookclerk-db-exec.workspace = true
 bookclerk-db-guest.workspace = true
 bookclerk-plugin-abi = { workspace = true, features = ["host"] }
 bookclerk-plugin-sdk = { workspace = true, features = ["db", "http"] }
+bookclerk-storage.workspace = true
 chrono.workspace = true
 hex.workspace = true
 sea-orm.workspace = true

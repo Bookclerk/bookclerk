@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from bookclerk_plugin_sdk import testkit
+from bookclerk_plugin_sdk import RetryToken, canonical_execute_request_hash, testkit
 from bookclerk_plugin_sdk.testkit import (
     TEST_DATABASE_PROFILES,
     create_test_database,
@@ -298,6 +298,43 @@ class TestDatabaseTests(unittest.TestCase):
                             "SELECT operation_id FROM bookclerk_receipts"
                         ).all()
                     self.assertEqual(scoped.exception.code, "invalid_params")
+
+        _run(scenario())
+
+    def test_a_retry_token_over_the_sql_as_written_is_accepted(self) -> None:
+        """The host desugars ``ORDER BY`` before hashing; a token over the sent request still fits."""
+
+        async def scenario() -> None:
+            for profile in TEST_DATABASE_PROFILES:
+                async with await create_test_database(profile=profile, migrations=MIGRATIONS) as db:
+                    insert = db.binding.prepare("INSERT INTO notes (id, body) VALUES (?, ?)")
+                    await insert.bind(_i64(1), _text("a")).run()
+                    statement: Any = {
+                        "sql": "SELECT id FROM notes ORDER BY id",
+                        "parameters": [],
+                        "kind": "select",
+                        "maxRows": 0,
+                        "resultSelection": "rows",
+                    }
+                    operation_id = "retry-ordered-read"
+                    request_hash = canonical_execute_request_hash(
+                        {
+                            "operationId": operation_id,
+                            "requestHash": "",
+                            "statements": [statement],
+                            "deadlineUnixMs": 0,
+                        }
+                    )
+                    reply = await db.binding.execute(
+                        [statement], retry=RetryToken(operation_id, request_hash)
+                    )
+                    ids = [row["values"][0] for row in reply["statements"][0]["rows"]]
+                    self.assertEqual(ids, [_i64(1)], profile)
+                    with self.assertRaises(PluginError) as forged:
+                        await db.binding.execute(
+                            [statement], retry=RetryToken("retry-forged", "0" * 64)
+                        )
+                    self.assertEqual(forged.exception.code, "invalid_params")
 
         _run(scenario())
 

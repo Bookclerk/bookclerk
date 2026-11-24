@@ -1,10 +1,12 @@
-//! Cloudflare API replies the `r2` destination's guided setup reads, and
-//! the request parts it builds.
+//! Cloudflare API replies the guided setups of the `r2` destination and the
+//! `d1` database read, and the request parts they build.
 //!
-//! The guided setup calls the Cloudflare v4 API with the operator's token:
-//! it finds the account, creates (or reuses) the bucket, looks up the
+//! The R2 setup calls the Cloudflare v4 API with the operator's token: it
+//! finds the account, creates (or reuses) the bucket, looks up the
 //! bucket-scoped permission group, mints a token for that one bucket, and
-//! deletes the token it minted on an earlier run. Every reply comes from
+//! deletes the token it minted on an earlier run. The D1 setup finds (or
+//! creates) the database, looks up the D1 write permission group, and mints
+//! an account token that can use D1 and nothing else. Every reply comes from
 //! outside Bookclerk, so this module is the boundary that reads them: pure
 //! functions over bytes, with no I/O, fuzzed by the `cloudflare_api`
 //! target. The caller does the HTTP.
@@ -44,6 +46,17 @@ pub const BUCKET_ALREADY_OWNED: i64 = 10004;
 /// The permission group that lets a token read and write the objects of
 /// the buckets it names, and nothing else.
 pub const BUCKET_ITEM_WRITE: &str = "Workers R2 Storage Bucket Item Write";
+
+/// The permission group that lets a token read and write the account's
+/// D1 databases (shown as "D1 Edit" in the dashboard).
+pub const D1_WRITE: &str = "D1 Write";
+
+/// The dashboard's name for [`D1_WRITE`], which some accounts' permission
+/// group lists use.
+pub const D1_EDIT: &str = "D1 Edit";
+
+/// Longest D1 database name accepted, in characters.
+pub const MAX_D1_DATABASE_NAME_CHARS: usize = 64;
 
 /// One error a failed reply reported.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -349,6 +362,100 @@ pub fn parse_done(reply: &[u8]) -> Result<(), ApiReplyError> {
     parse_envelope(reply).map(|_| ())
 }
 
+/// Whether `id` is a UUID in its hyphenated form (36 characters).
+fn is_uuid(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    bytes.len() == 36
+        && bytes.iter().enumerate().all(|(i, b)| match i {
+            8 | 13 | 18 | 23 => *b == b'-',
+            _ => b.is_ascii_hexdigit(),
+        })
+}
+
+/// Reads a `GET /accounts/{id}/d1/database?name=` reply and returns the id
+/// of the database named exactly `name` (the filter also matches names
+/// that only contain it).
+///
+/// # Returns
+///
+/// The database's UUID, lowercased, or `None` when none has that name.
+///
+/// # Errors
+///
+/// As [`parse_envelope`], and [`ApiReplyError::Malformed`] when the
+/// matching entry's `uuid` is not a UUID.
+pub fn find_d1_database(reply: &[u8], name: &str) -> Result<Option<String>, ApiReplyError> {
+    for entry in list_of(parse_envelope(reply)?)? {
+        if entry.get("name").and_then(serde_json::Value::as_str) != Some(name) {
+            continue;
+        }
+        return d1_uuid(&entry).map(Some);
+    }
+    Ok(None)
+}
+
+/// Reads a `POST /accounts/{id}/d1/database` reply and returns the new
+/// database's UUID, lowercased.
+///
+/// # Errors
+///
+/// As [`parse_envelope`], and [`ApiReplyError::Malformed`] when the result
+/// has no UUID.
+pub fn parse_d1_created(reply: &[u8]) -> Result<String, ApiReplyError> {
+    d1_uuid(&parse_envelope(reply)?)
+}
+
+/// A D1 database object's `uuid`, checked and lowercased.
+fn d1_uuid(entry: &serde_json::Value) -> Result<String, ApiReplyError> {
+    entry
+        .get("uuid")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| is_uuid(id))
+        .map(str::to_ascii_lowercase)
+        .ok_or_else(|| ApiReplyError::Malformed("a D1 database uuid is not a UUID".into()))
+}
+
+/// Checks a D1 database name: 1 to [`MAX_D1_DATABASE_NAME_CHARS`]
+/// lowercase letters, digits, hyphens and underscores, starting with a
+/// letter or digit.
+///
+/// # Errors
+///
+/// A sentence saying what is wrong.
+pub fn check_d1_database_name(name: &str) -> Result<(), String> {
+    let bytes = name.as_bytes();
+    if bytes.is_empty() || bytes.len() > MAX_D1_DATABASE_NAME_CHARS {
+        return Err(format!(
+            "a database name is 1 to {MAX_D1_DATABASE_NAME_CHARS} characters"
+        ));
+    }
+    if !bytes
+        .iter()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-' || *b == b'_')
+    {
+        return Err(
+            "a database name holds only lowercase letters, digits, hyphens and underscores".into(),
+        );
+    }
+    if !bytes
+        .first()
+        .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    {
+        return Err("a database name starts with a letter or a digit".into());
+    }
+    Ok(())
+}
+
+/// The token policy resource that names a whole account.
+///
+/// # Arguments
+///
+/// * `account` - the account id.
+#[must_use]
+pub fn account_resource(account: &str) -> String {
+    format!("com.cloudflare.api.account.{account}")
+}
+
 /// Checks an R2 bucket name: 3 to 63 lowercase letters, digits and hyphens,
 /// not starting or ending with a hyphen.
 ///
@@ -511,5 +618,38 @@ mod tests {
         let body = token_request("Bookclerk books", ID, &resource);
         assert_eq!(body["policies"][0]["resources"][&resource], "*");
         assert_eq!(body["policies"][0]["permission_groups"][0]["id"], ID);
+    }
+
+    #[test]
+    fn d1_replies_and_names() {
+        const DB: &str = "0c3a1d2e-4b5f-4a6b-8c7d-9e0f1a2b3c4d";
+        let list = format!(
+            r#"{{"success":true,"result":[{{"name":"books-old","uuid":"{ID}"}},{{"name":"books","uuid":"{}"}}]}}"#,
+            DB.to_ascii_uppercase()
+        );
+        assert_eq!(
+            find_d1_database(list.as_bytes(), "books").unwrap(),
+            Some(DB.to_string())
+        );
+        assert_eq!(find_d1_database(list.as_bytes(), "other").unwrap(), None);
+        assert!(find_d1_database(list.as_bytes(), "books-old").is_err());
+        let created = format!(r#"{{"success":true,"result":{{"uuid":"{DB}","name":"books"}}}}"#);
+        assert_eq!(parse_d1_created(created.as_bytes()).unwrap(), DB);
+        assert!(parse_d1_created(br#"{"success":true,"result":{}}"#).is_err());
+        assert!(parse_d1_created(
+            br#"{"success":false,"errors":[{"code":7406,"message":"limit"}]}"#
+        )
+        .unwrap_err()
+        .has_code(7406));
+
+        assert!(check_d1_database_name("bookclerk_library-1").is_ok());
+        assert!(check_d1_database_name("").is_err());
+        assert!(check_d1_database_name("Books").is_err());
+        assert!(check_d1_database_name("-books").is_err());
+        assert!(check_d1_database_name(&"a".repeat(MAX_D1_DATABASE_NAME_CHARS + 1)).is_err());
+        assert_eq!(
+            account_resource(ID),
+            format!("com.cloudflare.api.account.{ID}")
+        );
     }
 }

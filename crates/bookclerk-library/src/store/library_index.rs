@@ -2149,6 +2149,8 @@ mod tests {
             share_digest: None,
             delivered_digest: None,
             delivered_at: None,
+            refused_digest: None,
+            refused_at: None,
             created_at: at.into(),
             updated_at: at.into(),
         }

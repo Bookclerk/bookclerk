@@ -63,7 +63,7 @@ boundary extends it.
 | `storage_reply` | A storage plugin's replies to intent operations: `moveMany`, `deleteMany`, `headMany`, `translateKeys` and `changes` replies and the hinted `list` page, checked against the request that asked for them | `bookclerk-plugin-abi::validate_move_many_page` and siblings |
 | `s3_event` | Messages on an S3 bucket's notification queue, which the `s3` guest turns into change-feed entries: S3 event notifications, SNS envelopes and EventBridge events, the percent-encoded keys of S3 and SNS records, buckets and prefixes | `bookclerk-storage::s3_events` |
 | `r2_event` | What the `r2` guest reads from Cloudflare to serve its change feed: Queues HTTP pull replies (the envelope, lease ids and base64 or text bodies) and the R2 event notifications in them, with their accounts, buckets and prefixes | `bookclerk-storage::r2_events` |
-| `cloudflare_api` | What the `r2` guest's guided setup reads from the Cloudflare API: the v4 envelope and its errors, account lists, bucket create replies, permission group lists and token create replies, and the bucket names it sends | `bookclerk-storage::cloudflare_api` |
+| `cloudflare_api` | What the `r2` and `d1` guests' guided setups read from the Cloudflare API: the v4 envelope and its errors, account lists, bucket create replies, D1 database lists and create replies, permission group lists and token create replies, and the bucket and database names they send | `bookclerk-storage::cloudflare_api` |
 | `b2_reply` | What the `b2` guest reads from Backblaze B2: native API replies (authorization, buckets, upload URLs, file versions, file-name and file-version listings, uploaded parts, errors) and download headers, and the percent-encoding of file names | `bookclerk-storage::b2_api` |
 | `b2_event` | What the `b2` guest reads to serve its change feed: B2 event notification webhook bodies (event types, buckets, object names, times) and `b2_get_bucket_notification_rules` / `b2_set_bucket_notification_rules` replies | `bookclerk-storage::b2_events` |
 | `socket_request` | A plugin's host-brokered socket request (`Sockets.connect`): its URL (`ws://`, `wss://` or `tls://host:port`), headers, subprotocols or ALPN ids, heartbeat pairs, attachment, trust anchors' DER shape and `tls://` server name, and the `SocketMessage` the host delivers to a socket handler | `bookclerk-plugin-abi::sockets` |
@@ -119,6 +119,7 @@ boundary extends it.
 | `work_tags_request` | An Administrator's library tags for a work, the body of `PUT /api/library/works/{id}/tags` | `bookclerk-library::parse_work_tags_request` |
 | `collections_request` | An Administrator's collections for the library, the body of `PUT /api/library/collections` and the stored `core.collections` document | `bookclerk-library::control_plane::parse_collections_request` |
 | `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
+| `account_mail_request` | Account mail's notifier, the body of `PUT /api/notifications/account-mail`, and the token of a verification link, the body of `POST /api/auth/verify-email` | `bookclerk-library::notifications::parse_account_mail_settings`, `parse_verify_email_request` (the routes read the same request types with the JSON extractor) |
 | `pace_request` | A person's pace for one of their store accounts, the body of `POST /api/portal/sources/{source}/connections/{account_id}/pace` | `bookclerk-library::pacing::parse_pace_request` |
 | `title_meta_fill` | A signed-in user's title-meta query (the body of `POST /api/discover/title-meta`, each entry of its batch route, and the body of `POST /api/discover/title-sample`) and the storefront catalog-detail lookups its store editions and ISBN plan | `bookclerk-discover::check_title_meta_query`, `plan_title_meta_fill` |
 | `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the window's own credential (the operator token or its patron's session cookies) unless refused, the URLs the window is asked to open, and which pages may start the window's live updates | `bookclerk-window-policy` |
@@ -640,10 +641,12 @@ only that. The others check:
   sending back the rules that are not the destination's own keeps each one
   as listed without B2's computed fields. The shared oracle is
   `fuzz/oracles/b2_event.rs`, replayed from `bookclerk-storage`.
-- **`cloudflare_api`**: byte 0 modulo 6 picks the reader: the bare
+- **`cloudflare_api`**: byte 0 modulo 10 picks the reader: the bare
   envelope (0), an account list (1), a bucket create reply (2), a
   permission group list searched for the bucket item group (3), a token
-  create reply (4) or a bucket name (5). Reading never panics and answers
+  create reply (4), a bucket name (5), a D1 database list searched for
+  `books` (6), a D1 create reply (7), a D1 database name (8) or a
+  permission group list searched for the D1 write group (9). Reading never panics and answers
   the same twice; a reply over 1 MiB is refused as too large. A refusal
   keeps at most 4 errors, each message within 160 characters without
   control characters, and only for a reply whose `success` is not `true`.
@@ -652,8 +655,10 @@ only that. The others check:
   32 hex digits, lowercased; a token value is the reply's own printable
   value, and its S3 secret is the oracle's own SHA-256 of it; a bucket
   create counts as already owned exactly when the reply refused with
-  code 10004. A bucket name passes exactly when the oracle's own reading
-  of R2's naming rules accepts it. The shared oracle is
+  code 10004. A D1 database id is the reply's own UUID, lowercased, and a
+  list search yields the first entry named exactly `books`. A bucket name
+  or a D1 database name passes exactly when the oracle's own reading of
+  the naming rules accepts it. The shared oracle is
   `fuzz/oracles/cloudflare_api.rs`, replayed from `bookclerk-storage`.
 - **`provision_reply`**: byte 0 bit 0 picks the form (clear: a Cap'n
   Proto `ProvisionReply`; set: NUL-separated settings JSON, credential
@@ -803,7 +808,9 @@ only that. The others check:
   control characters, or a sync token of at most 4096 bytes with no
   control characters. A file of an `upload.grant` or `catalog.upload`
   that passes its validator states a probe only with a bitrate of at most
-  20,000 kbps and a plain store id. A `copy.grant` that passes its
+  20,000 kbps and a plain store id. A file of a `catalog.sync` title that
+  passes its validator carries a content version of at most 128 bytes with
+  no control byte, when it carries one. A `copy.grant` that passes its
   validator names a plain store id, a lowercase marketplace and a product
   id with no control characters or outer whitespace. A `copy.granted`
   that passes its validator carries a lowercase hyphenated UUID as its
@@ -1176,6 +1183,17 @@ only that. The others check:
   86400 seconds). Only `custom` may carry a number, and it needs at least
   one. Anything else is refused as `Invalid`. The shared oracle is
   `fuzz/oracles/pace_request.rs`, replayed from `bookclerk-library`.
+- **`account_mail_request`**: the first byte picks the body (even:
+  settings, odd: verify) and the rest is read as an untyped JSON value. It
+  is accepted exactly when it is one object with no repeated keys whose
+  only key is `plugin_instance_id` (`null`, or 1 to 128 printable ASCII
+  bytes with no space) or `token` (exactly 64 lowercase hex characters),
+  and the parsed value equals the one written. Anything else is refused as
+  `Invalid`. The routes read the same `AccountMailSettingsRequest` and
+  `VerifyEmailRequest` types with axum's JSON extractor and call the same
+  `validate`, so the target covers their reading and validation. The
+  shared oracle is `fuzz/oracles/account_mail_request.rs`, replayed from
+  `bookclerk-library`.
 - **`download_resume`**: the input is a flags byte (the length is already
   known; the answer sent `Content-Length`; it sent `Content-Range`), the
   resume offset, the known length and the `Content-Length` (eight bytes

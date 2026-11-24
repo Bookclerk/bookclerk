@@ -22,6 +22,9 @@ pub struct Model {
     pub created_by: String,
     /// RFC 3339 timestamp when the row was inserted.
     pub created_at: String,
+    /// The address account mail sent this ticket to, when it was emailed;
+    /// redeeming it verifies that address if the user still has it.
+    pub emailed_to: Option<String>,
 }
 
 /// Declared SeaORM relations (none unless FK edges are modeled).

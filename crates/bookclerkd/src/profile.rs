@@ -340,7 +340,7 @@ pub(crate) async fn require_self_user_id(
             ("nothing_to_change" = (summary = "The body changes nothing.", value = json!({"error": "bad_request", "message": "The request could not be understood.", "status": 400}))),
         )),
         (status = 404, description = "The caller's user no longer exists."),
-        (status = 409, description = "The email is used by another account (`email_in_use`).", body = crate::http_error::ErrorJson, example = json!({"error": "email_in_use", "message": "That email is already used by another account.", "status": 409})),
+        (status = 409, description = "The email is used by another account (`email_in_use`), or another change to the address landed while this one was being applied (`email_changed`; reload and try again). It does not detect a change made before this request read the address, so it does not reject a stale form.", body = crate::http_error::ErrorJson, example = json!({"error": "email_in_use", "message": "That email is already used by another account.", "status": 409})),
         (status = 500, description = "The library could not be read or written."),
     ),
 )]
@@ -376,6 +376,7 @@ pub async fn patch_profile(
     }
 
     if let Some(raw) = body.email.as_deref() {
+        let before = user.email.clone();
         user = match library.set_user_email(user_id, Some(raw)).await {
             Ok(u) => u,
             Err(bookclerk_library::LibraryError::InvalidEmail) => {
@@ -385,6 +386,8 @@ pub async fn patch_profile(
                     "Enter a valid email address.",
                 ));
             }
+            // A unique-index refusal can arrive as a `Conflict`; it is checked
+            // first so a taken address is not reported as a changed one.
             Err(err) if is_unique_violation(&err) => {
                 return Ok(crate::auth::json_auth_error(
                     StatusCode::CONFLICT,
@@ -392,8 +395,23 @@ pub async fn patch_profile(
                     "That email is already used by another account.",
                 ));
             }
+            Err(bookclerk_library::LibraryError::Conflict(_)) => {
+                return Ok(crate::auth::json_auth_error(
+                    StatusCode::CONFLICT,
+                    "email_changed",
+                    "Your email address changed meanwhile. Reload and try again.",
+                ));
+            }
             Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR.into()),
         };
+        // A new address is unverified until a link mailed to it is used.
+        if let Some(address) = user
+            .email
+            .as_deref()
+            .filter(|now| before.as_deref() != Some(*now))
+        {
+            crate::account_mail::queue_verification_if_ready(&state, user_id, address).await;
+        }
     }
 
     if let Some(raw) = body.avatar_source.as_deref() {
