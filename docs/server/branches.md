@@ -770,8 +770,12 @@ Each library sees only its share:
   free now, so the library's scheduler never counts on the whole machine
   or on headroom other work already took. The library then applies its
   own budget for the branch (`bookclerk nodes set` there) as it does for any
-  node; the branch's budget decides how many slots there are. Free disk is
-  reported whole.
+  node. The heartbeat also carries the same share of the branch's own
+  budget, and the library keeps the smaller of the two, so a library that
+  allows more than the branch does never plans more than the branch
+  budgeted. For example, a machine with 8 cores, a 40% budget on the
+  branch and one library that allows 80% records 3,200 millicores, not
+  6,400. Free disk is reported whole.
 
 For example, a branch of two libraries with four slots runs up to two
 jobs for each. While it runs one job of its own, the first library (by
@@ -1362,17 +1366,34 @@ For each library A it joined, B:
   in, it drops the books A no longer named. A read cut short keeps the
   list from the last complete read. Leaving A clears that library's list.
 
-B's **Library** page then shows **Books in other libraries** to B's
-operator and Owners: every library B is a branch of, merged into one list
-by work, the person's own books marked **Yours**, with an **Only yours**
-filter. Two books are the same work when their identifiers reach the
-same work in B's own library, when they share a strong identifier (an
-ASIN with its marketplace, or an OpenLibrary edition or work id), or when
-one library groups them under one work. An ISBN alone doesn't join two
-libraries' books, since one ISBN can sit on several editions. Titles are
-never compared,
-because work ids differ between libraries. Each entry shows which
-libraries hold it, from which stores, and in which formats.
+For B's operator and Owners, B's **Library** page lists these books in
+the same list as B's own, merged by work. Two books are the same work
+when their identifiers reach the same work in B's own library, when they
+share a strong identifier (an ASIN with its marketplace, or an
+OpenLibrary edition or work id), or when one library groups them under
+one work. An ISBN alone doesn't join two libraries' books, since one ISBN
+can sit on several editions. Titles are never compared, because work ids
+differ between libraries.
+
+- A book B has too stays on B's row, with an **Also in** line naming the
+  other libraries, and **Yours there** when it is on the person's own
+  store accounts in one of them.
+- A book only other libraries hold gets a row of its own in the list's
+  order, saying which libraries hold it (or "On a branch of" one), from
+  which stores and in which formats, marked **Yours** when it is the
+  person's own there.
+- Title, author and series orders place these rows among B's own. They
+  have no added or purchase time on B, so those orders put them last; the
+  duration order uses their runtime. Under a search they follow B's own
+  matches. While more of B's pages are to come, only the rows that sort
+  before the last one loaded show, so nothing jumps as the list grows.
+- The search narrows them too (`author:`, `narrator:`, `series:`,
+  `title:` and `asin:` included), and so does the format filter (an
+  ebook there is a PDF). The status and other filters leave them out,
+  since B holds no state or filter values for them.
+- When B reads any other library, a **Library** filter shows **Every
+  library** (the default), **This library**, **Other libraries**, **Yours
+  in other libraries**, or one library when there are several.
 
 The list also has the books of every library B holds a library card for
 (see [Signing in with a library card](sign-in.md#signing-in-with-a-library-card)).
@@ -1397,6 +1418,13 @@ and every library above it.
 A shared branch is the same point in the tree as its
 library, so it adds no depth: a shared branch join to a library at the
 limit is not refused.
+
+When a library that is itself a branch has shared branches, they all read
+the same link to its parent and its node keys. Only one of them dials the
+parent at a time: it holds the link's dial lease (`library-link.dial:<parent
+id>` in `library_leases`) and renews it every few seconds. The others try
+again on the same beat and take over within 30 seconds of the holder
+stopping, or at once when it stops cleanly.
 
 ## Leaving
 

@@ -162,6 +162,7 @@ const INTERFACES: &[InterfaceEntry] = &[
             "scanLibrary",
             "syncListening",
             "pollEvents",
+            "ackEvents",
         ],
     },
     InterfaceEntry {

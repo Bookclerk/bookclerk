@@ -5,7 +5,7 @@ version = "0.1.0"
 logo = "https://www.google.com/s2/favicons?domain=cloudflare.com&sz=128"
 runtime = "native"
 command = "./bookclerk-plugin-database-d1"
-entrypoints = ["databaseAdapter"]
+entrypoints = ["databaseAdapter", "provisioning"]
 
 [capabilities.network]
 mode = "outbound"
@@ -14,6 +14,62 @@ tcp = [{ host = "api.cloudflare.com", ports = [443] }]
 # active database plugin. Nested jail denies ambient AF_INET; HTTP goes
 # through `bookclerk_plugin_sdk::http`.
 
+# Guided setup (`bookclerk database setup d1`): with a pasted Cloudflare API
+# token it finds or creates the library's D1 database and mints an account
+# token limited to D1, which the host seals with the library's key and keeps
+# in the master key's store. The pasted token is not stored. The settings
+# below are the setup's inputs and outputs only: D1 is configured in
+# `[database.d1]` in config.toml, not through a library instance.
+[provisioning]
+provider = "cloudflare"
+grants = ["api_token"]
+token_url = "https://dash.cloudflare.com/?to=/:account/api-tokens"
+token_permissions = [
+    "Account > D1 > Edit",
+    "Account > Account API Tokens > Edit",
+]
+inputs = ["account_id", "database_name", "jurisdiction"]
+outputs = ["account_id", "database_id", "database_name", "jurisdiction", "api_token_id", "api_token"]
+deprovision = false
+
 [vars]
+
+[[settings]]
+key = "account_id"
+label = "Account ID"
+type = "string"
+description = "The Cloudflare account that holds the database (32 hex digits); found from the token when it can see only one."
+
+[[settings]]
+key = "database_name"
+label = "Database name"
+type = "string"
+default = "bookclerk"
+description = "The D1 database the library lives in; created when it doesn't exist."
+
+[[settings]]
+key = "jurisdiction"
+label = "Jurisdiction"
+type = "enum"
+values = [{ id = "default", label = "Default" }, { id = "eu", label = "European Union" }, { id = "fedramp", label = "FedRAMP" }]
+default = "default"
+description = "Where a new database keeps its data."
+
+[[settings]]
+key = "database_id"
+label = "Database ID"
+type = "string"
+
+[[settings]]
+key = "api_token_id"
+label = "API token ID"
+type = "string"
+description = "The id of the token the setup minted, so a later run can delete it."
+
+[[settings]]
+key = "api_token"
+label = "API token"
+type = "secret"
+description = "A Cloudflare API token limited to D1."
 
 [secrets]

@@ -61,6 +61,7 @@ fn request<'a>(
         lease_secs,
         limits: limits(class),
         filter: None,
+        node_bound: None,
     }
 }
 
@@ -736,6 +737,7 @@ async fn an_instance_runs_only_where_an_up_guest_has_a_live_database_node() {
                     files_dir_free_bytes: None,
                     cache: None,
                     public_origin: None,
+                    budget_share: None,
                 },
             )
             .await

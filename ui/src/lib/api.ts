@@ -4032,10 +4032,18 @@ export async function fetchJobs(): Promise<JobInfo[]> {
   return parseJson(res);
 }
 
+/**
+ * How a works search reads `q`: by its words, or by what it means (which
+ * needs the library's embedding model; see {@link fetchMeaningStatus}).
+ */
+export type WorkSearchMode = "words" | "meaning";
+
 /** Filters and paging for {@link fetchWorks}. */
 export interface WorksQuery {
   /** Search text; matches come best first and `sort` is ignored. */
   q?: string;
+  /** How `q` is matched; `words` when omitted. Only sent with `q`. */
+  search?: WorkSearchMode;
   /** Page order without `q`. */
   sort?: WorkSort;
   /** Only works with an edition of this media kind. */
@@ -4065,6 +4073,7 @@ export interface WorksQuery {
 export async function fetchWorks(query: WorksQuery): Promise<WorksPage> {
   const sp = new URLSearchParams();
   if (query.q) sp.set("q", query.q);
+  if (query.q && query.search === "meaning") sp.set("search", "meaning");
   if (query.sort && !query.q) sp.set("sort", query.sort);
   if (query.media_kind) sp.set("media_kind", query.media_kind);
   if (query.kind) sp.set("kind", query.kind);
@@ -4079,6 +4088,58 @@ export async function fetchWorks(query: WorksQuery): Promise<WorksPage> {
   const res = await fetchRetryingBusy(`/api/library/works?${sp}`, {
     credentials: "include",
   });
+  return parseJson(res);
+}
+
+/**
+ * Whether a way of reading the library by meaning can be used: it
+ * answers, no embedding model is there for it, or the library is still
+ * being embedded with the model.
+ */
+export type MeaningState = "ready" | "no_model" | "embedding";
+
+/** What `GET /api/library/works/meaning` reports. */
+export interface MeaningStatus {
+  /** Whether a works search with `search: "meaning"` answers. */
+  search: MeaningState;
+  /** Whether {@link fetchSimilarWorks} lists works. */
+  similar: MeaningState;
+}
+
+/**
+ * Asks whether the library can be searched by meaning and whether similar
+ * works can be listed.
+ *
+ * @returns The state of each.
+ */
+export async function fetchMeaningStatus(): Promise<MeaningStatus> {
+  const res = await fetchRetryingBusy("/api/library/works/meaning", {
+    credentials: "include",
+  });
+  return parseJson(res);
+}
+
+/** What `GET /api/library/works/{id}/similar` reports. */
+export interface SimilarWorks {
+  /** `ready` when `works` was looked up; otherwise why it is empty. */
+  state: MeaningState;
+  /** The held works most like the one asked about, most alike first. */
+  works: WorkSummary[];
+}
+
+/**
+ * Fetches the held works most like one work, by what their descriptions
+ * mean.
+ *
+ * @param id - Work id.
+ * @param limit - Most works to list (the daemon caps it at 40).
+ * @returns The works, or the reason there are none.
+ */
+export async function fetchSimilarWorks(id: string, limit = 12): Promise<SimilarWorks> {
+  const res = await fetchRetryingBusy(
+    `/api/library/works/${encodeURIComponent(id)}/similar?limit=${limit}`,
+    { credentials: "include" },
+  );
   return parseJson(res);
 }
 
@@ -4891,6 +4952,35 @@ export interface CatalogSearchHit {
   purchase_hints?: PurchaseHint[];
   /** Branches of this library that currently list this title. */
   available_through?: BranchAvailability[];
+  /** Whether the library already holds this edition or another edition of the book. */
+  in_library?: LibraryCopy | null;
+}
+
+/**
+ * How the library holds a catalog search hit: `this_edition` when one of
+ * the hit's ASIN, ISBN or store products belongs to a held edition,
+ * `other_edition` when it holds another edition of the book (another
+ * recording, or this one from another store).
+ */
+export type LibraryCopy = "this_edition" | "other_edition";
+
+/**
+ * The line a search row shows for a title the library already holds.
+ *
+ * @param copy - The hit's `in_library` mark.
+ * @returns "In your library", "Another edition in your library", or `null`
+ *   when the library holds neither.
+ */
+export function inLibraryLabel(copy: LibraryCopy | null | undefined): string | null {
+  switch (copy) {
+    case "this_edition":
+      return "In your library";
+    case "other_edition":
+      return "Another edition in your library";
+    case null:
+    case undefined:
+      return null;
+  }
 }
 
 /**

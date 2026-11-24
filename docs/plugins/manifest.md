@@ -420,6 +420,13 @@ deprovision = true
   plugin may write back; at least one.
 - `deprovision`: whether the plugin can remove what it created.
 
+A database plugin has no library instance, because it must work before the
+library opens. Its guided setup runs from the CLI
+(`bookclerk config database setup d1` for D1) with the settings
+`config.toml` holds and no secrets, and the host keeps what it returns in
+`config.toml` and its credential store; see
+[Database → Set up D1 with a pasted token](../server/database.md#set-up-d1-with-a-pasted-token).
+
 The guided setup runs under the plugin's normal
 [`[capabilities.network]`](capabilities.md#network-rules) grant, so the provider's
 API host must be listed there. See

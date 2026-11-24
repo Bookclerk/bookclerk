@@ -17,7 +17,7 @@ class BookclerkEntrypoint<Env> extends WorkerEntrypoint<Env> {
   event?(batch: EventBatch): Promise<void>;             // [[events.consumers]]
   queue?(batch: QueueBatch): Promise<void>;             // [[queues.consumers]]
   job?(job: JobController): Promise<JobCompletion | void>; // [triggers] jobs
-  scheduled?(controller: ScheduledController): Promise<void>; // [triggers] crons
+  scheduled?(controller: ScheduledFire): Promise<void>; // [triggers] crons
   databaseMigrations?(binding: string): Promise<PluginMigration[]>; // [[databases]]
   shutdown?(): Promise<void>;
 }
@@ -534,10 +534,10 @@ crons = ["*/30 * * * *", "0 3 * * MON-FRI"]
 
 ```ts
 export default class MyPlugin extends BookclerkEntrypoint<Env> {
-  async scheduled(controller: ScheduledController) {
+  async scheduled(controller: ScheduledFire) {
     // controller.cron, controller.scheduledTime (UTC Unix ms),
     // controller.fireId, controller.attempt, controller.deadlineUnixMs
-    await refresh(controller.scheduledTime);
+    await refresh(controller.scheduledTime, { signal: controller.signal });
   }
 }
 ```
@@ -547,6 +547,15 @@ frozen `ScheduledController` (`cron`, `scheduled_time`, `fire_id`,
 `attempt`, `deadline_unix_ms`). Native guests implement
 `ScheduledHandler::scheduled` and return it from `open` as
 `Entrypoints.scheduled_handler`.
+
+- **Cancellation.** When the fire's job loses its fence or an operator
+  cancels it, the host stops awaiting the fire and tells the handler:
+  `controller.signal` aborts with a `cancelled` error in TypeScript,
+  `controller.cancelled` turns `True` and `await controller.wait_cancelled()`
+  returns in Python, and the `cancel` probe passed to
+  `ScheduledHandler::scheduled` polls `true` in a native guest. Stop side
+  effects then; the host does not refuse the plugin's granted calls on its
+  own.
 
 - **Schedules.** Each entry has five fields (minute, hour, day of month,
   month, day of week) and is read in UTC. Fields take `*`, values, ranges,
@@ -898,7 +907,8 @@ There is no `kind = "integration"`.
 | `remoteLibrary.start` / `stop` | Background watchers |
 | `remoteLibrary.scanLibrary` | `{ force: bool }` |
 | `remoteLibrary.syncListening` | Listening progress snapshots; the host upserts them tagged with the plugin id |
-| `remoteLibrary.pollEvents` | Observed external users. The host polls after `start`, and kicks off **core** workflows (such as claim tickets). The plugin stays unaware of the portal and tickets |
+| `remoteLibrary.pollEvents` | `{ ackFollows: bool }` → observed external users. The host polls after `start`, and kicks off **core** workflows (such as claim tickets). The plugin stays unaware of the portal and tickets. The host sends `ackFollows: true`; older hosts send no params, which read as `false` |
+| `remoteLibrary.ackEvents` | `{ externalUserIds }`: the users a `pollEvents` reply carried that the host accepted (their claim tickets minted). A user the host could not accept is left out and comes back on the next poll. A plugin polled with `ackFollows: true` keeps returning a user until it is acknowledged, so a reply lost on the way is answered again. Each user may arrive more than once; the default does nothing |
 | `oidc.authenticateUser` | `{ username, password }` → external user (when `oidc` is exported) |
 | `cli` | Declared under `[cli]` / `entrypoints = ["cli"]` |
 
@@ -2485,6 +2495,11 @@ and the `bookclerk_src` wrap alias.
 - The binding's own `bookclerk_receipts` and `bookclerk_plugin_migrations`
   tables stay host-owned, so retry tokens replay inside the binding and
   plugins can't edit the journal.
+- A retry token's `requestHash` may be the canonical hash of the request
+  as the plugin sent it (what `canonicalExecuteRequestHash` /
+  `canonical_execute_request_hash` compute) or of the form the host runs
+  after it desugars the SQL. Both name the same request; the host stamps
+  the desugared one.
 
 #### The SQL a plugin may use
 

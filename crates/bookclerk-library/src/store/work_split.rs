@@ -679,12 +679,14 @@ mod tests {
                 .unwrap();
             assert_eq!(isolated.action, "isolate", "{name}");
             assert_eq!(isolated.created_by_user_id, Some(ana.id), "{name}");
-            let updated = domain_events::Entity::find()
-                .filter(domain_events::Column::EventType.eq("edition_updated"))
-                .filter(domain_events::Column::DedupKey.ends_with(isolated.revision.as_str()))
-                .all(&store.db)
-                .await
-                .unwrap();
+            let updated = crate::test_support::uncapped(
+                domain_events::Entity::find()
+                    .filter(domain_events::Column::EventType.eq("edition_updated"))
+                    .filter(domain_events::Column::DedupKey.ends_with(isolated.revision.as_str()))
+                    .all(&store.db),
+            )
+            .await
+            .unwrap();
             assert_eq!(updated.len(), 2, "{name}: one edition on each side");
 
             // A new listing with the same title joins the original work,

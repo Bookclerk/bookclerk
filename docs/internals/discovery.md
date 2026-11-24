@@ -503,6 +503,78 @@ centroid of the reader's taste works.
 > counts for about as much as it did with the stand-in. They are tested
 > on small built libraries, not measured on real ones.
 
+### Searching by meaning
+
+Once a model serves the library, its work vectors answer two more
+questions, both in the Library:
+
+- **Search by meaning**: `GET /api/library/works?q=…&search=meaning`
+  finds the works whose descriptions are about the query, in any words
+  and any language the model knows. The filters and the cursor work as
+  they do for a search by words.
+- **More like this**: `GET /api/library/works/{id}/similar` lists the
+  held works closest to one work, most alike first.
+
+`GET /api/library/works/meaning` says whether each is `ready`, has
+`no_model`, or waits while the library is `embedding`. The web app asks
+it before it offers either.
+
+**The index.** Each node keeps the work vectors of the serving space in
+memory as one flat matrix of unit-length rows, and scans all of it for
+every question. The scan is exact; there is no approximate index and no
+engine-specific vector type. The `embeddings` table stays the one
+durable copy:
+
+- The matrix is built on the first question, from one keyset read of the
+  space's work vectors.
+- At most every 5 seconds a question compares the space's row count and
+  newest write with what the matrix was built from, and rebuilds it when
+  they differ. The node that ran `discover_embed` looks at once.
+- A library of 10,000 works at 384 numbers takes about 15 MB.
+
+**Which space is read.** Both read the space that
+[serves](#which-space-serves). A scan adds works without vectors, which
+costs a model's space its cover until they are embedded, and rankings
+fall back to the stand-in meanwhile. These routes do not: while the
+stand-in serves they read a model's space that holds vectors for at
+least 9 in 10 works (this node's model first), so a search misses only
+the newest books for the minutes their embedding takes. A search by
+meaning also queues `discover_embed` when the model's space does not
+serve.
+
+**The query.** A search embeds its text with the library's model as a
+*query* (models that tell queries from passages get the right prefix).
+The node that answers must run the model plugin; the model has 15
+seconds, which covers a sleeping plugin loading it. The vectors of the
+last 32 queries are kept, so the pages of one search run the model once.
+A query is at most 1,024 bytes.
+
+**What matches.** A model's cosines sit in a narrow band, so no fixed
+cosine separates a match from the rest. A work matches when its
+similarity to the query stands at least one standard deviation above the
+mean over the whole library. Matches come best first, ties in work id
+order, so pages agree.
+
+> [!NOTE]
+> One deviation is a first setting, not yet measured on real libraries.
+> On a library with no clear match for a query it still lists the works
+> that stand out the most.
+
+**When it is not ready.** A search that cannot run answers `503` with a
+message the web app shows; More like this answers `200` with a `state`
+and no works.
+
+| Case | Search by meaning | More like this |
+| --- | --- | --- |
+| The node that answers runs no model plugin | `503` | Lists works when a model serves the library, else `no_model` |
+| Model present, library not embedded with it yet | `503`, and queues `discover_embed` | `embedding` |
+| Model did not answer in 15 seconds | `503` | Not affected |
+
+More like this compares two stored vectors, so it needs no model on the
+node that answers. It lists only held works inside the caller's
+[patron scope](../guide/sharing.md#limit-what-a-patron-sees), and a work outside the scope
+answers `404` as its own page does.
+
 ### OSV / `paste`
 
 `lofty`, the tag library `bookclerk-media` uses, pulls crates.io `paste`
@@ -759,9 +831,12 @@ A row is one recording, never one title. Two stores' hits share a row when
 they share an ISBN or ASIN, or when the shared listing pool resolved both
 store products into the same expression (`LibraryStore::listing_expressions`).
 
-Stores rarely share a record number, so hits from two different stores that
-share none of those still share a row when all of these hold
-(`same_recording_by_runtime` in `bookclerk-discover`):
+Stores rarely share a record number, so hits that share none of those still
+share a row when all of these hold (`same_recording_by_runtime` in
+`bookclerk-discover`). This also joins one store's two products of one
+recording, which happens when two distributors deliver it: Chirp lists Cyril
+Taylor-Carr's *Aleister Crowley* from both Icon Audio Arts and Author's
+Republic, 2 seconds apart, and search shows one row.
 
 1. Both report a runtime, and the runtimes differ by at most 1 minute
    (stores round a recording's length differently, by less than a minute).
@@ -771,10 +846,11 @@ share none of those still share a row when all of these hold
 3. They credit the same, non-empty set of narrators.
 4. Nothing tells them apart: no two different ISBNs or ASINs, no abridged
    against unabridged, no two different languages, and no two different
-   expressions in the pool.
+   expressions in the pool. For two products of one store, no two different
+   subtitles either (stores word subtitles differently, so this is not
+   checked across stores).
 
-Two products of one store never merge this way, and title and authors alone
-never merge hits. A narration and a dramatisation of one book, or an
+Title and authors alone never merge hits. A narration and a dramatisation of one book, or an
 unabridged and an abridged recording, stay separate rows with their own
 cover, narrators and price. Each merged row keeps every store's edition, so
 every store's price is still offered, and a field one store left out (a
@@ -788,6 +864,18 @@ a tie the first one stays.
 > David Baldacci's *First Family*, read by Ron McLarty, is the reference
 > case: Audible, Chirp and Libro.fm each list an unabridged (871 minutes)
 > and an abridged (370 minutes) recording, and search shows two rows.
+
+Search is a store browser, so unlike the shelves it keeps books the library
+already holds and marks them instead (`in_library` on each hit, filled by
+`join_search_library_copies` when a page is read, never stored):
+
+- `this_edition` ("In your library"): one of the hit's ASIN, ISBN or store
+  products belongs to an edition an account or a branch holds.
+- `other_edition` ("Another edition in your library"): none of those is
+  held, but the hit's work is. The work is that of a store listing the
+  shared listing pool holds for the hit, or else the work the library's
+  resolver would place the hit in, as it places a scanned listing. That is
+  another recording of the book, or the same recording from another store.
 
 Stores give ISBNs where they can: Audible's catalog `isbn` attribute and
 Libro.fm's product ids are ISBNs, and Chirp, which lists none, names a

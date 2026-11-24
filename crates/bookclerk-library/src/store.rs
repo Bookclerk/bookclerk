@@ -173,6 +173,14 @@ impl LibraryStore {
         self
     }
 
+    /// Whether `other` is this store or a clone of it: the same opened
+    /// database, not merely an equal one. A cache built from one store
+    /// uses it to tell that the daemon now reads another.
+    #[must_use]
+    pub fn same_store(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.caps, &other.caps)
+    }
+
     /// Records the full negotiated [`bookclerk_plugin_abi::DbCapabilities`].
     #[must_use]
     pub fn with_db_capabilities(mut self, caps: bookclerk_plugin_abi::DbCapabilities) -> Self {
@@ -5009,9 +5017,10 @@ impl LibraryStore {
         Ok(())
     }
 
-    /// Counts the library's held works per acquire status in one grouped
+    /// Counts the library's held works per acquire status in a grouped
     /// read of the page index (`library_work_rows`), where each work has the
-    /// furthest state any of its editions reached.
+    /// furthest state any of its editions reached; the groups are read in
+    /// pages sized to the database plugin's `maxResultRows`.
     ///
     /// # Returns
     ///
@@ -5035,16 +5044,35 @@ impl LibraryStore {
             n: i64,
         }
         lock_retry::retry_read_lock(|| async {
-            let rows = library_work_rows::Entity::find()
-                .select_only()
-                .column(library_work_rows::Column::AcquireStatus)
-                .column_as(library_work_rows::Column::WorkId.count(), "n")
-                .filter(library_work_rows::Column::HoldingCount.gt(0))
-                .group_by(library_work_rows::Column::AcquireStatus)
-                .into_model::<StatusCount>()
-                .all(&self.db)
-                .await
-                .map_err(LibraryError::from_db_err)?;
+            // The groups are read in pages of at most one reply's rows,
+            // each starting after the last status of the one before.
+            let page = keyset::result_page(self);
+            let mut rows: Vec<StatusCount> = Vec::new();
+            loop {
+                let mut query = library_work_rows::Entity::find()
+                    .select_only()
+                    .column(library_work_rows::Column::AcquireStatus)
+                    .column_as(library_work_rows::Column::WorkId.count(), "n")
+                    .filter(library_work_rows::Column::HoldingCount.gt(0));
+                if let Some(last) = rows.last() {
+                    query = query.filter(
+                        library_work_rows::Column::AcquireStatus.gt(last.acquire_status.clone()),
+                    );
+                }
+                let groups = query
+                    .group_by(library_work_rows::Column::AcquireStatus)
+                    .order_by_asc(library_work_rows::Column::AcquireStatus)
+                    .limit(page)
+                    .into_model::<StatusCount>()
+                    .all(&self.db)
+                    .await
+                    .map_err(LibraryError::from_db_err)?;
+                let full = u64::try_from(groups.len()).unwrap_or(u64::MAX) >= page;
+                rows.extend(groups);
+                if !full {
+                    break;
+                }
+            }
             let mut counts = AcquireStatusCounts::default();
             for StatusCount {
                 acquire_status: status,

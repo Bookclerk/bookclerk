@@ -239,7 +239,11 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["POST", "/api/library/acquire", "deny"],
   ["POST", "/api/library/convert", "deny"],
   ["GET", "/api/library/works", "allow"],
+  // Search by meaning and "more like this": reads over the sample
+  // library's baked vectors, in the visitor's own container.
+  ["GET", "/api/library/works/meaning", "allow"],
   ["GET", "/api/library/works/{id}", "allow"],
+  ["GET", "/api/library/works/{id}/similar", "allow"],
   ["PUT", "/api/library/works/{id}/state", "allow"],
   ["GET", "/api/library/works/{id}/tags", "allow"],
   ["PUT", "/api/library/works/{id}/tags", "deny"],

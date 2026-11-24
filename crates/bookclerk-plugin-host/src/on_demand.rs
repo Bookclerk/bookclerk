@@ -102,6 +102,16 @@ pub(crate) trait ExternalUserPoll: Send + Sync {
     /// Returns the guest's `poll_events` failure.
     async fn poll_external_users(&self) -> bookclerk_integrations::Result<Vec<ExternalUser>>;
 
+    /// Acknowledges users a poll handed over.
+    ///
+    /// # Errors
+    ///
+    /// Returns the guest's `ackEvents` failure.
+    async fn ack_external_users(
+        &self,
+        external_user_ids: Vec<String>,
+    ) -> bookclerk_integrations::Result<()>;
+
     /// The guest's relying-party templates, with a failed RPC as an error.
     ///
     /// # Errors
@@ -114,6 +124,13 @@ pub(crate) trait ExternalUserPoll: Send + Sync {
 impl ExternalUserPoll for crate::ExternalIntegration {
     async fn poll_external_users(&self) -> bookclerk_integrations::Result<Vec<ExternalUser>> {
         crate::ExternalIntegration::poll_external_users(self).await
+    }
+
+    async fn ack_external_users(
+        &self,
+        external_user_ids: Vec<String>,
+    ) -> bookclerk_integrations::Result<()> {
+        crate::ExternalIntegration::ack_external_users(self, external_user_ids).await
     }
 
     async fn fetch_oidc_clients(&self) -> bookclerk_integrations::Result<Vec<ProvidedOidcClient>> {
@@ -295,6 +312,19 @@ impl OnDemandIntegration {
         guest.poll_external_users().await
     }
 
+    /// Wakes the guest to acknowledge users a poll handed over.
+    ///
+    /// # Errors
+    ///
+    /// Returns the wake failure or the guest's `ackEvents` failure.
+    async fn ack_external_users(
+        &self,
+        external_user_ids: Vec<String>,
+    ) -> bookclerk_integrations::Result<()> {
+        let (guest, _busy) = self.awake().await?;
+        guest.ack_external_users(external_user_ids).await
+    }
+
     /// Stops the guest now if it has been idle for the timeout.
     ///
     /// # Returns
@@ -411,11 +441,23 @@ impl Integration for OnDemandIntegration {
                     self.poll_interval,
                     self.identity.id.clone(),
                     on_user,
-                    move || {
+                    {
+                        let me = me.clone();
+                        move || {
+                            let me = me.clone();
+                            async move {
+                                let proxy = me.upgrade().filter(|proxy| !proxy.is_retired())?;
+                                Some(proxy.poll_external_users().await)
+                            }
+                        }
+                    },
+                    move |ids| {
                         let me = me.clone();
                         async move {
-                            let proxy = me.upgrade().filter(|proxy| !proxy.is_retired())?;
-                            Some(proxy.poll_external_users().await)
+                            match me.upgrade().filter(|proxy| !proxy.is_retired()) {
+                                Some(proxy) => proxy.ack_external_users(ids).await,
+                                None => Ok(()),
+                            }
                         }
                     },
                 );

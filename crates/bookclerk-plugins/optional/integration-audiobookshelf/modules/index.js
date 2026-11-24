@@ -129,12 +129,23 @@ export class RemoteLibrary extends RemoteLibraryEntrypoint {
         return guarded(() => guest.syncListening(STATE, contextOf(this.env), Date.now()));
     }
     /**
-     * The users created since the last poll.
+     * The users created since the last poll, plus those the host has not
+     * acknowledged yet when it acknowledges polls.
      *
+     * @param params - Whether an `ackEvents` call follows (absent from older hosts).
      * @returns New users, for claim tickets.
      */
-    pollEvents() {
-        return guarded(() => guest.pollEvents(STATE, contextOf(this.env)));
+    pollEvents(params) {
+        const ackFollows = params?.ackFollows === true;
+        return guarded(() => guest.pollEvents(STATE, contextOf(this.env), ackFollows));
+    }
+    /**
+     * Records that the host received these users, so polls stop reporting them.
+     *
+     * @param params - The acknowledged Audiobookshelf user ids.
+     */
+    ackEvents(params) {
+        return guarded(() => guest.ackEvents(STATE, contextOf(this.env), params.externalUserIds));
     }
 }
 /** `oidc` entrypoint: the relying-party template and credential sign-in. */

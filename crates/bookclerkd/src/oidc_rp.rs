@@ -2310,6 +2310,7 @@ mod http_tests {
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
+            work_vectors: Arc::default(),
             integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
             sources: Arc::new(RwLock::new(SourceRegistry::new())),
             destinations: Arc::new(RwLock::new(DestinationRegistry::default())),

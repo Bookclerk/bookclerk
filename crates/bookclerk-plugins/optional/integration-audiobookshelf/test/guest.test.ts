@@ -390,3 +390,31 @@ test("serialized calls run one at a time, even after a failure", async () => {
   assert.equal(await second, 2);
   assert.deepEqual(order, ["first", "second"]);
 });
+
+test("an acknowledged poll stops reporting the acknowledged users", async () => {
+  for (const profile of TEST_DATABASE_PROFILES) {
+    const db = await createTestDatabase({ profile, migrations: migrationsFor("LISTENING_STATE") });
+    try {
+      const state = guest.newState();
+      await guest.start(state, ctxFor(usersServer(["root"]), { db: db.binding }));
+      const server = usersServer(["root", "ada"]);
+      const ctx = ctxFor(server, { db: db.binding });
+      const first = await guest.pollEvents(state, ctx, true);
+      assert.deepEqual(
+        first.map((u) => u.externalUserId),
+        ["ada"],
+        profile,
+      );
+      assert.deepEqual(
+        (await guest.pollEvents(state, ctx, true)).map((u) => u.externalUserId),
+        ["ada"],
+        profile,
+      );
+      await guest.ackEvents(state, ctx, []);
+      await guest.ackEvents(state, ctx, ["ada"]);
+      assert.deepEqual(await guest.pollEvents(state, ctx, true), [], profile);
+    } finally {
+      await db.close();
+    }
+  }
+});

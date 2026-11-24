@@ -10,11 +10,11 @@ desktop/app--accounts--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 desktop/app--add-branch--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
-desktop/app--add-branch--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+desktop/app--add-branch--light.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
 
-desktop/app--book-details--dark.png b179a075afd9fec03ea4714797e0be8fa0796948
+desktop/app--book-details--dark.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
 
-desktop/app--book-details--light.png b179a075afd9fec03ea4714797e0be8fa0796948
+desktop/app--book-details--light.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
 
 desktop/app--change-picture--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
@@ -48,21 +48,21 @@ desktop/app--join-callback--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 desktop/app--join-callback--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
-desktop/app--library--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+desktop/app--library--dark.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
 
-desktop/app--library--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+desktop/app--library--light.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
 
-desktop/app--library-other-libraries--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+desktop/app--library-other-libraries--dark.png 2e978c4b280ee9ba1314f2b6a2910d5c8caca725
 
-desktop/app--library-other-libraries--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+desktop/app--library-other-libraries--light.png 2e978c4b280ee9ba1314f2b6a2910d5c8caca725
 
 desktop/app--now-playing--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
-desktop/app--now-playing--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+desktop/app--now-playing--light.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
 
-desktop/app--player--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+desktop/app--player--dark.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
 
-desktop/app--player--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+desktop/app--player--light.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
 
 desktop/app--player-approve--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
@@ -530,11 +530,11 @@ phone/app--accounts--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 phone/app--add-branch--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
-phone/app--add-branch--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+phone/app--add-branch--light.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
 
-phone/app--book-details--dark.png b179a075afd9fec03ea4714797e0be8fa0796948
+phone/app--book-details--dark.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
 
-phone/app--book-details--light.png b179a075afd9fec03ea4714797e0be8fa0796948
+phone/app--book-details--light.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
 
 phone/app--change-picture--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
@@ -568,21 +568,21 @@ phone/app--join-callback--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 phone/app--join-callback--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
-phone/app--library--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+phone/app--library--dark.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
 
-phone/app--library--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+phone/app--library--light.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
 
-phone/app--library-other-libraries--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+phone/app--library-other-libraries--dark.png 2e978c4b280ee9ba1314f2b6a2910d5c8caca725
 
-phone/app--library-other-libraries--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+phone/app--library-other-libraries--light.png 2e978c4b280ee9ba1314f2b6a2910d5c8caca725
 
 phone/app--now-playing--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 phone/app--now-playing--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
-phone/app--player--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+phone/app--player--dark.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
 
-phone/app--player--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+phone/app--player--light.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
 
 phone/app--player-approve--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 

@@ -752,6 +752,7 @@ mod tests {
                 files_dir_free_bytes: None,
                 cache: None,
                 public_origin: None,
+                budget_share: None,
             },
         )
         .await

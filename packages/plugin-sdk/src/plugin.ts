@@ -114,6 +114,8 @@ import type {
   EventReadPage,
   ExpandCandidatesParams,
   ExtensibleConfig,
+  EventAckParams,
+  EventPollParams,
   ExternalUser,
   FetchTitleParams,
   HealthOk,
@@ -2119,9 +2121,10 @@ export class BookclerkEntrypoint<
    * `[triggers] crons` trigger, the Workers `scheduled(controller)`: run one
    * cron fire. Return to complete; throw to have the host retry the same
    * fire (same `scheduledTime` and `fireId`) with backoff. Fires are
-   * delivered at least once, so dedupe on `controller.fireId`.
+   * delivered at least once, so dedupe on `controller.fireId`. Stop work
+   * when `controller.signal` aborts: the host has stopped awaiting the fire.
    */
-  scheduled?(controller: Readonly<ScheduledController>): Promise<void> | void;
+  scheduled?(controller: ScheduledFire): Promise<void> | void;
 
   /**
    * `[triggers] jobs` trigger: run one durable job. Return to complete,
@@ -2242,18 +2245,20 @@ export class BookclerkEntrypoint<
    *
    * @param context - Granted bindings for this invocation.
    * @param wire - Wire `ScheduledController`.
+   * @param cancel - Host cancellation watch for this fire, when the host sent one.
    * @returns Resolves when the author's handler completes.
    * @internal
    */
   async bookclerkScheduled(
     context: GrantedContext,
     wire: Partial<ScheduledController>,
+    cancel?: CancelWatchLike | null,
   ): Promise<void> {
     if (typeof this.scheduled !== "function") {
       throw unsupported("scheduled");
     }
     applyInvocationEnv(this, context);
-    await this.scheduled(scheduledControllerOf(wire));
+    await this.scheduled(scheduledControllerOf(wire, cancel));
   }
 
   /**
@@ -2885,6 +2890,7 @@ const REMOTE_LIBRARY_METHODS = Object.freeze([
   "scanLibrary",
   "syncListening",
   "pollEvents",
+  "ackEvents",
 ]);
 
 /**
@@ -2947,12 +2953,28 @@ export class RemoteLibraryEntrypoint<
     return Promise.reject(unsupported("syncListening"));
   }
   /**
-   * Drains external users observed since the last poll.
+   * External users observed and not yet acknowledged. When
+   * `params.ackFollows` is true the host calls {@link ackEvents} with every
+   * user it passes on: keep returning a user until then, so a lost reply
+   * does not lose it. When it is false (a host that predates `ackEvents`),
+   * a returned user counts as delivered.
    *
-   * @returns Newly observed users.
+   * @param _params - Whether the host acknowledges what it receives.
+   * @returns Users the host has not acknowledged.
    */
-  pollEvents(): Promise<ExternalUser[]> {
+  pollEvents(_params?: EventPollParams): Promise<ExternalUser[]> {
     return Promise.reject(unsupported("pollEvents"));
+  }
+  /**
+   * Acknowledges users a {@link pollEvents} reply handed over: stop
+   * returning them. The default does nothing, which suits a plugin that
+   * treats every returned user as delivered.
+   *
+   * @param _params - The acknowledged `externalUserId`s.
+   * @returns Resolves once recorded.
+   */
+  ackEvents(_params: EventAckParams): Promise<void> {
+    return Promise.resolve();
   }
 }
 
@@ -4961,22 +4983,45 @@ export const TRIGGER_FAMILIES: Readonly<
 });
 
 /**
+ * One cron fire as the author's `scheduled()` receives it: the wire
+ * `ScheduledController` fields plus `signal`, which aborts with a
+ * `cancelled` {@link PluginError} once the host stops awaiting the fire
+ * (fence loss or operator cancel).
+ */
+export type ScheduledFire = Readonly<ScheduledController> & {
+  /** Aborts when the host cancels this fire. */
+  readonly signal: AbortSignal;
+};
+
+/**
  * Frozen author view of one wire `ScheduledController`, with every field
  * present and typed.
  *
  * @param wire - Decoded wire struct (fields may be missing).
+ * @param cancel - Host cancellation watch; without one `signal` never aborts.
  * @returns The controller the author's `scheduled()` receives.
  */
 export function scheduledControllerOf(
   wire: Partial<ScheduledController> | null | undefined,
-): Readonly<ScheduledController> {
+  cancel?: CancelWatchLike | null,
+): ScheduledFire {
   const w = wire && typeof wire === "object" ? wire : {};
+  const abort = new AbortController();
+  if (cancel && typeof cancel.wait === "function") {
+    Promise.resolve()
+      .then(() => cancel.wait())
+      .then(
+        () => abort.abort(PluginError.fromWire("cancelled", "cron fire cancelled by host")),
+        () => {},
+      );
+  }
   return Object.freeze({
     cron: String(w.cron ?? ""),
     scheduledTime: Number(w.scheduledTime ?? 0) || 0,
     fireId: String(w.fireId ?? ""),
     attempt: Number(w.attempt ?? 0) || 0,
     deadlineUnixMs: Number(w.deadlineUnixMs ?? 0) || 0,
+    signal: abort.signal,
   });
 }
 

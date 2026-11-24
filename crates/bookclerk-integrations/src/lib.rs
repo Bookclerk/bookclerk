@@ -38,8 +38,8 @@ pub use tickets::{
     ticket_portal_url, MintedClaimTicket,
 };
 pub use traits::{
-    EventSubscription, Integration, IntegrationContext, ProvidedOidcClient, QueueSubscription,
-    ScheduledInvocation,
+    EventSubscription, ExternalUserAccepted, Integration, IntegrationContext, OnExternalUser,
+    ProvidedOidcClient, QueueSubscription, ScheduledInvocation,
 };
 pub use types::{
     CoverHeaders, ExternalUser, FetchedCover, IntegrationHealth, ListeningProgressSnapshot,

@@ -341,9 +341,10 @@ Then the daemon keeps the library's clerk socket open with the card:
   the library sends `changed` for `library`, and every 30 minutes. Once the
   last page is in, it drops the books the read no longer named. A read cut
   short drops nothing.
-- The books show in **Books in other libraries**
+- The books show in the **Library** list with the install's own
   (`GET /api/config/join/window`, which lists the libraries in `cards`),
-  merged with the books of any library this install is a branch of. Each
+  merged with the books of any library this install is a branch of (see
+  [Books in other libraries](branches.md#books-in-other-libraries)). Each
   edition there carries `yours`, and the person's own are marked **Yours**.
   An edition the library has no copy of also carries `request`: the
   library's own work id (`work_id`) and where a copy would come from
@@ -421,9 +422,9 @@ name, and sends the browser to the library's sign-in page. The library
 sends it back to `/clerk/callback`, which posts the `code` and `state` to
 `POST /api/config/clerk/callback` and removes them from the address bar.
 Only a request that got no answer offers **Try again**; any answer ends
-the pending sign-in. In **Books in other libraries**, a book a library
-has no copy of has a **Request** button; one only the library's branches
-hold also says "On a branch of" that library. Each card in the list has **Sign out** (**Remove** once
+the pending sign-in. In the **Library** list, a book only other libraries
+hold, and none has a copy of, has a **Request** button; one only the library's branches
+hold says "On a branch of" that library. Each card in the card list has **Sign out** (**Remove** once
 the library ended it), and for the operator **Make this server a branch**.
 A branch in Settings → Library has **Use a library card instead**. See
 [Sign in with a library card](../guide/branches.md#sign-in-with-a-library-card).

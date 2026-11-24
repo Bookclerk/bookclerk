@@ -20,7 +20,9 @@ use bookclerk_library::control_plane::{
     load_plugin_instance, resolve_instance_bindings_with, PluginInstanceId, RequiredSettings,
 };
 use bookclerk_library::LibraryStore;
-use bookclerk_plugin_abi::provision::{check_provisioned, CheckedProvision, ProvisionRefusal};
+use bookclerk_plugin_abi::provision::{
+    check_provisioned, CheckedProvision, ProvisionOutputs, ProvisionRefusal,
+};
 use bookclerk_plugin_manifest::ProvisionGrantType;
 use bookclerk_plugin_sdk::{
     BindingValues, DeprovisionRequest, ExtensibleConfig, InvocationPurpose, PluginError,
@@ -251,6 +253,83 @@ pub async fn provision_instance(
     token: &ProvisionToken,
     inputs: &BTreeMap<String, Value>,
 ) -> Result<CheckedProvision, ProvisionRunError> {
+    let (outputs, inputs_json) = check_offer(plugin, inputs)?;
+    let session = open_for_provision(store, config, plugin, instance_id, inputs).await?;
+    run_provision(session, token, inputs_json, &outputs).await
+}
+
+/// Runs the guided setup of a bootstrap plugin, one configured in
+/// `config.toml` rather than through a library instance (a hosted database
+/// such as Cloudflare D1, which must work before the library opens).
+///
+/// The guest is opened with `settings` (what the caller's configuration
+/// already holds) with `inputs` laid over them, and no secrets.
+///
+/// # Arguments
+///
+/// * `config` - Host configuration, for the spawn.
+/// * `plugin` - The installed plugin.
+/// * `settings` - The plugin's current settings, as a JSON object.
+/// * `token` - The operator's pasted token.
+/// * `inputs` - The operator's choices, keyed by `[provisioning] inputs`.
+///
+/// # Returns
+///
+/// The checked settings, credentials and summary lines, for the caller to
+/// write into its configuration and credential store.
+///
+/// # Errors
+///
+/// Returns a [`ProvisionRunError`] for each way the run can fail.
+pub async fn provision_bootstrap(
+    config: &Config,
+    plugin: &DiscoveredPlugin,
+    settings: &serde_json::Map<String, Value>,
+    token: &ProvisionToken,
+    inputs: &BTreeMap<String, Value>,
+) -> Result<CheckedProvision, ProvisionRunError> {
+    let (outputs, inputs_json) = check_offer(plugin, inputs)?;
+    let mut table = settings.clone();
+    for (key, value) in inputs {
+        table.insert(key.clone(), value.clone());
+    }
+    let table = Value::Object(table);
+    let host = |err: &dyn std::fmt::Display| ProvisionRunError::Host(err.to_string());
+    let session = PluginSession::spawn_with(
+        plugin,
+        config,
+        table.clone(),
+        HOST_SHARED_ACCOUNT,
+        &[],
+        SessionServices::default(),
+    )
+    .await
+    .map_err(|err| host(&err))?;
+    session
+        .open(BindingValues {
+            config: ExtensibleConfig::json(&table),
+            purpose: InvocationPurpose::Provision,
+            ..BindingValues::default()
+        })
+        .await
+        .map_err(|err| host(&err))?;
+    run_provision(session, token, inputs_json, &outputs).await
+}
+
+/// Checks that `plugin` offers a pasted-token guided setup taking
+/// `inputs`.
+///
+/// # Returns
+///
+/// The outputs the setup may write, and the inputs as JSON.
+///
+/// # Errors
+///
+/// [`ProvisionRunError::NotOffered`] or [`ProvisionRunError::BadInput`].
+fn check_offer(
+    plugin: &DiscoveredPlugin,
+    inputs: &BTreeMap<String, Value>,
+) -> Result<(ProvisionOutputs, String), ProvisionRunError> {
     let manifest = &plugin.manifest;
     let (Some(table), Some(outputs)) =
         (manifest.provisioning.as_ref(), manifest.provision_outputs())
@@ -278,7 +357,20 @@ pub async fn provision_instance(
             "the inputs are longer than {MAX_PROVISION_SETTINGS_BYTES} bytes"
         )));
     }
-    let session = open_for_provision(store, config, plugin, instance_id, inputs).await?;
+    Ok((outputs, inputs_json))
+}
+
+/// Calls `provision` on an opened guest and checks its answer.
+///
+/// # Errors
+///
+/// As [`provision_instance`].
+async fn run_provision(
+    session: PluginSession,
+    token: &ProvisionToken,
+    inputs_json: String,
+    outputs: &ProvisionOutputs,
+) -> Result<CheckedProvision, ProvisionRunError> {
     let request = ProvisionRequest {
         grant: token.grant(),
         inputs_json,
@@ -292,7 +384,7 @@ pub async fn provision_instance(
         "the guided setup",
     )?;
     drop(session);
-    Ok(check_provisioned(&answer, &outputs, Some(token.expose()))?)
+    Ok(check_provisioned(&answer, outputs, Some(token.expose()))?)
 }
 
 /// Asks `plugin` to remove what its guided setup created for

@@ -28,6 +28,7 @@ pub const METHOD_NAMES: &[&str] = &[
     send::NAME,
     send_batch::NAME,
     poll_events::NAME,
+    ack_events::NAME,
     scan_library::NAME,
     sync_listening::NAME,
     authenticate_user::NAME,
@@ -164,10 +165,18 @@ pub mod send_batch {
 
 /// Poll for plugin-observed external users after [`start`].
 ///
-/// Result: [`crate::EventPollResult`].
+/// Params: [`crate::EventPollParams`]. Result: [`crate::EventPollResult`].
 pub mod poll_events {
     /// Wire method name `"pollEvents"`.
     pub const NAME: &str = "pollEvents";
+}
+
+/// Acknowledge users a [`poll_events`] reply handed over.
+///
+/// Params: [`crate::EventAckParams`].
+pub mod ack_events {
+    /// Wire method name `"ackEvents"`.
+    pub const NAME: &str = "ackEvents";
 }
 
 /// Trigger an integration library scan against a remote server (e.g. ABS).

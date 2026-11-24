@@ -56,6 +56,7 @@ import type {
   EntrypointName,
   EventOutcome,
   GrantedContext,
+  CancelWatchLike,
   GrantedJobCapabilities,
   JobOutcomeRecord,
   ChangesRequest,
@@ -985,12 +986,19 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       W.RemoteLibrarySyncListeningResultsCodec,
       (value) => okValue({ items: asList<ListeningProgress>(value) }),
     ),
-    pollEvents: withoutParams(
+    pollEvents: withParams(
       "remoteLibrary",
       "pollEvents",
       W.RemoteLibraryPollEventsParamsCodec,
       W.RemoteLibraryPollEventsResultsCodec,
       (value) => okValue({ users: asList<ExternalUser>(value) }),
+    ),
+    ackEvents: withParams(
+      "remoteLibrary",
+      "ackEvents",
+      W.RemoteLibraryAckEventsParamsCodec,
+      W.RemoteLibraryAckEventsResultsCodec,
+      okEmpty,
     ),
   },
   EventConsumer: {
@@ -1027,7 +1035,11 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       results: W.ScheduledHandlerScheduledResultsCodec,
       stub: "author",
       call: (s, p, cx) =>
-        (s as AuthorStub).bookclerkScheduled(cx.host.bindContext(cx.ctx), p.controller ?? {}),
+        (s as AuthorStub).bookclerkScheduled(
+          cx.host.bindContext(cx.ctx),
+          p.controller ?? {},
+          (p.cancel ?? null) as CancelWatchLike | null,
+        ),
       ok: okEmpty,
     }),
   },

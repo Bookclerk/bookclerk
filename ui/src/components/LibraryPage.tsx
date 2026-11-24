@@ -8,10 +8,11 @@ import { TitleDetailModal, type TitleMetaSearchKind } from "@/components/TitleDe
 import { ConvertBookPanel } from "@/components/ConvertBookPanel";
 import { RealignChaptersPanel } from "@/components/RealignChaptersPanel";
 import { titleDetailFromWork } from "@/lib/titleDetail";
+import { SimilarWorks } from "@/components/SimilarWorks";
 import { WorkRow } from "@/components/WorkRow";
 import { JobsStrip } from "@/components/JobsStrip";
 import { WaveformThrobber } from "@/components/WaveformThrobber";
-import { WindowBooksSection } from "@/components/WindowBooksSection";
+import { ElsewhereNote, RemoteWorkRow } from "@/components/OtherLibraryRows";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -19,6 +20,7 @@ import {
   fetchEventDeliveries,
   fetchFacetValues,
   fetchJobs,
+  fetchMeaningStatus,
   fetchStatus,
   fetchWork,
   fetchWorks,
@@ -30,10 +32,12 @@ import {
   type AuthRole,
   type EventDeliveryInfo,
   type JobInfo,
+  type MeaningStatus,
   type MediaKind,
   type StatusResponse,
   type WorkDetail,
   type WorkFacet,
+  type WorkSearchMode,
   type WorkSort,
   type WorkSummary,
 } from "@/lib/api";
@@ -44,7 +48,9 @@ import {
   readFacetValues,
   readWorks,
 } from "@/lib/libraryWorks";
-import { canChangeBranchSharing } from "@/lib/join";
+import { canChangeBranchSharing, windowEntryIsYours, windowLibraries } from "@/lib/join";
+import { mergeLibraryList, type LibraryPlace } from "@/lib/libraryMerge";
+import { useWindowBooks } from "@/lib/useWindowBooks";
 import { isDesktopWindow } from "@/lib/desktop";
 import { useLiveRefresh } from "@/lib/live";
 import { playableEdition } from "@/lib/playTarget";
@@ -74,6 +80,12 @@ const MEDIA_OPTIONS: { value: MediaKind | "all"; label: string }[] = [
   { value: "print", label: "Print" },
 ];
 
+/** The two ways a search reads its text. */
+const SEARCH_MODES: { value: WorkSearchMode; label: string; hint: string }[] = [
+  { value: "words", label: "Words", hint: "Find titles, authors, narrators and series" },
+  { value: "meaning", label: "Meaning", hint: "Find books about what you describe" },
+];
+
 /** Page orders; a search orders by relevance instead. */
 const SORT_OPTIONS: { value: WorkSort; label: string }[] = [
   { value: "title", label: "Title" },
@@ -90,7 +102,10 @@ const selectClassName =
 /**
  * Library view — the library's works, searchable and filterable, with
  * acquire actions. Each book or podcast is one row however many editions
- * and accounts hold it.
+ * and accounts hold it. For the operator or an Owner, the books of every
+ * library this server is a branch of or holds a library card for are in
+ * the same list: a book this library has too gets an "Also in" line, and
+ * one only they hold gets a row of its own in the list's order.
  *
  * @param props - Logout, acquire permission, nav, optional role, and
  *   whether a patron elevated to the operator.
@@ -120,6 +135,11 @@ export function LibraryPage({
   const [deliveries, setDeliveries] = useState<EventDeliveryInfo[]>([]);
   const [q, setQ] = useState("");
   const [debouncedQ, setDebouncedQ] = useState("");
+  // Whether the search reads the words of `q` or what it means; the
+  // choice is offered once the library has an embedding model.
+  const [searchMode, setSearchMode] = useState<WorkSearchMode>("words");
+  const [meaning, setMeaning] = useState<MeaningStatus | null>(null);
+  const byMeaning = searchMode === "meaning" && meaning?.search === "ready";
   const [statusFilter, setStatusFilter] = useState<AcquireStatus | "all">("all");
   const [mediaFilter, setMediaFilter] = useState<MediaKind | "all">("all");
   const [sortKey, setSortKey] = useState<WorkSort>("title");
@@ -159,11 +179,37 @@ export function LibraryPage({
   // Bumped after each successful load so the scroll sentinel checks again
   // whether it is still in view (the list may not have grown).
   const [sentinelCheck, setSentinelCheck] = useState(0);
+  // Books of the libraries this server is a branch of or holds a card for.
+  const otherLibraries = useWindowBooks(canChangeBranchSharing(role));
+  const [place, setPlace] = useState<LibraryPlace>("all");
 
   useEffect(() => {
-    const t = window.setTimeout(() => setDebouncedQ(q.trim()), 250);
+    // A search by meaning runs the model once per query, so it waits for
+    // a longer pause in typing.
+    const t = window.setTimeout(() => setDebouncedQ(q.trim()), byMeaning ? 600 : 250);
     return () => window.clearTimeout(t);
-  }, [q]);
+  }, [q, byMeaning]);
+
+  // Whether the library can be searched by meaning. A daemon that cannot
+  // say (an older one, or a failed read) offers the search by words only.
+  // Read again on Refresh and whenever the library changes, so the switch
+  // turns on when the library's embedding ends.
+  const refreshMeaning = useCallback(async () => {
+    try {
+      setMeaning(await fetchMeaningStatus());
+    } catch {
+      setMeaning(null);
+    }
+  }, []);
+
+  // The end of the embedding changes nothing in the library, so while it
+  // runs the state is asked for again every few seconds.
+  const preparing = meaning?.search === "embedding" || meaning?.similar === "embedding";
+  useEffect(() => {
+    if (!preparing) return;
+    const t = window.setTimeout(() => void refreshMeaning(), 15_000);
+    return () => window.clearTimeout(t);
+  }, [preparing, meaning, refreshMeaning]);
 
   // Reads the value menu of the chosen facet, again on every Refresh (so a
   // failed read can be retried).
@@ -218,6 +264,7 @@ export function LibraryPage({
           fetchWorks,
           {
             q: debouncedQ || undefined,
+            search: byMeaning ? "meaning" : undefined,
             sort: sortKey,
             status: statusFilter,
             media_kind: mediaFilter === "all" ? undefined : mediaFilter,
@@ -259,7 +306,7 @@ export function LibraryPage({
         }
       }
     },
-    [debouncedQ, sortKey, statusFilter, mediaFilter, appliedFacet, appliedValue],
+    [debouncedQ, byMeaning, sortKey, statusFilter, mediaFilter, appliedFacet, appliedValue],
   );
   // Declared before the effects that load, so a queued load runs the
   // version for the current search and filter.
@@ -267,7 +314,9 @@ export function LibraryPage({
     loadWorksRef.current = loadWorks;
   }, [loadWorks]);
 
-  const reloadWorks = useCallback(() => loadWorks("reload"), [loadWorks]);
+  const reloadWorks = useCallback(async () => {
+    await Promise.all([loadWorks("reload"), refreshMeaning()]);
+  }, [loadWorks, refreshMeaning]);
 
   const refreshMeta = useCallback(async () => {
     if (!canAcquire) return;
@@ -287,8 +336,8 @@ export function LibraryPage({
 
   const refresh = useCallback(async () => {
     setFacetReads((n) => n + 1);
-    await Promise.all([loadWorks("replace"), refreshMeta()]);
-  }, [loadWorks, refreshMeta]);
+    await Promise.all([loadWorks("replace"), refreshMeta(), refreshMeaning()]);
+  }, [loadWorks, refreshMeta, refreshMeaning]);
 
   useEffect(() => {
     void refresh();
@@ -355,6 +404,46 @@ export function LibraryPage({
   const pendingCount = useMemo(
     () => status?.pending ?? works.filter((w) => w.acquire_status === "not_acquired").length,
     [status, works],
+  );
+
+  const otherHosts = useMemo(
+    () => (otherLibraries.view ? windowLibraries(otherLibraries.view) : []),
+    [otherLibraries.view],
+  );
+  const anyYoursElsewhere = useMemo(
+    () => (otherLibraries.view?.books ?? []).some(windowEntryIsYours),
+    [otherLibraries.view],
+  );
+  // A place that no longer exists (the library left) shows everything.
+  const shownPlace: LibraryPlace =
+    otherHosts.length === 0 ||
+    (place.startsWith("host:") && !otherHosts.includes(place.slice("host:".length))) ||
+    (place === "yours" && !anyYoursElsewhere)
+      ? "all"
+      : place;
+  const items = useMemo(
+    () =>
+      mergeLibraryList(works, otherLibraries.view?.books ?? [], {
+        sort: sortKey,
+        q: debouncedQ,
+        status: statusFilter,
+        media: mediaFilter,
+        facetApplied: appliedFacet !== "all",
+        place: shownPlace,
+        complete: loaded && nextCursor === null,
+      }),
+    [
+      works,
+      otherLibraries.view,
+      sortKey,
+      debouncedQ,
+      statusFilter,
+      mediaFilter,
+      appliedFacet,
+      shownPlace,
+      loaded,
+      nextCursor,
+    ],
   );
 
   // The operator is no library user, so it has nothing to play as. In the
@@ -461,12 +550,77 @@ export function LibraryPage({
             }
           />
           <div className="flex flex-col gap-2">
-            <Input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="Search title, author:, narrator:, series:, asin:…"
-            />
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder={
+                  byMeaning
+                    ? "Describe what you are looking for…"
+                    : "Search title, author:, narrator:, series:, asin:…"
+                }
+              />
+              {meaning && meaning.search !== "no_model" ? (
+                <div
+                  role="group"
+                  aria-label="Search by"
+                  className="flex shrink-0 overflow-hidden rounded-md border border-ink/15 bg-card-strong text-sm shadow-sm"
+                >
+                  {SEARCH_MODES.map((mode) => {
+                    const preparing = mode.value === "meaning" && meaning.search !== "ready";
+                    const on = mode.value === (byMeaning ? "meaning" : "words");
+                    return (
+                      <button
+                        key={mode.value}
+                        type="button"
+                        aria-pressed={on}
+                        disabled={preparing}
+                        title={
+                          preparing
+                            ? "The library is still being prepared for search by meaning"
+                            : mode.hint
+                        }
+                        onClick={() => setSearchMode(mode.value)}
+                        className={cn(
+                          "flex-1 px-3 py-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal/50 disabled:cursor-not-allowed disabled:text-ink/70",
+                          on ? "bg-teal/15 font-semibold text-ink" : "text-ink hover:bg-card-mid",
+                        )}
+                      >
+                        {mode.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+            <div
+              className={cn(
+                "grid grid-cols-1 gap-2 sm:grid-cols-3",
+                otherHosts.length > 0 ? "lg:grid-cols-6" : "lg:grid-cols-5",
+              )}
+            >
+              {otherHosts.length > 0 ? (
+                <select
+                  value={shownPlace}
+                  onChange={(e) => setPlace(e.target.value as LibraryPlace)}
+                  className={selectClassName}
+                  aria-label="Library"
+                >
+                  <option value="all">Every library</option>
+                  <option value="this">This library</option>
+                  <option value="other">Other libraries</option>
+                  {anyYoursElsewhere ? (
+                    <option value="yours">Yours in other libraries</option>
+                  ) : null}
+                  {otherHosts.length > 1
+                    ? otherHosts.map((host) => (
+                        <option key={host} value={`host:${host}`}>
+                          {host}
+                        </option>
+                      ))
+                    : null}
+                </select>
+              ) : null}
               <select
                 value={facet}
                 onChange={(e) => {
@@ -544,7 +698,7 @@ export function LibraryPage({
             </p>
           ) : (
             <p className="text-xs text-ink/70">
-              Showing {works.length} {works.length === 1 ? "title" : "titles"}
+              Showing {items.length} {items.length === 1 ? "title" : "titles"}
               {nextCursor !== null ? " · scroll for more" : ""}
               {loadingMore ? " · loading more…" : ""}
             </p>
@@ -554,33 +708,58 @@ export function LibraryPage({
 
       <div className="min-h-0 flex-1 overflow-auto">
         <main className={cn("w-full", pageWidthClass)}>
-          {/* On a window: the books the libraries it joined hold for its person. */}
-          {canChangeBranchSharing(role) ? <WindowBooksSection query={debouncedQ} /> : null}
           {/* Only on the unfiltered library: a search is for finding something else. */}
           {canListen && !debouncedQ && appliedFacet === "all" ? <ContinueListening /> : null}
           <div className="animate-[rowIn_500ms_ease-out] bg-card shadow-[inset_0_1px_0_rgba(11,53,83,0.06)]">
-            {works.length === 0 && !loaded ? (
+            {otherLibraries.stale ? (
+              <div
+                className="flex flex-wrap items-center gap-2 border-b border-ink/10 px-3 py-2 text-xs text-ink/70 sm:px-4"
+                role="status"
+              >
+                <span>
+                  Couldn&apos;t refresh the books of {otherHosts.join(", ")}; showing the last ones
+                  read.
+                </span>
+                <Button
+                  variant="secondary"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => void otherLibraries.reload()}
+                >
+                  Try again
+                </Button>
+              </div>
+            ) : null}
+            {items.length === 0 && !loaded ? (
               <div className="flex justify-center px-4 py-16" role="status">
                 <WaveformThrobber size="sm" />
                 <span className="sr-only">Loading the library…</span>
               </div>
-            ) : works.length === 0 && nextCursor === null ? (
+            ) : items.length === 0 && nextCursor === null ? (
               <p className="px-4 py-16 text-center text-sm text-ink/70">
                 No books match this view.
                 {canAcquire ? " Run a scan or adjust filters." : " Link a store under Accounts."}
               </p>
             ) : (
-              works.map((work) => (
-                <WorkRow
-                  key={work.id}
-                  work={work}
-                  busy={busyKey !== null}
-                  showAcquire={canAcquire}
-                  onOpen={setSelected}
-                  onPlay={canListen ? (w) => void onPlayWork(w) : undefined}
-                  onAcquire={(w) => void onAcquireWork(w)}
-                />
-              ))
+              items.map((item) =>
+                item.kind === "remote" ? (
+                  <RemoteWorkRow key={`elsewhere:${item.entry.key}`} entry={item.entry} />
+                ) : (
+                  <WorkRow
+                    key={item.work.id}
+                    work={item.work}
+                    busy={busyKey !== null}
+                    showAcquire={canAcquire}
+                    onOpen={setSelected}
+                    onPlay={canListen ? (w) => void onPlayWork(w) : undefined}
+                    onAcquire={(w) => void onAcquireWork(w)}
+                    note={
+                      item.elsewhere.length > 0 ? (
+                        <ElsewhereNote entries={item.elsewhere} />
+                      ) : undefined
+                    }
+                  />
+                ),
+              )
             )}
             <div ref={sentinelRef} className="h-8" aria-hidden />
           </div>
@@ -604,20 +783,29 @@ export function LibraryPage({
               : undefined
           }
           extra={
-            role === "operator" || role === "owner" || role === "administrator" ? (
-              <>
-                <LibraryTagsEditor workId={selected.id} />
-                {storedEditions(selectedDetail).length > 0 ? (
-                  <>
-                    <ConvertBookPanel
-                      editions={storedEditions(selectedDetail)}
-                      onQueued={() => void refreshMeta()}
-                    />
-                    <RealignChaptersPanel editions={storedEditions(selectedDetail)} />
-                  </>
-                ) : null}
-              </>
-            ) : undefined
+            <>
+              <SimilarWorks
+                workId={selected.id}
+                onOpen={(work) => {
+                  setLoadedDetail(null);
+                  setSelected(work);
+                }}
+              />
+              {role === "operator" || role === "owner" || role === "administrator" ? (
+                <>
+                  <LibraryTagsEditor workId={selected.id} />
+                  {storedEditions(selectedDetail).length > 0 ? (
+                    <>
+                      <ConvertBookPanel
+                        editions={storedEditions(selectedDetail)}
+                        onQueued={() => void refreshMeta()}
+                      />
+                      <RealignChaptersPanel editions={storedEditions(selectedDetail)} />
+                    </>
+                  ) : null}
+                </>
+              ) : null}
+            </>
           }
           onMetaSearch={(kind: TitleMetaSearchKind, value: string) => {
             setSelected(null);
@@ -628,6 +816,8 @@ export function LibraryPage({
               setFacet("genre");
               setFacetValue(value);
             } else {
+              // A field query (`author:"…"`) is read by its words.
+              setSearchMode("words");
               setQ(metaSearchQuery(kind, value));
             }
           }}

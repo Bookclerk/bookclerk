@@ -80,6 +80,9 @@ pub struct AppState {
     /// Cap concurrent discover/embed work so ONNX load + inference cannot saturate
     /// the Tokio blocking pool (and starve accept / `/health`) under page refresh.
     pub discover_gate: Arc<Semaphore>,
+    /// This node's in-memory index of the library's work vectors, read by
+    /// search by meaning and "more like this".
+    pub(crate) work_vectors: Arc<crate::work_vectors::WorkVectors>,
     /// Loaded integration guests used by watchers, the portal, and listening sync.
     pub integrations: Arc<RwLock<IntegrationRegistry>>,
     /// Loaded storefront source guests used by scan, acquire, and discover.
@@ -1672,6 +1675,8 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
 fn shared_routes() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
         .routes(routes!(crate::library_works::list_works))
+        .routes(routes!(crate::library_meaning::get_meaning_status))
+        .routes(routes!(crate::library_meaning::list_similar_works))
         .routes(routes!(crate::library_works::get_work))
         .routes(routes!(crate::library_works::put_work_state))
         .routes(routes!(crate::library_works::list_facet_values))
@@ -2399,7 +2404,9 @@ pub async fn start_integration_watchers(state: &AppState) {
         on_external_user: Some(Arc::new(move |user| {
             let library_for_tickets = library_for_tickets.clone();
             let config_for_tickets = config_for_tickets.clone();
-            tokio::spawn(async move {
+            // The poll acknowledges the user only once this resolves `Ok`, so
+            // a failed mint leaves the user pending for the next poll.
+            Box::pin(async move {
                 let cfg = config_for_tickets.read().await;
                 let lib = library_for_tickets.read().await.clone();
                 match bookclerk_integrations::mint_for_external_user(
@@ -2419,10 +2426,14 @@ pub async fn start_integration_watchers(state: &AppState) {
                                 "claim ticket minted for ABS user"
                             );
                         }
+                        Ok(())
                     }
-                    Err(err) => tracing::warn!(%err, "failed to mint claim ticket"),
+                    Err(err) => {
+                        tracing::warn!(%err, "failed to mint claim ticket");
+                        Err(err)
+                    }
                 }
-            });
+            })
         })),
     };
     state
@@ -2611,6 +2622,8 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
         // library-link supervisor stops them and dials the new store's
         // active links.
         state.library_swaps.send_modify(|swaps| *swaps += 1);
+        // The index holds the previous store's vectors.
+        state.work_vectors.reset().await;
     }
 
     bookclerk_plugin_host::reconcile_host_overlay_authority(&new_cfg);
@@ -7128,6 +7141,11 @@ async fn discover_catalog_search(
     })
     .await
     .map_err(internal_err)?;
+    bookclerk_discover::join_search_library_copies(&library, &mut page.items, |id| {
+        plugin_keys.get(id).cloned()
+    })
+    .await
+    .map_err(internal_err)?;
     for hit in &mut page.items {
         state
             .covers
@@ -8811,6 +8829,7 @@ tcp = {tcp}
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
+            work_vectors: Arc::default(),
             integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
             sources: Arc::new(RwLock::new(SourceRegistry::new())),
             destinations: Arc::new(RwLock::new(DestinationRegistry::default())),
@@ -9439,6 +9458,7 @@ default_port = 5432
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
+            work_vectors: Arc::default(),
             integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
             sources: Arc::new(RwLock::new(SourceRegistry::new())),
             destinations: Arc::new(RwLock::new(DestinationRegistry::default())),
@@ -9544,6 +9564,7 @@ default_port = 5432
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
+            work_vectors: Arc::default(),
             integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
             sources: Arc::new(RwLock::new(SourceRegistry::new())),
             destinations: Arc::new(RwLock::new(DestinationRegistry::default())),
@@ -9707,6 +9728,7 @@ default_port = 5432
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
+            work_vectors: Arc::default(),
             integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
             sources: Arc::new(RwLock::new(SourceRegistry::new())),
             destinations: Arc::new(RwLock::new(DestinationRegistry::default())),

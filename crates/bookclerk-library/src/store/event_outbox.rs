@@ -1488,15 +1488,17 @@ impl LibraryStore {
     ///
     /// Returns [`LibraryError::Orm`] when the read fails.
     pub async fn list_domain_events(&self, limit: u64) -> Result<Vec<DomainEventRecord>> {
-        domain_events::Entity::find()
-            .order_by_desc(domain_events::Column::CreatedAt)
-            .limit(limit)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(map_event)
-            .collect()
+        crate::store::keyset::read_keyset_limit(
+            self,
+            domain_events::Entity::find(),
+            &[domain_events::Column::CreatedAt, domain_events::Column::Id],
+            crate::store::keyset::KeyOrder::Descending,
+            limit,
+        )
+        .await?
+        .into_iter()
+        .map(map_event)
+        .collect()
     }
 
     /// Recent outbox rows on one queue, newest first.
@@ -1509,16 +1511,18 @@ impl LibraryStore {
         queue_name: &str,
         limit: u64,
     ) -> Result<Vec<DomainEventRecord>> {
-        domain_events::Entity::find()
-            .filter(domain_events::Column::QueueName.eq(queue_name_or_bus(queue_name)))
-            .order_by_desc(domain_events::Column::CreatedAt)
-            .limit(limit)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(map_event)
-            .collect()
+        crate::store::keyset::read_keyset_limit(
+            self,
+            domain_events::Entity::find()
+                .filter(domain_events::Column::QueueName.eq(queue_name_or_bus(queue_name))),
+            &[domain_events::Column::CreatedAt, domain_events::Column::Id],
+            crate::store::keyset::KeyOrder::Descending,
+            limit,
+        )
+        .await?
+        .into_iter()
+        .map(map_event)
+        .collect()
     }
 
     /// Distinct queue names that hold at least one outbox row, sorted.
@@ -1850,15 +1854,17 @@ impl LibraryStore {
                     ),
             );
         }
-        q.order_by_asc(domain_events::Column::CreatedAt)
-            .order_by_asc(domain_events::Column::Id)
-            .limit(limit)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(map_event)
-            .collect()
+        crate::store::keyset::read_keyset_limit(
+            self,
+            q,
+            &[domain_events::Column::CreatedAt, domain_events::Column::Id],
+            crate::store::keyset::KeyOrder::Ascending,
+            limit,
+        )
+        .await?
+        .into_iter()
+        .map(map_event)
+        .collect()
     }
 
     /// Heartbeat one node's plugin registration (does not delete other nodes).
@@ -2015,7 +2021,9 @@ impl LibraryStore {
     /// Dispatched events in the retention window missing a delivery for `plugin_id`.
     ///
     /// Restricted to `event_types` the plugin actually subscribes to so unrelated
-    /// types do not occupy the page.
+    /// types do not occupy the page. Up to `limit` events are read in pages
+    /// of at most one reply's rows, each starting after the last event of
+    /// the one before.
     ///
     /// # Errors
     ///
@@ -2032,6 +2040,57 @@ impl LibraryStore {
         if (event_types.is_empty() && queues.is_empty()) || plugin_id.trim().is_empty() {
             return Ok(Vec::new());
         }
+        let page = crate::store::keyset::result_page(self);
+        let mut out = Vec::new();
+        let mut cursor: Option<(String, String)> =
+            after.map(|(created_at, id)| (created_at.to_string(), id.to_string()));
+        loop {
+            let read = u64::try_from(out.len()).unwrap_or(u64::MAX);
+            let take = page.min(limit.saturating_sub(read));
+            if take == 0 {
+                return Ok(out);
+            }
+            let (named, models) = self
+                .missing_dispatched_page(
+                    plugin_id,
+                    event_types,
+                    queues,
+                    created_after,
+                    cursor.as_ref().map(|(at, id)| (at.as_str(), id.as_str())),
+                    take,
+                )
+                .await?;
+            if let Some(last) = models.last() {
+                cursor = Some((last.created_at.clone(), last.id.clone()));
+            }
+            for model in models {
+                out.push(map_event(model)?);
+            }
+            if named < take {
+                return Ok(out);
+            }
+        }
+    }
+
+    /// One page of [`Self::list_missing_dispatched_events_for_plugin`]: at
+    /// most `limit` events after `after`, in `(created_at, id)` order.
+    ///
+    /// # Returns
+    ///
+    /// How many event ids the page named, and the events still there.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the read fails.
+    async fn missing_dispatched_page(
+        &self,
+        plugin_id: &str,
+        event_types: &[String],
+        queues: &[String],
+        created_after: &str,
+        after: Option<(&str, &str)>,
+        limit: u64,
+    ) -> Result<(u64, Vec<domain_events::Model>)> {
         let mut values: Vec<sea_orm::Value> = vec![created_after.to_string().into()];
         let mut scope: Vec<String> = Vec::new();
         if !event_types.is_empty() {
@@ -2074,22 +2133,24 @@ impl LibraryStore {
         let ids =
             query_host_sql_first_text(&self.db, self.leftover_in_process(), &sql, values, max_rows)
                 .await?;
+        let named = u64::try_from(ids.len()).unwrap_or(u64::MAX);
         if ids.is_empty() {
-            return Ok(Vec::new());
+            return Ok((0, Vec::new()));
         }
-        let models = domain_events::Entity::find()
-            .filter(domain_events::Column::Id.is_in(ids.clone()))
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?;
+        let models = crate::store::keyset::read_keyset(
+            self,
+            domain_events::Entity::find().filter(domain_events::Column::Id.is_in(ids.clone())),
+            &[domain_events::Column::Id],
+        )
+        .await?;
         let mut by_id = std::collections::HashMap::new();
         for model in models {
             by_id.insert(model.id.clone(), model);
         }
-        ids.into_iter()
-            .filter_map(|id| by_id.remove(&id))
-            .map(map_event)
-            .collect()
+        Ok((
+            named,
+            ids.into_iter().filter_map(|id| by_id.remove(&id)).collect(),
+        ))
     }
 
     /// Late-join catalog deliveries for missing `(event_id, plugin_id)` pairs.

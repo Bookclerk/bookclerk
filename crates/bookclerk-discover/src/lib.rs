@@ -23,6 +23,7 @@ mod embed;
 mod error;
 mod hide_prices;
 mod identity;
+mod library_copy;
 mod listening;
 mod metadata_enrich;
 mod pool;
@@ -54,10 +55,10 @@ pub use catalog_search::{
     CatalogSearchHit, CatalogSearchPage, CatalogSearchPageOpts,
 };
 pub use embed::{
-    embed_dirty_works, embed_text, is_stand_in, open_embedder, prune_vectors, serving_space,
-    stand_in_space, text_for_work, text_vectors, EmbedFields, EmbedPass, Embedder, HashEmbedder,
-    SharedEmbedder, VectorSource, EMBED_PAGE_WORKS, LOCAL_HASH_DIMENSIONS, MODEL_LOCAL_HASH_V1,
-    OLD_SPACE_MAX_AGE, TEXT_VECTOR_MAX_AGE,
+    bytes_to_vector, embed_dirty_works, embed_text, is_stand_in, open_embedder, prune_vectors,
+    serving_space, stand_in_space, text_for_work, text_vectors, vector_to_bytes, EmbedFields,
+    EmbedPass, Embedder, HashEmbedder, SharedEmbedder, VectorSource, EMBED_PAGE_WORKS,
+    LOCAL_HASH_DIMENSIONS, MODEL_LOCAL_HASH_V1, OLD_SPACE_MAX_AGE, TEXT_VECTOR_MAX_AGE,
 };
 pub use error::DiscoverError;
 pub use identity::{
@@ -65,6 +66,7 @@ pub use identity::{
     merge_recommendation, parse_series_index, push_edition, push_shelf_category,
     recommendation_map_key, soft_work_key, work_map_key, works_match, StoreEdition, WorkIdentity,
 };
+pub use library_copy::{join_search_library_copies, LibraryCopy};
 pub use metadata_enrich::{
     enrich_books_from_metadata, MetadataEnrichOptions, DEFAULT_MAX_REQUESTS_PER_RUN,
     METADATA_ENRICH_SOURCE_PREFIX,
