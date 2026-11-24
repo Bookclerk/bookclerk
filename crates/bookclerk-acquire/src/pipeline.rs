@@ -560,6 +560,17 @@ async fn acquire_book_recorded(
     stored: &StoredCopies,
 ) -> Result<AcquireResult> {
     req.options = destinations.primary_destination().options.clone();
+    // The store's records come back from the one fetch every destination
+    // shares: ask for each when any destination stores it. Each destination
+    // still writes only what its own options ask for (store_record_sidecars).
+    req.options.save_metadata_json = destinations
+        .items
+        .iter()
+        .any(|dest| dest.options.save_metadata_json);
+    req.options.download_clips_bookmarks = destinations
+        .items
+        .iter()
+        .any(|dest| dest.options.download_clips_bookmarks);
     req.destination_keys =
         crate::keys::DestinationKeys::of(destinations.primary_destination().backend.as_ref());
     tracing::info!(
@@ -1450,7 +1461,14 @@ async fn plan_existing_destinations(
     // A destination that receives a copy beside the main output's is
     // fetched again: a copy between destinations would bring it only the
     // main output's file.
-    let wants_extra = missing.iter().any(|(id, _)| extra.receives(id));
+    // So is one that stores the store's records beside the audio: those
+    // come only from a fetch, never from a copy between destinations.
+    let wants_extra = missing.iter().any(|(id, _)| {
+        extra.receives(id)
+            || destinations.destination(id).is_some_and(|dest| {
+                dest.options.save_metadata_json || dest.options.download_clips_bookmarks
+            })
+    });
     match destinations.multi_destination {
         // A copy between destinations moves one file: an edition stored as
         // several audio files (parts or chapters) is fetched again for the
@@ -2883,6 +2901,8 @@ async fn replace_with_better_copy(
         better.cover_path = own.cover_path;
     }
     better.pdf_url = own.pdf_url;
+    // The store's records describe the title, whichever audio is kept.
+    better.store_records = own.store_records;
     Compared::Library(better)
 }
 
@@ -2954,6 +2974,7 @@ async fn store_plain_fetch(
                 chapters: plain.chapters,
                 chapter_kind: bookclerk_source::ChapterKind::Unknown,
                 pdf_url: plain.pdf_url,
+                store_records: plain.store_records,
             },
             library_pdf,
         )
@@ -3297,6 +3318,15 @@ async fn store_plain_fetch(
         }
     }
 
+    let record_keys = store_record_sidecars(
+        library,
+        destinations,
+        req,
+        &stored_keys,
+        &plain.store_records,
+    )
+    .await;
+
     // Flat sidecars for players/tools that ignore embedded Nero/QuickTime chapters;
     // also persist the provider's nested chapter tree (timestamp-adjusted) when available.
     for stored in &stored_keys.keys {
@@ -3328,6 +3358,7 @@ async fn store_plain_fetch(
     }
 
     let mut written_keys = stored_keys.all_keys();
+    written_keys.extend(record_keys);
     written_keys.extend(
         store_companion_pdf_sidecars(
             library,
@@ -3360,6 +3391,73 @@ async fn store_plain_fetch(
         store_fetches: 0,
         copies: stored_keys.copies(),
     })
+}
+
+/// Stores the store's own records of the title beside the audio on each
+/// destination that asked for them: the catalog record as
+/// `<name>.metadata.json` (`save_metadata_json`) and the account's clips and
+/// bookmarks as `<name>.clips.json` (`download_clips_bookmarks`).
+///
+/// The files are stored as the guest wrote them, never parsed. A failed
+/// write is logged and never fails the acquire, as for the cover.
+///
+/// # Arguments
+///
+/// * `library` - The library, for the object's ASIN.
+/// * `destinations` - Where the audio went.
+/// * `req` - The acquire.
+/// * `stored_keys` - The audio's key on each destination.
+/// * `records` - The files the guest handed back.
+///
+/// # Returns
+///
+/// The keys written, for the acquire's `written_keys`; a disabled or failed
+/// write adds none.
+async fn store_record_sidecars(
+    library: &LibraryStore,
+    destinations: &AcquireDestinations,
+    req: &AcquireRequest,
+    stored_keys: &StoredKeys,
+    records: &bookclerk_source::StoreRecords,
+) -> Vec<String> {
+    let mut written = Vec::new();
+    if records.catalog_record.is_none() && records.annotations.is_none() {
+        return written;
+    }
+    for stored in &stored_keys.keys {
+        let Some(dest) = destinations.destination(&stored.id) else {
+            continue;
+        };
+        let dest_req = request_for_destination(req, dest);
+        let wanted = [
+            (
+                records.catalog_record.as_deref(),
+                dest_req.options.save_metadata_json,
+                "metadata.json",
+            ),
+            (
+                records.annotations.as_deref(),
+                dest_req.options.download_clips_bookmarks,
+                "clips.json",
+            ),
+        ];
+        for (path, on, suffix) in wanted {
+            let Some(path) = path.filter(|_| on) else {
+                continue;
+            };
+            let key = sidecar_key(&stored.key, suffix);
+            let asin_str = object_asin_for(library, &dest_req).await;
+            let meta =
+                sidecar_meta(asin_str.as_str(), &dest_req.title, "application/json", path).await;
+            match dest.backend.put_file(&key, path, meta).await {
+                Ok(()) => written.push(key),
+                Err(err) => {
+                    tracing::warn!(id = %status_key(req), key, error = %err, "store record sidecar failed");
+                }
+            }
+        }
+    }
+    written
 }
 
 /// Stores a multi-part plain fetch as separate files and optional cover sidecars.
@@ -3416,7 +3514,17 @@ async fn store_plain_parts(
         }
     }
 
+    let record_keys = store_record_sidecars(
+        library,
+        destinations,
+        req,
+        &stored_keys,
+        &plain.store_records,
+    )
+    .await;
+
     let mut written_keys = stored_keys.all_keys();
+    written_keys.extend(record_keys);
     written_keys.extend(
         store_companion_pdf_sidecars(
             library,
@@ -5439,6 +5547,7 @@ mod tests {
                 chapters: Vec::new(),
                 chapter_kind: bookclerk_source::ChapterKind::Unknown,
                 pdf_url: None,
+                store_records: Default::default(),
             })
         }
     }
@@ -5700,6 +5809,7 @@ mod tests {
                 chapters: vec![("Crash".into(), 0)],
                 chapter_kind: bookclerk_source::ChapterKind::Tracks,
                 pdf_url: self.pdf_url.clone(),
+                store_records: Default::default(),
             })
         }
     }
@@ -6118,6 +6228,7 @@ mod tests {
                 chapters: Vec::new(),
                 chapter_kind: bookclerk_source::ChapterKind::Unknown,
                 pdf_url: Some("https://store.example/twin.pdf".into()),
+                store_records: Default::default(),
             }
         };
         // What the library says of its copy, and the file it sends.
@@ -6787,6 +6898,18 @@ mod tests {
             real_m4b(&m4b);
             let cover = opts.cache_dir.join("store.jpg");
             tokio::fs::write(&cover, b"store jpeg").await?;
+            // Like a storefront, hand back the store's records only when asked.
+            let mut store_records = bookclerk_source::StoreRecords::default();
+            if opts.download.save_metadata_json {
+                let path = opts.cache_dir.join("store.metadata.json");
+                tokio::fs::write(&path, br#"{"asin":"store"}"#).await?;
+                store_records.catalog_record = Some(path);
+            }
+            if opts.download.download_clips_bookmarks {
+                let path = opts.cache_dir.join("store.clips.json");
+                tokio::fs::write(&path, br#"{"records":[]}"#).await?;
+                store_records.annotations = Some(path);
+            }
             let (m4b_path, parts) = if self.mp3 {
                 let mp3 = opts.cache_dir.join("store.mp3");
                 let lame = bookclerk_config::LameConfig {
@@ -6815,6 +6938,7 @@ mod tests {
                 chapters: self.chapters.clone(),
                 chapter_kind: bookclerk_source::ChapterKind::Unknown,
                 pdf_url: self.pdf_url.clone(),
+                store_records,
             })
         }
     }
@@ -6958,6 +7082,90 @@ mod tests {
             .map(|dir| dir.map(|entry| entry.unwrap().path()).collect())
             .unwrap_or_default();
         assert!(scratch.is_empty(), "scratch was cleaned: {scratch:?}");
+    }
+
+    /// The store's catalog record and the account's clips are stored beside
+    /// the audio as `<name>.metadata.json` and `<name>.clips.json`, each only
+    /// on a destination that asked for it, even when the primary asked for
+    /// neither; their keys are among the written keys, and a destination
+    /// filled later from a stored copy is fetched again to get them.
+    #[tokio::test]
+    async fn the_store_records_are_stored_beside_the_audio_when_asked() {
+        media_in_process();
+        let store = test_store().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join("cache");
+        tokio::fs::create_dir_all(&cache).await.unwrap();
+        let primary_root = tmp.path().join("dest");
+        let mut destinations = title_named_destinations(&primary_root, Arc::default());
+        let second_root = tmp.path().join("second");
+        let mut second = title_named_destinations(&second_root, Arc::default())
+            .items
+            .remove(0);
+        second.id = DestinationId::new("second").unwrap();
+        destinations.items.push(second);
+        destinations.multi_destination = MultiDestinationMode::SyncMissing;
+        for item in &mut destinations.items {
+            item.options.format = bookclerk_config::OutputFormat::EnrichedM4b;
+            let wants = item.id.as_str() == "second";
+            item.options.save_metadata_json = wants;
+            item.options.download_clips_bookmarks = wants;
+        }
+        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let source = RealAudioSource {
+            fetches: fetches.clone(),
+            pdf_url: None,
+            mp3: false,
+            chapters: Vec::new(),
+        };
+        let job = job_id(&store).await;
+        edition_book(&store, "B00REC", "user-1", "Records", None).await;
+        // The second destination is unavailable at first: its root is a
+        // file, so every write under it fails.
+        std::fs::remove_dir_all(&second_root).unwrap();
+        std::fs::write(&second_root, b"not a folder").unwrap();
+
+        let req = edition_req(&cache, job.clone(), "B00REC", "user-1");
+        let result = acquire_book(&store, &destinations, req, &source)
+            .await
+            .unwrap();
+        assert_eq!(fetches.load(Ordering::SeqCst), 1);
+        let stem = result
+            .storage_key
+            .rsplit_once('.')
+            .map(|(stem, _)| stem.to_owned())
+            .unwrap();
+        // The primary asked for neither record.
+        assert!(!primary_root.join(format!("{stem}.metadata.json")).exists());
+        assert!(!primary_root.join(format!("{stem}.clips.json")).exists());
+
+        // Once the second destination is back, it is fetched again rather
+        // than copied, so it gets the records a copy would not bring.
+        std::fs::remove_file(&second_root).unwrap();
+        std::fs::create_dir_all(&second_root).unwrap();
+        let req = edition_req(&cache, job, "B00REC", "user-1");
+        let again = acquire_book(&store, &destinations, req, &source)
+            .await
+            .unwrap();
+        assert_eq!(fetches.load(Ordering::SeqCst), 2, "fetched again");
+        let Some(CopyResult::Stored { key }) = again
+            .copies
+            .iter()
+            .find(|copy| copy.destination.as_str() == "second")
+            .map(|copy| copy.result.clone())
+        else {
+            panic!("{again:?}");
+        };
+        let stem = key.rsplit_once('.').map(|(stem, _)| stem).unwrap();
+        let record = format!("{stem}.metadata.json");
+        let clips = format!("{stem}.clips.json");
+        assert_eq!(
+            std::fs::read(second_root.join(&record)).unwrap(),
+            br#"{"asin":"store"}"#
+        );
+        assert!(second_root.join(&clips).exists());
+        assert!(again.written_keys.contains(&record), "{again:?}");
+        assert!(again.written_keys.contains(&clips), "{again:?}");
     }
 
     /// A library's copy from another store that beats the store's download
@@ -7560,6 +7768,7 @@ mod tests {
             chapters: Vec::new(),
             chapter_kind: bookclerk_source::ChapterKind::Unknown,
             pdf_url: None,
+            store_records: Default::default(),
         };
         let err = store_copies(&store, &copies, &req, tmp.path(), fetch, None)
             .await
@@ -7631,6 +7840,7 @@ mod tests {
             chapters: Vec::new(),
             chapter_kind: bookclerk_source::ChapterKind::Unknown,
             pdf_url: Some(serve_http_body_loop(b"%PDF-1.4 companion".to_vec(), hits.clone()).await),
+            store_records: Default::default(),
         };
 
         let result = store_copies(&store, &copies, &req, &work_dir, fetch, None)
@@ -7681,6 +7891,7 @@ mod tests {
             chapters: Vec::new(),
             chapter_kind: bookclerk_source::ChapterKind::Unknown,
             pdf_url: Some(url),
+            store_records: Default::default(),
         };
         store_copies(&store, &copies, &req, &work_dir, fetch, None)
             .await
@@ -8196,6 +8407,7 @@ mod tests {
             chapters: Vec::new(),
             chapter_kind: bookclerk_source::ChapterKind::Unknown,
             pdf_url: None,
+            store_records: Default::default(),
         };
 
         let result = store_copies(&store, &copies, &req, &work_dir, fetch, None)
@@ -8342,6 +8554,7 @@ mod tests {
             chapters: Vec::new(),
             chapter_kind: bookclerk_source::ChapterKind::Unknown,
             pdf_url: None,
+            store_records: Default::default(),
         };
 
         let result = store_copies(&store, &copies, &req, &work_dir, fetch, None)

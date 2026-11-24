@@ -320,6 +320,7 @@ async fn download_source(
         chapters: Vec::new(),
         chapter_kind: bookclerk_source::ChapterKind::Unknown,
         pdf_url: None,
+        store_records: Default::default(),
     };
     let single = files.len() == 1;
     for (index, file) in files.iter().enumerate() {

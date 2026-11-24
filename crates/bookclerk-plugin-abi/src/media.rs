@@ -198,6 +198,16 @@ pub enum FetchError {
     SecondWhole,
     /// The reply listed more than one `cover`.
     SecondCover,
+    /// The reply listed more than one `catalogRecord`.
+    SecondCatalogRecord,
+    /// The reply listed more than one `annotations` file.
+    SecondAnnotations,
+    /// A file's path is not a plain absolute path inside the fetch's cache
+    /// directory (relative, holding `.` or `..`, or elsewhere).
+    OutsideCacheDir {
+        /// Index of the file in `files`.
+        index: usize,
+    },
 }
 
 impl std::fmt::Display for FetchError {
@@ -218,6 +228,14 @@ impl std::fmt::Display for FetchError {
             Self::PartsAndWhole => f.write_str("fetch lists both `part` files and a `whole` file"),
             Self::SecondWhole => f.write_str("fetch lists more than one `whole` file"),
             Self::SecondCover => f.write_str("fetch lists more than one `cover`"),
+            Self::SecondCatalogRecord => f.write_str("fetch lists more than one `catalogRecord`"),
+            Self::SecondAnnotations => f.write_str("fetch lists more than one `annotations` file"),
+            Self::OutsideCacheDir { index } => {
+                write!(
+                    f,
+                    "fetched file {index} is not inside the fetch's cache directory"
+                )
+            }
         }
     }
 }
@@ -228,7 +246,8 @@ impl std::error::Error for FetchError {}
 ///
 /// The carrier must be one the plugin declared in `fetches`, and the files
 /// must describe one edition: ordered `part`s or a single `whole` file, plus
-/// at most one `cover`, each with a role and a path.
+/// at most one `cover`, one `catalogRecord` and one `annotations` file, each
+/// with a role and a path.
 ///
 /// # Arguments
 ///
@@ -247,6 +266,7 @@ pub fn validate_plain_fetch(fetch: &PlainFetch, media: &MediaSupport) -> Result<
         return Err(FetchError::CarrierNotFetched(fetch.media_kind));
     }
     let (mut parts, mut wholes, mut covers) = (0usize, 0usize, 0usize);
+    let (mut records, mut annotations) = (0usize, 0usize);
     for (index, file) in fetch.files.iter().enumerate() {
         if file.path.trim().is_empty() {
             return Err(FetchError::EmptyPath { index });
@@ -256,6 +276,8 @@ pub fn validate_plain_fetch(fetch: &PlainFetch, media: &MediaSupport) -> Result<
             FetchedFileRole::Part => parts += 1,
             FetchedFileRole::Whole => wholes += 1,
             FetchedFileRole::Cover => covers += 1,
+            FetchedFileRole::CatalogRecord => records += 1,
+            FetchedFileRole::Annotations => annotations += 1,
         }
     }
     if wholes > 1 {
@@ -264,11 +286,88 @@ pub fn validate_plain_fetch(fetch: &PlainFetch, media: &MediaSupport) -> Result<
     if covers > 1 {
         return Err(FetchError::SecondCover);
     }
+    if records > 1 {
+        return Err(FetchError::SecondCatalogRecord);
+    }
+    if annotations > 1 {
+        return Err(FetchError::SecondAnnotations);
+    }
     match (parts, wholes) {
         (0, 0) => Err(FetchError::NoContent),
         (0, _) | (_, 0) => Ok(()),
         _ => Err(FetchError::PartsAndWhole),
     }
+}
+
+/// Checks that every file a `fetchTitle` reply names lies inside the cache
+/// directory the host handed the guest, by its spelling alone.
+///
+/// A path passes when it is absolute, has no `.` or `..` component, and
+/// starts with the components of one of `cache_dirs` followed by at least
+/// one more. The host passes the directory as it sent it and as it resolves
+/// on disk, since a guest may answer with either spelling (on macOS the
+/// temporary directory sits behind the `/var` to `/private/var` link). The
+/// host then resolves each path on disk (following symlinks) and checks it
+/// again, since a guest can plant a symlink under its own cache directory;
+/// this check refuses the replies that need no disk to refuse.
+///
+/// # Arguments
+///
+/// * `fetch` - The guest's reply (untrusted).
+/// * `cache_dirs` - Spellings of `FetchTitleParams.cacheDir`; a file must
+///   lie inside one of them.
+///
+/// # Errors
+///
+/// Returns [`FetchError::OutsideCacheDir`] for the first file outside them.
+pub fn validate_fetched_paths(
+    fetch: &PlainFetch,
+    cache_dirs: &[&std::path::Path],
+) -> Result<(), FetchError> {
+    for (index, file) in fetch.files.iter().enumerate() {
+        let path = std::path::Path::new(&file.path);
+        if !cache_dirs.iter().any(|dir| lexically_inside(path, dir)) {
+            return Err(FetchError::OutsideCacheDir { index });
+        }
+    }
+    Ok(())
+}
+
+/// Whether `path` is a plain absolute path strictly below `dir`, by spelling.
+///
+/// # Arguments
+///
+/// * `path` - The guest's path.
+/// * `dir` - The directory it must lie under.
+///
+/// # Returns
+///
+/// `true` when `path` is absolute, holds no `.` or `..` component, and has
+/// every component of `dir` as a prefix plus at least one more.
+fn lexically_inside(path: &std::path::Path, dir: &std::path::Path) -> bool {
+    use std::path::Component;
+    if !path.is_absolute() || !dir.is_absolute() {
+        return false;
+    }
+    // `components()` drops a lone `.` in the middle of a path, so look at
+    // the spelling for it too.
+    let spelled_dot = path
+        .to_str()
+        .is_some_and(|s| s.split(['/', '\\']).any(|seg| seg == "." || seg == ".."));
+    if spelled_dot
+        || path
+            .components()
+            .any(|c| matches!(c, Component::CurDir | Component::ParentDir))
+    {
+        return false;
+    }
+    let mut rest = path.components();
+    for want in dir.components() {
+        if rest.next() != Some(want) {
+            return false;
+        }
+    }
+    rest.next().is_some()
 }
 
 /// Decodes an unpacked single-segment Cap'n Proto message whose root is a
@@ -470,6 +569,95 @@ mod tests {
         assert_eq!(
             validate_plain_fetch(&fetch, &m),
             Err(FetchError::UnspecifiedCarrier)
+        );
+    }
+
+    #[test]
+    fn a_fetch_carries_at_most_one_catalog_record_and_annotations_file() {
+        let m = audio_store();
+        let mut fetch = PlainFetch {
+            media_kind: MediaKind::Audio,
+            files: vec![
+                file("/c/book.m4b", FetchedFileRole::Whole),
+                file("/c/book.json", FetchedFileRole::CatalogRecord),
+                file("/c/clips.json", FetchedFileRole::Annotations),
+            ],
+            ..PlainFetch::default()
+        };
+        assert_eq!(validate_plain_fetch(&fetch, &m), Ok(()));
+        fetch
+            .files
+            .push(file("/c/again.json", FetchedFileRole::CatalogRecord));
+        assert_eq!(
+            validate_plain_fetch(&fetch, &m),
+            Err(FetchError::SecondCatalogRecord)
+        );
+        fetch.files.pop();
+        fetch
+            .files
+            .push(file("/c/again.json", FetchedFileRole::Annotations));
+        assert_eq!(
+            validate_plain_fetch(&fetch, &m),
+            Err(FetchError::SecondAnnotations)
+        );
+        // Companions alone are no edition.
+        fetch.files = vec![file("/c/book.json", FetchedFileRole::CatalogRecord)];
+        assert_eq!(validate_plain_fetch(&fetch, &m), Err(FetchError::NoContent));
+    }
+
+    #[test]
+    fn fetched_paths_must_lie_inside_the_cache_dir() {
+        // An absolute path on this platform: Windows needs a drive.
+        let abs = |path: &str| format!("{}{path}", if cfg!(windows) { "C:" } else { "" });
+        let dir_spelling = abs("/scratch/fetch");
+        let dir = std::path::Path::new(&dir_spelling);
+        let fetch = |path: &str| PlainFetch {
+            media_kind: MediaKind::Audio,
+            files: vec![
+                file(&abs("/scratch/fetch/B0/book.m4b"), FetchedFileRole::Whole),
+                file(path, FetchedFileRole::Cover),
+            ],
+            ..PlainFetch::default()
+        };
+        assert_eq!(
+            validate_fetched_paths(&fetch(&abs("/scratch/fetch/B0/c.jpg")), &[dir]),
+            Ok(())
+        );
+        let outside = [
+            abs("/etc/passwd"),
+            "relative/c.jpg".to_owned(),
+            abs("/scratch/fetch"),
+            abs("/scratch/fetch/"),
+            abs("/scratch/fetchx/c.jpg"),
+            abs("/scratch/fetch/../fetch/c.jpg"),
+            abs("/scratch/fetch/./c.jpg"),
+            abs("/scratch/fetch/B0/../../../etc/passwd"),
+        ];
+        for outside in &outside {
+            assert_eq!(
+                validate_fetched_paths(&fetch(outside), &[dir]),
+                Err(FetchError::OutsideCacheDir { index: 1 }),
+                "{outside}"
+            );
+        }
+        assert_eq!(
+            validate_fetched_paths(
+                &fetch(&abs("/scratch/fetch/c.jpg")),
+                &[std::path::Path::new("rel")]
+            ),
+            Err(FetchError::OutsideCacheDir { index: 0 })
+        );
+        // Either spelling of the directory admits a file.
+        let resolved_spelling = abs("/private/scratch/fetch");
+        let resolved = std::path::Path::new(&resolved_spelling);
+        let in_resolved = abs("/private/scratch/fetch/c.jpg");
+        assert_eq!(
+            validate_fetched_paths(&fetch(&in_resolved), &[dir, resolved]),
+            Ok(())
+        );
+        assert_eq!(
+            validate_fetched_paths(&fetch(&in_resolved), &[dir]),
+            Err(FetchError::OutsideCacheDir { index: 1 })
         );
     }
 }

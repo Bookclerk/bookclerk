@@ -18648,7 +18648,9 @@
         "unspecified",
         "part",
         "whole",
-        "cover"
+        "cover",
+        "catalogRecord",
+        "annotations"
       ]
     },
     "IdentifierScheme": {

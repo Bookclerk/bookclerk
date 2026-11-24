@@ -56,6 +56,7 @@ pub async fn fetch_title_materials_with(
                         chapters: chapters_from_tracks(&manifest.tracks),
                         chapter_kind: bookclerk_storefront::ChapterKind::Tracks,
                         pdf_url: None,
+                        store_records: bookclerk_storefront::StoreRecords::default(),
                     });
                 }
                 // Server ignored format / returned zips — use those parts.
@@ -68,6 +69,7 @@ pub async fn fetch_title_materials_with(
                         chapters: chapters_from_tracks(&manifest.tracks),
                         chapter_kind: bookclerk_storefront::ChapterKind::Tracks,
                         pdf_url: None,
+                        store_records: bookclerk_storefront::StoreRecords::default(),
                     });
                 }
             }
@@ -93,6 +95,7 @@ pub async fn fetch_title_materials_with(
                 chapters,
                 chapter_kind: bookclerk_storefront::ChapterKind::Tracks,
                 pdf_url: None,
+                store_records: bookclerk_storefront::StoreRecords::default(),
             });
         }
     }
@@ -107,6 +110,7 @@ pub async fn fetch_title_materials_with(
         chapters: chapters_from_tracks(&manifest.tracks),
         chapter_kind: bookclerk_storefront::ChapterKind::Tracks,
         pdf_url: None,
+        store_records: bookclerk_storefront::StoreRecords::default(),
     })
 }
 

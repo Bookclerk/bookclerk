@@ -740,6 +740,14 @@ pub enum FetchedFileRole {
     Whole,
     /// The edition's cover image.
     Cover,
+    /// The store's own catalog record of the title, as JSON, when the host asked
+    /// for it (`FetchOptions.saveMetadataJson`). The host stores it beside the
+    /// audio as `<name>.metadata.json` and never parses it.
+    CatalogRecord,
+    /// The account's clips, notes and bookmarks for the title, as JSON, when the
+    /// host asked for them (`FetchOptions.downloadClipsBookmarks`). The host
+    /// stores it beside the audio as `<name>.clips.json` and never parses it.
+    Annotations,
 }
 
 impl FetchedFileRole {
@@ -751,6 +759,8 @@ impl FetchedFileRole {
             Self::Part => "part",
             Self::Whole => "whole",
             Self::Cover => "cover",
+            Self::CatalogRecord => "catalogRecord",
+            Self::Annotations => "annotations",
         }
     }
 
@@ -762,6 +772,8 @@ impl FetchedFileRole {
             "part" => Some(Self::Part),
             "whole" => Some(Self::Whole),
             "cover" => Some(Self::Cover),
+            "catalogRecord" => Some(Self::CatalogRecord),
+            "annotations" => Some(Self::Annotations),
             _ => None,
         }
     }
@@ -774,6 +786,8 @@ impl From<FetchedFileRole> for plugin_capnp::FetchedFileRole {
             FetchedFileRole::Part => Self::Part,
             FetchedFileRole::Whole => Self::Whole,
             FetchedFileRole::Cover => Self::Cover,
+            FetchedFileRole::CatalogRecord => Self::CatalogRecord,
+            FetchedFileRole::Annotations => Self::Annotations,
         }
     }
 }
@@ -785,6 +799,8 @@ impl From<plugin_capnp::FetchedFileRole> for FetchedFileRole {
             plugin_capnp::FetchedFileRole::Part => Self::Part,
             plugin_capnp::FetchedFileRole::Whole => Self::Whole,
             plugin_capnp::FetchedFileRole::Cover => Self::Cover,
+            plugin_capnp::FetchedFileRole::CatalogRecord => Self::CatalogRecord,
+            plugin_capnp::FetchedFileRole::Annotations => Self::Annotations,
         }
     }
 }
@@ -2696,16 +2712,19 @@ pub struct FetchOptions {
     /// When true, trim Audible brand intro/outro from the remux window.
     #[serde(default)]
     pub strip_audible_brand_audio: bool,
-    /// When true, download clips/bookmarks sidecars when offered.
+    /// When true, hand back the account's clips and bookmarks for the title as
+    /// an `annotations` file when the store keeps them.
     #[serde(default)]
     pub download_clips_bookmarks: bool,
-    /// When true, keep the encrypted download in storage.
+    /// Retired: hosts always send false and guests ignore it. A kept encrypted
+    /// download plays only with its keys, which the host does not store.
     #[serde(default)]
     pub retain_aax_file: bool,
     /// Fetch speed cap in KB/s (`0` = unlimited).
     #[serde(default)]
     pub download_speed_limit_kbps: u32,
-    /// When true, persist raw catalog API JSON as `metadata.json`.
+    /// When true, hand back the store's catalog record of the title as a
+    /// `catalogRecord` file.
     #[serde(default)]
     pub save_metadata_json: bool,
 }

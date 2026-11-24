@@ -1151,13 +1151,12 @@ impl ContentSource for ExternalSource {
     ) -> bookclerk_source::Result<SourceFetch> {
         let credentials = self.account_credential_bytes(scope, account_id).await?;
         // Jail-granted scratch (already TMPDIR), not the host download cache.
-        let cache_dir = {
-            let dir = self.session.scratch_dir().join("fetch");
-            tokio::fs::create_dir_all(&dir)
-                .await
-                .map_err(|e| bookclerk_source::SourceError::api(e.to_string()))?;
-            dir
-        };
+        // Its resolved form is pinned before the guest is asked, so a guest
+        // that swaps the folder for a link cannot move where replies may
+        // point.
+        let (cache_dir, fetch_root) = prepare_fetch_dir(self.session.scratch_dir())
+            .await
+            .map_err(bookclerk_source::SourceError::api)?;
         let sent = credentials.clone().unwrap_or_default();
         let stop = FetchStop::new(opts, cache_dir.clone());
         let params = FetchTitleParams {
@@ -1211,6 +1210,9 @@ impl ContentSource for ExternalSource {
         // rotated its token during the fetch must not lose it to a bad reply.
         bookclerk_plugin_abi::validate_plain_fetch(&plain, &self.session.describe_snapshot().media)
             .map_err(|err| bookclerk_source::SourceError::api(err.to_string()))?;
+        confine_fetched_files(&mut plain, &cache_dir, &fetch_root)
+            .await
+            .map_err(bookclerk_source::SourceError::api)?;
         SourceFetch::try_from(plain)
             .map_err(|err| bookclerk_source::SourceError::api(err.to_string()))
     }
@@ -2057,6 +2059,103 @@ fn brand_from_abi(
     }
 }
 
+/// Creates the fetch's cache directory under the guest's scratch and pins
+/// where it resolves.
+///
+/// The guest may write anywhere in its scratch, so the `fetch` folder must
+/// be a real directory when the root is taken, and the root is resolved
+/// through the scratch directory itself, which the guest cannot replace.
+///
+/// # Arguments
+///
+/// * `scratch` - The guest's scratch directory.
+///
+/// # Returns
+///
+/// The cache directory as sent to the guest, and its resolved form.
+///
+/// # Errors
+///
+/// Returns a message when the folder cannot be created or resolved, or is
+/// not a directory (a link the guest left there, for instance).
+pub(crate) async fn prepare_fetch_dir(
+    scratch: &std::path::Path,
+) -> std::result::Result<(std::path::PathBuf, std::path::PathBuf), String> {
+    let dir = scratch.join("fetch");
+    match tokio::fs::symlink_metadata(&dir).await {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => return Err("the fetch cache directory is not a directory".into()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            tokio::fs::create_dir_all(&dir)
+                .await
+                .map_err(|e| format!("fetch cache directory cannot be created: {e}"))?;
+        }
+        Err(err) => return Err(format!("fetch cache directory cannot be read: {err}")),
+    }
+    let root = tokio::fs::canonicalize(scratch)
+        .await
+        .map_err(|e| format!("scratch directory cannot be resolved: {e}"))?
+        .join("fetch");
+    match tokio::fs::symlink_metadata(&root).await {
+        Ok(meta) if meta.is_dir() => Ok((dir, root)),
+        Ok(_) => Err("the fetch cache directory is not a directory".into()),
+        Err(err) => Err(format!("fetch cache directory cannot be read: {err}")),
+    }
+}
+
+/// Checks that every file a `fetchTitle` reply names is a regular file inside
+/// the fetch's cache directory, and rewrites each path to the file it
+/// resolves to.
+///
+/// The guest names the files and the host then reads them into storage, so
+/// a reply naming a host file (directly, through `..`, or through a symlink
+/// the guest planted in its own scratch) must be refused before anything
+/// reads it. The spelling is checked first, against the directory as sent
+/// and as it resolved before the guest ran
+/// ([`bookclerk_plugin_abi::validate_fetched_paths`]), then each path is
+/// resolved on disk and must land under that pinned root. A guest that
+/// swaps the folder for a link after the root was pinned only makes its
+/// files resolve elsewhere, and so be refused.
+///
+/// # Arguments
+///
+/// * `plain` - The validated reply; its paths are replaced by the resolved
+///   ones.
+/// * `cache_dir` - The `cacheDir` the host sent with the fetch.
+/// * `root` - Where `cache_dir` resolved before the guest was asked
+///   ([`prepare_fetch_dir`]).
+///
+/// # Errors
+///
+/// Returns a message naming the first file that is outside the cache
+/// directory, cannot be resolved, or is not a regular file.
+pub(crate) async fn confine_fetched_files(
+    plain: &mut bookclerk_plugin_abi::PlainFetch,
+    cache_dir: &std::path::Path,
+    root: &std::path::Path,
+) -> std::result::Result<(), String> {
+    bookclerk_plugin_abi::validate_fetched_paths(plain, &[cache_dir, root])
+        .map_err(|e| e.to_string())?;
+    for (index, file) in plain.files.iter_mut().enumerate() {
+        let resolved = tokio::fs::canonicalize(&file.path)
+            .await
+            .map_err(|e| format!("fetched file {index} cannot be resolved: {e}"))?;
+        if !resolved.starts_with(root) || resolved == root {
+            return Err(format!(
+                "fetched file {index} resolves outside the fetch's cache directory"
+            ));
+        }
+        let meta = tokio::fs::metadata(&resolved)
+            .await
+            .map_err(|e| format!("fetched file {index} cannot be read: {e}"))?;
+        if !meta.is_file() {
+            return Err(format!("fetched file {index} is not a regular file"));
+        }
+        file.path = resolved.display().to_string();
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2072,6 +2171,98 @@ mod tests {
             dir
         });
         configure_master_key(dir.path()).unwrap();
+    }
+
+    /// A reply with a `whole` file at `whole` and a `cover` at `cover`.
+    fn reply(whole: &std::path::Path, cover: &str) -> bookclerk_plugin_abi::PlainFetch {
+        use bookclerk_plugin_abi::{FetchedFile, FetchedFileRole};
+        bookclerk_plugin_abi::PlainFetch {
+            media_kind: bookclerk_plugin_abi::MediaKind::Audio,
+            files: vec![
+                FetchedFile {
+                    path: whole.display().to_string(),
+                    role: FetchedFileRole::Whole,
+                    ..FetchedFile::default()
+                },
+                FetchedFile {
+                    path: cover.into(),
+                    role: FetchedFileRole::Cover,
+                    ..FetchedFile::default()
+                },
+            ],
+            ..bookclerk_plugin_abi::PlainFetch::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn fetched_files_must_resolve_inside_the_cache_dir() {
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret");
+        std::fs::write(&secret, b"host only").unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let (cache, root) = prepare_fetch_dir(scratch.path()).await.unwrap();
+        assert_eq!(cache, scratch.path().join("fetch"));
+        std::fs::create_dir_all(cache.join("B0")).unwrap();
+        let whole = cache.join("B0/book.m4b");
+        std::fs::write(&whole, b"audio").unwrap();
+        let cover = cache.join("B0/cover.jpg");
+        std::fs::write(&cover, b"jpg").unwrap();
+
+        let mut ok = reply(&whole, &cover.display().to_string());
+        confine_fetched_files(&mut ok, &cache, &root).await.unwrap();
+        assert_eq!(root, std::fs::canonicalize(&cache).unwrap());
+        assert!(ok
+            .files
+            .iter()
+            .all(|f| std::path::Path::new(&f.path).starts_with(&root)));
+
+        let mut named = reply(&whole, &secret.display().to_string());
+        let err = confine_fetched_files(&mut named, &cache, &root)
+            .await
+            .unwrap_err();
+        assert!(err.contains("fetched file 1"), "{err}");
+
+        #[cfg(unix)]
+        {
+            let link = cache.join("B0/link.jpg");
+            std::os::unix::fs::symlink(&secret, &link).unwrap();
+            let mut linked = reply(&whole, &link.display().to_string());
+            let err = confine_fetched_files(&mut linked, &cache, &root)
+                .await
+                .unwrap_err();
+            assert!(err.contains("outside"), "{err}");
+        }
+
+        let mut directory = reply(&whole, &cache.join("B0").display().to_string());
+        let err = confine_fetched_files(&mut directory, &cache, &root)
+            .await
+            .unwrap_err();
+        assert!(err.contains("regular file"), "{err}");
+
+        let mut missing = reply(&whole, &cache.join("B0/none.jpg").display().to_string());
+        let err = confine_fetched_files(&mut missing, &cache, &root)
+            .await
+            .unwrap_err();
+        assert!(err.contains("cannot be resolved"), "{err}");
+
+        // A guest that swaps the whole folder for a link to a host folder
+        // after the root was pinned: its files now resolve outside the root.
+        #[cfg(unix)]
+        {
+            std::fs::write(outside.path().join("book.m4b"), b"host audio").unwrap();
+            std::fs::rename(&cache, scratch.path().join("moved")).unwrap();
+            std::os::unix::fs::symlink(outside.path(), &cache).unwrap();
+            let swapped = cache.join("book.m4b");
+            let mut swapped = reply(&swapped, &swapped.display().to_string());
+            swapped.files.truncate(1);
+            let err = confine_fetched_files(&mut swapped, &cache, &root)
+                .await
+                .unwrap_err();
+            assert!(err.contains("outside"), "{err}");
+            // And the next fetch refuses to start in a folder that is a link.
+            let err = prepare_fetch_dir(scratch.path()).await.unwrap_err();
+            assert!(err.contains("not a directory"), "{err}");
+        }
     }
 
     /// A scanned audiobook of account `a1`.

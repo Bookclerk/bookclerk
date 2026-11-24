@@ -150,6 +150,7 @@ impl ContentSource for FakeSource {
             chapters: Vec::new(),
             chapter_kind: bookclerk_source::ChapterKind::Unknown,
             pdf_url: None,
+            store_records: Default::default(),
         })
     }
 

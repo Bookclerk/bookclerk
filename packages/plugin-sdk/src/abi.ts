@@ -493,7 +493,7 @@ export type CreditLevel = (typeof CREDIT_LEVELS)[number];
  *
  * Ordinal-ordered `FetchedFileRole` wire names (index = Cap'n Proto ordinal).
  */
-export const FETCHED_FILE_ROLES = ["unspecified", "part", "whole", "cover"] as const;
+export const FETCHED_FILE_ROLES = ["unspecified", "part", "whole", "cover", "catalogRecord", "annotations"] as const;
 
 /** Union of `FETCHED_FILE_ROLES` wire names. */
 export type FetchedFileRole = (typeof FETCHED_FILE_ROLES)[number];

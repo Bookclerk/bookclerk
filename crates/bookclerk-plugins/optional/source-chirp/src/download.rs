@@ -78,6 +78,7 @@ pub async fn fetch_title_materials(
         chapters,
         chapter_kind: bookclerk_storefront::ChapterKind::Tracks,
         pdf_url: None,
+        store_records: bookclerk_storefront::StoreRecords::default(),
     })
 }
 

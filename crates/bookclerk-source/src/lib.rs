@@ -25,7 +25,7 @@ pub use bookclerk_storefront::{
     ChapterKind, ConfigOptionValue, ExpandSeed, ImportCredentialsOptions, LoginOptions,
     OAuthProgress, PlainAudioPart, PlainFetch, PriceLookup, PricedAnswer, PricedListing,
     PurchaseHintOpts, Result, ScanOptions, ScanSummary, SourceAccount, SourceBrand,
-    SourceConfigOption, SourceError, SourceFetch, SourcePurchaseHint,
+    SourceConfigOption, SourceError, SourceFetch, SourcePurchaseHint, StoreRecords,
 };
 pub use fetch::FetchOptions;
 pub use options::DownloadOptions;

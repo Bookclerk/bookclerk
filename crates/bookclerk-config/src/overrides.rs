@@ -248,9 +248,6 @@ fn apply_dotted_override(config: &mut Config, key: &str, value: &str) {
         "output.download_clips_bookmarks" => {
             config.output.download_clips_bookmarks = parse_bool(v).unwrap_or(false);
         }
-        "output.retain_aax_file" => {
-            config.output.retain_aax_file = parse_bool(v).unwrap_or(false);
-        }
         "output.download_speed_limit_kbps" => {
             if let Ok(n) = v.parse() {
                 config.output.download_speed_limit_kbps = n;
@@ -557,7 +554,6 @@ mod tests {
         ("output.strip_unabridged", "true"),
         ("output.strip_audible_brand_audio", "true"),
         ("output.download_clips_bookmarks", "true"),
-        ("output.retain_aax_file", "true"),
         ("output.download_speed_limit_kbps", "77"),
         ("output.lame.target", "bitrate-77"),
         ("output.lame.vbr_quality", "7"),

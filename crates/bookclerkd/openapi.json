@@ -66616,7 +66616,6 @@
           "strip_unabridged",
           "strip_audible_brand_audio",
           "download_clips_bookmarks",
-          "retain_aax_file",
           "download_speed_limit_kbps",
           "lame",
           "creation_time",
@@ -66804,11 +66803,6 @@
           "download_clips_bookmarks": {
             "type": "boolean",
             "description": "Download Audible clips/bookmarks sidecars.",
-            "example": false
-          },
-          "retain_aax_file": {
-            "type": "boolean",
-            "description": "Keep the encrypted download.",
             "example": false
           },
           "download_speed_limit_kbps": {

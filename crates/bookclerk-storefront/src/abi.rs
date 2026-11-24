@@ -17,7 +17,7 @@ use bookclerk_plugin_abi as abi;
 use crate::types::{
     CatalogHit, CatalogSearchField, CatalogSearchOpts, CatalogSearchSort, ExpandSeed, LoginOptions,
     PlainAudioPart, PlainFetch, PricedAnswer, PricedListing, PurchaseHintOpts, SourceAccount,
-    SourcePurchaseHint,
+    SourcePurchaseHint, StoreRecords,
 };
 
 /// `limit` sent for the host's `ContentSource::list_deals` when the caller omits one.
@@ -91,6 +91,18 @@ impl From<PlainFetch> for abi::PlainFetch {
         if let Some(cover) = plain.cover_path {
             files.push(fetched_file(&cover, abi::FetchedFileRole::Cover));
         }
+        if let Some(record) = plain.store_records.catalog_record {
+            files.push(abi::FetchedFile {
+                content_type: Some("application/json".into()),
+                ..fetched_file(&record, abi::FetchedFileRole::CatalogRecord)
+            });
+        }
+        if let Some(annotations) = plain.store_records.annotations {
+            files.push(abi::FetchedFile {
+                content_type: Some("application/json".into()),
+                ..fetched_file(&annotations, abi::FetchedFileRole::Annotations)
+            });
+        }
         Self {
             media_kind: abi::MediaKind::Audio,
             files,
@@ -141,6 +153,7 @@ impl TryFrom<abi::PlainFetch> for PlainFetch {
         let mut parts = Vec::new();
         let mut m4b_path = None;
         let mut cover_path = None;
+        let mut store_records = StoreRecords::default();
         for file in plain.files {
             match file.role {
                 abi::FetchedFileRole::Part => parts.push(PlainAudioPart {
@@ -150,6 +163,12 @@ impl TryFrom<abi::PlainFetch> for PlainFetch {
                 }),
                 abi::FetchedFileRole::Whole => m4b_path = Some(PathBuf::from(file.path)),
                 abi::FetchedFileRole::Cover => cover_path = Some(PathBuf::from(file.path)),
+                abi::FetchedFileRole::CatalogRecord => {
+                    store_records.catalog_record = Some(PathBuf::from(file.path));
+                }
+                abi::FetchedFileRole::Annotations => {
+                    store_records.annotations = Some(PathBuf::from(file.path));
+                }
                 abi::FetchedFileRole::Unspecified => {}
             }
         }
@@ -164,6 +183,7 @@ impl TryFrom<abi::PlainFetch> for PlainFetch {
                 .collect(),
             chapter_kind: plain.chapter_kind,
             pdf_url: plain.pdf_url,
+            store_records,
         })
     }
 }
@@ -846,6 +866,7 @@ mod tests {
             chapters: vec![("Ch 1".into(), 0), ("Ch 2".into(), 5000)],
             chapter_kind: abi::ChapterKind::Tracks,
             pdf_url: Some("https://cdn.example/book.pdf".into()),
+            store_records: Default::default(),
         };
         let wire: abi::PlainFetch = plain.clone().into();
         assert_eq!(wire.chapters[1].start_ms, 5000);
@@ -879,6 +900,7 @@ mod tests {
             chapters: Vec::new(),
             chapter_kind: abi::ChapterKind::Unknown,
             pdf_url: None,
+            store_records: Default::default(),
         };
         let wire: abi::PlainFetch = plain.into();
         assert_eq!(wire.files.len(), 1);

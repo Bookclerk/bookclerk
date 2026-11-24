@@ -18,7 +18,9 @@ Chardonnay and Classic share the same backend; this matrix uses upstream
 **Headless parity with Classic/Chardonnay is complete for the LibationCli +
 acquire surface.** All LibationCli verbs, download/decrypt settings that affect
 headless operation, naming templates, podcast handling, library metadata,
-migrate-from-classic, and classic EF Postgres `copydb` are implemented.
+migrate-from-classic, and classic EF Postgres `copydb` are implemented, except
+`RetainAaxFile`: Bookclerk does not keep the encrypted download, because
+Audible's AAXC and Widevine files play only with keys Bookclerk does not store.
 
 Remaining items are either **GUI-only**, **intentionally deferred** (upgrade
 checks), or **minor headless polish** listed under
@@ -75,7 +77,7 @@ checks), or **minor headless polish** listed under
 | `DownloadCoverArt` | ✅ | `output.download_cover` |
 | `CreateCueSheet` | ✅ | `output.create_cue` |
 | `AllowLibationFixup` | ✅ | `output.fixup_metadata` |
-| `SaveMetadataToFile` | ✅ | `output.save_metadata_json` |
+| `SaveMetadataToFile` | ✅ | `output.save_metadata_json` (the account's library record as `<name>.metadata.json`) |
 | `AutoDownloadEpisodes` | ✅ | `library.auto_acquire` |
 | `AutoScan` | ✅ | `library.scan_interval_minutes` |
 | `OverwriteExisting` | ✅ | `output.overwrite_existing` |
@@ -90,9 +92,9 @@ checks), or **minor headless polish** listed under
 | `CombineNestedChapterTitles` | ✅ | `output.combine_nested_chapter_titles` |
 | `MergeOpeningAndEndCredits` | ✅ | `output.merge_opening_and_end_credits` |
 | `StripUnabridged` / `StripAudibleBrandAudio` | ✅ | `output.strip_unabridged` / `strip_audible_brand_audio` (brand audio is trimmed from the media using chapter `brand_intro`/`brand_outro` durations; titles are scrubbed too) |
-| `DownloadClipsBookmarks` | ✅ | `output.download_clips_bookmarks` (JSON sidecar) |
+| `DownloadClipsBookmarks` | ✅ | `output.download_clips_bookmarks` (`<name>.clips.json` beside the audio) |
 | `ClipsBookmarksFileFormat` | ⚠️ | Always JSON; classic also offers CSV/XLSX |
-| `RetainAaxFile` | ✅ | `output.retain_aax_file` |
+| `RetainAaxFile` | ❌ | Not offered: Audible now sends AAXC or Widevine downloads, which play only with their keys, and Bookclerk does not store keys |
 | `DownloadSpeedLimit` | ✅ | `output.download_speed_limit_kbps` |
 | `Lame*` | ✅ | `output.lame.*` (target/quality/bitrate/mode/downsample/CBR) |
 | `LameMatchSourceBR` | ⚠️ | Not a separate toggle; bitrate path uses configured kbps |

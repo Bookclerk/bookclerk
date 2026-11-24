@@ -42,7 +42,8 @@ impl From<&DownloadOptions> for abi::FetchOptions {
             chapter_layout: download.chapter_layout.clone(),
             strip_audible_brand_audio: download.strip_audible_brand_audio,
             download_clips_bookmarks: download.download_clips_bookmarks,
-            retain_aax_file: download.retain_aax_file,
+            // Retired: a kept encrypted download plays only with its keys.
+            retain_aax_file: false,
             download_speed_limit_kbps: download.download_speed_limit_kbps,
             save_metadata_json: download.save_metadata_json,
         }
@@ -75,7 +76,6 @@ impl DownloadOptions {
         }
         self.strip_audible_brand_audio = fetch.strip_audible_brand_audio;
         self.download_clips_bookmarks = fetch.download_clips_bookmarks;
-        self.retain_aax_file = fetch.retain_aax_file;
         self.download_speed_limit_kbps = fetch.download_speed_limit_kbps;
         self.save_metadata_json = fetch.save_metadata_json;
     }

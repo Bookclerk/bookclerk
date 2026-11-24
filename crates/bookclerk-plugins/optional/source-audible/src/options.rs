@@ -77,6 +77,11 @@ pub struct DownloadOptions {
     pub strip_audible_brand_audio: bool,
     /// Download speed cap in KB/s (`0` = unlimited).
     pub download_speed_limit_kbps: u32,
+    /// Hand back the account's library record of the title as a
+    /// `catalogRecord` file.
+    pub save_metadata_json: bool,
+    /// Hand back the account's clips and bookmarks as an `annotations` file.
+    pub download_clips_bookmarks: bool,
 }
 
 impl Default for DownloadOptions {
@@ -91,6 +96,8 @@ impl Default for DownloadOptions {
             chapter_layout: String::from("tree"),
             strip_audible_brand_audio: false,
             download_speed_limit_kbps: 0,
+            save_metadata_json: false,
+            download_clips_bookmarks: false,
         }
     }
 }
@@ -118,6 +125,8 @@ impl DownloadOptions {
             chapter_layout: non_empty_or(&fetch.chapter_layout, defaults.chapter_layout),
             strip_audible_brand_audio: fetch.strip_audible_brand_audio,
             download_speed_limit_kbps: fetch.download_speed_limit_kbps,
+            save_metadata_json: fetch.save_metadata_json,
+            download_clips_bookmarks: fetch.download_clips_bookmarks,
         }
     }
 }
@@ -164,6 +173,8 @@ mod tests {
             chapter_layout: String::new(),
             strip_audible_brand_audio: true,
             download_speed_limit_kbps: 512,
+            save_metadata_json: true,
+            download_clips_bookmarks: true,
             ..FetchOptions::default()
         };
         let options = DownloadOptions::from_host(&fetch, &json!({"bitrate": "normal"}));
@@ -179,6 +190,8 @@ mod tests {
                 chapter_layout: "tree".into(),
                 strip_audible_brand_audio: true,
                 download_speed_limit_kbps: 512,
+                save_metadata_json: true,
+                download_clips_bookmarks: true,
             }
         );
     }

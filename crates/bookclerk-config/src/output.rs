@@ -180,8 +180,6 @@ pub struct OutputConfig {
     pub strip_audible_brand_audio: bool,
     /// When true, download Audible clips/bookmarks sidecars when the store offers them.
     pub download_clips_bookmarks: bool,
-    /// Keep encrypted download in storage (`RetainAaxFile`).
-    pub retain_aax_file: bool,
     /// Fetch speed cap in KB/s (`0` = unlimited).
     pub download_speed_limit_kbps: u32,
     /// LAME encoder knobs used when packaging to MP3.
@@ -236,7 +234,6 @@ impl Default for OutputConfig {
             strip_unabridged: false,
             strip_audible_brand_audio: false,
             download_clips_bookmarks: false,
-            retain_aax_file: false,
             download_speed_limit_kbps: 0,
             lame: LameConfig::default(),
             max_sample_rate: None,

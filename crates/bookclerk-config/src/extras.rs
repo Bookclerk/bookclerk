@@ -356,7 +356,6 @@ pub fn classic_key_aliases() -> HashMap<&'static str, &'static str> {
         ("StripUnabridged", "output.strip_unabridged"),
         ("StripAudibleBrandAudio", "output.strip_audible_brand_audio"),
         ("DownloadClipsBookmarks", "output.download_clips_bookmarks"),
-        ("RetainAaxFile", "output.retain_aax_file"),
         ("DownloadSpeedLimit", "output.download_speed_limit_kbps"),
         ("LameTarget", "output.lame.target"),
         ("LameVBRQuality", "output.lame.vbr_quality"),

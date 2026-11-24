@@ -122,7 +122,14 @@ CreditLevel = Literal["roleDefault", "work", "expression", "edition"]
 a guest sets this only when a credit departs from it.
 """
 
-FetchedFileRole = Literal["unspecified", "part", "whole", "cover"]
+FetchedFileRole = Literal[
+    "unspecified",
+    "part",
+    "whole",
+    "cover",
+    "catalogRecord",
+    "annotations",
+]
 """What one fetched file is to the edition it belongs to."""
 
 ChapterKind = Literal["unknown", "chapters", "tracks"]
@@ -4408,11 +4415,13 @@ class FetchOptions(TypedDict):
         chapterLayout: Preferred chapter API layout when fetching (`tree` or `flat`).
         stripAudibleBrandAudio: When true, trim Audible brand intro/outro from the remux
             window.
-        downloadClipsBookmarks: When true, download clips/bookmarks sidecars when
-            offered.
-        retainAaxFile: When true, keep the encrypted download in storage.
+        downloadClipsBookmarks: When true, hand back the account's clips and bookmarks
+            for the title as an `annotations` file when the store keeps them.
+        retainAaxFile: Retired: hosts always send false and guests ignore it. A kept
+            encrypted download plays only with its keys, which the host does not store.
         downloadSpeedLimitKbps: Fetch speed cap in KB/s (`0` = unlimited).
-        saveMetadataJson: When true, persist raw catalog API JSON as `metadata.json`.
+        saveMetadataJson: When true, hand back the store's catalog record of the title
+            as a `catalogRecord` file.
     """
 
     widevine: bool

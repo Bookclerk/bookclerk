@@ -823,7 +823,7 @@ When some destinations already have a title and others don't,
 
 | Policy | What happens |
 | --- | --- |
-| `sync_missing` (default) | Copies from a destination that has the title to those that don't, without downloading again. It copies the main output's copy only, so a destination whose copy rules refuse that copy gets nothing, and a destination missing the title that takes another copy too (`output.copies`) is downloaded again instead. A plain multi-part download is not matched on a destination by name, so it is downloaded again for the destination that lacks it |
+| `sync_missing` (default) | Copies from a destination that has the title to those that don't, without downloading again. It copies the main output's copy only, so a destination whose copy rules refuse that copy gets nothing, and a destination missing the title that takes another copy too (`output.copies`) or stores the store's records (`save_metadata_json`, `download_clips_bookmarks`) is downloaded again instead. A plain multi-part download is not matched on a destination by name, so it is downloaded again for the destination that lacks it |
 | `refetch_missing` | Downloads and encodes again, and writes only to the destinations missing the title |
 | `refetch_all` | Downloads and encodes again, and writes to every destination |
 
@@ -985,7 +985,24 @@ fixup_metadata = true
 save_chapter_json = true
 cover_size = "500"        # 500 | 1215 | native
 chapter_layout = "tree"   # tree | flat
+save_metadata_json = false
+download_clips_bookmarks = false
 ```
+
+`save_metadata_json` stores the store's catalog record of the book beside
+its audio as `<name>.metadata.json`, and `download_clips_bookmarks`
+stores your clips, notes and bookmarks for it as `<name>.clips.json`.
+Bookclerk stores each file as the store plugin hands it back and never
+reads it. Only a store plugin that keeps such records sends them; today
+that is Audible, whose catalog record is the library item Libation saves
+under the same name.
+
+The records come from the store with the audio, so each destination decides
+for itself: a destination that asks for a record gets it even when the
+primary destination does not. A destination filled later from a copy on
+another destination (`multi_destination = "sync_missing"`) is downloaded
+from the store again when it asks for either record, since a copy between
+destinations moves only the audio.
 
 > [!NOTE]
 > These `[output]` settings live in the library database, as the
@@ -998,6 +1015,12 @@ Every host applies a new revision at its next configuration wakeup. See
 [Configuration](configuration.md#output-shared).
 
 If a sidecar file fails, Bookclerk logs it and still keeps the audio.
+
+> [!NOTE]
+> Bookclerk never keeps the encrypted file a store sends. Audible's
+> downloads play only with their keys, which Bookclerk does not store, so
+> there is no setting for it, and a Libation `RetainAaxFile` setting is
+> not imported.
 
 ### Keeping unusual audio in M4B
 

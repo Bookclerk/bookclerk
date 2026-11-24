@@ -2868,13 +2868,22 @@ export interface FetchOptions {
   chapterLayout: string;
   /** When true, trim Audible brand intro/outro from the remux window. */
   stripAudibleBrandAudio: boolean;
-  /** When true, download clips/bookmarks sidecars when offered. */
+  /**
+   * When true, hand back the account's clips and bookmarks for the title as
+   * an `annotations` file when the store keeps them.
+   */
   downloadClipsBookmarks: boolean;
-  /** When true, keep the encrypted download in storage. */
+  /**
+   * Retired: hosts always send false and guests ignore it. A kept encrypted
+   * download plays only with its keys, which the host does not store.
+   */
   retainAaxFile: boolean;
   /** Fetch speed cap in KB/s (`0` = unlimited). */
   downloadSpeedLimitKbps: number;
-  /** When true, persist raw catalog API JSON as `metadata.json`. */
+  /**
+   * When true, hand back the store's catalog record of the title as a
+   * `catalogRecord` file.
+   */
   saveMetadataJson: boolean;
 }
 

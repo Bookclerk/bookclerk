@@ -75,8 +75,6 @@ pub struct DownloadOptions {
     pub strip_audible_brand_audio: bool,
     /// When true, download Audible clips/bookmarks sidecars when offered.
     pub download_clips_bookmarks: bool,
-    /// When true, keep the encrypted download in storage (`RetainAaxFile`).
-    pub retain_aax_file: bool,
     /// Fetch speed cap in KB/s (`0` = unlimited).
     pub download_speed_limit_kbps: u32,
     /// LAME encoder knobs used when packaging to MP3.
@@ -136,7 +134,6 @@ impl From<&OutputConfig> for DownloadOptions {
             strip_unabridged: cfg.strip_unabridged,
             strip_audible_brand_audio: cfg.strip_audible_brand_audio,
             download_clips_bookmarks: cfg.download_clips_bookmarks,
-            retain_aax_file: cfg.retain_aax_file,
             download_speed_limit_kbps: cfg.download_speed_limit_kbps,
             lame: cfg.lame.clone(),
             copies: cfg.copies.clone(),
