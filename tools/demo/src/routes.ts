@@ -85,6 +85,13 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["DELETE", "/api/auth/passkeys/{id}", "deny"],
   ["PUT", "/api/auth/password", "deny"],
   ["POST", "/api/auth/password", "deny"],
+  // Self-service password reset: the sign-in page may ask whether it is
+  // offered; asking for, checking or using a link stays refused.
+  ["GET", "/api/auth/password-reset", "allow"],
+  ["POST", "/api/auth/password-reset", "deny"],
+  ["POST", "/api/auth/password-reset/check", "deny"],
+  ["POST", "/api/auth/password-reset/finish", "deny"],
+  ["POST", "/api/auth/password-reset/passkey", "deny"],
   ["PATCH", "/api/auth/profile", "deny"],
   ["PUT", "/api/auth/profile/avatar", "deny"],
   ["DELETE", "/api/auth/profile/avatar", "deny"],
