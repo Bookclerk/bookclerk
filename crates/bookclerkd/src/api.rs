@@ -1345,6 +1345,8 @@ pub(crate) fn route_groups() -> Vec<RouteGroup> {
     groups.extend(crate::passkeys::route_groups());
     // TOTP MFA + host second-factor policy.
     groups.extend(crate::totp::route_groups());
+    // Self-service password reset by account mail.
+    groups.extend(crate::password_reset::route_groups());
     // The player API for audiobook apps (`/player`).
     groups.extend(crate::player::route_groups());
     // The library key's recovery copy (the desktop first run, Settings).
@@ -2000,8 +2002,10 @@ pub fn router(state: Arc<AppState>, ui_dist: Option<PathBuf>) -> Router {
                 "/clerk/callback",
                 // A player app's browser sign-in: the consent page.
                 "/apps/approve",
-                // A mailed link that verifies an email address.
+                // Mailed links: one that verifies an email address, and
+                // one that resets a forgotten password.
                 "/verify-email",
+                "/reset-password",
             ];
             let spa_index = axum::routing::get_service(ServeFile::new(index.clone()))
                 .layer(middleware::from_fn(spa_document_csp));

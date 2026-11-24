@@ -535,6 +535,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "password_reset_request"
+path = "fuzz_targets/password_reset_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "pace_request"
 path = "fuzz_targets/pace_request.rs"
 test = false

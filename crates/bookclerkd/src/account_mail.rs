@@ -6,13 +6,16 @@
 //! `[notifier] account_mail = true`. Account mail is ready when that
 //! instance is installed and the library's public origin is set, since
 //! every link in a message is built from the public origin and never from
-//! a request's `Host`. Three messages exist:
+//! a request's `Host`. These messages exist:
 //!
 //! - a test to the Administrator's own address;
 //! - an invite, whose claim ticket the send job mints at send time and
 //!   which verifies the address once it is used;
 //! - a verification link, also minted at send time, for an address a
-//!   patron set or changed.
+//!   patron set or changed;
+//! - a password-reset link, minted at send time, only to a verified
+//!   address ([`crate::password_reset`]);
+//! - a notice, with no link, that a reset link changed the password.
 //!
 //! Only a token's hash is stored, and the link is written nowhere but the
 //! message: a retry mints a new token and voids the last one. The send
@@ -294,12 +297,21 @@ async fn queue_unless_since(
     let library = state.library_snapshot().await;
     let status = status(state, &library).await?;
     let usable = match (status.not_ready, kind) {
-        (None, _) | (Some(NotReady::NoPublicOrigin), AccountMailKind::Test) => true,
+        (None, _)
+        | (
+            Some(NotReady::NoPublicOrigin),
+            AccountMailKind::Test | AccountMailKind::PasswordChanged,
+        ) => true,
         (
             Some(NotReady::NotConfigured | NotReady::NotifierMissing | NotReady::NoPublicOrigin),
             _,
         ) => false,
     };
+    // A reset link goes only through a notifier whose test arrived, read
+    // from the same settings that pick it: the notifier may have changed
+    // since the request was accepted.
+    let usable =
+        usable && !(matches!(kind, AccountMailKind::PasswordReset) && status.tested_at.is_none());
     let Some(instance) = status.plugin_instance_id.filter(|_| usable) else {
         return Ok(Err(status.not_ready.unwrap_or(NotReady::NotConfigured)));
     };
@@ -360,6 +372,135 @@ pub(crate) async fn queue_verification_if_ready(state: &AppState, user_id: i64, 
         queue(state, AccountMailKind::VerifyEmail, user_id, address, None).await
     {
         tracing::debug!(user_id, "no verification mail queued");
+    }
+}
+
+/// Whether self-service password reset is on: account mail is ready and a
+/// test message through the chosen instance was delivered (ADR decision
+/// 7), so a patron who asks for a link can expect it to arrive.
+///
+/// # Errors
+///
+/// An error answer when the library or the plugin catalog cannot be read.
+pub(crate) async fn reset_available(
+    state: &AppState,
+    library: &LibraryStore,
+) -> Result<bool, ApiError> {
+    let status = status(state, library).await?;
+    Ok(status.ready && status.tested_at.is_some())
+}
+
+/// Shortest wait between two reset links for one account; a request
+/// inside it sends nothing.
+pub(crate) const RESET_RESEND_GAP: chrono::Duration = chrono::Duration::minutes(5);
+
+/// What became of a password-reset request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResetRequest {
+    /// The job that answers it is queued (or one for the address already
+    /// was).
+    Queued,
+    /// Self-service reset is off: account mail is not ready or its
+    /// notifier has no delivered test.
+    Off,
+    /// The notification queue is full, so nothing was queued; the same for
+    /// every address.
+    Busy,
+}
+
+/// Enqueues the job that answers a password-reset request for `address`.
+///
+/// # Errors
+///
+/// An error answer when the library cannot be read or written.
+pub(crate) async fn queue_reset_request(
+    state: &AppState,
+    address: &str,
+) -> Result<ResetRequest, ApiError> {
+    let _permit = crate::jobs::admission_permit(state)
+        .await
+        .map_err(|err| store_error("password_reset_request", LibraryError::Other(err)))?;
+    let library = state.library_snapshot().await;
+    let status = status(state, &library).await?;
+    let Some(instance) = status
+        .plugin_instance_id
+        .filter(|_| status.ready && status.tested_at.is_some())
+    else {
+        return Ok(ResetRequest::Off);
+    };
+    let limits = notify_queue_limits(state).await;
+    if library
+        .enqueue_password_reset_request(address, &instance, limits)
+        .await
+        .map_err(|err| store_error("password_reset_request", err))?
+    {
+        Ok(ResetRequest::Queued)
+    } else {
+        warn!("the notification queue is full; a password-reset request was not queued");
+        Ok(ResetRequest::Busy)
+    }
+}
+
+/// Queues the notice that a user's password was changed through a reset
+/// link, to their verified address; a failure is logged, since the reset
+/// itself already happened.
+pub(crate) async fn queue_password_changed(state: &AppState, user_id: i64, address: &str) {
+    if let Err(_) | Ok(Err(_)) = queue(
+        state,
+        AccountMailKind::PasswordChanged,
+        user_id,
+        address,
+        None,
+    )
+    .await
+    {
+        warn!(user_id, "could not queue the password-changed notice");
+    }
+}
+
+/// Runs one `notify_send` job that answers a self-service password-reset
+/// request: when an enabled user has the address verified, it queues the
+/// reset mail, at most one per account every five minutes. The job's
+/// summary does not say whether an account was found.
+///
+/// # Errors
+///
+/// An error when the library could not be read or written.
+pub async fn run_password_reset_request(
+    state: &AppState,
+    payload: &JobPayload,
+    ctx: Option<&JobExecCtx>,
+) -> anyhow::Result<String> {
+    const DONE: &str = "password-reset request answered";
+    let address = payload
+        .password_reset_request
+        .as_deref()
+        .ok_or_else(|| JobFailedForGood("notify_send names no reset request".into()))?;
+    let library = state.library.read().await.clone();
+    if job_cancelled(ctx, &library).await {
+        anyhow::bail!("cancelled");
+    }
+    let Some(user) = library.get_user_by_email(address).await? else {
+        return Ok(DONE.into());
+    };
+    if matches!(user.status, UserStatus::Disabled) || !user.email_verified {
+        return Ok(DONE.into());
+    }
+    let Some(email) = user.email.clone() else {
+        return Ok(DONE.into());
+    };
+    match queue_unless_since(
+        state,
+        AccountMailKind::PasswordReset,
+        user.id,
+        &email,
+        Some(Utc::now() - RESET_RESEND_GAP),
+        None,
+    )
+    .await
+    {
+        Ok(_) => Ok(DONE.into()),
+        Err(_) => anyhow::bail!("the reset mail could not be queued"),
     }
 }
 
@@ -829,6 +970,13 @@ pub async fn run_account_mail_send(
     if mail.kind == AccountMailKind::VerifyEmail && user.email_verified {
         return dropped(&library, mail_id, "the address is already verified", fence).await;
     }
+    if matches!(
+        mail.kind,
+        AccountMailKind::PasswordReset | AccountMailKind::PasswordChanged
+    ) && !user.email_verified
+    {
+        return dropped(&library, mail_id, "the address is not verified", fence).await;
+    }
     let origin = state.config.read().await.integrations.public_origin.clone();
     // Cancellation may have arrived while the mail was read; no token is
     // minted after it.
@@ -915,8 +1063,52 @@ pub async fn run_account_mail_send(
                 ),
             }
         }
+        AccountMailKind::PasswordReset => {
+            if link_for(origin.as_deref(), Some("/")).is_none() {
+                return dropped(
+                    &library,
+                    mail_id,
+                    "the library's public address is not set",
+                    fence,
+                )
+                .await;
+            }
+            let Some(token) = library
+                .mint_password_reset(user.id, &mail.address, fence)
+                .await?
+            else {
+                return unminted(&library, &mail, fence).await;
+            };
+            Composed {
+                title: "Reset your password".into(),
+                text: "Open this link to choose a new password for your Bookclerk library. \
+                       It works once and for 30 minutes, and your password stays the same \
+                       until you use it. If you did not ask for it, ignore this message."
+                    .into(),
+                link: link_for(
+                    origin.as_deref(),
+                    Some(&format!("/reset-password?token={}", token.expose())),
+                ),
+                fields: Vec::new(),
+            }
+        }
+        AccountMailKind::PasswordChanged => Composed {
+            title: "Your password was changed".into(),
+            text: "The password of your Bookclerk library account was just changed through \
+                   a reset link, and every device was signed out. If this was not you, \
+                   contact your library's administrator right away."
+                .into(),
+            fields: Vec::new(),
+            link: None,
+        },
     };
-    if mail.kind != AccountMailKind::Test && composed.link.is_none() {
+    let needs_link = match mail.kind {
+        AccountMailKind::Invite | AccountMailKind::VerifyEmail | AccountMailKind::PasswordReset => {
+            true
+        }
+        AccountMailKind::Test | AccountMailKind::PasswordChanged => false,
+    };
+    if needs_link && composed.link.is_none() {
         return dropped(
             &library,
             mail_id,
@@ -938,7 +1130,10 @@ pub async fn run_account_mail_send(
             },
             notification_type: match mail.kind {
                 AccountMailKind::Invite => INVITE_TYPE,
-                AccountMailKind::Test | AccountMailKind::VerifyEmail => ACCOUNT_MAIL_TYPE,
+                AccountMailKind::Test
+                | AccountMailKind::VerifyEmail
+                | AccountMailKind::PasswordReset
+                | AccountMailKind::PasswordChanged => ACCOUNT_MAIL_TYPE,
             }
             .into(),
             severity: NotificationSeverity::Info,

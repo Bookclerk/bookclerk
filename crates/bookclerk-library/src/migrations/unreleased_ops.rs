@@ -2433,7 +2433,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS account_mail (
         id TEXT PRIMARY KEY NOT NULL,
-        kind TEXT NOT NULL CHECK (kind IN ('test', 'invite', 'verify_email')),
+        kind TEXT NOT NULL CHECK (kind IN ('test', 'invite', 'verify_email', 'password_reset', 'password_changed')),
         user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         address TEXT NOT NULL,
         plugin_instance_id TEXT NOT NULL,
@@ -2456,6 +2456,18 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // single use, 24 hours, and voided by the next one.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS email_verifications (
+        token_hash TEXT PRIMARY KEY NOT NULL,
+        user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+        email TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )",
+    ),
+    // The live password-reset link of each user (ADR decision 7): hashed,
+    // single use, 30 minutes, voided by the next one, and only for the
+    // verified address it was sent to.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS password_resets (
         token_hash TEXT PRIMARY KEY NOT NULL,
         user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
         email TEXT NOT NULL,

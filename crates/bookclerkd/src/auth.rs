@@ -2941,7 +2941,7 @@ impl PasswordRecheck {
 /// # Returns
 ///
 /// The key passed to the login throttle, `password:<user_id>`.
-fn password_throttle_key(user_id: i64) -> String {
+pub(crate) fn password_throttle_key(user_id: i64) -> String {
     format!("password:{user_id}")
 }
 

@@ -40,6 +40,10 @@ desktop/app--discover-search--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 desktop/app--discover-search--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
+desktop/app--forgot-password--dark.png 69427b13da1a3e0a43c0bcf82c8312755f21f8a0
+
+desktop/app--forgot-password--light.png 69427b13da1a3e0a43c0bcf82c8312755f21f8a0
+
 desktop/app--join-approve--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 desktop/app--join-approve--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
@@ -71,6 +75,10 @@ desktop/app--player-approve--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 desktop/app--plugin-consent--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 desktop/app--plugin-consent--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/app--reset-password--dark.png 69427b13da1a3e0a43c0bcf82c8312755f21f8a0
+
+desktop/app--reset-password--light.png 69427b13da1a3e0a43c0bcf82c8312755f21f8a0
 
 desktop/app--second-factor--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
@@ -132,13 +140,13 @@ desktop/app--settings-users--dark.png 04774c479aab654d9a0276d38d21e25dc5b36771
 
 desktop/app--settings-users--light.png 04774c479aab654d9a0276d38d21e25dc5b36771
 
-desktop/app--sign-in--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+desktop/app--sign-in--dark.png 69427b13da1a3e0a43c0bcf82c8312755f21f8a0
 
-desktop/app--sign-in--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+desktop/app--sign-in--light.png 69427b13da1a3e0a43c0bcf82c8312755f21f8a0
 
-desktop/app--sign-in-sso--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+desktop/app--sign-in-sso--dark.png 69427b13da1a3e0a43c0bcf82c8312755f21f8a0
 
-desktop/app--sign-in-sso--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+desktop/app--sign-in-sso--light.png 69427b13da1a3e0a43c0bcf82c8312755f21f8a0
 
 desktop/app--status--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
@@ -564,6 +572,10 @@ phone/app--discover-search--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 phone/app--discover-search--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
+phone/app--forgot-password--dark.png 69427b13da1a3e0a43c0bcf82c8312755f21f8a0
+
+phone/app--forgot-password--light.png 69427b13da1a3e0a43c0bcf82c8312755f21f8a0
+
 phone/app--join-approve--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 phone/app--join-approve--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
@@ -595,6 +607,10 @@ phone/app--player-approve--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 phone/app--plugin-consent--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 phone/app--plugin-consent--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/app--reset-password--dark.png 69427b13da1a3e0a43c0bcf82c8312755f21f8a0
+
+phone/app--reset-password--light.png 69427b13da1a3e0a43c0bcf82c8312755f21f8a0
 
 phone/app--second-factor--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
@@ -656,13 +672,13 @@ phone/app--settings-users--dark.png 04774c479aab654d9a0276d38d21e25dc5b36771
 
 phone/app--settings-users--light.png 04774c479aab654d9a0276d38d21e25dc5b36771
 
-phone/app--sign-in--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+phone/app--sign-in--dark.png 69427b13da1a3e0a43c0bcf82c8312755f21f8a0
 
-phone/app--sign-in--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+phone/app--sign-in--light.png 69427b13da1a3e0a43c0bcf82c8312755f21f8a0
 
-phone/app--sign-in-sso--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+phone/app--sign-in-sso--dark.png 69427b13da1a3e0a43c0bcf82c8312755f21f8a0
 
-phone/app--sign-in-sso--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+phone/app--sign-in-sso--light.png 69427b13da1a3e0a43c0bcf82c8312755f21f8a0
 
 phone/app--status--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 

@@ -68,6 +68,7 @@ mod openapi;
 mod openapi_contract;
 mod origin;
 mod passkeys;
+mod password_reset;
 mod patron_scopes;
 mod placement;
 mod playback;

@@ -19,15 +19,18 @@ use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use super::notifications::fenced;
 use super::LibraryStore;
 use crate::control_plane::batch;
-use crate::entities::{account_mail, account_mail_settings, email_verifications, jobs};
+use crate::entities::{
+    account_mail, account_mail_settings, email_verifications, jobs, password_resets, users,
+};
 use crate::error::{LibraryError, Result};
 use crate::models::{
     EnqueueJobSpec, EnqueueOutcome, JobFence, JobKind, JobPayload, JobState, JobTrigger,
 };
 use crate::notifications::{
     AccountMail, AccountMailKind, AccountMailRequest, AccountMailSettings, DeliveryState,
-    FailedAttempt, MintedToken, VerifyEmailToken, ACCOUNT_MAIL_RETENTION_DAYS,
-    EMAIL_VERIFICATION_HOURS, INVITE_DAYS,
+    FailedAttempt, MintedToken, PasswordResetFactor, PasswordResetToken, RedeemedReset,
+    VerifyEmailToken, ACCOUNT_MAIL_RETENTION_DAYS, EMAIL_VERIFICATION_HOURS, INVITE_DAYS,
+    PASSWORD_RESET_MINUTES,
 };
 use crate::token_hash::hash_token;
 use crate::NotifyQueueLimits;
@@ -86,6 +89,18 @@ pub fn account_mail_slot(kind: AccountMailKind, user_id: i64) -> String {
 /// a send that read an old address mints nothing and voids nothing.
 /// Binds: user id, address.
 const STILL_ADDRESSED: &str = "EXISTS (SELECT 1 FROM users WHERE id = ? AND email = ?)";
+
+/// SQL condition: the user still has the address, verified, so a reset
+/// link is minted only for a verified address and a send that read an old
+/// one mints nothing and voids nothing. Binds: user id, address.
+const STILL_VERIFIED: &str = "EXISTS (SELECT 1 FROM users WHERE id = ? AND email = ? \
+                              AND email_verified_at IS NOT NULL)";
+
+/// The `expires_at` a reset link holds while one redemption batch has
+/// claimed it. No minted link expires then, and an expired link never
+/// passes the claim, so the marker names only a claim made inside the
+/// running batch (the same batch deletes the row before it commits).
+const RESET_CLAIM: &str = "1970-01-01T00:00:00+00:00";
 
 impl LibraryStore {
     /// The instance account mail goes through; `None` when none is chosen.
@@ -331,6 +346,46 @@ impl LibraryStore {
         ))
         .await?;
         Ok(Some(job_id))
+    }
+
+    /// Enqueues the job that answers a self-service password-reset
+    /// request for `address`: it looks the account up and queues the reset
+    /// mail when a user has that address verified.
+    ///
+    /// # Returns
+    ///
+    /// Whether a job was enqueued or already waits for the address;
+    /// `false` when the queue is full.
+    ///
+    /// # Errors
+    ///
+    /// An error when the enqueue fails.
+    pub async fn enqueue_password_reset_request(
+        &self,
+        address: &str,
+        plugin_instance_id: &str,
+        limits: NotifyQueueLimits,
+    ) -> Result<bool> {
+        let outcome = self
+            .enqueue_job(EnqueueJobSpec {
+                kind: JobKind::NotifySend,
+                payload: JobPayload {
+                    plugin_instance_id: Some(plugin_instance_id.to_string()),
+                    requires: vec![plugin_instance_id.to_string()],
+                    trigger: JobTrigger::Scheduler,
+                    password_reset_request: Some(address.to_string()),
+                    ..JobPayload::default()
+                },
+                priority: 0,
+                max_attempts: limits.max_attempts.max(1),
+                max_pending: limits.max_pending,
+                run_after: None,
+            })
+            .await?;
+        Ok(match outcome {
+            EnqueueOutcome::Created { .. } | EnqueueOutcome::Duplicate { .. } => true,
+            EnqueueOutcome::QueueFull => false,
+        })
     }
 
     /// One message; `None` when it is gone (pruned, or its user deleted).
@@ -846,9 +901,282 @@ impl LibraryStore {
         Ok(batch::rows_affected(&reply, 0) == 1)
     }
 
+    /// Mints the link a password-reset message carries, voiding the
+    /// user's last one.
+    ///
+    /// # Arguments
+    ///
+    /// * `user_id` - The user.
+    /// * `email` - The address it goes to; nothing is minted unless the
+    ///   user still has it, verified.
+    /// * `fence` - The send job's claim; nothing is minted or voided once
+    ///   it lost the job, so a stale send cannot void a newer link.
+    ///
+    /// # Returns
+    ///
+    /// The raw token, for the link; `None` when the fence no longer holds
+    /// or the user's address is no longer `email`, verified.
+    ///
+    /// # Errors
+    ///
+    /// An error when the batch fails.
+    pub async fn mint_password_reset(
+        &self,
+        user_id: i64,
+        email: &str,
+        fence: Option<&JobFence>,
+    ) -> Result<Option<MintedToken>> {
+        let raw = random_token();
+        let now = Utc::now();
+        let reply = self
+            .execute_host_batch(batch::request(
+                &format!("account-mail-reset-{}", uuid::Uuid::new_v4()),
+                vec![
+                    fenced(
+                        &format!(
+                            "DELETE FROM password_resets WHERE user_id = ? AND {STILL_VERIFIED}"
+                        ),
+                        vec![batch::int(user_id), batch::int(user_id), batch::text(email)],
+                        fence,
+                    ),
+                    fenced(
+                        &format!(
+                            "INSERT INTO password_resets (token_hash, user_id, email, \
+                             expires_at, created_at) SELECT ?, ?, ?, ?, ? WHERE {STILL_VERIFIED}"
+                        ),
+                        vec![
+                            batch::text(&hash_token(&raw)),
+                            batch::int(user_id),
+                            batch::text(email),
+                            batch::text(
+                                &(now + Duration::minutes(PASSWORD_RESET_MINUTES)).to_rfc3339(),
+                            ),
+                            batch::text(&now.to_rfc3339()),
+                            batch::int(user_id),
+                            batch::text(email),
+                        ],
+                        fence,
+                    ),
+                ],
+            ))
+            .await?;
+        Ok((batch::rows_affected(&reply, 1) == 1).then(|| MintedToken::new(raw)))
+    }
+
+    /// The user a password-reset link is for, without using it up.
+    ///
+    /// # Arguments
+    ///
+    /// * `token` - The raw token from the link.
+    /// * `now` - The current time.
+    ///
+    /// # Returns
+    ///
+    /// The user's id; `None` for a link that is unknown, used, expired, or
+    /// for an address the user no longer has verified.
+    ///
+    /// # Errors
+    ///
+    /// An error when a read fails.
+    pub async fn password_reset_user(
+        &self,
+        token: &PasswordResetToken,
+        now: DateTime<Utc>,
+    ) -> Result<Option<i64>> {
+        let Some(row) = password_resets::Entity::find_by_id(hash_token(token.expose()))
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(None);
+        };
+        let live = DateTime::parse_from_rfc3339(&row.expires_at)
+            .is_ok_and(|expires| expires.with_timezone(&Utc) > now);
+        if !live {
+            return Ok(None);
+        }
+        let verified = users::Entity::find_by_id(row.user_id)
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?
+            .is_some_and(|user| {
+                user.email.as_deref() == Some(row.email.as_str())
+                    && user.email_verified_at.is_some()
+            });
+        Ok(verified.then_some(row.user_id))
+    }
+
+    /// Redeems a reset link: sets the new password, signs the account out
+    /// everywhere (portal and elevated sessions, and OpenID refresh
+    /// tokens), records `password_reset_self` in the security audit log and
+    /// spends the link, all in one atomic batch.
+    ///
+    /// The first statement claims the link: it marks the row with
+    /// a claim marker (`RESET_CLAIM`) only while the link is unexpired, is for `user_id`,
+    /// still names the account's verified address, the account is not
+    /// disabled, and its second factor is still `factor`. Every later
+    /// write is guarded only by that claim, and the claimed row is deleted
+    /// last, so the claim is never visible outside the batch. When the
+    /// claim matches nothing, nothing changes. A second redemption of the
+    /// same link waits on the claimed row's lock and then finds it gone, so
+    /// only one applies even under `READ COMMITTED`, and a factor enrolled
+    /// after the claim cannot strand a half-applied reset.
+    ///
+    /// The operation id comes from the link and the new hash, so a retry
+    /// after a lost reply resends the same batch, while a later attempt
+    /// with another password gets an id of its own. When the retry finds
+    /// the link already spent, the stored hash tells whether the lost
+    /// batch was this one.
+    ///
+    /// # Arguments
+    ///
+    /// * `token` - The link's token.
+    /// * `user_id` - The account the link was checked for.
+    /// * `factor` - The second factor the account required when checked.
+    /// * `password_hash` - The new Argon2id hash. Its salt makes it unique
+    ///   to this attempt.
+    /// * `now` - The current time.
+    ///
+    /// # Returns
+    ///
+    /// The redeemed reset, with how many portal sessions were signed out
+    /// (unknown when the reply was lost and the retry found this reset
+    /// already applied, since the count went with the reply), or `None`
+    /// when the link no longer works for this account and factor (nothing
+    /// was changed).
+    ///
+    /// # Errors
+    ///
+    /// An error when the batch fails; nothing was changed unless the error
+    /// is [`LibraryError::Unavailable`] after a retry.
+    pub async fn redeem_password_reset(
+        &self,
+        token: &PasswordResetToken,
+        user_id: i64,
+        factor: PasswordResetFactor,
+        password_hash: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<RedeemedReset>> {
+        let token_hash = hash_token(token.expose());
+        let factor_sql = match factor {
+            PasswordResetFactor::None => {
+                "users.totp_enabled = 0 AND NOT EXISTS (SELECT 1 FROM webauthn_credentials \
+                 WHERE webauthn_credentials.user_id = users.id)"
+            }
+            PasswordResetFactor::Totp => "users.totp_enabled <> 0",
+            PasswordResetFactor::Passkey => {
+                "users.totp_enabled = 0 AND EXISTS (SELECT 1 FROM webauthn_credentials \
+                 WHERE webauthn_credentials.user_id = users.id)"
+            }
+        };
+        let claimed = || {
+            (
+                "EXISTS (SELECT 1 FROM password_resets \
+                 WHERE password_resets.token_hash = ? AND password_resets.expires_at = ?)",
+                [batch::text(&token_hash), batch::text(RESET_CLAIM)],
+            )
+        };
+        let guarded = |sql: &str, mut leading: Vec<bookclerk_plugin_abi::DbValue>| {
+            let (claim_sql, claim_params) = claimed();
+            leading.extend(claim_params);
+            batch::exec(&format!("{sql} AND {claim_sql}"), leading)
+        };
+        // `expires_at` is always written as UTC RFC 3339, so it compares
+        // as text, and the claim marker sorts before every real expiry.
+        let statements = vec![
+            batch::exec(
+                &format!(
+                    "UPDATE password_resets SET expires_at = ? \
+                     WHERE token_hash = ? AND user_id = ? AND expires_at > ? \
+                     AND EXISTS (SELECT 1 FROM users WHERE users.id = password_resets.user_id \
+                     AND users.email = password_resets.email \
+                     AND users.email_verified_at IS NOT NULL AND users.status <> 'disabled' \
+                     AND {factor_sql})"
+                ),
+                vec![
+                    batch::text(RESET_CLAIM),
+                    batch::text(&token_hash),
+                    batch::int(user_id),
+                    batch::text(&now.to_rfc3339()),
+                ],
+            ),
+            guarded(
+                "UPDATE users SET password_hash = ?, \
+                 security_version = security_version + 1, updated_at = ? WHERE id = ?",
+                vec![
+                    batch::text(password_hash),
+                    batch::text(&now.to_rfc3339()),
+                    batch::int(user_id),
+                ],
+            ),
+            guarded(
+                "DELETE FROM operator_sessions WHERE elevated_from_user_id = ?",
+                vec![batch::int(user_id)],
+            ),
+            guarded(
+                "DELETE FROM portal_sessions WHERE identity_id IN \
+                 (SELECT id FROM portal_identities WHERE user_id = ?)",
+                vec![batch::int(user_id)],
+            ),
+            // OpenID refresh tokens would otherwise mint new sessions.
+            guarded(
+                "UPDATE oidc_refresh_tokens SET revoked_at = ? \
+                 WHERE user_id = ? AND revoked_at IS NULL",
+                vec![batch::text(&now.to_rfc3339()), batch::int(user_id)],
+            ),
+            // The audit row commits with the reset or not at all.
+            batch::exec(
+                &format!(
+                    "INSERT INTO security_audit_events (at, actor, action, detail_json) \
+                     SELECT ?, ?, 'password_reset_self', NULL WHERE {}",
+                    claimed().0
+                ),
+                {
+                    let mut params = vec![
+                        batch::text(&now.to_rfc3339()),
+                        batch::text(&format!("user:{user_id}")),
+                    ];
+                    params.extend(claimed().1);
+                    params
+                },
+            ),
+            batch::exec(
+                "DELETE FROM password_resets WHERE token_hash = ? AND expires_at = ?",
+                vec![batch::text(&token_hash), batch::text(RESET_CLAIM)],
+            ),
+        ];
+        // A hash of the stored hash and the new one, so the id names this
+        // attempt without repeating a stored value in logs.
+        let operation_id = format!(
+            "password-reset-redeem-{}",
+            &hash_token(&format!("{token_hash}:{password_hash}"))[..32]
+        );
+        let request = batch::request(&operation_id, statements);
+        let redeemed = |reply: &bookclerk_plugin_abi::ExecuteReply| {
+            (batch::rows_affected(reply, 6) == 1).then(|| RedeemedReset {
+                revoked_sessions: Some(batch::rows_affected(reply, 3)),
+            })
+        };
+        match self.execute_host_batch(request.clone()).await {
+            Ok(reply) => Ok(redeemed(&reply)),
+            Err(LibraryError::Unavailable(_)) => {
+                let reply = self.execute_host_batch(request).await?;
+                if let Some(done) = redeemed(&reply) {
+                    return Ok(Some(done));
+                }
+                let applied =
+                    self.get_user_password_hash(user_id).await?.as_deref() == Some(password_hash);
+                Ok(applied.then_some(RedeemedReset {
+                    revoked_sessions: None,
+                }))
+            }
+            Err(err) => Err(err),
+        }
+    }
+
     /// Deletes account-mail records older than
     /// [`ACCOUNT_MAIL_RETENTION_DAYS`] that are no longer pending, and
-    /// verification links that expired.
+    /// verification and password-reset links that expired.
     ///
     /// # Returns
     ///
@@ -869,6 +1197,10 @@ impl LibraryStore {
             ),
             batch::exec(
                 "DELETE FROM email_verifications WHERE expires_at <= ?",
+                vec![batch::text(&now.to_rfc3339())],
+            ),
+            batch::exec(
+                "DELETE FROM password_resets WHERE expires_at <= ?",
                 vec![batch::text(&now.to_rfc3339())],
             ),
         ];

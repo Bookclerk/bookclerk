@@ -161,6 +161,9 @@ pub const EMAIL_VERIFICATION_HOURS: i64 = 24;
 /// How long an emailed invite works, as for every claim ticket.
 pub const INVITE_DAYS: i64 = 7;
 
+/// How long a password-reset link works.
+pub const PASSWORD_RESET_MINUTES: i64 = 30;
+
 /// What an account-mail message says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -172,11 +175,22 @@ pub enum AccountMailKind {
     Invite,
     /// A link that proves the user's email address.
     VerifyEmail,
+    /// A link that sets a new password, sent only to a verified address.
+    PasswordReset,
+    /// A notice, with no link, that the password was changed through a
+    /// reset link.
+    PasswordChanged,
 }
 
 impl AccountMailKind {
     /// Every kind, in the order of the `kind` column's CHECK list.
-    pub const ALL: [Self; 3] = [Self::Test, Self::Invite, Self::VerifyEmail];
+    pub const ALL: [Self; 5] = [
+        Self::Test,
+        Self::Invite,
+        Self::VerifyEmail,
+        Self::PasswordReset,
+        Self::PasswordChanged,
+    ];
 
     /// The stored spelling.
     #[must_use]
@@ -185,6 +199,8 @@ impl AccountMailKind {
             Self::Test => "test",
             Self::Invite => "invite",
             Self::VerifyEmail => "verify_email",
+            Self::PasswordReset => "password_reset",
+            Self::PasswordChanged => "password_changed",
         }
     }
 
@@ -195,6 +211,8 @@ impl AccountMailKind {
             "test" => Some(Self::Test),
             "invite" => Some(Self::Invite),
             "verify_email" => Some(Self::VerifyEmail),
+            "password_reset" => Some(Self::PasswordReset),
+            "password_changed" => Some(Self::PasswordChanged),
             _ => None,
         }
     }
@@ -404,6 +422,338 @@ impl VerifyEmailRequest {
         }
         Ok(VerifyEmailToken(token))
     }
+}
+
+/// Longest password a reset link sets, in bytes.
+pub const MAX_PASSWORD_BYTES: usize = 1024;
+
+/// Whether `token` is a link token: exactly [`VERIFY_TOKEN_CHARS`]
+/// lowercase hex characters.
+fn is_link_token(token: &str) -> bool {
+    token.len() == VERIFY_TOKEN_CHARS
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// A reset link that was redeemed: the password is set and every session
+/// of the account is signed out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RedeemedReset {
+    /// How many portal sessions were signed out, or `None` when the
+    /// database's reply was lost and the retry found this reset already
+    /// applied: the count left with the lost reply.
+    pub revoked_sessions: Option<u64>,
+}
+
+/// The second factor an account required when its reset was checked.
+///
+/// Redeeming a link repeats the check inside the same atomic write, so a
+/// factor enrolled or removed after the check makes the redemption fail
+/// rather than set a password without it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasswordResetFactor {
+    /// No authenticator and no passkey.
+    None,
+    /// An authenticator app (it takes precedence over passkeys).
+    Totp,
+    /// At least one passkey and no authenticator.
+    Passkey,
+}
+
+/// The token of a password-reset link, as the patron's browser sends it
+/// back: exactly [`VERIFY_TOKEN_CHARS`] lowercase hex characters.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PasswordResetToken(String);
+
+impl PasswordResetToken {
+    /// The raw token, to hash and look up. Never logged.
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
+    /// Checks a token read from a body.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::LibraryError::Invalid`] when it is not a link token.
+    fn checked(token: String) -> crate::Result<Self> {
+        if is_link_token(&token) {
+            Ok(Self(token))
+        } else {
+            Err(crate::LibraryError::Invalid(format!(
+                "password reset: token must be {VERIFY_TOKEN_CHARS} lowercase hex characters"
+            )))
+        }
+    }
+}
+
+impl std::fmt::Debug for PasswordResetToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PasswordResetToken(<redacted>)")
+    }
+}
+
+/// The body of `POST /api/auth/password-reset`: the address to send a
+/// reset link to, read from a JSON object only.
+#[derive(Debug)]
+pub struct PasswordResetAsk(AskBody);
+
+/// The fields of [`PasswordResetAsk`].
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AskBody {
+    /// The address, as typed.
+    email: String,
+}
+
+impl<'de> Deserialize<'de> for PasswordResetAsk {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        crate::control_plane::from_object(d, "a JSON object").map(Self)
+    }
+}
+
+impl PasswordResetAsk {
+    /// Checks the address.
+    ///
+    /// # Returns
+    ///
+    /// The address trimmed and lowercased, as addresses are stored.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::LibraryError::Invalid`] when it is empty or not a valid
+    /// address.
+    pub fn validate(self) -> crate::Result<String> {
+        match crate::email::normalize_user_email(Some(&self.0.email)) {
+            Ok(Some(address)) => Ok(address),
+            Ok(None) | Err(_) => Err(crate::LibraryError::Invalid(
+                "password reset: email must be a valid address".into(),
+            )),
+        }
+    }
+}
+
+/// The body of `POST /api/auth/password-reset/check` and
+/// `POST /api/auth/password-reset/passkey`: a reset link's token, read
+/// from a JSON object only.
+pub struct PasswordResetLink(LinkBody);
+
+/// The fields of [`PasswordResetLink`].
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LinkBody {
+    /// The token from the link.
+    token: String,
+}
+
+impl std::fmt::Debug for PasswordResetLink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PasswordResetLink(<redacted>)")
+    }
+}
+
+impl<'de> Deserialize<'de> for PasswordResetLink {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        crate::control_plane::from_object(d, "a JSON object").map(Self)
+    }
+}
+
+impl PasswordResetLink {
+    /// Checks the token.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::LibraryError::Invalid`] when it is not a link token.
+    pub fn validate(self) -> crate::Result<PasswordResetToken> {
+        PasswordResetToken::checked(self.0.token)
+    }
+}
+
+/// The second factor a reset is finished with.
+#[derive(Clone, PartialEq)]
+pub enum ResetSecondFactor {
+    /// None was sent; enough only for an account without one.
+    None,
+    /// A six-digit authenticator code.
+    Totp(String),
+    /// A passkey assertion answering the challenge the reset began.
+    Passkey {
+        /// The challenge from `POST /api/auth/password-reset/passkey`.
+        challenge_id: String,
+        /// The browser's credential, a JSON object WebAuthn reads.
+        credential: serde_json::Value,
+    },
+}
+
+impl std::fmt::Debug for ResetSecondFactor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::None => "None",
+            Self::Totp(_) => "Totp(<redacted>)",
+            Self::Passkey { .. } => "Passkey(<redacted>)",
+        })
+    }
+}
+
+/// A checked [`PasswordResetFinish`].
+pub struct ResetFinish {
+    /// The link's token.
+    pub token: PasswordResetToken,
+    /// The new password, trimmed; 1 to [`MAX_PASSWORD_BYTES`] bytes.
+    pub password: zeroize::Zeroizing<String>,
+    /// The second factor sent with it.
+    pub second_factor: ResetSecondFactor,
+}
+
+impl std::fmt::Debug for ResetFinish {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResetFinish")
+            .field("token", &self.token)
+            .field("password", &"<redacted>")
+            .field("second_factor", &self.second_factor)
+            .finish()
+    }
+}
+
+/// The body of `POST /api/auth/password-reset/finish`, read from a JSON
+/// object only.
+pub struct PasswordResetFinish(FinishBody);
+
+/// The fields of [`PasswordResetFinish`].
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FinishBody {
+    /// The token from the link.
+    token: String,
+    /// The new password.
+    password: String,
+    /// An authenticator code, for an account with one.
+    #[serde(default)]
+    totp_code: Option<String>,
+    /// A passkey assertion, for an account with passkeys and no
+    /// authenticator app.
+    #[serde(default)]
+    passkey: Option<PasskeyAnswer>,
+}
+
+/// A passkey assertion in a reset's finish body.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PasskeyAnswer {
+    /// The challenge the reset began.
+    challenge_id: String,
+    /// The browser's credential.
+    credential: serde_json::Value,
+}
+
+/// Longest passkey challenge id a reset body takes.
+const MAX_CHALLENGE_ID_BYTES: usize = 64;
+
+impl std::fmt::Debug for PasswordResetFinish {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PasswordResetFinish(<redacted>)")
+    }
+}
+
+impl<'de> Deserialize<'de> for PasswordResetFinish {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        crate::control_plane::from_object(d, "a JSON object").map(Self)
+    }
+}
+
+impl PasswordResetFinish {
+    /// Checks the body.
+    ///
+    /// # Returns
+    ///
+    /// The token, the trimmed password and the second factor.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::LibraryError::Invalid`] naming the first rule the body
+    /// breaks: the token is not a link token; the password is empty or
+    /// longer than [`MAX_PASSWORD_BYTES`]; `totp_code` is not six digits;
+    /// the passkey's challenge id is not 1 to 64 printable characters or
+    /// its credential is not an object; or both factors are sent.
+    pub fn validate(self) -> crate::Result<ResetFinish> {
+        let body = self.0;
+        let invalid = |rule: &str| crate::LibraryError::Invalid(format!("password reset: {rule}"));
+        let token = PasswordResetToken::checked(body.token)?;
+        let raw = zeroize::Zeroizing::new(body.password);
+        let password = raw.trim();
+        if password.is_empty() || password.len() > MAX_PASSWORD_BYTES {
+            return Err(invalid(&format!(
+                "password must be 1 to {MAX_PASSWORD_BYTES} bytes"
+            )));
+        }
+        let second_factor = match (body.totp_code, body.passkey) {
+            (Some(_), Some(_)) => return Err(invalid("send totp_code or passkey, not both")),
+            (Some(code), None) => {
+                if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(invalid("totp_code must be six digits"));
+                }
+                ResetSecondFactor::Totp(code)
+            }
+            (None, Some(answer)) => {
+                if answer.challenge_id.is_empty()
+                    || answer.challenge_id.len() > MAX_CHALLENGE_ID_BYTES
+                    || !answer.challenge_id.bytes().all(|b| b.is_ascii_graphic())
+                {
+                    return Err(invalid(
+                        "passkey.challenge_id must be 1 to 64 printable characters",
+                    ));
+                }
+                if !answer.credential.is_object() {
+                    return Err(invalid("passkey.credential must be an object"));
+                }
+                ResetSecondFactor::Passkey {
+                    challenge_id: answer.challenge_id,
+                    credential: answer.credential,
+                }
+            }
+            (None, None) => ResetSecondFactor::None,
+        };
+        Ok(ResetFinish {
+            token,
+            password: zeroize::Zeroizing::new(password.to_string()),
+            second_factor,
+        })
+    }
+}
+
+/// Parses the body of `POST /api/auth/password-reset` from bytes
+/// (sans-IO), for the fuzz target and tests; the route reads the same
+/// [`PasswordResetAsk`] with the JSON extractor.
+///
+/// # Errors
+///
+/// [`crate::LibraryError::Invalid`] naming the first rule the body breaks.
+pub fn parse_password_reset_ask(body: &[u8]) -> crate::Result<String> {
+    read_body::<PasswordResetAsk>(body, "password reset")?.validate()
+}
+
+/// Parses the body of `POST /api/auth/password-reset/check` from bytes
+/// (sans-IO), for the fuzz target and tests; the route reads the same
+/// [`PasswordResetLink`] with the JSON extractor.
+///
+/// # Errors
+///
+/// [`crate::LibraryError::Invalid`] naming the first rule the body breaks.
+pub fn parse_password_reset_link(body: &[u8]) -> crate::Result<PasswordResetToken> {
+    read_body::<PasswordResetLink>(body, "password reset")?.validate()
+}
+
+/// Parses the body of `POST /api/auth/password-reset/finish` from bytes
+/// (sans-IO), for the fuzz target and tests; the route reads the same
+/// [`PasswordResetFinish`] with the JSON extractor.
+///
+/// # Errors
+///
+/// [`crate::LibraryError::Invalid`] naming the first rule the body breaks.
+pub fn parse_password_reset_finish(body: &[u8]) -> crate::Result<ResetFinish> {
+    read_body::<PasswordResetFinish>(body, "password reset")?.validate()
 }
 
 /// Reads a body as `T` from bytes, for the fuzz target and tests (the
@@ -675,8 +1025,9 @@ pub struct StalledSend {
     /// delivery; `None` when the mail is gone, finished or linked to
     /// another job.
     pub account_mail_id: Option<String>,
-    /// The notifier instance the delivery or account mail goes through;
-    /// `None` exactly when both of those are.
+    /// The notifier instance the delivery or account mail goes through,
+    /// or that a password-reset request names; `None` when the job has
+    /// none of those.
     pub notifier: Option<String>,
 }
 

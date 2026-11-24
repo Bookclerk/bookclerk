@@ -117,7 +117,7 @@ export function SsoProviderMark({
     return (
       <span
         className={cn(
-          "flex h-6 w-6 shrink-0 items-center justify-center rounded-[2px] bg-ink/10 text-[10px] font-semibold uppercase text-ink/70",
+          "flex h-6 w-6 shrink-0 items-center justify-center rounded-[2px] bg-ink/10 text-[10px] font-semibold uppercase text-ink",
           className,
         )}
         aria-hidden

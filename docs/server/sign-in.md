@@ -489,6 +489,7 @@ The web app keeps the address bar in step with the screen:
 | `/settings` | Settings |
 | `/invite` | Claim an invite (`?ticket=`) |
 | `/verify-email` | Verify an email address from a mailed link (`?token=`; see [Account mail](notifications.md#account-mail)) |
+| `/reset-password` | Choose a new password from a mailed reset link (`?token=`; see [Password reset](notifications.md#password-reset)) |
 | `/clerk/approve` | Give a clerk a library card (see [Library cards](#library-cards)) |
 | `/clerk/callback` | Finish this install's library card sign-in (see [Signing in with a library card](#signing-in-with-a-library-card)) |
 
@@ -621,8 +622,11 @@ The operator adds the first Owner. The operator, Owners and Administrators
 create users with an invite link, change role and status, send a new invite, and
 reset passwords. Once [account mail](notifications.md#account-mail) is set
 up, a new user with an email address gets their invite by email instead of
-a link, **Email invite** mails a new one, and each row shows whether the
-user's address is verified.
+a link, **Email invite** mails a new one, **Email the link** after
+**Reset password** mails the user a new link instead of copying it, and
+each row shows whether the user's address is verified. Patrons with a
+verified address can also reset a forgotten password themselves (see
+[Password reset](notifications.md#password-reset)).
 
 Who can grant which role:
 

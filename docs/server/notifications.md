@@ -10,9 +10,9 @@ The design is in the [notifications ADR](../adr/notifications.md).
 > and desktop notifications, the web API, the
 > [webhook notifier](#the-webhook-notifier), the
 > [email notifier](#the-email-notifier) and
-> [account mail](#account-mail) (emailed invites and verified addresses)
-> are built. Self-service password reset, second-factor recovery and the
-> chat, paging and push notifiers come later.
+> [account mail](#account-mail) (emailed invites, verified addresses and
+> [password reset](#password-reset)) are built. Second-factor recovery and
+> the chat, paging and push notifiers come later.
 
 ## How a notification travels
 
@@ -280,7 +280,8 @@ What the server answers decides what happens next:
 ## Account mail
 
 Account mail is what the library sends about a patron's own account:
-invites and links that verify an email address. It is never routed and
+invites, links that verify an email address, password-reset links and
+the notice that a password was changed. It is never routed and
 patrons cannot turn it off. It goes through one notifier instance an
 administrator chooses, and only plugins that say they can carry it (the
 [email notifier](#the-email-notifier) does) can be chosen.
@@ -345,6 +346,77 @@ The web API:
   link.
 - `POST /api/auth/verify-email` with `{"token": "…"}` uses a link.
 
+### Password reset
+
+A patron who forgot their password can ask for a reset link from the
+sign-in page with **Forgot your password?**. The sign-in page offers it
+only once account mail is ready and a test message through the chosen
+notifier arrived, so a library whose mail does not work never promises
+a link.
+
+1. The patron enters their address. The answer is the same whether or
+   not an account has it, and the work runs in a job, so neither the
+   answer nor its timing says whether the address is known.
+2. When an enabled account has that address **verified**, the library
+   mails a link to it, at most one every five minutes per account. An
+   unverified address gets nothing, so verify addresses before patrons
+   need a reset.
+3. The link works once, for 30 minutes, and only while the account still
+   has that address verified. A new link voids the last. The password
+   does not change until the link is used, so asking for links cannot
+   lock anyone out.
+4. Opening the link asks for a new password. An account with an
+   authenticator app also asks for its current code; one with passkeys
+   and no authenticator asks for a passkey. A wrong code does not use
+   the link up.
+5. Saving sets the password, signs every device out (browser and
+   elevated sessions, and revokes OpenID refresh tokens) and mails a
+   notice that the password was changed. The change is recorded in the
+   security audit log as `password_reset_self`, in the same atomic write.
+
+Links that do not work and wrong codes count toward a per-client limit,
+the same one failed sign-ins use, so repeated tries are answered `429`
+with `Retry-After`. Asking for links has a limit of its own, so asking
+several times cannot lock a patron out of the link that arrives. When
+the notification queue is full, a request is answered `503` with
+`Retry-After` and nothing is queued; the answer is the same for every
+address.
+
+Saving the new password, signing every device out and using the link up
+happen in one atomic write that repeats the second-factor check, so a
+write that does not commit leaves the link working and the password
+unchanged, and an authenticator or passkey added after the link was
+opened makes saving fail without using the link up. When the database's
+reply is lost, Bookclerk sends the same write again and then compares
+the stored password with the new one, so a write that did commit is
+still reported as a success. If the retry or that check fails too, the
+outcome is unknown: the patron sees an error, and the
+new password may already be in effect. The password-changed notice is queued
+after that write, on a best-effort basis: if it cannot be queued, the
+reset, the sign-outs and the audit row still stand, and the failure is
+logged.
+
+An administrator can still reset a password from **Settings → Users**:
+**Reset password** signs the user out and shows a link to send them, and
+**Email the link** mails them a new invite instead when they have an
+address.
+
+The web API (no sign-in needed; the link is the proof):
+
+- `GET /api/auth/password-reset` says whether reset is offered
+  (`{"available": true}`).
+- `POST /api/auth/password-reset` with `{"email": "…"}` asks for a link;
+  it answers `202`, `409` with `reset_unavailable` when reset is off, or
+  `503` with `busy` when the notification queue is full.
+- `POST /api/auth/password-reset/check` with `{"token": "…"}` checks a
+  link without using it and says which second factor it needs (`none`,
+  `totp` or `passkey`).
+- `POST /api/auth/password-reset/passkey` with `{"token": "…"}` begins
+  the passkey step.
+- `POST /api/auth/password-reset/finish` with `token`, `password` and
+  either `totp_code` or `passkey` (`challenge_id` and `credential`) sets
+  the password.
+
 ## Retries, pausing and the delivery log
 
 - A send runs on a node that holds the library database, so deploy each
@@ -389,4 +461,4 @@ optionally for one destination.
 - Notifications, their delivery log and inbox rows are deleted after 30
   days by the record retention pass (see
   [Jobs and scheduling](../internals/jobs.md)). So are records of sent
-  account mail, and expired verification links.
+  account mail, and expired verification and password-reset links.

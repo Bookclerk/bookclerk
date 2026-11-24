@@ -5855,6 +5855,96 @@ export async function requestEmailVerification(): Promise<{ mail_id: string }> {
   return parseJson(res);
 }
 
+/** The second factor a password-reset link asks for before it sets a password. */
+export type ResetFactor = "none" | "totp" | "passkey";
+
+/**
+ * Whether the sign-in page may offer "Forgot password": account mail is set
+ * up and a test message through it was delivered. Needs no sign-in.
+ *
+ * @returns True when self-service password reset is on.
+ */
+export async function passwordResetAvailable(): Promise<boolean> {
+  const res = await fetch("/api/auth/password-reset", { credentials: "include" });
+  const body = await parseJson<{ available: boolean }>(res);
+  return body.available;
+}
+
+/**
+ * Asks for a password-reset link. The answer is the same whether or not an
+ * account has the address, so it never says whether a mail was sent.
+ *
+ * @param email - The address to send the link to.
+ * @returns Resolves once the library accepted the request.
+ */
+export async function requestPasswordReset(email: string): Promise<void> {
+  const res = await fetch("/api/auth/password-reset", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+  await parseJson(res);
+}
+
+/**
+ * Checks a password-reset link without using it up.
+ *
+ * @param token - The token from the link.
+ * @returns The second factor finishing the reset asks for.
+ */
+export async function checkPasswordReset(token: string): Promise<ResetFactor> {
+  const res = await fetch("/api/auth/password-reset/check", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  const body = await parseJson<{ second_factor: ResetFactor }>(res);
+  return body.second_factor;
+}
+
+/**
+ * Begins the passkey step of a password reset.
+ *
+ * @param token - The token from the link.
+ * @returns WebAuthn request options for the account's passkeys.
+ */
+export async function passwordResetPasskeyBegin(token: string): Promise<{
+  challenge_id: string;
+  publicKey: Record<string, unknown>;
+}> {
+  const res = await fetch("/api/auth/password-reset/passkey", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  return parseJson(res);
+}
+
+/**
+ * Finishes a password reset: sets the password and signs every device out.
+ *
+ * @param body - The link's token, the new password, and the second factor
+ *   the link asked for (a code or a passkey assertion), if any.
+ * @returns How many sessions were signed out.
+ */
+export async function finishPasswordReset(body: {
+  token: string;
+  password: string;
+  totp_code?: string;
+  passkey?: { challenge_id: string; credential: Record<string, unknown> };
+}): Promise<{ revoked_sessions: number | null }> {
+  const res = await fetch("/api/auth/password-reset/finish", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return parseJson(res);
+}
+
 /**
  * Uses a mailed verification link. Needs no sign-in.
  *

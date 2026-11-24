@@ -185,6 +185,8 @@ paths = [
     "fuzz/oracles/pace_request.rs",
     "fuzz/corpus/account_mail_request/**",
     "fuzz/oracles/account_mail_request.rs",
+    "fuzz/corpus/password_reset_request/**",
+    "fuzz/oracles/password_reset_request.rs",
 ]
 
 # The desktop window's custom-scheme oracle, shared the same way.
