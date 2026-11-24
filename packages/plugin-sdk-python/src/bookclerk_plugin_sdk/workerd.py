@@ -3080,7 +3080,9 @@ class MediaDownloadEntrypoint(NamedEntrypoint):
         """Liveness / readiness probe (``HealthOk``)."""
         return {"ok": True, "detail": ""}
 
-    async def downloadMedia(self, _params: abi.MediaDownloadParams, _sink: Any) -> list[abi.DownloadResult]:
+    async def downloadMedia(
+        self, _params: abi.MediaDownloadParams, _sink: Any
+    ) -> list[abi.DownloadResult]:
         """Fetch each URL into ``_sink`` under its index (list of ``DownloadResult``)."""
         raise _unsupported("downloadMedia")
 

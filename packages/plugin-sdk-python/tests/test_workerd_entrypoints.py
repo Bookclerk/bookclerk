@@ -12,12 +12,12 @@ from bookclerk_plugin_sdk.workerd import (
     AiEntrypoint,
     BookclerkEntrypoint,
     CliEntrypoint,
-    MediaDownloadEntrypoint,
     DatabaseAdapterEntrypoint,
     EventBatch,
     EventMessage,
     IngressEntrypoint,
     JobController,
+    MediaDownloadEntrypoint,
     MetadataEntrypoint,
     MetadataFilesEntrypoint,
     NotifierEntrypoint,
@@ -510,7 +510,9 @@ class DatabaseAdapterSessionTests(unittest.IsolatedAsyncioTestCase):
             async def downloadMedia(self, params: dict, sink: object) -> list[dict]:
                 return [{"url": u, "stored": False, "error": repr(sink)} for u in params["urls"]]
 
-        images = await MediaDownload().bookclerkInvoke({}, "downloadMedia", {"urls": ["https://a/"]}, "sink")
+        images = await MediaDownload().bookclerkInvoke(
+            {}, "downloadMedia", {"urls": ["https://a/"]}, "sink"
+        )
         self.assertEqual(images, [{"url": "https://a/", "stored": False, "error": "'sink'"}])
 
     async def test_provisioning_defaults_and_dispatch(self) -> None:
