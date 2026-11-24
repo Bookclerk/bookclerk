@@ -5,7 +5,7 @@ version = "0.1.0"
 logo = "https://www.google.com/s2/favicons?domain=cloudflare.com&sz=128"
 runtime = "native"
 command = "./bookclerk-plugin-destination-r2"
-entrypoints = ["storage"]
+entrypoints = ["storage", "provisioning"]
 
 [capabilities.network]
 mode = "outbound"
@@ -13,9 +13,26 @@ tcp = [
     # The bucket's S3 API: <account>.r2.cloudflarestorage.com, or
     # <account>.<jurisdiction>.r2.cloudflarestorage.com.
     { host = "*.r2.cloudflarestorage.com", ports = [443] },
-    # The Cloudflare API, for the notification queue's HTTP pull consumer.
+    # The Cloudflare API, for the notification queue's HTTP pull consumer
+    # and the guided setup.
     { host = "api.cloudflare.com", ports = [443] },
 ]
+
+# Guided setup: with a pasted Cloudflare API token it creates (or reuses)
+# the bucket and mints a token scoped to that bucket alone, whose S3
+# credentials the destination keeps. The pasted token is not stored. It runs
+# under the network grant above (api.cloudflare.com).
+[provisioning]
+provider = "cloudflare"
+grants = ["api_token"]
+token_url = "https://dash.cloudflare.com/?to=/:account/api-tokens"
+token_permissions = [
+    "Account > Workers R2 Storage > Edit",
+    "Account > Account API Tokens > Edit",
+]
+inputs = ["account_id", "jurisdiction", "bucket", "prefix"]
+outputs = ["account_id", "jurisdiction", "bucket", "access_key_id", "secret_access_key"]
+deprovision = true
 
 [vars]
 

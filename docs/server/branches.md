@@ -294,8 +294,8 @@ accounts and which of them would travel.
 - **The branch operator's rule.** Each operator decides whether members
   may connect store accounts there with the **Link store accounts**
   member control, for every member or one (**Settings → User
-  Management**, `PUT /api/users/default-controls` and
-  `PUT /api/users/{id}/controls`; see
+  Management**, `PATCH /api/users/default-controls` and
+  `PATCH /api/users/{id}/controls`; see
   [Sharing](../guide/sharing.md#limit-what-a-patron-may-do)). It is on
   by default and nobody can change their own. An Owner or the operator
   can turn it off for one Administrator too; Owners are never limited. A member it is off for adds nothing from a join,
@@ -398,6 +398,17 @@ account itself.
   keeps refreshing it itself, so a branch that was sent the account but
   couldn't keep it (no Owner to keep it for, or its member rule refused it)
   never leaves it stale.
+- **The first push.** A branch's first push can come from the copy the
+  library sent it while the library saved a newer refresh since. So until a
+  push from the branch is applied, the library answers one whose secrets
+  differ from its own with `reconcile`, carrying its own sign-in sealed to
+  the branch's box key, whenever its secrets were written after it last
+  sent the account there. When the branch's copy is still the one it was
+  sent (none of its secrets written since it arrived), the branch takes the
+  library's sign-in, guarded on that in one atomic batch, and pushes it
+  back, which matches and is applied. Otherwise the branch's own sign-in
+  is newer, and it pushes it again marked `keeps_own`, which the library
+  applies.
 - **Elsewhere.** A kept account travels back only to its keeper, never to
   a second branch, and a second branch's offer of it is not kept.
 - **A new keeper.** When the account is disconnected everywhere on the
@@ -555,6 +566,13 @@ elevating, since removing one deletes its records. Stop Bookclerk on it
 first: a branch that heartbeats while it's being removed either keeps its
 place (the removal is refused as running) or is removed and then has its
 heartbeats refused until it restarts and joins again.
+
+A shared branch that was cut off from the database for a while reads as
+not running and can be removed while it still runs. When it reconnects
+it notices it was removed: it logs an error, writes no heartbeat and
+queues none of the maintenance work a heartbeat queues, so it never comes
+back half-registered. Stop Bookclerk
+on it, or restart it to register it again.
 
 > [!WARNING]
 > Removing a shared branch doesn't take back the database credentials or key it
@@ -714,6 +732,12 @@ there only when **Keep copies of other members' books** is on (see
 [Work settings on the branch](#work-settings-on-the-branch)). The owner
 says which titles are whose with each job.
 
+The host never replaces another book's file to keep its copy. Before it
+writes anything, it checks each file name against its own library: when
+another edition there already holds one of the names, the host keeps no
+copy of the title at all (and so doesn't add it to its own library). The
+title is still uploaded to the owner.
+
 Once the owner has committed one of the owner's own titles, the host also
 adds it to its own library: the title, acquired, with its copy's files,
 held by the store account that bought it. This happens only when that
@@ -750,8 +774,12 @@ Each library sees only its share:
   free now, so the library's scheduler never counts on the whole machine
   or on headroom other work already took. The library then applies its
   own budget for the branch (`bookclerk nodes set` there) as it does for any
-  node; the branch's budget decides how many slots there are. Free disk is
-  reported whole.
+  node. The heartbeat also carries the same share of the branch's own
+  budget, and the library keeps the smaller of the two, so a library that
+  allows more than the branch does never plans more than the branch
+  budgeted. For example, a machine with 8 cores, a 40% budget on the
+  branch and one library that allows 80% records 3,200 millicores, not
+  6,400. Free disk is reported whole.
 
 For example, a branch of two libraries with four slots runs up to two
 jobs for each. While it runs one job of its own, the first library (by
@@ -952,7 +980,10 @@ library it joined, in turn, for the copy of that listing.
   the store is not asked. The files then go through the branch's own
   acquire like a store download: converted to the branch's output
   format, named by its templates, tagged, probed and recorded. Chapters
-  are read from the downloaded file in the confined media worker.
+  are read from the downloaded file in the confined media worker. A
+  branch whose output re-encodes or repackages the audio checks the
+  encoding first, as for a copy from another store: one the media worker
+  can't decode is removed, and the branch fetches from its store.
 - **Several audio files: the store.** A book the library holds as parts
   or as one file per chapter is fetched from the branch's store. The
   grant lists those files by name, which need not be playing order.
@@ -1072,7 +1103,9 @@ C is B's.
   members' books stay on B, unless A requests one or A's operator turns on
   **Acquire all of this branch's members' books** (see below). Each title
   carries its store, product id, marketplace, metadata (with its ASIN,
-  ISBN and kind) and file list, nothing else. A matches each one to the edition it already knows, as a
+  ISBN and kind) and file list, nothing else. One product held in two
+  marketplaces (the same ASIN on Audible US and UK) is two titles, each
+  shared on its own. A matches each one to the edition it already knows, as a
   store scan would, and records B as holding it, so C's books are simply
   B's books there, belonging to the A user who owns B. A title B got from
   A, or acquired for A and added to its own library, isn't sent back.
@@ -1082,11 +1115,22 @@ C is B's.
   uses is recorded, but its files aren't sent. Neither are the files of an
   edition A already has (acquired there, or delivered by another branch),
   so each edition arrives once. If A has no output deployed, it records
-  the titles without files.
+  the titles without files. If a title A already has the files of later
+  moves to another edition (an Administrator pins its listing there, or
+  the listing is linked again to another edition), those files belong to
+  the edition it matched before: A counts the title as not delivered
+  again and asks B for its files.
 - **Sync** runs when the branch connects, every 5 minutes, and at once
   when a setting changes. It is incremental and resumes after a
   reconnect. A full pass (after a setting changes, and once a day) also
-  withdraws titles B no longer has.
+  withdraws titles B no longer has. If B can't list a title's files (its
+  destination is briefly unreachable), the pass keeps the title and tries
+  again on the next one. If the title still can't be listed after about
+  an hour while B's other titles do list, B skips it, so a folder B can
+  never read doesn't stop every pass from finishing, and A withdraws it
+  like any title B no longer has. While nothing lists (the destination
+  is down), B keeps every title, however long that lasts. A restart of B
+  starts the hour again.
 
 ### Sharing settings on the branch
 
@@ -1381,10 +1425,20 @@ and every library above it.
   A ← B ← C ← A can be made.
 - A tree holds at most 64 libraries along one path. A join that would take
   the joining install's ancestry past that is refused
-  (`409 ancestry_too_deep`).
+  (`409 ancestry_too_deep`) when it starts and when its code is redeemed.
+  Inspecting a library checks only for a loop, since the depth depends
+  on whether you join as a branch or a shared branch.
 
 A shared branch is the same point in the tree as its
-library.
+library, so it adds no depth: a shared branch join to a library at the
+limit is not refused.
+
+When a library that is itself a branch has shared branches, they all read
+the same link to its parent and its node keys. Only one of them dials the
+parent at a time: it holds the link's dial lease (`library-link.dial:<parent
+id>` in `library_leases`) and renews it every few seconds. The others try
+again on the same beat and take over within 30 seconds of the holder
+stopping, or at once when it stops cleanly.
 
 ## Leaving
 

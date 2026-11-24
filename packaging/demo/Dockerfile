@@ -38,7 +38,10 @@
 #     deploys the storefronts and covers (their manifest grants, as the
 #     Worker does), fetches each title's record from its store's catalog
 #     through them, and writes through the library code of this commit,
-#     never raw SQL. bookclerkd then stores Sam's Discover shelves, and
+#     never raw SQL. bookclerkd then downloads the default embedding
+#     model, embeds the library with it and stores Sam's Discover shelves
+#     (a container never downloads a model, so the image ships it under
+#     /opt/bookclerk/models and the template ships the vectors), and
 #     `--bake-finish` strips everything a container must make for itself
 #     (master.key and the library secret fingerprint, the covers URL key,
 #     leases, plugin sessions). The build fails if any of it is left.
@@ -107,14 +110,18 @@ USER bookclerk
 # plugin paths as the final image, so the baked plugin keys match.
 FROM demo-base AS seeded
 USER root
-RUN install -d -o bookclerk -g bookclerk -m 0700 /seed
+RUN install -d -o bookclerk -g bookclerk -m 0700 /seed /seed-models
 COPY --chmod=0755 bake-seed.sh /usr/local/bin/bake-seed
 USER bookclerk
 ENV BOOKCLERK_FILES_DIR=/seed \
-    BOOKCLERK_CONFIG=/seed/config.toml
+    BOOKCLERK_CONFIG=/seed/config.toml \
+    BOOKCLERK_DEMO_MODELS_OUT=/seed-models
 RUN /usr/local/bin/bake-seed
 
 FROM demo-base
+# The embedding model before the template: a seed refresh replaces only the
+# template's layer (Dockerfile.refresh), so the model's 141 MB ship once.
+COPY --from=seeded --chown=bookclerk:bookclerk /seed-models /opt/bookclerk/models
 COPY --from=seeded --chown=bookclerk:bookclerk /seed /opt/bookclerk/seeded
 COPY --chmod=0755 boot.sh /opt/bookclerk/demo-boot.sh
 # Copy the baked library into the empty files dir (or seed live without

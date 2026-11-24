@@ -42,8 +42,8 @@ matching name extending its base: `Storefront(StorefrontEntrypoint)`,
 `DatabaseAdapter(DatabaseAdapterEntrypoint)`, `Cli(CliEntrypoint)`,
 `Oidc(OidcEntrypoint)`, `Metadata(MetadataEntrypoint)`,
 `Covers(CoverEntrypoint)`, `MetadataFiles(MetadataFilesEntrypoint)`,
-`Notifier(NotifierEntrypoint)`, `Ingress(IngressEntrypoint)` and
-`Ai(AiEntrypoint)`. The Python SDK serves `direct`
+`Notifier(NotifierEntrypoint)`, `Ingress(IngressEntrypoint)`,
+`Provisioning(ProvisioningEntrypoint)` and `Ai(AiEntrypoint)`. The Python SDK serves `direct`
 [`[ingress]`](../../manifest.md#ingress-public-address) plugins only; the
 `ORIGIN` binding a relay plugin hands requests to is in the TypeScript SDK.
 
@@ -103,7 +103,10 @@ returns to complete, raises to reject, or calls `job.suspend(...)` or
 
 Granted bindings arrive on `self.env` per invocation: `CONFIG`,
 `SECRETS`, `EVENTS`, `WORK_FS`, and one entry per `[[databases]]`
-binding. A binding's `await limits()` returns the `DbCapabilities` its
+binding. `EVENTS` follows the generated `EventPublisher` protocol:
+`await env.EVENTS.publish(event)` and `await env.EVENTS.read(request)` take
+the ABI request dicts and return the reply unions, `{"ok": ...}` or
+`{"err": {"code", "message", "details"}}`, instead of raising. A binding's `await limits()` returns the `DbCapabilities` its
 session negotiated; a request or result over one of them raises a
 `PluginError` whose `code` is `limit_exceeded` and whose `limit` names
 the cap. On a host that predates `limits()` the call raises
@@ -227,9 +230,20 @@ every profile. A plugin's own `pyproject.toml` is what makes
 ```bash
 python -m bookclerk_plugin_sdk check .
 python -m bookclerk_plugin_sdk types .
+python -m bookclerk_plugin_sdk fmt plugin.toml
+python -m bookclerk_plugin_sdk fmt --check plugin.toml
 python -m bookclerk_plugin_sdk package --out dist .
 python -m bookclerk_plugin_sdk smoke .   # download the pinned workerd, then describe + health
 ```
+
+`check` validates `plugin.toml` with the host's rules, in the host's order
+and with its messages, so a manifest that fails gets the error the host
+would give first. It also checks that a workerd `main_module` exists. A
+native `command` is checked only when a `.require-binary` file sits in the
+plugin folder, so passing `check` does not prove a native binary is there. `fmt` writes `plugin.toml`
+exactly as the Rust `bookclerk-plugin fmt` does: every table the manifest
+declares, in the host's field order, with the defaults the host fills in.
+Comments are not kept.
 
 `smoke` does not need a built `bookclerk-workerd`. It downloads the
 pinned Cloudflare `workerd` into `~/.cache/bookclerk/workerd` (override

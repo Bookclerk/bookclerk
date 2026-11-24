@@ -112,6 +112,13 @@ input_from = "plugin package"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.provision_reply]
+crate = "bookclerk-plugin-abi"
+boundary = "A plugin's answer to Provisioning.provision, decoded and checked against its [provisioning] outputs before anything is stored or sealed"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk", "rust-sdk"]
+
 [targets.abi_decode]
 crate = "bookclerk-plugin-abi"
 boundary = "Generated Cap'n Proto read_* codecs and the database envelope decoders"
@@ -220,6 +227,13 @@ artifacts = ["bookclerk"]
 [targets.r2_event]
 crate = "bookclerk-storage"
 boundary = "Cloudflare Queues HTTP pull replies and the R2 event notifications in them, read by the r2 guest into change-feed entries"
+input_from = "storage"
+side = "guest"
+artifacts = ["bookclerk"]
+
+[targets.cloudflare_api]
+crate = "bookclerk-storage"
+boundary = "Cloudflare API replies (accounts, bucket create, permission groups, token create and delete) read by the r2 guest's guided setup"
 input_from = "storage"
 side = "guest"
 artifacts = ["bookclerk"]
@@ -569,7 +583,7 @@ artifacts = ["bookclerk"]
 
 [targets.member_controls_request]
 crate = "bookclerk-library"
-boundary = "Member controls an Owner or Administrator sets, from PUT /api/users/default-controls and PUT /api/users/{id}/controls"
+boundary = "Member controls an Owner or Administrator changes, from PATCH /api/users/default-controls and PATCH /api/users/{id}/controls"
 input_from = "Owner, Administrator or operator"
 side = "host"
 artifacts = ["bookclerk"]
@@ -732,4 +746,12 @@ crate = "bookclerk-plugin-catalog"
 boundary = "What the host parses while it downloads an embedding model: the registry's token reply and the plugin package's model list (models.json)"
 input_from = "store"
 side = "host"
+artifacts = ["bookclerk"]
+
+[targets.smtp_session]
+crate = "bookclerk-plugin-notifier-email"
+boundary = "A mail server's SMTP replies to the email notifier, and a patron's email address document"
+input_from = "the operator's mail server; any signed-in patron (address)"
+# Only the email guest reads them.
+side = "guest"
 artifacts = ["bookclerk"]

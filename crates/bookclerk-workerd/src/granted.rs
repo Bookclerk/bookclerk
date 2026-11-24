@@ -2274,14 +2274,14 @@ fn plugin_error_status(err: &PluginError) -> u16 {
     }
 }
 
-/// `{ "error": { "code", "message" } }` with the matching HTTP status.
+/// `{ "error": { "code", "message", "details"? } }` with the matching HTTP
+/// status; `details` is the error's detail object as JSON text, present only
+/// when the error carries one.
 async fn write_plugin_error<S: AsyncWrite + Unpin>(
     stream: &mut S,
     err: &PluginError,
 ) -> Result<()> {
-    let payload = serde_json::to_vec(&serde_json::json!({
-        "error": { "code": err.wire_str(), "message": err.message },
-    }))?;
+    let payload = serde_json::to_vec(&plugin_error_body(err))?;
     let resp = format!(
         "HTTP/1.1 {} Error\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
         plugin_error_status(err),
@@ -2291,6 +2291,26 @@ async fn write_plugin_error<S: AsyncWrite + Unpin>(
     stream.write_all(&payload).await?;
     stream.flush().await?;
     Ok(())
+}
+
+/// The JSON body [`write_plugin_error`] sends for `err`.
+///
+/// # Arguments
+///
+/// * `err` - The failure to report.
+///
+/// # Returns
+///
+/// `{ "error": { "code", "message" } }`, plus `details` (the detail object
+/// as JSON text, the form the SDKs parse) when `err` carries one.
+fn plugin_error_body(err: &PluginError) -> serde_json::Value {
+    let mut error = serde_json::json!({ "code": err.wire_str(), "message": err.message });
+    if let Some(details) = err.details.as_ref().filter(|d| !d.is_empty()) {
+        if let (Some(obj), Ok(text)) = (error.as_object_mut(), serde_json::to_string(details)) {
+            obj.insert("details".into(), serde_json::Value::String(text));
+        }
+    }
+    serde_json::json!({ "error": error })
 }
 
 /// The `413` body for a `/db/execute` request past the grant's
@@ -3753,6 +3773,26 @@ mod tests {
             413
         );
         assert_eq!(plugin_error_status(&PluginError::invalid_params("x")), 400);
+    }
+
+    #[test]
+    fn error_body_carries_details_as_json_text_only_when_present() {
+        let limit = PluginError::limit_exceeded(LimitExceeded::new("maxRequestBytes", 16, 32));
+        let body = plugin_error_body(&limit);
+        let details = body["error"]["details"]
+            .as_str()
+            .expect("details travel as JSON text");
+        let parsed: serde_json::Value = serde_json::from_str(details).expect("details JSON");
+        assert_eq!(
+            parsed,
+            serde_json::json!({ "limit": "maxRequestBytes", "cap": 16, "used": 32 })
+        );
+        assert_eq!(body["error"]["code"], "limit_exceeded");
+        let plain = plugin_error_body(&PluginError::forbidden("no"));
+        assert_eq!(
+            plain,
+            serde_json::json!({ "error": { "code": "forbidden", "message": "no" } })
+        );
     }
 
     #[test]

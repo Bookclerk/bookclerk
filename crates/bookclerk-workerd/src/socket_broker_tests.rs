@@ -175,6 +175,7 @@ fn request(port: u16) -> SocketConnectRequest {
         }],
         attachment: b"cursor".to_vec(),
         trust_anchors: Vec::new(),
+        server_name: String::new(),
     }
 }
 
@@ -697,10 +698,20 @@ where
     F: FnOnce(tokio_rustls::server::TlsStream<TcpStream>) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = Vec<u8>> + Send,
 {
+    serve_tls_as("127.0.0.1", alpn, script).await
+}
+
+/// A one-connection TLS server on `127.0.0.1` whose certificate is for
+/// `name`, offering `alpn`, running `script` on the stream.
+async fn serve_tls_as<F, Fut>(name: &str, alpn: &[&str], script: F) -> TlsServer
+where
+    F: FnOnce(tokio_rustls::server::TlsStream<TcpStream>) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Vec<u8>> + Send,
+{
     use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
     use tokio_rustls::rustls::ServerConfig;
 
-    let issued = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()]).expect("cert");
+    let issued = rcgen::generate_simple_self_signed(vec![name.to_string()]).expect("cert");
     let cert = CertificateDer::from(issued.cert.der().to_vec());
     let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(issued.signing_key.serialize_der()));
     let mut server = ServerConfig::builder_with_provider(bookclerk_tls::crypto_provider())
@@ -909,6 +920,67 @@ async fn a_tls_stream_may_trust_only_the_guests_own_root() {
             assert_eq!(server.await.expect("server"), b"hi");
             let events = wait_for(&seen, 1).await;
             assert_eq!(events, vec!["closed 1000  true"]);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_tls_stream_may_name_a_granted_server_other_than_its_host() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (port, tls, _der, server) =
+                serve_tls_as("edge.test", &[], |mut stream| async move {
+                    let sni = stream.get_ref().1.server_name().map(str::to_string);
+                    let mut got = vec![0_u8; 2];
+                    stream.read_exact(&mut got).await.expect("read");
+                    let _ = stream.shutdown().await;
+                    sni.unwrap_or_default().into_bytes()
+                })
+                .await;
+            let mut named = tls_request(port, &[]);
+            named.server_name = "Edge.Test".into();
+
+            // The name must be on a tcp grant for the port too.
+            let (broker, _seen) = new_tls_broker(tcp_policy_on(port), Arc::clone(&tls));
+            let err = broker
+                .connect(named.clone())
+                .await
+                .expect_err("ungranted server name");
+            assert_eq!(err.code, PluginErrorCode::NetworkNotGranted);
+            assert!(err.message.contains("edge.test"), "{}", err.message);
+
+            let mut policy = tcp_policy_on(port);
+            policy.tcp.push(bookclerk_plugin_manifest::TcpGrant {
+                host: "edge.test".into(),
+                ports: vec![port],
+            });
+            let (broker, seen) = new_tls_broker(policy, tls);
+            let info = broker.connect(named).await.expect("named connect");
+            broker
+                .send(info.socket, SocketFrame::Binary(b"hi".to_vec()))
+                .await
+                .expect("send");
+            assert_eq!(server.await.expect("server"), b"edge.test");
+            let events = wait_for(&seen, 1).await;
+            assert_eq!(events, vec!["closed 1000  true"]);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_tls_stream_checks_its_host_when_it_names_no_server() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (port, tls, _der, _server) =
+                serve_tls_as("edge.test", &[], |_stream| async move { Vec::new() }).await;
+            let (broker, _seen) = new_tls_broker(tcp_policy_on(port), tls);
+            let err = broker
+                .connect(tls_request(port, &[]))
+                .await
+                .expect_err("certificate is for another name");
+            assert_eq!(err.code, PluginErrorCode::Unavailable);
         })
         .await;
 }

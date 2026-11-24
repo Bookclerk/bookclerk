@@ -1,0 +1,78 @@
+api_version = 3
+id = "email"
+name = "Email (SMTP)"
+version = "0.1.0"
+runtime = "native"
+command = "./bookclerk-plugin-notifier-email"
+entrypoints = ["notifier"]
+
+[notifier]
+destinations = ["channel", "personal"]
+account_mail = true
+formats = ["text", "html"]
+
+[[notifier.address_fields]]
+key = "email"
+label = "Email address"
+required = true
+
+[capabilities.network]
+mode = "outbound"
+# The mail server comes from the `server` setting, whose destination the
+# operator approves on the consent form; nothing else is reached. The guest
+# is native because workerd plugins can't run TLS on a raw TCP connection:
+# it tunnels through the host and runs TLS itself.
+
+[vars]
+
+[secrets]
+
+[[settings]]
+key = "server"
+label = "SMTP server"
+type = "string"
+network = "tcp"
+default_port = 587
+description = "Your mail provider's submission server, as host or host:port (for example smtp.example.com:587). Port 587 is used when none is given."
+
+[[settings]]
+key = "security"
+label = "Connection security"
+type = "enum"
+values = [
+  { id = "starttls", label = "STARTTLS (usually port 587)" },
+  { id = "tls", label = "TLS (usually port 465)" },
+  { id = "none", label = "None (only on a network you trust; no sign-in)" },
+]
+default = "starttls"
+
+[[settings]]
+key = "username"
+label = "User name"
+type = "string"
+description = "The account that signs in to the server. Leave it empty when the server takes mail without signing in."
+
+[[settings]]
+key = "password"
+label = "Password"
+type = "secret"
+description = "The account's password or app password. Sent only over TLS."
+
+[[settings]]
+key = "from_address"
+label = "From address"
+type = "string"
+description = "The address mail comes from. Most providers only accept an address of the signed-in account or a verified domain."
+
+[[settings]]
+key = "from_name"
+label = "From name"
+type = "string"
+default = "Bookclerk"
+description = "The name shown beside the from address."
+
+[[settings]]
+key = "to"
+label = "Channel recipients"
+type = "string"
+description = "Where channel notifications go: up to 10 addresses separated by commas. Leave it empty when only patrons' own addresses are used."

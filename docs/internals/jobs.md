@@ -482,11 +482,23 @@ Every scan and acquire is admitted through a planner, whoever asks:
 - **Scan** (`control_plane::plan_scan`): operator authority, an Owner or an
   Administrator scanning every account gets one job per scan-enabled
   account; anyone else only the accounts they own (see the control-plane
-  ADR, *Per-item trust and the scan planner*).
+  ADR, *Per-item trust and the scan planner*). A scan-all job names its
+  account by its exact id (`account_match = "exact_id"` in the payload), so
+  an account whose label is another account's id is still scanned once, by
+  its own job, and the other account is not scanned twice. Trust, the
+  secret handoff, result checks, permits and the dedup key read such a job
+  the same exact way. An id that
+  exists on two plugins gets one job when every row is scan-enabled, and
+  otherwise one job pinned to each enabled row's default instance.
 - **Acquire** (`control_plane::plan_acquire`): each named title id
   (`titles`, UUID, ASIN, ISBN or product id) becomes its own job, so each
   can go to any node trusted with it. Operator authority, an Owner or an
-  Administrator acquiring everything gets one unsplit job. Anyone else must
+  Administrator acquiring everything gets one unsplit job; a title they name
+  without an account becomes one job per account id it is in, so a branch
+  trusted with that account can take it. It stays one unsplit job when it is
+  in no account, or when two of those ids reach one account (ids differing
+  only in case, or an id that is another account's label), which would
+  acquire it twice. Anyone else must
   own the account they name, when they name one, and every account that
   holds a title a named id matches (a listing's product id, an ASIN or ISBN
   of its edition, or a holding id; 403 otherwise). An account is named by
@@ -554,7 +566,17 @@ libraries scan` ([Libraries and branch nodes](../server/branches.md)).
   discovered during audio acquire) are bounded by the remaining quota: sources
   can call `FetchOptions::enforce_cache_budget`, the pipeline watchdog cancels
   a stage that crosses the budget, and PDF bodies are streamed with an
-  explicit remaining-byte cap.
+  explicit remaining-byte cap. An external guest downloads into its own
+  jail-granted scratch (`plugin-state/<PluginKey fs-id>/tmp/fetch`), not
+  the acquire's scratch dir, so the host measures that directory while the
+  guest's `fetchTitle` runs: what it gains during the call counts against
+  the remaining quota (files an earlier fetch left there do not).
+- Cancelling an acquire job, or losing its fence, stops the store fetch in
+  flight, not only the work between titles. The job's cancel flag reaches
+  the guest's `fetchTitle` call, which the host drops on the plugin's own
+  thread, as it drops a call over the scratch quota; the job then fails or
+  is cancelled as usual. A branch running a library's acquire passes the
+  job's cancel flag the same way.
 
 Scan, listen-sync, and integration-scan retries are idempotent (upserts /
 remote rescan). Acquire retries skip titles already `acquired`, except when
@@ -672,12 +694,13 @@ node that runs it needs. At admission the daemon records
   nowhere is not recorded, so the job is claimed anywhere and fails there as
   before instead of waiting forever.
 - An acquire requires every deployed instance of a node-bound output (today
-  the verified first-party `local` destination), because it writes to every
-  deployed destination and a `local` output is the disk of the nodes it is
-  deployed to. If plugin discovery fails on the admitting node (say an
-  unrelated plugin has a duplicate alias), every instance whose plugin key
-  names the first-party `local` package is required instead, unverified, so
-  the acquire is never left claimable by a node without those outputs.
+  the first-party `local` destination), because it writes to every deployed
+  destination and a `local` output is the disk of the nodes it is deployed
+  to. The node-bound keys are read from the library's instance list (every
+  instance whose plugin key names the first-party `local` package,
+  `jobs::node_bound_output_keys`), not from the plugins installed on the
+  admitting node, so admission runs no plugin discovery and every node
+  admits the same requirements, whatever it has installed.
 - Everything else (unpinned scans, listen sync, integration scans,
   `plugin_copy`) has no requirements and is claimable on any node.
 
@@ -713,13 +736,12 @@ or retired, or the scheduler moves a replica. Each daemon runs a sweep loop
 A pass runs every 30 s, on a deployment or install wakeup on this node, and
 after a scheduler pass that moved replicas. A wakeup waits until wakeups have
 been quiet for 0.5 s (at most 3 s), so a burst of deployment changes, such
-as enabling several plugins at once, is swept once. Discovery runs on a
-blocking thread. It re-resolves the requirements
-of every pending acquire, pinned job, or job that already has requirements,
-with the node-bound output keys the daemon discovers plus every instance
-keyed as the first-party `local` destination (so a sweeping node without
-that plugin, or whose discovery failed, never strips them; a pass that cannot
-read the instance list is skipped), and:
+as enabling several plugins at once, is swept once. It re-resolves the
+requirements of every pending acquire, pinned job, or job that already has
+requirements, with the same node-bound output keys admission uses (every
+instance keyed as the first-party `local` destination, so a sweeping node
+without that plugin never strips them; a pass that cannot read the instance
+list is skipped), and:
 
 - **applies at once** a set that is unchanged or only gains instances when
   some node is deployed to run all of them (a newly deployed `local` output
@@ -751,6 +773,21 @@ alone, and a claimer that read the row before the sweep wrote it loses its
 own CAS (a routed claim matches the generation of the record whose
 requirements it checked) and moves on to re-read it on a later pass. A wakeup on a node that does not hold the lease does
 nothing; the holder's timer picks the change up within 30 s.
+
+Until the sweep runs, a claim does not trust the stored requirements
+alone. Before a routed claim takes a job, it resolves the job's
+requirements again from the deployments committed now, with the same
+node-bound output keys. If the stored ones are missing any of them, the
+claim skips the job until the sweep has rewritten them. Stored requirements
+that cover the current ones (as during the grace period, when the sweep
+keeps old and new together) still let the job be claimed by a node that
+runs them all. A deployment committed
+on one node while another node holds the sweep lease therefore stops claims
+of queued work on its old requirements at once, instead of after the next
+pass. The daemon's own worker and the node API's branch claims both check
+this way. The check is read once per claim for each job kind and pinned
+instance, and only for a job that got past the trust, filter and
+requirement checks.
 
 Before requirements and permits, the routed claim filters candidates
 through the trust predicate (`control_plane::trust`). The daemon's own

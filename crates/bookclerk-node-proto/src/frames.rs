@@ -120,6 +120,17 @@ pub enum Body {
         /// [`crate::BranchOrigin::parse`] accepts it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         public_origin: Option<String>,
+        /// The CPU, in millicores, of the branch's own budget it gives
+        /// this library (its `node.runtime` budget cut to this library's
+        /// share of the machine). The library records the smaller of this
+        /// and its own budget for the node. Absent from a branch that
+        /// reports none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        budget_cpu_millicores: Option<i64>,
+        /// The memory, in bytes, of the branch's own budget it gives this
+        /// library, like `budget_cpu_millicores`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        budget_memory_bytes: Option<i64>,
     },
     /// Host → owner: pull one work item. Answered with [`Body::Work`] or
     /// [`Body::NoWork`].
@@ -604,6 +615,10 @@ pub enum Body {
         store: String,
         /// Product id of the title.
         product_id: String,
+        /// Marketplace of the title ([`crate::CatalogRef::marketplace`]);
+        /// empty, and left out of the frame, when the store has none.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        marketplace: String,
         /// The title's files, in upload order, each copied to every
         /// destination of the session under its manifest key.
         files: Vec<UploadFile>,
@@ -667,12 +682,25 @@ pub enum Body {
         sealed: String,
         /// The keeper's revision of the sign-in.
         revision: i64,
+        /// True when the branch was answered [`KeeperOutcome::Reconcile`]
+        /// for this account and keeps its own sign-in, which is newer than
+        /// the one the library sent it: the library then applies the push
+        /// rather than answering with its own sign-in again. Left out when
+        /// false.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        keeps_own: bool,
     },
     /// Library → branch: what became of an [`Body::AccountsUpdate`].
     #[serde(rename = "accounts.updated")]
     AccountsUpdated {
         /// What the library did with the sign-in.
         outcome: KeeperOutcome,
+        /// With [`KeeperOutcome::Reconcile`] only: the library's own
+        /// sign-in of the account, a one-account [`crate::AccountBundle`]
+        /// sealed to the branch's box key
+        /// ([`crate::seal_account_reconcile`]), base64url without padding.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sealed: Option<String>,
     },
     /// Branch → library: send the catalog questions waiting for this
     /// branch (see [`crate::LookupWork`]). Answered with
@@ -972,6 +1000,12 @@ pub enum KeeperOutcome {
     /// The account is not the branch owner's here, or not shared with
     /// this branch; nothing changed. The keeper stops pushing it here.
     NotShared,
+    /// The branch's first push of the account, and the library refreshed
+    /// its own sign-in after it sent the account to the branch: nothing
+    /// changed, and the answer carries the library's sign-in. The branch
+    /// takes it when its own copy is still the one the library sent, and
+    /// otherwise pushes its own again with `keeps_own`.
+    Reconcile,
 }
 
 /// The owner's library import settings a host scan runs with.
@@ -2124,10 +2158,18 @@ mod tests {
                     cursor: "c".into(),
                     ancestry: vec!["lib-a".into()],
                     destinations: vec!["local".into()],
-                    wanted: vec![crate::CatalogRef {
-                        store: "audible".into(),
-                        product_id: "B1".into(),
-                    }],
+                    wanted: vec![
+                        crate::CatalogRef {
+                            store: "audible".into(),
+                            product_id: "B1".into(),
+                            marketplace: String::new(),
+                        },
+                        crate::CatalogRef {
+                            store: "audible".into(),
+                            product_id: "B1".into(),
+                            marketplace: "uk".into(),
+                        },
+                    ],
                     members_books: true,
                 },
                 "catalog.session",
@@ -2171,6 +2213,7 @@ mod tests {
                     fence: 3,
                     store: "audible".into(),
                     product_id: "B1".into(),
+                    marketplace: "uk".into(),
                     files: Vec::new(),
                 },
                 "catalog.upload",

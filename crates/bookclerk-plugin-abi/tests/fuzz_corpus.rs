@@ -1,5 +1,5 @@
 //! Replays the checked-in `sql_parse`, `abi_decode`, `abi_roundtrip`,
-//! `cover_sink_key`, `db_stream`, `scan_page`, `quality_offers`, `plain_fetch`, `metadata_file_record`, `notifier_reply`, `notify_address_body`, `notify_raise`, `ai_run_reply`, `ai_run`, `event_read`, `socket_request`, `webhook_message`, `storage_reply` and `origin_request` fuzz corpora in PR CI
+//! `cover_sink_key`, `db_stream`, `scan_page`, `quality_offers`, `plain_fetch`, `metadata_file_record`, `notifier_reply`, `notify_address_body`, `notify_raise`, `ai_run_reply`, `ai_run`, `event_read`, `socket_request`, `webhook_message`, `storage_reply`, `origin_request` and `provision_reply` fuzz corpora in PR CI
 //! (no libFuzzer required), so an input that once crashed a decoder stays
 //! fixed (`docs/adr/untrusted-input-fuzzing.md`).
 // Test code: a failed assertion or a missing corpus file is the test failing,
@@ -1595,6 +1595,7 @@ fn socket_request_seeds_are_current() {
         }],
         attachment: b"{\"user\":\"u1\"}".to_vec(),
         trust_anchors: Vec::new(),
+        server_name: String::new(),
     };
     let mut smuggled = abs.clone();
     smuggled.headers[0].name = "Sec-WebSocket-Key".into();
@@ -1629,6 +1630,12 @@ fn socket_request_seeds_are_current() {
     bad_anchor.trust_anchors = vec![vec![0x30, 0x81, 0x05, 0, 0, 0, 0, 0]];
     let mut ws_anchor = abs.clone();
     ws_anchor.trust_anchors = anchored.trust_anchors.clone();
+    let mut named = tunnel.clone();
+    named.server_name = "h2.cftunnel.com".into();
+    let mut named_ip = tunnel.clone();
+    named_ip.server_name = "10.0.0.1".into();
+    let mut ws_named = abs.clone();
+    ws_named.server_name = named.server_name.clone();
     let seeds: Vec<(&str, Vec<u8>)> = vec![
         ("url_wss.bin", url("wss://abs.example.com/socket.io/?EIO=4")),
         ("url_ws_port.bin", url("ws://10.0.0.5:13378/socket.io")),
@@ -1660,6 +1667,15 @@ fn socket_request_seeds_are_current() {
             capnp_socket_connect(&bad_anchor),
         ),
         ("connect_ws_anchor.bin", capnp_socket_connect(&ws_anchor)),
+        ("connect_tls_server_name.bin", capnp_socket_connect(&named)),
+        (
+            "connect_tls_server_name_ip.bin",
+            capnp_socket_connect(&named_ip),
+        ),
+        (
+            "connect_ws_server_name.bin",
+            capnp_socket_connect(&ws_named),
+        ),
         ("connect_abs.bin", capnp_socket_connect(&abs)),
         (
             "connect_smuggled_header.bin",
@@ -2711,4 +2727,55 @@ fn ai_run_seeds_are_current() {
         capnp.extend(encode_ai_run_params_bytes(&params).expect("encode"));
         assert_notify_seed("ai_run", &format!("{name}.capnp.bin"), &capnp);
     }
+}
+
+#[path = "../../../fuzz/oracles/provision_reply.rs"]
+mod provision_reply_oracle;
+
+#[test]
+fn fuzz_corpus_provision_reply_holds_the_oracle() {
+    for path in corpus_files("provision_reply") {
+        let data = std::fs::read(&path).expect("read");
+        provision_reply_oracle::check(&data);
+    }
+}
+
+/// The host's verdict on one wire-form `provision_reply` seed: `Some(true)`
+/// accepted, `Some(false)` refused by the checker, `None` a plugin error.
+// Test helper: a missing or unreadable seed is a failed test.
+#[allow(clippy::expect_used)]
+fn provision_seed_verdict(name: &str) -> Option<bool> {
+    use bookclerk_plugin_abi::provision::{
+        check_provisioned, decode_provision_reply_bytes, ProvisionOutputs,
+    };
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fuzz/corpus/provision_reply")
+        .join(name);
+    let data = std::fs::read(&path).expect("read seed");
+    let (&selector, rest) = data.split_first().expect("non-empty seed");
+    let outputs = ProvisionOutputs {
+        settings: ["account_id", "bucket", "jurisdiction"]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        secrets: ["access_key_id", "secret_access_key"]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+    };
+    let grant = (selector & 2 != 0).then_some("grant-token-xyz");
+    let provisioned = decode_provision_reply_bytes(rest).expect("decodes").ok()?;
+    Some(check_provisioned(&provisioned, &outputs, grant).is_ok())
+}
+
+#[test]
+fn provision_reply_seeds_mean_what_they_say() {
+    assert_eq!(provision_seed_verdict("wire_ok"), Some(true));
+    assert_eq!(provision_seed_verdict("wire_ok_with_grant"), Some(true));
+    assert_eq!(provision_seed_verdict("wire_refused"), None);
+    assert_eq!(provision_seed_verdict("wire_grant_in_summary"), Some(false));
+    assert_eq!(
+        provision_seed_verdict("wire_undeclared_setting"),
+        Some(false)
+    );
 }

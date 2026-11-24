@@ -101,6 +101,7 @@ fn reference(product: &str) -> CatalogRef {
     CatalogRef {
         store: "audible".into(),
         product_id: product.into(),
+        marketplace: "us".into(),
     }
 }
 
@@ -182,6 +183,102 @@ async fn shared_titles_land_as_the_branch_owners_and_deduplicate() {
             .len(),
         2
     );
+}
+
+/// One product sold in two marketplaces is two titles: both are recorded
+/// and asked for, each under its own reference, and an upload names the
+/// one it delivers.
+#[tokio::test]
+async fn a_second_marketplace_copy_of_a_product_is_its_own_title() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _member) = world(dir.path()).await;
+    let session = open(&store, true, true).await;
+    let mut uk = title("p1", 11);
+    uk.marketplace = "uk".into();
+    uk.primary_key = "Author/p1 (uk)/p1.m4b".into();
+    uk.files[0].key = uk.primary_key.clone();
+    let uk_ref = CatalogRef {
+        marketplace: "uk".into(),
+        ..reference("p1")
+    };
+    let (upserted, skipped, wanted) = accepted(
+        &store,
+        session.fence,
+        "c1",
+        false,
+        &[title("p1", 10), uk.clone()],
+    )
+    .await;
+    assert_eq!((upserted, skipped), (2, 0));
+    let mut wanted = wanted;
+    wanted.sort();
+    assert_eq!(wanted, vec![uk_ref.clone(), reference("p1")]);
+    assert_eq!(
+        list_branch_titles(&store, Some(BRANCH), 100)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    let again = open(&store, true, true).await;
+    let mut wanted = again.wanted.clone();
+    wanted.sort();
+    assert_eq!(wanted, vec![uk_ref.clone(), reference("p1")]);
+    // The upload of the UK copy is checked against the UK manifest.
+    let destinations = vec![GrantedDestination::new("local", 0)];
+    let files = vec![UploadFile {
+        copies: vec![FileCopy {
+            destination: "local".into(),
+            key: uk.primary_key.clone(),
+        }],
+        size: 11,
+        sha256: "ab".repeat(32),
+        content_type: None,
+        probe: None,
+    }];
+    assert!(matches!(
+        grant_catalog_upload(
+            &store,
+            BRANCH,
+            again.fence,
+            "shared-node",
+            &uk_ref,
+            &files,
+            &destinations,
+        )
+        .await
+        .unwrap(),
+        UploadGrant::Granted { .. }
+    ));
+}
+
+/// A share reference names the marketplace only when there is one, and
+/// a product id holding `:` or `@` reads back whole.
+#[test]
+fn share_refs_round_trip() {
+    for reference in [
+        reference("p1"),
+        CatalogRef {
+            marketplace: String::new(),
+            ..reference("p1")
+        },
+        CatalogRef {
+            product_id: "urn:isbn:978@1".into(),
+            ..reference("p1")
+        },
+    ] {
+        assert_eq!(split_share_ref(&share_ref(&reference)), reference);
+    }
+    assert_eq!(
+        share_ref(&CatalogRef {
+            marketplace: String::new(),
+            ..reference("p1")
+        }),
+        "audible:p1",
+        "a title without a marketplace keeps the earlier form"
+    );
+    assert_eq!(share_ref(&reference("p1")), "audible@us:p1");
 }
 
 /// A limited listing is a prefix of the full listing (by holding id).
@@ -618,8 +715,7 @@ async fn a_catalog_upload_commits_only_under_the_live_fence() {
                 BRANCH,
                 fence,
                 "shared-node",
-                "audible",
-                "p1",
+                &reference("p1"),
                 &files,
                 &destinations,
             )
@@ -645,8 +741,7 @@ async fn a_catalog_upload_commits_only_under_the_live_fence() {
             BRANCH,
             session.fence,
             "shared-node",
-            "audible",
-            "nope",
+            &reference("nope"),
             &[file(key, 3)],
             &destinations
         )
@@ -943,8 +1038,7 @@ async fn a_catalog_upload_never_overwrites_another_titles_files() {
                 branch,
                 fence,
                 "shared-node",
-                "audible",
-                product,
+                &reference(product),
                 &files,
                 &destinations,
             )
@@ -1023,7 +1117,7 @@ async fn overlapping_grants_of_one_edition_grant_one() {
     let fence_c = open_branch(&store, "branch-c", &[keyed("Author/free2/free.m4b")]).await;
     // Branch C's grant read the edition before branch B claimed it: its
     // preflight passed, and it goes on to open its upload.
-    let (row_c, edition, shared_c) = shared_holding(&store, "branch-c", "audible", "free")
+    let (row_c, edition, shared_c) = shared_holding(&store, "branch-c", &reference("free"))
         .await
         .unwrap()
         .expect("branch C shares the title");
@@ -1186,8 +1280,7 @@ async fn grant_branch_local(
         branch,
         fence,
         "shared-node",
-        "audible",
-        product,
+        &reference(product),
         &local_files(keys),
         &[GrantedDestination::new("local", 0)],
     )
@@ -1773,7 +1866,13 @@ async fn forwardable_keys_page_by_id_and_bind_columns_by_name() {
         assert_eq!(ids, sorted, "{name}: by holding id");
         let mut seen: Vec<(&str, &str, bool)> = walked
             .iter()
-            .map(|k| (k.store.as_str(), k.product_id.as_str(), k.delivered))
+            .map(|k| {
+                (
+                    k.reference.store.as_str(),
+                    k.reference.product_id.as_str(),
+                    k.delivered,
+                )
+            })
             .collect();
         seen.sort_unstable();
         assert_eq!(
@@ -1874,8 +1973,9 @@ async fn a_title_shared_again_is_delivered_again_and_its_files_kept_while_held()
     assert!(store.edition_file("local", key).await.unwrap().is_some());
 }
 
-/// A title that resolves to another listing (here its marketplace
-/// changed) replaces the branch's earlier holding of it.
+/// A title that resolves to another listing (here its store's listings
+/// are filed under a plugin connected since) replaces the branch's
+/// earlier holding of it.
 #[tokio::test]
 async fn a_title_on_a_new_listing_replaces_its_earlier_holding() {
     let _lock = master_key_test_lock_async().await;
@@ -1883,10 +1983,13 @@ async fn a_title_on_a_new_listing_replaces_its_earlier_holding() {
     let (store, _member) = world(dir.path()).await;
     let session = open(&store, true, true).await;
     accepted(&store, session.fence, "c", false, &[title("p1", 1)]).await;
-    let moved = CatalogTitle {
-        marketplace: "uk".into(),
-        ..title("p1", 1)
-    };
+    // A store account connected here now files the store's listings under
+    // its plugin: the same title resolves to a listing of that plugin.
+    store
+        .upsert_account(PLUGIN, "store-acct", "us", None, true, "audible")
+        .await
+        .unwrap();
+    let moved = title("p1", 1);
     accepted(&store, session.fence, "d", false, &[moved]).await;
     let rows = list_branch_titles(&store, None, 10).await.unwrap();
     assert_eq!(rows.len(), 1, "one holding per shared title");
@@ -2133,14 +2236,13 @@ async fn replaced_holdings_are_found_under_every_profile() {
         };
         let us: Vec<CatalogTitle> = (0..20).map(|n| title(&format!("p{n}"), 1)).collect();
         accepted(&store, opened.fence, "a", false, &us).await;
-        let uk: Vec<CatalogTitle> = us
-            .iter()
-            .map(|t| CatalogTitle {
-                marketplace: "uk".into(),
-                ..t.clone()
-            })
-            .collect();
-        accepted(&store, opened.fence, "b", false, &uk).await;
+        // A store account connected since files the store's listings under
+        // its plugin: every title resolves to a new listing.
+        store
+            .upsert_account(PLUGIN, "store-acct", "us", None, true, "audible")
+            .await
+            .unwrap();
+        accepted(&store, opened.fence, "b", false, &us).await;
         let held = holdings::Entity::find()
             .filter(holdings::Column::NodeId.eq(BRANCH))
             .count(store.db())
@@ -2183,8 +2285,7 @@ async fn a_catalog_upload_is_refused_once_its_listing_sells_another_edition() {
         BRANCH,
         session.fence,
         "shared-node",
-        "audible",
-        "p1",
+        &reference("p1"),
         &files,
         &destinations,
     )
@@ -2233,6 +2334,98 @@ async fn a_catalog_upload_is_refused_once_its_listing_sells_another_edition() {
         .unwrap()
         .iter()
         .all(|row| !row.delivered));
+}
+
+/// A delivered title whose listing then moves to another edition (an
+/// Administrator pins it there) no longer reads as delivered: its files
+/// belong to the edition it sold before.
+#[tokio::test]
+async fn a_delivered_title_whose_listing_moves_is_asked_for_again() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _member) = world(dir.path()).await;
+    let session = open(&store, true, true).await;
+    accepted(
+        &store,
+        session.fence,
+        "c",
+        false,
+        &[title("p1", 3), title("p2", 3)],
+    )
+    .await;
+    let files = [UploadFile {
+        copies: vec![FileCopy {
+            destination: "local".into(),
+            key: "Author/p1/p1.m4b".into(),
+        }],
+        size: 3,
+        sha256: "ab".repeat(32),
+        content_type: None,
+        probe: None,
+    }];
+    let UploadGrant::Granted { upload_id, .. } = grant_catalog_upload(
+        &store,
+        BRANCH,
+        session.fence,
+        "shared-node",
+        &reference("p1"),
+        &files,
+        &[GrantedDestination::new("local", 0)],
+    )
+    .await
+    .unwrap() else {
+        panic!("expected a grant");
+    };
+    assert!(record_upload_file(&store, &upload_id, 0).await.unwrap());
+    let limits = JobClaimLimits {
+        class: 1,
+        plugin_instance: 1,
+    };
+    assert!(matches!(
+        commit_upload(&store, &upload_id, None, limits)
+            .await
+            .unwrap(),
+        UploadCommit::Committed { .. }
+    ));
+    let delivered = |product: &'static str| {
+        let store = store.clone();
+        async move {
+            list_branch_titles(&store, None, 10)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|row| row.product_id == product)
+                .unwrap()
+                .delivered
+        }
+    };
+    assert!(delivered("p1").await);
+    let edition_of = |product: &'static str| {
+        let store = store.clone();
+        async move {
+            store_listings::Entity::find()
+                .filter(store_listings::Column::ProductId.eq(product))
+                .one(store.db())
+                .await
+                .unwrap()
+                .unwrap()
+                .edition_id
+        }
+    };
+    let listing = store_listings::Entity::find()
+        .filter(store_listings::Column::ProductId.eq("p1"))
+        .one(store.db())
+        .await
+        .unwrap()
+        .unwrap();
+    let target = edition_of("p2").await;
+    assert_ne!(listing.edition_id, target);
+    assert!(matches!(
+        store.pin_listing(&listing.id, &target, None).await.unwrap(),
+        crate::PinOutcome::Moved { .. }
+    ));
+    assert_eq!(edition_of("p1").await, target, "the listing moved");
+    assert!(!delivered("p1").await, "no longer delivered");
 }
 
 /// Two shared titles of one edition are delivered once: the branch's
@@ -2334,10 +2527,13 @@ async fn a_replaced_holding_stops_being_shared_in_the_replacing_batch() {
     let (store, _member) = world(dir.path()).await;
     let session = open(&store, true, true).await;
     accepted(&store, session.fence, "a", false, &[title("p1", 1)]).await;
-    let moved = CatalogTitle {
-        marketplace: "uk".into(),
-        ..title("p1", 1)
-    };
+    // A store account connected here now files the store's listings under
+    // its plugin: the same title resolves to a listing of that plugin.
+    store
+        .upsert_account(PLUGIN, "store-acct", "us", None, true, "audible")
+        .await
+        .unwrap();
+    let moved = title("p1", 1);
     let prepared = match prepare_catalog_batch(&store, BRANCH, session.fence, "b", false, &[moved])
         .await
         .unwrap()
@@ -2362,4 +2558,92 @@ async fn a_replaced_holding_stops_being_shared_in_the_replacing_batch() {
         .unwrap();
     assert_eq!(shared, 1, "only the replacing holding is shared");
     assert_eq!(list_branch_titles(&store, None, 10).await.unwrap().len(), 1);
+}
+
+/// A full batch from a branch (one statement per title, more than the
+/// host minimum's 40) is recorded whole under every database profile:
+/// every batch the library sends fits the profile's `maxStatements`, and
+/// the cursor moves only with the last one.
+#[tokio::test]
+async fn a_full_catalog_batch_fits_every_profiles_statement_limit() {
+    let _lock = master_key_test_lock_async().await;
+    for profile in crate::test_support::Profile::ALL {
+        let name = profile.name();
+        let dir = tempfile::tempdir().unwrap();
+        crate::configure_master_key(dir.path()).expect("master key");
+        let kit = crate::test_support::sqlite::memory(profile).await;
+        let store = kit.store();
+        let member = store
+            .create_user(UserRole::Member, Some("Riley"), None)
+            .await
+            .unwrap();
+        add_node(store, BRANCH, "branch", Some(member.id)).await;
+        let session = open(store, true, true).await;
+        let titles: Vec<CatalogTitle> = (0..MAX_CATALOG_BATCH_TITLES)
+            .map(|n| title(&format!("p{n:03}"), 1))
+            .collect();
+        let before = kit.batch_sizes().len();
+        let (upserted, skipped, _) = accepted(store, session.fence, "c1", false, &titles).await;
+        assert_eq!(
+            (upserted, skipped),
+            (u64::try_from(MAX_CATALOG_BATCH_TITLES).unwrap(), 0),
+            "{name}"
+        );
+        let max = usize::try_from(kit.capabilities().max_statements).unwrap();
+        let sizes = kit.batch_sizes();
+        assert!(
+            sizes[before..].iter().all(|size| *size <= max),
+            "{name}: batches {:?} over {max}",
+            &sizes[before..]
+        );
+        let shared = holdings::Entity::find()
+            .filter(holdings::Column::NodeId.eq(BRANCH))
+            .filter(holdings::Column::ShareDigest.is_not_null())
+            .count(store.db())
+            .await
+            .unwrap();
+        assert_eq!(
+            shared,
+            u64::try_from(MAX_CATALOG_BATCH_TITLES).unwrap(),
+            "{name}"
+        );
+        assert_eq!(open(store, true, true).await.cursor, "c1", "{name}");
+    }
+}
+
+/// A batch written in parts whose gate fails before the last part moves
+/// no cursor: the parts already written stand, the batch is lost, and the
+/// branch sends those titles again.
+#[tokio::test]
+async fn a_split_catalog_batch_moves_no_cursor_when_its_gate_fails() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    crate::configure_master_key(dir.path()).expect("master key");
+    let kit = crate::test_support::sqlite::memory(crate::test_support::Profile::Minimum).await;
+    let store = kit.store();
+    let member = store
+        .create_user(UserRole::Member, Some("Riley"), None)
+        .await
+        .unwrap();
+    add_node(store, BRANCH, "branch", Some(member.id)).await;
+    let session = open(store, true, true).await;
+    let titles: Vec<CatalogTitle> = (0..MAX_CATALOG_BATCH_TITLES)
+        .map(|n| title(&format!("p{n:03}"), 1))
+        .collect();
+    let prepared = match prepare_catalog_batch(store, BRANCH, session.fence, "c1", false, &titles)
+        .await
+        .unwrap()
+    {
+        Ok(prepared) => prepared,
+        Err(other) => panic!("expected a prepared batch: {other:?}"),
+    };
+    // A newer connection raises the fence before the batch is written.
+    open(store, true, true).await;
+    assert_eq!(
+        apply_catalog_batch(store, BRANCH, session.fence, prepared)
+            .await
+            .unwrap(),
+        CatalogAccept::Lost
+    );
+    assert_eq!(open(store, true, true).await.cursor, "");
 }

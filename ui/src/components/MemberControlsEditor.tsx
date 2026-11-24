@@ -3,8 +3,8 @@ import {
   getDefaultControls,
   getUserControls,
   isApiError,
-  putDefaultControls,
-  putUserControls,
+  patchDefaultControls,
+  patchUserControls,
   type ControlOverrides,
   type MemberControl,
   type MemberControls,
@@ -13,7 +13,6 @@ import {
   LIBRARY_DEFAULT,
   MEMBER_CONTROLS,
   overrideChoice,
-  withOverride,
   type OverrideChoice,
 } from "@/lib/memberControls";
 
@@ -73,7 +72,9 @@ export function MemberControlsEditor({ target, disabled = false }: MemberControl
     setSaving(true);
     setError(null);
     try {
-      setDefaults((await putDefaultControls({ ...defaults, [control]: value })).controls);
+      // Only this control: another Administrator's change to another
+      // control is kept.
+      setDefaults((await patchDefaultControls({ [control]: value })).controls);
     } catch (err) {
       setError(isApiError(err) ? err.message : "The controls could not be saved.");
     } finally {
@@ -85,7 +86,7 @@ export function MemberControlsEditor({ target, disabled = false }: MemberControl
     setSaving(true);
     setError(null);
     try {
-      const res = await putUserControls(id, withOverride(overrides, control, choice));
+      const res = await patchUserControls(id, { [control]: choice });
       setDefaults(res.defaults);
       setOverrides(res.overrides);
     } catch (err) {

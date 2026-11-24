@@ -767,6 +767,42 @@ async fn shared_node_removal_is_one_batch_without_an_interactive_transaction() {
 #[ignore = "requires BOOKCLERK_TEST_POSTGRES_URL and a disposable Postgres"]
 async fn postgres_removal_and_a_first_heartbeat_order_on_the_node_row() {
     use sea_orm::TransactionTrait;
+    /// Waits (up to 30 s) until `count` other sessions of this test's own
+    /// database wait on a lock, as seen from the session holding it.
+    ///
+    /// # Panics
+    ///
+    /// Panics when they don't within the time, or the read fails.
+    async fn waiters_on_the_row(holder: &sea_orm::DatabaseTransaction, count: i64) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            // A transaction keeps its first view of `pg_stat_activity` until
+            // the view is cleared.
+            holder
+                .execute_unprepared("SELECT pg_stat_clear_snapshot()")
+                .await
+                .expect("clear the activity snapshot");
+            let row = holder
+                .query_one_raw(sea_orm::Statement::from_string(
+                    holder.get_database_backend(),
+                    "SELECT count(*)::bigint AS waiting FROM pg_stat_activity \
+                     WHERE datname = current_database() AND pid <> pg_backend_pid() \
+                     AND wait_event_type = 'Lock'",
+                ))
+                .await
+                .expect("read pg_stat_activity")
+                .expect("one row");
+            let waiting: i64 = row.try_get("", "waiting").expect("waiting");
+            if waiting >= count {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{waiting} of {count} sessions wait on the node row"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
     if !super::tests::postgres_tests_enabled() {
         return;
     }
@@ -791,12 +827,14 @@ async fn postgres_removal_and_a_first_heartbeat_order_on_the_node_row() {
             .unwrap()
             .is_none());
         // Hold the node's row so that the removal and the heartbeat both
-        // start and wait on it, the removal first.
+        // start and wait on it, the removal first. The hold only locks the
+        // row: an update would leave a newer row version that the two
+        // waiters then race to lock, in no set order.
         #[allow(clippy::disallowed_methods)]
         let holder = store_b.db().begin().await.expect("hold the node row");
         holder
             .execute_unprepared(&format!(
-                "UPDATE nodes SET heartbeat_at = heartbeat_at WHERE node_id = '{node_id}'"
+                "SELECT 1 FROM nodes WHERE node_id = '{node_id}' FOR UPDATE"
             ))
             .await
             .unwrap();
@@ -805,13 +843,15 @@ async fn postgres_removal_and_a_first_heartbeat_order_on_the_node_row() {
             let actor = as_owner.clone();
             tokio::spawn(async move { remove_shared_node(&store, &actor, &node, &this).await })
         };
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        // Wait until the removal waits on the row, so it is queued first
+        // however slow the runner is.
+        waiters_on_the_row(&holder, 1).await;
         let heartbeat = {
             let (store, node) = (store_b.clone(), node_id.clone());
             let beat = NodeSampler::new(dir.path()).sample();
             tokio::spawn(async move { record_node_heartbeat(&store, &node, &beat).await })
         };
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        waiters_on_the_row(&holder, 2).await;
         holder.commit().await.unwrap();
         let removed = removal.await.unwrap();
         let beat = heartbeat.await.unwrap();

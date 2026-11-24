@@ -173,6 +173,14 @@ impl LibraryStore {
         self
     }
 
+    /// Whether `other` is this store or a clone of it: the same opened
+    /// database, not merely an equal one. A cache built from one store
+    /// uses it to tell that the daemon now reads another.
+    #[must_use]
+    pub fn same_store(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.caps, &other.caps)
+    }
+
     /// Records the full negotiated [`bookclerk_plugin_abi::DbCapabilities`].
     #[must_use]
     pub fn with_db_capabilities(mut self, caps: bookclerk_plugin_abi::DbCapabilities) -> Self {
@@ -1242,6 +1250,10 @@ impl LibraryStore {
         // Until then they cannot sign in: a card is read through its
         // session row and a password through its user, both deleted.
         self.sweep_ended_player_rows().await?;
+        // So are the pieces of a Discover feed stored in pieces: the plan
+        // deleted the feed row that named them.
+        self.drop_unnamed_feed_parts(&DiscoverSubject::User(id).key())
+            .await?;
         for wish in wishes {
             self.publish_wishlist_changed(&wish.uuid, wish.identity_id, "deleted")
                 .await;
@@ -3022,7 +3034,8 @@ impl LibraryStore {
             .map(map_portal_identity))
     }
 
-    /// All portal identities linked to a first-party user.
+    /// All portal identities linked to a first-party user, read in keyset
+    /// pages within the database plugin's result limit.
     ///
     /// # Errors
     ///
@@ -3031,15 +3044,15 @@ impl LibraryStore {
         &self,
         user_id: i64,
     ) -> Result<Vec<crate::models::PortalIdentity>> {
-        Ok(portal_identities::Entity::find()
-            .filter(portal_identities::Column::UserId.eq(user_id))
-            .order_by_asc(portal_identities::Column::Id)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(map_portal_identity)
-            .collect())
+        let select =
+            portal_identities::Entity::find().filter(portal_identities::Column::UserId.eq(user_id));
+        Ok(
+            keyset::read_keyset(self, select, &[portal_identities::Column::Id])
+                .await?
+                .into_iter()
+                .map(map_portal_identity)
+                .collect(),
+        )
     }
 
     /// Link `(provider, external_user_id)` to an existing user (SSO / invite_only).
@@ -4190,7 +4203,8 @@ impl LibraryStore {
         Ok(map_account_link(model))
     }
 
-    /// Lists store accounts linked to a portal identity.
+    /// Lists store accounts linked to a portal identity, read in keyset pages
+    /// within the database plugin's result limit.
     ///
     /// # Arguments
     ///
@@ -4207,15 +4221,15 @@ impl LibraryStore {
         &self,
         identity_id: i64,
     ) -> Result<Vec<crate::models::AccountLinkRecord>> {
-        Ok(account_links::Entity::find()
-            .filter(account_links::Column::IdentityId.eq(identity_id))
-            .order_by_asc(account_links::Column::Id)
-            .all(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-            .into_iter()
-            .map(map_account_link)
-            .collect())
+        let select =
+            account_links::Entity::find().filter(account_links::Column::IdentityId.eq(identity_id));
+        Ok(
+            keyset::read_keyset(self, select, &[account_links::Column::Id])
+                .await?
+                .into_iter()
+                .map(map_account_link)
+                .collect(),
+        )
     }
 
     /// Remove an account link row (does not delete the account).
@@ -7133,6 +7147,7 @@ pub(crate) mod edition_enrichment;
 pub(crate) mod edition_files;
 pub(crate) mod event_outbox;
 pub(crate) mod holdings;
+pub(crate) mod keyset;
 pub(crate) mod library_index;
 pub(crate) mod library_model;
 pub(crate) mod listening;
@@ -7172,11 +7187,11 @@ pub use edition_copies::{
     MAX_COPY_ATTEMPTS,
 };
 pub use edition_enrichment::{
-    EditionAsin, EditionEnrichment, EnrichCandidate, EnrichCandidatePage,
+    EditionAsin, EditionEnrichment, EnrichAttemptOutcome, EnrichCandidate, EnrichCandidatePage,
 };
 pub use edition_files::{
-    AudioStream, EditionAcquisition, EditionFile, FileOwner, FileProbe, FileRole, ProbedAudioFile,
-    TitleHolding, ACQUIRE_WRITER,
+    AcquireWriter, AudioStream, EditionAcquisition, EditionFile, FileOwner, FileProbe, FileRole,
+    ProbedAudioFile, RecordedFile, TitleHolding, ACQUIRE_WRITER,
 };
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
 pub use holdings::{HoldingSelection, NodeHoldingSelection, HOLDING_REMOVED};

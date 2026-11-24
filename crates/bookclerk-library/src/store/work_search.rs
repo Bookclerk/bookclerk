@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 use super::library_model::find_chunked_paged;
 use super::work_batch::WorkModel;
@@ -99,16 +99,21 @@ impl LibraryStore {
             .iter()
             .flat_map(|model| model.inputs.editions.iter().map(|e| e.id.clone()))
             .collect();
-        let identifiers =
-            find_chunked_paged::<edition_identifiers::Entity, _>(self, &edition_ids, |part| {
+        let identifiers = find_chunked_paged::<edition_identifiers::Entity, _>(
+            self,
+            &edition_ids,
+            &[
+                edition_identifiers::Column::EditionId,
+                edition_identifiers::Column::Scheme,
+                edition_identifiers::Column::Value,
+                edition_identifiers::Column::Marketplace,
+            ],
+            |part| {
                 edition_identifiers::Entity::find()
                     .filter(edition_identifiers::Column::EditionId.is_in(part.iter().cloned()))
-                    .order_by_asc(edition_identifiers::Column::EditionId)
-                    .order_by_asc(edition_identifiers::Column::Scheme)
-                    .order_by_asc(edition_identifiers::Column::Value)
-                    .order_by_asc(edition_identifiers::Column::Marketplace)
-            })
-            .await?;
+            },
+        )
+        .await?;
         let mut identifiers_of: HashMap<&str, Vec<&str>> = HashMap::new();
         for identifier in &identifiers {
             identifiers_of

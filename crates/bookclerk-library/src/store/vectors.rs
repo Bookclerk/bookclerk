@@ -213,6 +213,31 @@ impl LibraryStore {
             .collect())
     }
 
+    /// Every work vector of one space, as `(work id, little-endian `f32`
+    /// bytes)` in work id order.
+    ///
+    /// Read in keyset pages that narrow until each reply fits the
+    /// adapter's limits. The whole space is returned at once: a node's
+    /// search index holds it in memory anyway.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn work_vectors_in(&self, space: &VectorSpace) -> Result<Vec<(String, Vec<u8>)>> {
+        let rows = super::keyset::read_keyset(
+            self,
+            embeddings::Entity::find()
+                .filter(embeddings::Column::TargetKind.eq(VECTOR_KIND_WORK))
+                .filter(in_space(space)),
+            &[embeddings::Column::TargetId],
+        )
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.target_id, row.vector))
+            .collect())
+    }
+
     /// The spaces that hold work vectors, with how many each holds.
     ///
     /// # Errors

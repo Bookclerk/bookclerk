@@ -1573,6 +1573,12 @@ impl JobKind {
     #[must_use]
     pub fn dedup_key(self, payload: &JobPayload) -> String {
         let account = payload.account.as_deref().unwrap_or("all");
+        // An exact-id job reaches other accounts than an id-or-label one of
+        // the same name, so the two never fold into each other.
+        let account = match payload.account_match {
+            bookclerk_storefront::AccountMatch::IdOrLabel => account.to_owned(),
+            bookclerk_storefront::AccountMatch::ExactId => format!("{account}:match=exact"),
+        };
         match self {
             Self::Scan => match payload
                 .plugin_instance_id
@@ -1835,6 +1841,14 @@ pub struct JobPayload {
     /// Optional account filter (`None` = all eligible accounts).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// How [`Self::account`] picks accounts: by id or label (what a person
+    /// types, the default), or by exact id (a scan of every account plans
+    /// these, one job per account).
+    #[serde(
+        default,
+        skip_serializing_if = "bookclerk_storefront::AccountMatch::is_default"
+    )]
+    pub account_match: bookclerk_storefront::AccountMatch,
     /// Optional title filter (uuid / ASIN / ISBN / product id).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -2005,6 +2019,7 @@ impl Default for JobPayload {
         Self {
             v: JOB_PAYLOAD_VERSION,
             account: None,
+            account_match: bookclerk_storefront::AccountMatch::IdOrLabel,
             title: None,
             plugin_instance_id: None,
             requires: Vec::new(),

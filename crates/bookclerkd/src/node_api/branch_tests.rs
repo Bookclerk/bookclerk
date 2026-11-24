@@ -777,6 +777,7 @@ async fn branch_context(state: &Arc<AppState>, node_id: &str) -> super::super::w
                 class: cfg.jobs.concurrency.network.max(1),
                 plugin_instance: cfg.jobs.concurrency.plugin_instance.max(1),
             },
+            node_bound: None,
         },
         shared_node_id: "shared-node".into(),
         state: Arc::clone(state),
@@ -1140,7 +1141,7 @@ async fn a_keeping_branch_pushes_newer_sign_ins_to_the_library() {
         let store = &store;
         let id = id.to_string();
         async move {
-            super::super::host_accounts::update(store, host, id, &sealed, revision)
+            super::super::host_accounts::update(store, host, id, &sealed, revision, false)
                 .await
                 .unwrap()
                 .body
@@ -1156,7 +1157,8 @@ async fn a_keeping_branch_pushes_newer_sign_ins_to_the_library() {
     assert_eq!(
         update("u1", vec![offered_with(&plugin_key, kept, b"second")], 10).await,
         Body::AccountsUpdated {
-            outcome: KeeperOutcome::Applied
+            outcome: KeeperOutcome::Applied,
+            sealed: None,
         }
     );
     assert_eq!(stored().await, b"second");
@@ -1170,7 +1172,8 @@ async fn a_keeping_branch_pushes_newer_sign_ins_to_the_library() {
             )
             .await,
             Body::AccountsUpdated {
-                outcome: KeeperOutcome::Stale
+                outcome: KeeperOutcome::Stale,
+                sealed: None,
             }
         );
     }
@@ -1184,7 +1187,8 @@ async fn a_keeping_branch_pushes_newer_sign_ins_to_the_library() {
         )
         .await,
         Body::AccountsUpdated {
-            outcome: KeeperOutcome::NotShared
+            outcome: KeeperOutcome::NotShared,
+            sealed: None,
         }
     );
     // Nor is a storefront that is not installed here.
@@ -1196,7 +1200,8 @@ async fn a_keeping_branch_pushes_newer_sign_ins_to_the_library() {
         )
         .await,
         Body::AccountsUpdated {
-            outcome: KeeperOutcome::NotShared
+            outcome: KeeperOutcome::NotShared,
+            sealed: None,
         }
     );
     // A push holds exactly one account.
@@ -1245,4 +1250,112 @@ async fn a_keeping_branch_pushes_newer_sign_ins_to_the_library() {
         "{answer:?}"
     );
     assert_eq!(stored().await, b"second");
+}
+
+/// A keeper branch's first push from the copy it was sent is answered with
+/// the library's newer refresh, sealed to the branch; pushed back, or
+/// pushed as the branch's own on purpose, it applies.
+#[tokio::test]
+async fn a_first_push_over_a_newer_library_refresh_is_answered_with_it() {
+    use crate::library_link::join::tests::{connect_account, stage_storefront};
+    use bookclerk_library::control_plane::{load_library_row, record_accounts_sent};
+    use bookclerk_library::secrets::{
+        build_sealed_record, secret_account_type, secret_kind, upsert_secret,
+    };
+    use bookclerk_node_proto::{
+        open_account_reconcile, seal_account_offer, AccountBundle, Body, KeeperOutcome,
+        ACCOUNT_BUNDLE_VERSION,
+    };
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let files = tempfile::tempdir().unwrap();
+    let (state, store, member) = owner(&files).await;
+    let plugin_key = stage_storefront(&files, &state, "single_keeper");
+    let account = "here@example.com";
+    connect_account(&store, member, &plugin_key, account, b"token").await;
+
+    let app = routes(&state, UserCaller::User { user_id: member }, LOOPBACK);
+    let v = verifier('r');
+    let code = approve(&app, &v).await;
+    let (status, _, enrolled) = call(
+        &app,
+        "POST",
+        "/api/node/v1/enroll/oauth",
+        Some(redeem(&code, &v, 51)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{enrolled}");
+    let node_id = enrolled["node_id"].as_str().unwrap().to_string();
+    let library_id = load_library_row(&store).await.unwrap().unwrap().library_id;
+    let host = branch_context(&state, &node_id).await;
+    let owner_key = bookclerk_node_proto::box_public_key(&[3; 32]);
+    let push = |id: &str, value: &[u8], revision, keeps_own| {
+        let sealed = seal_account_offer(
+            &owner_key,
+            &[8; 32],
+            &AccountBundle {
+                v: ACCOUNT_BUNDLE_VERSION,
+                library_id: library_id.clone(),
+                node_id: node_id.clone(),
+                accounts: vec![offered_with(&plugin_key, account, value)],
+            },
+        )
+        .unwrap();
+        let (host, store, id) = (&host, &store, id.to_string());
+        async move {
+            super::super::host_accounts::update(store, host, id, &sealed, revision, keeps_own)
+                .await
+                .unwrap()
+                .body
+        }
+    };
+
+    // The library sends the account to the branch, then refreshes it.
+    let sent = bookclerk_library::control_plane::accounts_to_carry(&store, member, &|_| true)
+        .await
+        .unwrap();
+    record_accounts_sent(&store, &node_id, &sent).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let record = build_sealed_record(
+        b"refreshed",
+        secret_kind::SOURCE_AUTH,
+        &plugin_key,
+        secret_account_type::INTEGRATION,
+        account,
+        "auth",
+    )
+    .unwrap();
+    upsert_secret(store.db(), &record).await.unwrap();
+
+    // The branch's first push, from the copy it was sent, is answered with
+    // the refresh, which only the branch can open (its box key in
+    // `branch_context`).
+    let Body::AccountsUpdated {
+        outcome: KeeperOutcome::Reconcile,
+        sealed: Some(sealed),
+    } = push("r1", b"token", 10, false).await
+    else {
+        panic!("expected a reconcile answer");
+    };
+    let bundle = open_account_reconcile(&[4; 32], &library_id, &node_id, &sealed).unwrap();
+    assert_eq!(bundle.accounts.len(), 1);
+    assert_eq!(bundle.accounts[0].account_id, account);
+    assert_eq!(bundle.accounts[0].secrets[0].value.expose(), b"refreshed");
+    assert!(open_account_reconcile(&[5; 32], &library_id, &node_id, &sealed).is_err());
+
+    // The branch says it keeps its own: applied.
+    assert_eq!(
+        push("r2", b"branch-own", 11, true).await,
+        Body::AccountsUpdated {
+            outcome: KeeperOutcome::Applied,
+            sealed: None,
+        }
+    );
+    // Once a push applied, later ones are never answered with the library's.
+    assert_eq!(
+        push("r3", b"branch-newer", 12, false).await,
+        Body::AccountsUpdated {
+            outcome: KeeperOutcome::Applied,
+            sealed: None,
+        }
+    );
 }

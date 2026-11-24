@@ -72,8 +72,8 @@ pub use clerk::{
 };
 pub use client::{
     CatalogBatchAccepted, CatalogSession, ClientExit, ClientTiming, HeartbeatSource, HostClient,
-    HostClientConfig, HostClientHandle, OfferedAccounts, AWAITING_HOST_CONSENT, KIND_NOT_RUN_HERE,
-    MAX_ARTIFACT_BYTES, MAX_LEASE, SECRETS_UNOPENABLE,
+    HostClientConfig, HostClientHandle, OfferedAccounts, SignInPushed, AWAITING_HOST_CONSENT,
+    KIND_NOT_RUN_HERE, MAX_ARTIFACT_BYTES, MAX_LEASE, SECRETS_UNOPENABLE,
 };
 pub use copies::{fetch_copy_file, CopyFetchError};
 pub use endpoint::{
@@ -81,7 +81,7 @@ pub use endpoint::{
     SocketMessage, TlsProbe, UploadSource, CONNECT_PATH, ENROLL_OAUTH_PATH, ENROLL_PATH, INFO_PATH,
     MAX_UPLOAD_RESUMES,
 };
-pub use enroll::{check_join_ancestry, join_library, refuse_cycle, JoinError};
+pub use enroll::{check_join_ancestry, join_library, refuse_cycle, refuse_loop, JoinError};
 pub use jobs::{
     AcquirePlan, GrantedCopy, HandedSecrets, HostJob, HostJobCtx, HostJobError, HostJobRunner,
     HostUpload, OwnerCallError, WriteBackError,

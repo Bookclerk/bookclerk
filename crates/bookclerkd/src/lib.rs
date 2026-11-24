@@ -47,6 +47,7 @@ mod jobs;
 mod library_chapters;
 mod library_index;
 mod library_link;
+mod library_meaning;
 mod library_overrides;
 mod library_works;
 mod live;
@@ -87,6 +88,7 @@ mod tray_companion;
 mod uploads;
 mod webhooks;
 mod work_tags;
+mod work_vectors;
 
 pub mod embedded;
 
@@ -635,6 +637,7 @@ async fn assemble_host(
         job_runtime: Arc::new(RwLock::new(())),
         work_lock: Mutex::new(()),
         discover_gate: Arc::new(Semaphore::new(1)),
+        work_vectors: Arc::default(),
         integrations: Arc::new(RwLock::new(integrations)),
         sources: Arc::new(RwLock::new(sources)),
         destinations: Arc::new(RwLock::new(destinations)),

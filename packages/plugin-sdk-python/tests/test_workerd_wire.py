@@ -9,6 +9,7 @@ import pytest
 
 from bookclerk_plugin_sdk.workerd import (
     EventMessage,
+    EventsBinding,
     JobController,
     KvNamespace,
     QueueBinding,
@@ -259,7 +260,8 @@ def test_invocation_env_grants_every_binding() -> None:
     assert env.CONFIG == {"k": "v"}
     assert env.SECRETS == {"s": "x"}
     assert env.WORK_FS is storage
-    assert env.EVENTS is events
+    assert isinstance(env.EVENTS, EventsBinding)
+    assert env.EVENTS._stub is events
     assert env.DB is database
     assert isinstance(env.JOBS, QueueBinding)
     assert env.JOBS._stub is queue
@@ -299,7 +301,9 @@ def test_invocation_env_layers_over_an_earlier_view() -> None:
     first = _invocation_env(raw, {"config": {"payload": {"a": 1}}, "storage": "fs-1"})
     second = _invocation_env(first, {"events": "ev-2", "storage": "fs-2"})
     assert second._raw is raw
-    assert second._granted == {"CONFIG": {"a": 1}, "WORK_FS": "fs-2", "EVENTS": "ev-2"}
+    assert second._granted["CONFIG"] == {"a": 1}
+    assert second._granted["WORK_FS"] == "fs-2"
+    assert second._granted["EVENTS"]._stub == "ev-2"
     assert second.CONFIG == {"a": 1}
     assert second.STATIC == "static"
     assert isinstance(second, _EnvView)

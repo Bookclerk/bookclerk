@@ -119,6 +119,13 @@ pub struct ChaptersAnswer {
 /// fails is reported in the answer's `failures` and does not stop the others.
 #[async_trait]
 pub trait MetadataProviders: Send + Sync {
+    /// The plugin keys of the providers asked, in the order they are asked.
+    ///
+    /// Empty when no provider is deployed: every answer is then empty, so
+    /// a caller can skip work whose only use is to score a provider record
+    /// (and a cache can key on the set, so deploying a provider is seen).
+    fn provider_keys(&self) -> Vec<String>;
+
     /// Records for a set of identifiers.
     ///
     /// # Arguments
@@ -160,6 +167,10 @@ pub struct NoMetadataProviders;
 
 #[async_trait]
 impl MetadataProviders for NoMetadataProviders {
+    fn provider_keys(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     async fn lookup(&self, _params: &MetadataLookupParams) -> MetadataAnswer {
         MetadataAnswer::default()
     }

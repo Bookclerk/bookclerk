@@ -191,6 +191,10 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["GET", "/api/config/plugin-instances/{id}/intake", "allow"],
   ["PUT", "/api/config/plugin-instances/{id}/intake", "deny"],
   ["DELETE", "/api/config/plugin-instances/{id}/intake", "deny"],
+  // Guided setup calls out to the provider with a pasted token.
+  ["GET", "/api/config/plugin-instances/{id}/provisioning", "allow"],
+  ["POST", "/api/config/plugin-instances/{id}/provision", "deny"],
+  ["POST", "/api/config/plugin-instances/{id}/deprovision", "deny"],
   ["PUT", "/api/config/plugin-instances/{id}/placement", "deny"],
   ["DELETE", "/api/config/plugin-instances/{id}/placement", "deny"],
   ["GET", "/api/config/plugins", "allow"],
@@ -235,7 +239,11 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["POST", "/api/library/acquire", "deny"],
   ["POST", "/api/library/convert", "deny"],
   ["GET", "/api/library/works", "allow"],
+  // Search by meaning and "more like this": reads over the sample
+  // library's baked vectors, in the visitor's own container.
+  ["GET", "/api/library/works/meaning", "allow"],
   ["GET", "/api/library/works/{id}", "allow"],
+  ["GET", "/api/library/works/{id}/similar", "allow"],
   ["PUT", "/api/library/works/{id}/state", "allow"],
   ["GET", "/api/library/works/{id}/tags", "allow"],
   ["PUT", "/api/library/works/{id}/tags", "deny"],
@@ -353,9 +361,9 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["GET", "/api/users", "allow"],
   // Member controls: readable, never changed.
   ["GET", "/api/users/default-controls", "allow"],
-  ["PUT", "/api/users/default-controls", "deny"],
+  ["PATCH", "/api/users/default-controls", "deny"],
   ["GET", "/api/users/{id}/controls", "allow"],
-  ["PUT", "/api/users/{id}/controls", "deny"],
+  ["PATCH", "/api/users/{id}/controls", "deny"],
   // Administrator switches: readable, never changed.
   ["GET", "/api/users/default-admin-controls", "allow"],
   ["PATCH", "/api/users/default-admin-controls", "deny"],

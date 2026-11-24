@@ -80,6 +80,9 @@ pub struct AppState {
     /// Cap concurrent discover/embed work so ONNX load + inference cannot saturate
     /// the Tokio blocking pool (and starve accept / `/health`) under page refresh.
     pub discover_gate: Arc<Semaphore>,
+    /// This node's in-memory index of the library's work vectors, read by
+    /// search by meaning and "more like this".
+    pub(crate) work_vectors: Arc<crate::work_vectors::WorkVectors>,
     /// Loaded integration guests used by watchers, the portal, and listening sync.
     pub integrations: Arc<RwLock<IntegrationRegistry>>,
     /// Loaded storefront source guests used by scan, acquire, and discover.
@@ -1415,6 +1418,15 @@ fn operator_only_routes() -> OpenApiRouter<Arc<AppState>> {
             crate::config_authority::put_plugin_instance_config
         ))
         .routes(routes!(
+            crate::config_authority::post_plugin_instance_provision
+        ))
+        .routes(routes!(
+            crate::config_authority::post_plugin_instance_deprovision
+        ))
+        .routes(routes!(
+            crate::config_authority::get_plugin_instance_provisioning
+        ))
+        .routes(routes!(
             crate::config_authority::get_destination_filter,
             crate::config_authority::put_destination_filter
         ))
@@ -1654,6 +1666,8 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
 fn shared_routes() -> OpenApiRouter<Arc<AppState>> {
     OpenApiRouter::new()
         .routes(routes!(crate::library_works::list_works))
+        .routes(routes!(crate::library_meaning::get_meaning_status))
+        .routes(routes!(crate::library_meaning::list_similar_works))
         .routes(routes!(crate::library_works::get_work))
         .routes(routes!(crate::library_works::put_work_state))
         .routes(routes!(crate::library_works::list_facet_values))
@@ -1765,11 +1779,11 @@ fn public_routes() -> OpenApiRouter<Arc<AppState>> {
         ))
         .routes(routes!(
             crate::patron_scopes::get_default_controls,
-            crate::patron_scopes::put_default_controls
+            crate::patron_scopes::patch_default_controls
         ))
         .routes(routes!(
             crate::patron_scopes::get_user_controls,
-            crate::patron_scopes::put_user_controls
+            crate::patron_scopes::patch_user_controls
         ))
         .routes(routes!(
             crate::admin_controls::get_default_admin_controls,
@@ -2588,6 +2602,8 @@ pub(crate) async fn reload_daemon_config_held(state: &AppState) -> anyhow::Resul
         // library-link supervisor stops them and dials the new store's
         // active links.
         state.library_swaps.send_modify(|swaps| *swaps += 1);
+        // The index holds the previous store's vectors.
+        state.work_vectors.reset().await;
     }
 
     bookclerk_plugin_host::reconcile_host_overlay_authority(&new_cfg);
@@ -8780,6 +8796,7 @@ tcp = {tcp}
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
+            work_vectors: Arc::default(),
             integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
             sources: Arc::new(RwLock::new(SourceRegistry::new())),
             destinations: Arc::new(RwLock::new(DestinationRegistry::default())),
@@ -9408,6 +9425,7 @@ default_port = 5432
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
+            work_vectors: Arc::default(),
             integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
             sources: Arc::new(RwLock::new(SourceRegistry::new())),
             destinations: Arc::new(RwLock::new(DestinationRegistry::default())),
@@ -9513,6 +9531,7 @@ default_port = 5432
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
+            work_vectors: Arc::default(),
             integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
             sources: Arc::new(RwLock::new(SourceRegistry::new())),
             destinations: Arc::new(RwLock::new(DestinationRegistry::default())),
@@ -9676,6 +9695,7 @@ default_port = 5432
             job_runtime: Arc::new(RwLock::new(())),
             work_lock: Mutex::new(()),
             discover_gate: Arc::new(Semaphore::new(1)),
+            work_vectors: Arc::default(),
             integrations: Arc::new(RwLock::new(IntegrationRegistry::new())),
             sources: Arc::new(RwLock::new(SourceRegistry::new())),
             destinations: Arc::new(RwLock::new(DestinationRegistry::default())),

@@ -40,7 +40,7 @@ request is answered by a frame with the same `id`. Both sides ping every
 
 | Host → owner | Owner answers |
 | --- | --- |
-| `heartbeat` | `ok` (capacity and use land in `node_status`) |
+| `heartbeat` | `ok` (capacity and use land in `node_status`; a branch's optional `budget_cpu_millicores` and `budget_memory_bytes` cap the library's budget for it) |
 | `claim {filter: {kinds, plugins, scope?}}` | `work` (job, lease, fence, sealed secrets, `for_node_owner` on the job when all its accounts are the node owner's, and for a scan `scan_tokens`: the owner's sync token per handed account whose last complete pass is under 7 days old) or `none {retry_after_secs}` |
 | `renew` | `renewed`, or `lost` when the fence is gone |
 | `complete`, `fail`, `release {reason}` | `ok`, or `lost`. A `release` gives the job back unrun without spending an attempt; whether its claim was a resume is the owner's record (`resumed_generation` on the job), not the branch's word |
@@ -48,15 +48,15 @@ request is answered by a frame with the same `id`. Both sides ping every
 | `instance.config` | `CONFIG`, and `SECRETS` sealed to the node only for a node trusted with every job |
 | `observation` | `ok` (`materialized` or `error` for its own deployments) |
 | `secret.update` | `ok` (a refreshed store token, sealed to the owner, only for a ref handed with a live job), or `error` `refused` `kept_by_branch` for a single-keeper account a branch keeps and has pushed a sign-in for |
-| `accounts.update {sealed, revision}` | `accounts.updated {outcome}`: `applied`, `stale` (not newer than the last one applied) or `not_shared` (not an account this branch keeps there); see [One refresh keeper](../server/branches.md#one-refresh-keeper) |
+| `accounts.update {sealed, revision, keeps_own?}` | `accounts.updated {outcome, sealed?}`: `applied`, `stale` (not newer than the last one applied), `not_shared` (not an account this branch keeps there) or `reconcile` (a first push the library answers with its newer sign-in in `sealed`, sealed to the branch's box key, unless `keeps_own` is true); see [One refresh keeper](../server/branches.md#one-refresh-keeper) |
 | `scan.results` | `scan.accepted {batch, upserted}` |
 | `scan.removed {account_id, batch, product_ids}` (at most 500 ids, after the job's rows) | `scan.accepted {batch, upserted}` (holdings removed), `lost`, or `error` `refused` |
 | `scan.pass_end {account_id, sync_token, complete, full}` (one per account, last) | `scan.accepted {batch: 0, upserted}` (holdings a complete full pass pruned), `lost`, or `error` `refused` |
 | `acquire.plan {after?}` | `acquire.targets {targets, destinations, next?}`: targets in holding-id order, only those after `after` (the last holding id the run was already planned), so titles that failed earlier in the run never fill the plan's 100-title cap. A plan looks at most 500 of the job's titles; when it stopped before looking at them all, `next` is the holding id to send as `after` next, even with no targets (titles another account already acquired add none). Each target is `{holding_id, plugin_key, account_id, title, call_number?, parent?, parent_call_number?}`, where `title` and `parent` are store listings `{product_id, source, marketplace, title, content_kind, is_abridged, asin?, isbn?, subtitle?, authors?, narrators?, series?, series_index?, series_product_id?, publisher?, categories?, length_minutes?, purchased_at?, published_at?}` (dates in RFC 3339) |
 | `upload.grant` (each file of the manifest may carry `probe {bitrate_kbps, lossless, source_store}`, as may `catalog.upload`'s) | `upload.granted {upload_id, sealed_token, expires_in_secs}` |
 | `catalog.begin {share_books, include_branches}` | `catalog.session {fence, cursor, ancestry, destinations, wanted, members_books}`; `members_books` (absent reads as false) is the library's "Acquire all of this branch's members' books": the branch then also sends the members' books it lists (see [Acquiring all of a branch's members' books](../server/branches.md#acquiring-all-of-a-branchs-members-books)) |
-| `catalog.sync {fence, batch, cursor, done, titles}` | `catalog.accepted {batch, upserted, skipped, wanted}`, or `lost` |
-| `catalog.upload {fence, store, product_id, files}` | `upload.granted` (then the upload routes above, job id `catalog`) |
+| `catalog.sync {fence, batch, cursor, done, titles}` | `catalog.accepted {batch, upserted, skipped, wanted}`, or `lost`. Each `wanted` entry (here and in `catalog.session`) names a title as `{store, product_id, marketplace?}`: one product sold in two marketplaces is two titles, and `marketplace` is left out when the store has none |
+| `catalog.upload {fence, store, product_id, marketplace?, files}` | `upload.granted` (then the upload routes above, job id `catalog`) |
 | `catalog.questions` | `catalog.ask {works}`: up to 100 questions `{work, identifiers}` waiting for this branch, or `error` `refused` |
 | `catalog.found {answers, missing}` | `ok`, or `error` `invalid` / `refused` (see [Shared catalog](../server/branches.md#shared-catalog)) |
 | `requests.claim` | `requests.claimed {requests}`: up to 16 interlibrary requests `{job, generation, work, store, marketplace, product_id}` leased to this branch for 5 minutes, or `error` `refused` |

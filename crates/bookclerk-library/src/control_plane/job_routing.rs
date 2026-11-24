@@ -39,6 +39,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use bookclerk_node_proto::ClaimScope;
+use bookclerk_storefront::AccountMatch;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use uuid::Uuid;
 
@@ -50,7 +51,7 @@ use super::semaphore::{
     acquire_permits, release_permits, PermitAcquire, SemaphorePermit, SemaphoreRequest,
 };
 use super::trust::{
-    account_owned, accounts_named, claimant_may_run, job_named_account, job_trusted,
+    account_owned, accounts_named_as, claimant_may_run, job_named_account, job_trusted,
     node_trust_in_scope, owned_job_account, Claimant, NodeTrust,
 };
 use crate::entities::accounts;
@@ -112,7 +113,19 @@ pub struct JobClaimRequest<'a> {
     /// The claimer's own narrowing; `None` claims every job it is trusted
     /// with and can run.
     pub filter: Option<&'a JobClaimFilter>,
+    /// Tells which plugin keys are node-bound outputs (the first-party
+    /// local destination), as the requirements sweep counts them. When
+    /// set, a job's requirements are resolved again before it is claimed,
+    /// and a job whose stored requirements no longer match (a deployment
+    /// committed since the sweep last rewrote them) is skipped until the
+    /// sweep catches up, so no node claims it on its old requirements.
+    /// `None` trusts the stored requirements.
+    pub node_bound: Option<NodeBoundKey>,
 }
+
+/// Tells whether a stored plugin key names a node-bound output
+/// ([`JobClaimRequest::node_bound`]).
+pub type NodeBoundKey = fn(&str) -> bool;
 
 impl JobClaimRequest<'_> {
     /// Whose work the claim takes: a Host's filter says
@@ -197,7 +210,7 @@ pub async fn job_source_plugin_key(
         return Ok(None);
     };
     // Resolved like the claim filter and the secret handoff (id or label).
-    let keys: BTreeSet<String> = accounts_named(store, account, None)
+    let keys: BTreeSet<String> = accounts_named_as(store, account, None, job.payload.account_match)
         .await?
         .into_iter()
         .map(|(plugin_key, _)| plugin_key)
@@ -250,7 +263,9 @@ pub async fn job_plugin_keys(
         // Resolved like the executor and the trust checks do (id or
         // label, ignoring case), so the set covers every store it touches.
         Some(account) => {
-            let named = accounts_named(store, account, pinned.as_deref()).await?;
+            let named =
+                accounts_named_as(store, account, pinned.as_deref(), job.payload.account_match)
+                    .await?;
             if named.is_empty() {
                 return Ok(None);
             }
@@ -593,10 +608,15 @@ pub async fn job_semaphores(
         // secret handoff resolve them, so two jobs naming one account
         // differently still share its permit.
         let touched: Vec<(String, String)> = match job.payload.account.as_deref() {
-            Some(account) => super::trust::accounts_named(store, account, pinned_key.as_deref())
-                .await?
-                .into_iter()
-                .collect(),
+            Some(account) => super::trust::accounts_named_as(
+                store,
+                account,
+                pinned_key.as_deref(),
+                job.payload.account_match,
+            )
+            .await?
+            .into_iter()
+            .collect(),
             None => {
                 let mut query = accounts::Entity::find();
                 if let Some(key) = pinned_key.as_deref() {
@@ -659,6 +679,63 @@ pub fn job_permit_holder_prefix(owner: &str, job_id: &str, generation: i64) -> S
     format!("{owner}/{job_id}/g{generation}/")
 }
 
+/// What [`claim_routed_job`] knows of the requirements jobs would be given
+/// now, read lazily.
+#[derive(Default)]
+struct CurrentRequirements {
+    /// The node-bound output keys; `None` until a candidate needs them.
+    node_bound_keys: Option<BTreeSet<String>>,
+    /// Each job shape's requirements now, by kind and pinned instance (the
+    /// only parts of a job they depend on).
+    by_shape: BTreeMap<(String, Option<String>), Vec<String>>,
+}
+
+impl CurrentRequirements {
+    /// True when `job`'s stored requirements cover the ones it would be
+    /// given now: a node that meets the stored set (checked before this)
+    /// then meets the current one too. A superset is what the requirements
+    /// sweep keeps while it holds a job unsettled (old and new together),
+    /// so such a job stays claimable through the grace period.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a read fails.
+    async fn matches(
+        &mut self,
+        store: &LibraryStore,
+        node_bound: NodeBoundKey,
+        job: &JobRecord,
+    ) -> Result<bool> {
+        let shape = (
+            job.kind.as_str().to_owned(),
+            job.payload.plugin_instance_id.clone(),
+        );
+        if !self.by_shape.contains_key(&shape) {
+            if self.node_bound_keys.is_none() {
+                let keys = list_all_plugin_instances(store)
+                    .await?
+                    .into_iter()
+                    .map(|instance| instance.plugin_key)
+                    .filter(|key| node_bound(key))
+                    .collect();
+                self.node_bound_keys = Some(keys);
+            }
+            let Some(keys) = self.node_bound_keys.as_ref() else {
+                return Ok(false);
+            };
+            let now = desired_requirements(store, job.kind, &job.payload, keys).await?;
+            self.by_shape.insert(shape.clone(), now);
+        }
+        let mut stored = job.payload.requires.clone();
+        stored.sort();
+        stored.dedup();
+        Ok(self
+            .by_shape
+            .get(&shape)
+            .is_some_and(|now| now.iter().all(|key| stored.binary_search(key).is_ok())))
+    }
+}
+
 /// Claims the best ready job this node can run, under the library semaphores.
 ///
 /// Pages through the ready pending jobs of the class, best first
@@ -701,7 +778,10 @@ pub async fn claim_routed_job(
     let mut runnable: BTreeMap<Vec<String>, bool> = BTreeMap::new();
     // A user's Host is checked against each named account once per call
     // too, rather than reading the accounts and links per candidate.
-    let mut owned_accounts: BTreeMap<String, bool> = BTreeMap::new();
+    let mut owned_accounts: BTreeMap<(String, AccountMatch), bool> = BTreeMap::new();
+    // The node-bound keys and each job shape's current requirements, read
+    // once per call and only when a candidate gets that far.
+    let mut current = CurrentRequirements::default();
     let mut after: Option<JobClaimCursor> = None;
     loop {
         let page = store
@@ -733,14 +813,17 @@ pub async fn claim_routed_job(
             };
             let trusted = match named {
                 Some((_, None)) => false,
-                Some((user_id, Some(account))) => match owned_accounts.get(account) {
-                    Some(known) => *known,
-                    None => {
-                        let known = account_owned(store, user_id, account).await?;
-                        owned_accounts.insert(account.to_owned(), known);
-                        known
+                Some((user_id, Some(account))) => {
+                    let how = job.payload.account_match;
+                    match owned_accounts.get(&(account.to_owned(), how)) {
+                        Some(known) => *known,
+                        None => {
+                            let known = account_owned(store, user_id, account, how).await?;
+                            owned_accounts.insert((account.to_owned(), how), known);
+                            known
+                        }
                     }
-                },
+                }
                 None => job_trusted(store, &trust, &job).await?,
             };
             if !trusted {
@@ -762,6 +845,11 @@ pub async fn claim_routed_job(
             };
             if !can_run {
                 continue;
+            }
+            if let Some(node_bound) = request.node_bound {
+                if !current.matches(store, node_bound, &job).await? {
+                    continue;
+                }
             }
             let semaphores = job_semaphores(store, &job, request.limits).await?;
             // The claim below succeeds only at the generation read here, so it

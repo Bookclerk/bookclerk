@@ -96,6 +96,8 @@ pub enum Entrypoint {
     Ingress,
     /// Model serving: `models` and `run` (`AiModels`).
     Ai,
+    /// Guided setup: `provision` and `deprovision` (`Provisioning`).
+    Provisioning,
 }
 
 impl Entrypoint {
@@ -115,6 +117,7 @@ impl Entrypoint {
             Self::Notifier => "notifier",
             Self::Ingress => "ingress",
             Self::Ai => "ai",
+            Self::Provisioning => "provisioning",
         }
     }
 
@@ -134,6 +137,7 @@ impl Entrypoint {
             "notifier" => Some(Self::Notifier),
             "ingress" => Some(Self::Ingress),
             "ai" => Some(Self::Ai),
+            "provisioning" => Some(Self::Provisioning),
             _ => None,
         }
     }
@@ -154,6 +158,7 @@ impl From<Entrypoint> for plugin_capnp::Entrypoint {
             Entrypoint::Notifier => Self::Notifier,
             Entrypoint::Ingress => Self::Ingress,
             Entrypoint::Ai => Self::Ai,
+            Entrypoint::Provisioning => Self::Provisioning,
         }
     }
 }
@@ -173,6 +178,7 @@ impl From<plugin_capnp::Entrypoint> for Entrypoint {
             plugin_capnp::Entrypoint::Notifier => Self::Notifier,
             plugin_capnp::Entrypoint::Ingress => Self::Ingress,
             plugin_capnp::Entrypoint::Ai => Self::Ai,
+            plugin_capnp::Entrypoint::Provisioning => Self::Provisioning,
         }
     }
 }
@@ -1322,6 +1328,56 @@ impl From<plugin_capnp::OfferedAacProfile> for OfferedAacProfile {
     }
 }
 
+/// Why the host opens a plugin's entrypoints (`Invocation.purpose`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InvocationPurpose {
+    /// Ordinary work: every required setting is set.
+    #[default]
+    Serve,
+    /// Guided setup (`Entrypoints.provisioning`): settings may be incomplete.
+    Provision,
+}
+
+impl InvocationPurpose {
+    /// Wire name of this enumerant (matches the TypeScript / Python SDK literal).
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Serve => "serve",
+            Self::Provision => "provision",
+        }
+    }
+
+    /// Parse a wire name; `None` for unknown strings.
+    #[must_use]
+    pub fn from_wire_name(name: &str) -> Option<Self> {
+        match name {
+            "serve" => Some(Self::Serve),
+            "provision" => Some(Self::Provision),
+            _ => None,
+        }
+    }
+}
+
+impl From<InvocationPurpose> for plugin_capnp::InvocationPurpose {
+    fn from(value: InvocationPurpose) -> Self {
+        match value {
+            InvocationPurpose::Serve => Self::Serve,
+            InvocationPurpose::Provision => Self::Provision,
+        }
+    }
+}
+
+impl From<plugin_capnp::InvocationPurpose> for InvocationPurpose {
+    fn from(value: plugin_capnp::InvocationPurpose) -> Self {
+        match value {
+            plugin_capnp::InvocationPurpose::Serve => Self::Serve,
+            plugin_capnp::InvocationPurpose::Provision => Self::Provision,
+        }
+    }
+}
+
 /// The kind of public media `CoverFetcher.fetchCovers` downloads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1821,6 +1877,62 @@ impl From<plugin_capnp::AiTextRole> for AiTextRole {
         match value {
             plugin_capnp::AiTextRole::Document => Self::Document,
             plugin_capnp::AiTextRole::Query => Self::Query,
+        }
+    }
+}
+
+/// What kind of grant the operator gave a guided setup (`ProvisionGrant`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProvisionGrantKind {
+    /// No grant: `deprovision` uses the instance's stored secrets.
+    #[default]
+    None,
+    /// An API token the operator created at the provider and pasted.
+    ApiToken,
+    /// An OAuth access token from the provider's sign-in.
+    OauthAccessToken,
+}
+
+impl ProvisionGrantKind {
+    /// Wire name of this enumerant (matches the TypeScript / Python SDK literal).
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::ApiToken => "apiToken",
+            Self::OauthAccessToken => "oauthAccessToken",
+        }
+    }
+
+    /// Parse a wire name; `None` for unknown strings.
+    #[must_use]
+    pub fn from_wire_name(name: &str) -> Option<Self> {
+        match name {
+            "none" => Some(Self::None),
+            "apiToken" => Some(Self::ApiToken),
+            "oauthAccessToken" => Some(Self::OauthAccessToken),
+            _ => None,
+        }
+    }
+}
+
+impl From<ProvisionGrantKind> for plugin_capnp::ProvisionGrantKind {
+    fn from(value: ProvisionGrantKind) -> Self {
+        match value {
+            ProvisionGrantKind::None => Self::None,
+            ProvisionGrantKind::ApiToken => Self::ApiToken,
+            ProvisionGrantKind::OauthAccessToken => Self::OauthAccessToken,
+        }
+    }
+}
+
+impl From<plugin_capnp::ProvisionGrantKind> for ProvisionGrantKind {
+    fn from(value: plugin_capnp::ProvisionGrantKind) -> Self {
+        match value {
+            plugin_capnp::ProvisionGrantKind::None => Self::None,
+            plugin_capnp::ProvisionGrantKind::ApiToken => Self::ApiToken,
+            plugin_capnp::ProvisionGrantKind::OauthAccessToken => Self::OauthAccessToken,
         }
     }
 }
@@ -3306,6 +3418,12 @@ pub struct Invocation {
     /// Id of the event or command that caused this invocation; empty when none.
     #[serde(default)]
     pub causation_id: String,
+    /// What the host opens the entrypoints for. `provision` opens an instance
+    /// that may not be configured yet: `CONFIG` and `SECRETS` hold what is
+    /// stored so far, required settings may be missing, and the host calls
+    /// only `Entrypoints.provisioning`.
+    #[serde(default)]
+    pub purpose: InvocationPurpose,
 }
 
 /// One message on a Workers-style queue, delivered by `QueueConsumer.queue`.
@@ -4339,6 +4457,14 @@ pub struct SocketConnectRequest {
     /// (an ngrok or Cloudflare Tunnel agent endpoint). Empty uses Mozilla's.
     #[serde(default)]
     pub trust_anchors: Vec<Vec<u8>>,
+    /// `tls://` only: the DNS name to send as SNI and to check the server's
+    /// certificate against, for an endpoint reached at one name that answers
+    /// for another (a Cloudflare Tunnel edge, dialed at `region1.v2.argotunnel.com`
+    /// and serving `h2.cftunnel.com`). It must be on a `tcp` grant for the
+    /// URL's port too, so it can't route past the grant by name. At most
+    /// `maxSocketServerNameBytes`; empty uses the URL's host.
+    #[serde(default)]
+    pub server_name: String,
 }
 
 /// One open host-brokered socket.
@@ -4616,6 +4742,77 @@ pub struct WebhookDelivered {
     /// Deliveries waiting for this webhook when the host called.
     #[serde(default)]
     pub waiting: u32,
+}
+
+/// A short-lived credential for one guided setup run. The host never stores
+/// or logs it; the plugin uses it only during the call.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvisionGrant {
+    /// Kind of grant.
+    #[serde(default)]
+    pub kind: ProvisionGrantKind,
+    /// The token; empty for `none`. At most `maxProvisionTokenBytes`.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    /// When the token expires (UTC Unix milliseconds); zero when unknown or it
+    /// does not expire.
+    /// `None` when absent (wire zero value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_unix_ms: Option<u64>,
+}
+
+/// Arguments of `Provisioning.provision`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvisionRequest {
+    /// The operator's grant; never `none`.
+    #[serde(default)]
+    pub grant: ProvisionGrant,
+    /// The operator's choices as a JSON object keyed by `\[provisioning\] inputs`
+    /// setting keys (`{"bucket": "books"}`); `{}` when none were asked for.
+    #[serde(default)]
+    pub inputs_json: String,
+}
+
+/// One credential a guided setup returns for the host to seal.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvisionedSecret {
+    /// A `secret` setting key listed in `\[provisioning\] outputs`.
+    #[serde(default)]
+    pub key: String,
+    /// The credential, at most `maxProvisionSecretBytes`.
+    #[serde(default)]
+    pub value: String,
+}
+
+/// Success payload of `Provisioning.provision`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Provisioned {
+    /// Non-secret settings to store, as a JSON object keyed by setting keys
+    /// listed in `\[provisioning\] outputs`; at most `maxProvisionSettingsBytes`.
+    #[serde(default)]
+    pub settings_json: String,
+    /// Credentials to seal; each key at most once.
+    #[serde(default)]
+    pub secrets: Vec<ProvisionedSecret>,
+    /// Short lines for the setup screen ("Created bucket books"), at most
+    /// `maxProvisionSummaryLines` of `maxProvisionSummaryLineBytes`. Never a
+    /// credential.
+    #[serde(default)]
+    pub summary: Vec<String>,
+}
+
+/// Arguments of `Provisioning.deprovision`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeprovisionRequest {
+    /// The operator's grant, or kind `none` to use the stored secrets.
+    #[serde(default)]
+    pub grant: ProvisionGrant,
 }
 
 /// Encode a [`EventConsumerSpec`] onto a Cap'n Proto builder.
@@ -7616,6 +7813,7 @@ pub fn write_invocation(
     b.set_deadline_unix_ms(v.deadline_unix_ms);
     b.set_correlation_id(&v.correlation_id);
     b.set_causation_id(&v.causation_id);
+    b.set_purpose(v.purpose.into());
     Ok(())
 }
 
@@ -7631,6 +7829,7 @@ pub fn read_invocation(r: plugin_capnp::invocation::Reader<'_>) -> capnp::Result
         deadline_unix_ms: r.get_deadline_unix_ms(),
         correlation_id: r.get_correlation_id()?.to_string()?,
         causation_id: r.get_causation_id()?.to_string()?,
+        purpose: r.get_purpose()?.into(),
     })
 }
 
@@ -10179,6 +10378,7 @@ pub fn write_socket_connect_request(
             items.set(list_len(i)?, item);
         }
     }
+    b.set_server_name(&v.server_name);
     Ok(())
 }
 
@@ -10209,6 +10409,7 @@ pub fn read_socket_connect_request(
             .iter()
             .map(|d| d.map(<[u8]>::to_vec))
             .collect::<capnp::Result<Vec<_>>>()?,
+        server_name: r.get_server_name()?.to_string()?,
     })
 }
 
@@ -11061,9 +11262,199 @@ pub fn read_webhook_delivered(
     })
 }
 
+/// Encode a [`ProvisionGrant`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_provision_grant(
+    mut b: plugin_capnp::provision_grant::Builder<'_>,
+    v: &ProvisionGrant,
+) -> capnp::Result<()> {
+    b.set_kind(v.kind.into());
+    if let Some(value) = &v.token {
+        b.set_token(value);
+    }
+    if let Some(value) = v.expires_at_unix_ms {
+        b.set_expires_at_unix_ms(value);
+    }
+    Ok(())
+}
+
+/// Decode a [`ProvisionGrant`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_provision_grant(
+    r: plugin_capnp::provision_grant::Reader<'_>,
+) -> capnp::Result<ProvisionGrant> {
+    Ok(ProvisionGrant {
+        kind: r.get_kind()?.into(),
+        token: opt_text(r.get_token()?)?,
+        expires_at_unix_ms: opt_num(r.get_expires_at_unix_ms()),
+    })
+}
+
+/// Encode a [`ProvisionRequest`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_provision_request(
+    mut b: plugin_capnp::provision_request::Builder<'_>,
+    v: &ProvisionRequest,
+) -> capnp::Result<()> {
+    write_provision_grant(b.reborrow().init_grant(), &v.grant)?;
+    b.set_inputs_json(&v.inputs_json);
+    Ok(())
+}
+
+/// Decode a [`ProvisionRequest`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_provision_request(
+    r: plugin_capnp::provision_request::Reader<'_>,
+) -> capnp::Result<ProvisionRequest> {
+    Ok(ProvisionRequest {
+        grant: read_provision_grant(r.get_grant()?)?,
+        inputs_json: r.get_inputs_json()?.to_string()?,
+    })
+}
+
+/// Encode a [`ProvisionedSecret`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_provisioned_secret(
+    mut b: plugin_capnp::provisioned_secret::Builder<'_>,
+    v: &ProvisionedSecret,
+) -> capnp::Result<()> {
+    b.set_key(&v.key);
+    b.set_value(&v.value);
+    Ok(())
+}
+
+/// Decode a [`ProvisionedSecret`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_provisioned_secret(
+    r: plugin_capnp::provisioned_secret::Reader<'_>,
+) -> capnp::Result<ProvisionedSecret> {
+    Ok(ProvisionedSecret {
+        key: r.get_key()?.to_string()?,
+        value: r.get_value()?.to_string()?,
+    })
+}
+
+/// Encode a [`Provisioned`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_provisioned(
+    mut b: plugin_capnp::provisioned::Builder<'_>,
+    v: &Provisioned,
+) -> capnp::Result<()> {
+    b.set_settings_json(&v.settings_json);
+    {
+        let mut items = b.reborrow().init_secrets(list_len(v.secrets.len())?);
+        for (i, item) in v.secrets.iter().enumerate() {
+            write_provisioned_secret(items.reborrow().get(list_len(i)?), item)?;
+        }
+    }
+    {
+        let mut items = b.reborrow().init_summary(list_len(v.summary.len())?);
+        for (i, item) in v.summary.iter().enumerate() {
+            items.set(list_len(i)?, item);
+        }
+    }
+    Ok(())
+}
+
+/// Decode a [`Provisioned`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_provisioned(r: plugin_capnp::provisioned::Reader<'_>) -> capnp::Result<Provisioned> {
+    Ok(Provisioned {
+        settings_json: r.get_settings_json()?.to_string()?,
+        secrets: r
+            .get_secrets()?
+            .iter()
+            .map(|item| read_provisioned_secret(item))
+            .collect::<capnp::Result<Vec<_>>>()?,
+        summary: read_text_list(r.get_summary()?)?,
+    })
+}
+
+/// Encode a `ProvisionReply` union from a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a nested field cannot be encoded.
+pub fn write_provision_reply(
+    b: plugin_capnp::provision_reply::Builder<'_>,
+    v: &Result<Provisioned, crate::PluginError>,
+) -> capnp::Result<()> {
+    match v {
+        Ok(ok) => write_provisioned(b.init_ok(), ok),
+        Err(err) => {
+            crate::rpc::write_error(b.init_err(), err);
+            Ok(())
+        }
+    }
+}
+
+/// Decode a `ProvisionReply` union into a typed result.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when the union is unset or a field is malformed.
+pub fn read_provision_reply(
+    r: plugin_capnp::provision_reply::Reader<'_>,
+) -> capnp::Result<Result<Provisioned, crate::PluginError>> {
+    match r.which()? {
+        plugin_capnp::provision_reply::Ok(ok) => Ok(Ok(read_provisioned(ok?)?)),
+        plugin_capnp::provision_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+    }
+}
+
+/// Encode a [`DeprovisionRequest`] onto a Cap'n Proto builder.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
+pub fn write_deprovision_request(
+    mut b: plugin_capnp::deprovision_request::Builder<'_>,
+    v: &DeprovisionRequest,
+) -> capnp::Result<()> {
+    write_provision_grant(b.reborrow().init_grant(), &v.grant)?;
+    Ok(())
+}
+
+/// Decode a [`DeprovisionRequest`] from a Cap'n Proto reader.
+///
+/// # Errors
+///
+/// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
+pub fn read_deprovision_request(
+    r: plugin_capnp::deprovision_request::Reader<'_>,
+) -> capnp::Result<DeprovisionRequest> {
+    Ok(DeprovisionRequest {
+        grant: read_provision_grant(r.get_grant()?)?,
+    })
+}
+
 /// Number of root structs [`read_any_message`] can decode; selectors are
 /// `0..READ_ANY_COUNT` in schema order.
-pub const READ_ANY_COUNT: u8 = 173;
+pub const READ_ANY_COUNT: u8 = 179;
 
 /// Decodes `bytes` as an unpacked single-segment Cap'n Proto message whose
 /// root is the struct `selector` names, through that struct's `read_*`
@@ -11858,6 +12249,34 @@ pub fn read_any_message(selector: u8, bytes: &[u8]) -> capnp::Result<()> {
         172 => {
             let _ = read_webhook_delivered(
                 reader.get_root::<plugin_capnp::webhook_delivered::Reader<'_>>()?,
+            )?;
+        }
+        173 => {
+            let _ = read_provision_grant(
+                reader.get_root::<plugin_capnp::provision_grant::Reader<'_>>()?,
+            )?;
+        }
+        174 => {
+            let _ = read_provision_request(
+                reader.get_root::<plugin_capnp::provision_request::Reader<'_>>()?,
+            )?;
+        }
+        175 => {
+            let _ = read_provisioned_secret(
+                reader.get_root::<plugin_capnp::provisioned_secret::Reader<'_>>()?,
+            )?;
+        }
+        176 => {
+            let _ = read_provisioned(reader.get_root::<plugin_capnp::provisioned::Reader<'_>>()?)?;
+        }
+        177 => {
+            let _ = read_provision_reply(
+                reader.get_root::<plugin_capnp::provision_reply::Reader<'_>>()?,
+            )?;
+        }
+        178 => {
+            let _ = read_deprovision_request(
+                reader.get_root::<plugin_capnp::deprovision_request::Reader<'_>>()?,
             )?;
         }
         _ => {
@@ -19283,6 +19702,263 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                     // needs to reproduce the difference.
                     return Err(RoundTripFailure::Codec(
                         "round trip changed the decoded WebhookDelivered value".to_string(),
+                    ));
+                }
+            }
+        }
+        173 => {
+            let first = read_provision_grant(
+                reader.get_root::<plugin_capnp::provision_grant::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_provision_grant(
+                message.init_root::<plugin_capnp::provision_grant::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_provision_grant(again.get_root::<plugin_capnp::provision_grant::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_provision_grant(
+                    message.init_root::<plugin_capnp::provision_grant::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded ProvisionGrant value".to_string(),
+                    ));
+                }
+            }
+        }
+        174 => {
+            let first = read_provision_request(
+                reader.get_root::<plugin_capnp::provision_request::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_provision_request(
+                message.init_root::<plugin_capnp::provision_request::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_provision_request(
+                    again.get_root::<plugin_capnp::provision_request::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_provision_request(
+                    message.init_root::<plugin_capnp::provision_request::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded ProvisionRequest value".to_string(),
+                    ));
+                }
+            }
+        }
+        175 => {
+            let first = read_provisioned_secret(
+                reader.get_root::<plugin_capnp::provisioned_secret::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_provisioned_secret(
+                message.init_root::<plugin_capnp::provisioned_secret::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_provisioned_secret(
+                    again.get_root::<plugin_capnp::provisioned_secret::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_provisioned_secret(
+                    message.init_root::<plugin_capnp::provisioned_secret::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded ProvisionedSecret value".to_string(),
+                    ));
+                }
+            }
+        }
+        176 => {
+            let first =
+                read_provisioned(reader.get_root::<plugin_capnp::provisioned::Reader<'_>>()?)?;
+            let mut message = capnp::message::Builder::new_default();
+            write_provisioned(
+                message.init_root::<plugin_capnp::provisioned::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_provisioned(again.get_root::<plugin_capnp::provisioned::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_provisioned(
+                    message.init_root::<plugin_capnp::provisioned::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded Provisioned value".to_string(),
+                    ));
+                }
+            }
+        }
+        177 => {
+            let first = read_provision_reply(
+                reader.get_root::<plugin_capnp::provision_reply::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_provision_reply(
+                message.init_root::<plugin_capnp::provision_reply::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_provision_reply(again.get_root::<plugin_capnp::provision_reply::Reader<'_>>()?)
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_provision_reply(
+                    message.init_root::<plugin_capnp::provision_reply::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded ProvisionReply value".to_string(),
+                    ));
+                }
+            }
+        }
+        178 => {
+            let first = read_deprovision_request(
+                reader.get_root::<plugin_capnp::deprovision_request::Reader<'_>>()?,
+            )?;
+            let mut message = capnp::message::Builder::new_default();
+            write_deprovision_request(
+                message.init_root::<plugin_capnp::deprovision_request::Builder<'_>>(),
+                &first,
+            )
+            .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+            let encoded = capnp::serialize::write_message_to_words(&message);
+            let again = capnp::serialize::read_message(
+                &mut std::io::Cursor::new(&encoded),
+                capnp::message::ReaderOptions::new(),
+            )
+            .and_then(|again| {
+                read_deprovision_request(
+                    again.get_root::<plugin_capnp::deprovision_request::Reader<'_>>()?,
+                )
+            })
+            .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
+            if first != again {
+                // `NaN != NaN`: the values still round-trip when they print
+                // alike field by field AND re-encode to the same bytes. The
+                // byte check also covers fields whose `Debug` redacts (credential
+                // DTOs), which the rendering alone would hide.
+                let mut message = capnp::message::Builder::new_default();
+                write_deprovision_request(
+                    message.init_root::<plugin_capnp::deprovision_request::Builder<'_>>(),
+                    &again,
+                )
+                .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
+                if format!("{first:?}") != format!("{again:?}")
+                    || capnp::serialize::write_message_to_words(&message) != encoded
+                {
+                    // The values stay out of the message: a decoded DTO may carry
+                    // credential fields, and the failing input is what a harness
+                    // needs to reproduce the difference.
+                    return Err(RoundTripFailure::Codec(
+                        "round trip changed the decoded DeprovisionRequest value".to_string(),
                     ));
                 }
             }

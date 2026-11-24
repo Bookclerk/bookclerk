@@ -7,9 +7,10 @@ The design is in the [notifications ADR](../adr/notifications.md).
 
 > [!NOTE]
 > Routing, the delivery log, the inbox, the web app's bell with browser
-> and desktop notifications, the web API and the
-> [webhook notifier](#the-webhook-notifier) are built. The chat, paging
-> and push notifiers, and account mail (invites and password resets), come
+> and desktop notifications, the web API, the
+> [webhook notifier](#the-webhook-notifier) and the
+> [email notifier](#the-email-notifier) are built. The chat, paging and
+> push notifiers, and account mail (invites and password resets), come
 > later.
 
 ## How a notification travels
@@ -177,6 +178,57 @@ The receiver's answer decides what happens next:
 - A redirect: failed. The plugin never follows one, so a signed body only
   reaches the URL you set; set the receiver's final URL.
 - Any other status: failed for this message.
+
+## The email notifier
+
+The first-party `email` plugin sends each notification as an email
+through a mail server you already use (your provider's SMTP submission
+server, or your own). Each message has a plain text part and, when the
+notification has one, an HTML part.
+
+To set up a channel:
+
+1. Install the plugin. It asks for no hosts up front.
+2. Set the instance's `server` setting to the mail server, as
+   `host` or `host:port` (port 587 when you leave it out), and approve
+   the network grant that setting asks for.
+3. Pick `security`:
+   - `starttls` (the default): connect in the clear on 587 and upgrade
+     to TLS before anything else is sent. The plugin stops if the
+     server does not offer the upgrade.
+   - `tls`: TLS from the first byte, usually on port 465.
+   - `none`: no encryption, for a relay on a network you trust. The
+     plugin never signs in over it.
+4. Set `username` and the `password` secret if the server needs a
+   sign-in, `from_address` (the sender), and optionally `from_name`
+   (default `Bookclerk`).
+5. Set `to` to one address, or up to 10 separated by commas, for the
+   channel's messages.
+6. Add the instance as a channel and send it the `test` notification.
+
+Patrons can use the same plugin for their own address once an
+administrator offers it; a personal address holds one `email`.
+
+Until `server` is set, the plugin reports itself healthy with "no mail
+server set yet" and every send fails. Its health check reads the settings
+only and never connects to the server.
+
+The plugin checks the server's certificate against the usual public
+roots, signs in only after TLS (`AUTH PLAIN`, or `AUTH LOGIN` when that is
+all the server offers), and marks every message `Auto-Submitted:
+auto-generated` so mail clients do not answer it.
+
+What the server answers decides what happens next:
+
+- Accepted: delivered.
+- A `4xx` reply, a timeout after 30 seconds, or no connection: retried
+  on the job's backoff.
+- A refused recipient (`550`, `551` or `553`): that address does not
+  exist; the message fails for this destination.
+- A refused sign-in: the message fails; check `username` and `password`.
+- The network grant for `server` not approved yet: the message fails
+  until an administrator approves it.
+- Any other `5xx`: the message fails.
 
 ## Retries, pausing and the delivery log
 

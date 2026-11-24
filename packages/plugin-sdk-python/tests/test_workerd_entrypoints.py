@@ -22,6 +22,7 @@ from bookclerk_plugin_sdk.workerd import (
     MetadataFilesEntrypoint,
     NotifierEntrypoint,
     PluginError,
+    ProvisioningEntrypoint,
     ScheduledController,
     StorageEntrypoint,
     StorefrontEntrypoint,
@@ -30,6 +31,7 @@ from bookclerk_plugin_sdk.workerd import (
     event_batch_results,
     job_outcome_for,
     json_payload,
+    provisioned,
 )
 
 
@@ -451,6 +453,34 @@ class DatabaseAdapterSessionTests(unittest.IsolatedAsyncioTestCase):
         images = await Covers().bookclerkInvoke({}, "fetchCovers", {"urls": ["https://a/"]}, "sink")
         self.assertEqual(images, [{"url": "https://a/", "stored": False, "error": "'sink'"}])
 
+    async def test_provisioning_defaults_and_dispatch(self) -> None:
+        """ProvisioningEntrypoint refuses by default and dispatches overrides."""
+        setup = ProvisioningEntrypoint()
+        for method in (setup.provision, setup.deprovision):
+            with self.assertRaises(PluginError) as ctx:
+                await method({})
+            self.assertEqual(ctx.exception.code, "unsupported")
+
+        class Bucket(ProvisioningEntrypoint):
+            async def provision(self, request: dict) -> dict:
+                return provisioned(
+                    settings={"bucket": "books", "port": 443},
+                    secrets={"access_key_id": request["grant"]["token"]},
+                    summary=["Created bucket books"],
+                )
+
+        done = await Bucket().bookclerkInvoke(
+            {}, "provision", {"grant": {"kind": "apiToken", "token": "id-1"}, "inputsJson": "{}"}
+        )
+        self.assertEqual(
+            done,
+            {
+                "settingsJson": '{"bucket":"books","port":443}',
+                "secrets": [{"key": "access_key_id", "value": "id-1"}],
+                "summary": ["Created bucket books"],
+            },
+        )
+
     async def test_ingress_defaults_and_dispatch(self) -> None:
         """IngressEntrypoint refuses start, reports serving, stops, and dispatches overrides."""
         ingress = IngressEntrypoint()
@@ -594,7 +624,9 @@ class DatabaseAdapterSessionTests(unittest.IsolatedAsyncioTestCase):
                         seen.append(err.code)
                 return {}
 
-        await Tagger().bookclerkInvoke({"ai": stub}, "run", {"model": "tiny", "input": {}})
+        await Tagger().bookclerkInvoke(
+            {"ai": _Settled(stub)}, "run", {"model": "tiny", "input": {}}
+        )
         self.assertEqual(
             seen,
             [
@@ -636,6 +668,76 @@ class DatabaseAdapterSessionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(sent, {"providerId": "d1"})
 
+    async def test_events_binding_returns_the_abi_reply_unions(self) -> None:
+        """``env.EVENTS`` sends the ABI request dicts and maps settled replies onto the unions."""
+        from bookclerk_plugin_sdk.workerd import EventsBinding
+
+        class _EventsStub:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, list]] = []
+
+            async def settle(self, method: str, args: list) -> dict:
+                self.calls.append((method, args))
+                if method == "publish" and args[0]["eventType"] == "denied":
+                    return {
+                        "err": {
+                            "code": "forbidden",
+                            "message": "not granted",
+                            "details": '{"type":"denied"}',
+                        }
+                    }
+                if method == "publish":
+                    return {"ok": {"eventId": "evt-1", "duplicate": False}}
+                return {
+                    "ok": {
+                        "events": [{"eventId": "evt-0"}],
+                        "cursor": "v1.next",
+                        "more": True,
+                        "expiredEventIds": [],
+                        "truncated": False,
+                    }
+                }
+
+        stub = _EventsStub()
+        seen: list = []
+
+        class Chat(NotifierEntrypoint):
+            async def send(self, params: dict) -> None:
+                events = self.env.EVENTS
+                assert isinstance(events, EventsBinding)
+                seen.append(await events.publish({"eventType": "pinged", "payload": b"{}"}))
+                seen.append(await events.publish({"eventType": "denied", "payload": b""}))
+                seen.append(await events.read({"after": "v1.start", "types": ["pinged"]}))
+                return None
+
+        await Chat().bookclerkInvoke({"events": stub}, "send", {"message": {}, "destination": {}})
+        self.assertEqual(
+            seen,
+            [
+                {"ok": {"eventId": "evt-1", "duplicate": False}},
+                {
+                    "err": {
+                        "code": "forbidden",
+                        "message": "not granted",
+                        "details": '{"type":"denied"}',
+                    }
+                },
+                {
+                    "ok": {
+                        "events": [{"eventId": "evt-0"}],
+                        "cursor": "v1.next",
+                        "more": True,
+                        "expiredEventIds": [],
+                        "truncated": False,
+                    }
+                },
+            ],
+        )
+        self.assertEqual(
+            stub.calls[2],
+            ("read", [{"after": "v1.start", "types": ["pinged"], "limit": 0}]),
+        )
+
     async def test_notify_binding_wraps_the_granted_stub(self) -> None:
         """``env.NOTIFY`` forwards raises in wire shape and refuses a raise without a type."""
         from bookclerk_plugin_sdk.workerd import NotifyBinding
@@ -644,12 +746,12 @@ class DatabaseAdapterSessionTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self) -> None:
                 self.calls: list[dict] = []
 
-            async def _raise(self, params: dict) -> dict:
-                self.calls.append(params)
-                return {"notificationId": "ntf-1"}
+            async def settle(self, method: str, args: list) -> dict:
+                assert method == "raise"
+                self.calls.append(args[0])
+                return {"ok": {"notificationId": "ntf-1"}}
 
         stub = _NotifyStub()
-        setattr(stub, "raise", stub._raise)
         seen: list = []
 
         class Chat(NotifierEntrypoint):
@@ -739,6 +841,19 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class _Settled:
+    """Adapter-side settled transport over a plain binding stub, as the SDK serves it."""
+
+    def __init__(self, inner: object) -> None:
+        self.inner = inner
+
+    async def settle(self, method: str, args: list) -> dict:
+        try:
+            return {"ok": await getattr(self.inner, method)(*args)}
+        except PluginError as err:
+            return {"err": {"code": err.wire_code, "message": str(err), "details": ""}}
+
+
 def _queue_message(message_id: str, body: bytes = b'{"n":1}', **overrides) -> dict:
     return {
         "id": message_id,
@@ -818,7 +933,10 @@ class QueueDispatchTests(unittest.IsolatedAsyncioTestCase):
                         msg.ack()
 
         results = await Default().bookclerkQueue(
-            {"invocation": {"id": "inv-q"}, "queues": [{"name": "NOTIFY", "queue": stub}]},
+            {
+                "invocation": {"id": "inv-q"},
+                "queues": [{"name": "NOTIFY", "queue": _Settled(stub)}],
+            },
             {"queue": "jobs", "messages": [_queue_message("msg-1"), _queue_message("msg-2")]},
         )
         self.assertEqual(
@@ -879,7 +997,7 @@ class QueueDispatchTests(unittest.IsolatedAsyncioTestCase):
                     msg.ack()
 
         await Default().bookclerkQueue(
-            {"kv": [{"name": "KV", "kv": stub}]},
+            {"kv": [{"name": "KV", "kv": _Settled(stub)}]},
             {"queue": "jobs", "messages": [_queue_message("a")]},
         )
         self.assertEqual(

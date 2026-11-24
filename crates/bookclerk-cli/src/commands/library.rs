@@ -118,8 +118,9 @@ pub enum LibraryCommand {
         no_wait: bool,
     },
     /// Download + decrypt + store titles: queues one acquire job per title
-    /// id (or one for every pending title) for a bookclerkd node to run, and
-    /// waits for them. `--dry-run` only prints planned keys, here.
+    /// id and account it is in (or one for every pending title) for a
+    /// bookclerkd node to run, and waits for them. `--dry-run` only prints
+    /// planned keys, here.
     Acquire {
         /// Acquire a single ASIN / product id / UUID.
         #[arg(long)]
@@ -556,6 +557,7 @@ pub async fn run(command: LibraryCommand, config: &Config) -> anyhow::Result<()>
                     placement: None,
                     job_id: None,
                     temp_quota_bytes: None,
+                    cancel: None,
                     call_number: None,
                     parent_call_number: None,
                     // Only plans the storage key; nothing is fetched.

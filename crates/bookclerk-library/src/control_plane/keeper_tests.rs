@@ -324,3 +324,166 @@ async fn a_keeper_tracks_what_it_pushed_to_each_library() {
         assert_eq!(carried[0].secrets.len(), 2, "{name}");
     }
 }
+
+/// Waits long enough that the next write lands in a later millisecond.
+async fn later() {
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+}
+
+/// Writes `value` as the `auth` secret of `account_id`, as a refresh does.
+async fn refresh(store: &LibraryStore, account_id: &str, value: &[u8]) {
+    let record = build_sealed_record(
+        value,
+        secret_kind::SOURCE_AUTH,
+        KEEPER,
+        secret_account_type::INTEGRATION,
+        account_id,
+        "auth",
+    )
+    .unwrap();
+    upsert_secret(store.db(), &record).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_library_answers_a_stale_first_push_with_its_newer_sign_in() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    crate::configure_master_key(dir.path()).expect("master key");
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        let ana = store
+            .create_user(UserRole::Member, Some("Ana"), None)
+            .await
+            .unwrap();
+        connect(store, ana.id, "ana", b"v1").await;
+
+        // Not sent to the branch: nothing to reconcile.
+        assert!(keeper_reconcile(store, ana.id, "b1", &pushed("ana", b"x"))
+            .await
+            .unwrap()
+            .is_none());
+        later().await;
+        record_accounts_sent_to(store, &node_peer("b1"), &[pushed("ana", b"")])
+            .await
+            .unwrap();
+        // The library has not refreshed it since it sent it: the push applies.
+        assert!(
+            keeper_reconcile(store, ana.id, "b1", &pushed("ana", b"x"))
+                .await
+                .unwrap()
+                .is_none(),
+            "{name}"
+        );
+
+        // The library refreshes it before the branch's first push.
+        later().await;
+        refresh(store, "ana", b"v2").await;
+        let own = keeper_reconcile(store, ana.id, "b1", &pushed("ana", b"v1"))
+            .await
+            .unwrap()
+            .expect("the library's newer sign-in");
+        assert_eq!(own.account_id, "ana", "{name}");
+        assert_eq!(own.secrets[0].value.expose(), b"v2", "{name}");
+        // Pushed back unchanged, it matches and applies.
+        assert!(
+            keeper_reconcile(store, ana.id, "b1", &pushed("ana", b"v2"))
+                .await
+                .unwrap()
+                .is_none(),
+            "{name}"
+        );
+        // Another branch was never sent it.
+        assert!(keeper_reconcile(store, ana.id, "b2", &pushed("ana", b"v1"))
+            .await
+            .unwrap()
+            .is_none());
+
+        // Once a push from the branch applied, later pushes are never
+        // answered, even after another library-side write.
+        let outcome = apply_keeper_update(store, ana.id, "b1", &pushed("ana", b"v3"), 10)
+            .await
+            .unwrap();
+        assert_eq!(outcome, KeeperUpdate::Applied, "{name}");
+        later().await;
+        refresh(store, "ana", b"v4").await;
+        assert!(
+            keeper_reconcile(store, ana.id, "b1", &pushed("ana", b"v5"))
+                .await
+                .unwrap()
+                .is_none(),
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_branch_takes_the_library_sign_in_only_over_its_untouched_copy() {
+    let _lock = master_key_test_lock_async().await;
+    let dir = tempfile::tempdir().unwrap();
+    crate::configure_master_key(dir.path()).expect("master key");
+    for profile in Profile::ALL {
+        let kit = sqlite::memory(profile).await;
+        let store = kit.store();
+        let name = profile.name();
+        let owner = store
+            .create_user(UserRole::Owner, Some("Ana"), None)
+            .await
+            .unwrap();
+        // The account as it arrived from the library `lib`.
+        connect(store, owner.id, "ana", b"v1").await;
+        assert!(!still_as_received(store, KEEPER, "ana", "lib")
+            .await
+            .unwrap());
+        assert!(!adopt_library_sign_in(store, "lib", &pushed("ana", b"v2"))
+            .await
+            .unwrap());
+        later().await;
+        record_accounts_sent_to(store, &link_peer("lib"), &[pushed("ana", b"")])
+            .await
+            .unwrap();
+        assert!(
+            still_as_received(store, KEEPER, "ana", "lib")
+                .await
+                .unwrap(),
+            "{name}"
+        );
+
+        // Untouched since it arrived: the library's sign-in is taken.
+        assert!(
+            adopt_library_sign_in(store, "lib", &pushed("ana", b"v2"))
+                .await
+                .unwrap(),
+            "{name}"
+        );
+        assert_eq!(secret_of(store, "ana").await, b"v2", "{name}");
+
+        // Arrived again, then signed in here: this install's own sign-in
+        // is kept.
+        later().await;
+        record_accounts_sent_to(store, &link_peer("lib"), &[pushed("ana", b"")])
+            .await
+            .unwrap();
+        later().await;
+        refresh(store, "ana", b"mine").await;
+        assert!(
+            !still_as_received(store, KEEPER, "ana", "lib")
+                .await
+                .unwrap(),
+            "{name}"
+        );
+        assert!(
+            !adopt_library_sign_in(store, "lib", &pushed("ana", b"theirs"))
+                .await
+                .unwrap(),
+            "{name}"
+        );
+        assert_eq!(secret_of(store, "ana").await, b"mine", "{name}");
+
+        // A sign-in without secrets is refused.
+        let mut empty = pushed("ana", b"x");
+        empty.secrets.clear();
+        assert!(adopt_library_sign_in(store, "lib", &empty).await.is_err());
+    }
+}

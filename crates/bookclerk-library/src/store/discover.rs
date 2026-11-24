@@ -31,8 +31,8 @@ use super::{now_str, parse_dt, parse_dt_opt, LibraryStore};
 use crate::column_read::SelectColumnExt;
 use crate::control_plane::{batch, sea_probe, Bump, LiveTopic};
 use crate::entities::{
-    discover_candidates, discover_feeds, discover_fetches, discover_store_call_hits,
-    discover_store_calls, discover_tastes, portal_identities, users,
+    discover_candidates, discover_feed_parts, discover_feeds, discover_fetches,
+    discover_store_call_hits, discover_store_calls, discover_tastes, portal_identities, users,
 };
 use crate::error::{LibraryError, Result};
 use crate::models::{portal_prefs_key, user_prefs_key, OPERATOR_PREFS_KEY};
@@ -44,6 +44,10 @@ use crate::models::{portal_prefs_key, user_prefs_key, OPERATOR_PREFS_KEY};
 /// reads. Candidate rows are references (a few hundred bytes); the listing
 /// text is read from the pool in its own size-bounded chunks.
 pub(super) const DISCOVER_READ_PAGE: u64 = 200;
+
+/// Room a feed piece's row takes in a reply beside its body: its key
+/// columns and the reply's framing.
+const FEED_PART_ROW_OVERHEAD: usize = 512;
 
 /// Most hits read back for one cached storefront call; stores answer a few
 /// dozen titles per call.
@@ -530,6 +534,7 @@ impl LibraryStore {
             Bump::IfAny(sea_probe(&probe)?),
         )
         .await?;
+        self.drop_unnamed_feed_parts(&key).await?;
         discover_tastes::Entity::delete_many()
             .filter(discover_tastes::Column::SubjectKey.eq(key.clone()))
             .exec(&self.db)
@@ -764,11 +769,13 @@ impl LibraryStore {
         let rows = super::library_model::find_chunked_paged::<discover_store_call_hits::Entity, _>(
             self,
             &fresh,
+            &[
+                discover_store_call_hits::Column::CallKey,
+                discover_store_call_hits::Column::Position,
+            ],
             |part| {
                 discover_store_call_hits::Entity::find()
                     .filter(discover_store_call_hits::Column::CallKey.is_in(part.iter().cloned()))
-                    .order_by_asc(discover_store_call_hits::Column::CallKey)
-                    .order_by_asc(discover_store_call_hits::Column::Position)
             },
         )
         .await?;
@@ -873,7 +880,12 @@ impl LibraryStore {
     /// Stores (or replaces) one subject's ranked feed.
     ///
     /// One upsert writes the row without reading the old one first, so a
-    /// stored feed too large to read back cannot block its replacement.
+    /// stored feed too large to read back cannot block its replacement. A
+    /// feed wider than one piece the database plugin carries (the smallest
+    /// of its cell, statement and result limits) is cut into `discover_feed_parts` pieces under a new
+    /// version first, in as few batches as its limits allow; the row then
+    /// names that version, so it never names one whose pieces are not all
+    /// in. Pieces the row no longer names are dropped afterwards.
     ///
     /// # Arguments
     ///
@@ -892,13 +904,47 @@ impl LibraryStore {
         scope: SeedScope,
         candidates_fetched_at: Option<DateTime<Utc>>,
     ) -> Result<()> {
+        let key = subject.key();
+        let width = crate::control_plane::chunk_bytes(self.db_capabilities());
+        let (inline, version, parts) = if feed_json.len() <= width {
+            (feed_json.to_string(), None, None)
+        } else {
+            let version = uuid::Uuid::new_v4().simple().to_string();
+            let pieces = crate::control_plane::cut_text(feed_json, width);
+            let mut batches = WriteBatches::new(self.db_capabilities(), "discover feed piece");
+            let mut full = Vec::new();
+            let mut count = 0_i64;
+            for (seq, body) in (0_i64..).zip(pieces) {
+                count = seq + 1;
+                let insert = batch::exec(
+                    "INSERT INTO discover_feed_parts (subject_key, version, seq, body) \
+                     VALUES (?, ?, ?, ?)",
+                    vec![
+                        batch::text(&key),
+                        batch::text(&version),
+                        batch::int(seq),
+                        batch::text(body),
+                    ],
+                );
+                full.extend(batches.push(insert)?);
+            }
+            full.extend(batches.finish());
+            for statements in full {
+                let operation_id = format!("discover-feed-parts-{}", uuid::Uuid::new_v4());
+                self.execute_host_batch(batch::request(&operation_id, statements))
+                    .await?;
+            }
+            (String::new(), Some(version), Some(count))
+        };
         let row = discover_feeds::ActiveModel {
             id: NotSet,
-            subject_key: Set(subject.key()),
-            feed_json: Set(feed_json.to_string()),
+            subject_key: Set(key.clone()),
+            feed_json: Set(inline),
             seed_scope: Set(scope.as_str().to_string()),
             candidates_fetched_at: Set(candidates_fetched_at.map(|t| t.to_rfc3339())),
             computed_at: Set(now_str()),
+            feed_version: Set(version),
+            feed_parts: Set(parts),
         };
         let upsert = discover_feeds::Entity::insert(row).on_conflict(
             OnConflict::column(discover_feeds::Column::SubjectKey)
@@ -907,33 +953,113 @@ impl LibraryStore {
                     discover_feeds::Column::SeedScope,
                     discover_feeds::Column::CandidatesFetchedAt,
                     discover_feeds::Column::ComputedAt,
+                    discover_feeds::Column::FeedVersion,
+                    discover_feeds::Column::FeedParts,
                 ])
                 .to_owned(),
         );
         self.exec_bumped(upsert, LiveTopic::Discover, Bump::Always)
             .await?;
+        self.drop_unnamed_feed_parts(&key).await
+    }
+
+    /// Drops `subject_key`'s feed pieces its `discover_feeds` row does not
+    /// name: an earlier write's, or every piece when the feed is stored
+    /// whole or gone.
+    ///
+    /// A ranking writing the same subject's feed at the same moment can
+    /// lose pieces its row is about to name; reading that feed then finds
+    /// pieces missing and answers no feed until the next ranking stores
+    /// one.
+    ///
+    /// # Errors
+    ///
+    /// Returns the database error.
+    pub(crate) async fn drop_unnamed_feed_parts(&self, subject_key: &str) -> Result<()> {
+        let operation_id = format!("discover-feed-parts-drop-{}", uuid::Uuid::new_v4());
+        self.execute_host_batch(batch::request(
+            &operation_id,
+            vec![batch::exec(
+                "DELETE FROM discover_feed_parts WHERE subject_key = ? AND version NOT IN \
+                 (SELECT feed_version FROM discover_feeds WHERE subject_key = ? \
+                 AND feed_version IS NOT NULL)",
+                vec![batch::text(subject_key), batch::text(subject_key)],
+            )],
+        ))
+        .await?;
         Ok(())
     }
 
     /// Returns one subject's stored feed, when it has one.
     ///
+    /// A feed stored in pieces is read in keyset pages sized to the
+    /// database plugin's result limits and joined again; one whose pieces
+    /// are not all there (a concurrent write dropped them) reads as
+    /// no feed.
+    ///
     /// # Errors
     ///
     /// Returns the database error.
     pub async fn get_discover_feed(&self, subject: &DiscoverSubject) -> Result<Option<StoredFeed>> {
-        let row = discover_feeds::Entity::find()
-            .filter(discover_feeds::Column::SubjectKey.eq(subject.key()))
+        let key = subject.key();
+        let Some(row) = discover_feeds::Entity::find()
+            .filter(discover_feeds::Column::SubjectKey.eq(key.clone()))
             .one(&self.db)
             .await
-            .map_err(LibraryError::Orm)?;
-        Ok(row.and_then(|m| {
-            Some(StoredFeed {
-                seed_scope: SeedScope::parse(&m.seed_scope)?,
-                candidates_fetched_at: parse_dt_opt(m.candidates_fetched_at.as_deref()),
-                computed_at: parse_dt(&m.computed_at),
-                feed_json: m.feed_json,
-            })
-        }))
+            .map_err(LibraryError::Orm)?
+        else {
+            return Ok(None);
+        };
+        let feed_json = match (&row.feed_version, row.feed_parts) {
+            (Some(version), Some(parts)) => {
+                match self.read_feed_parts(&key, version, parts).await? {
+                    Some(joined) => joined,
+                    None => return Ok(None),
+                }
+            }
+            _ => row.feed_json,
+        };
+        Ok(
+            SeedScope::parse(&row.seed_scope).map(|seed_scope| StoredFeed {
+                seed_scope,
+                candidates_fetched_at: parse_dt_opt(row.candidates_fetched_at.as_deref()),
+                computed_at: parse_dt(&row.computed_at),
+                feed_json,
+            }),
+        )
+    }
+
+    /// The feed text `version`'s `parts` pieces join into, or `None` when
+    /// they are not a gapless run from 0.
+    ///
+    /// # Errors
+    ///
+    /// Returns the database error.
+    async fn read_feed_parts(
+        &self,
+        subject_key: &str,
+        version: &str,
+        parts: i64,
+    ) -> Result<Option<String>> {
+        let caps = self.db_capabilities();
+        let width = crate::control_plane::chunk_bytes(caps).saturating_add(FEED_PART_ROW_OVERHEAD);
+        let by_bytes = match caps.max_result_bytes {
+            0 => u64::MAX,
+            bytes => u64::from(bytes) / u64::try_from(width).unwrap_or(u64::MAX),
+        };
+        let mut page = super::keyset::result_page(self).min(by_bytes).max(1);
+        let pieces = super::keyset::read_keyset_pages(
+            self,
+            discover_feed_parts::Entity::find()
+                .filter(discover_feed_parts::Column::SubjectKey.eq(subject_key))
+                .filter(discover_feed_parts::Column::Version.eq(version)),
+            &[discover_feed_parts::Column::Seq],
+            &mut page,
+        )
+        .await?;
+        let gapless = i64::try_from(pieces.len()).ok() == Some(parts)
+            && (0_i64..).zip(&pieces).all(|(seq, piece)| piece.seq == seq);
+        Ok(gapless.then(|| pieces.into_iter().map(|piece| piece.body).collect()))
     }
 
     /// Lists every subject that has a stored feed, so a shared change (the
@@ -989,6 +1115,7 @@ struct FeedSubjectRow {
 mod tests {
     use super::*;
     use bookclerk_plugin_abi::DbCapabilities;
+    use sea_orm::PaginatorTrait as _;
 
     #[test]
     fn subject_keys_round_trip() {
@@ -1348,6 +1475,125 @@ mod tests {
             .unwrap();
         let feed = store.get_discover_feed(&alice).await.unwrap().unwrap();
         assert_eq!(feed.feed_json, "{}");
+    }
+
+    /// A feed wider than one piece the database plugin carries is stored
+    /// in pieces and reads back whole under every database profile; a
+    /// smaller feed written after it drops the pieces, and forgetting the
+    /// subject drops them too.
+    /// With no result limits from the plugin, pieces are read in pages of
+    /// the most rows a keyset page takes.
+    #[tokio::test]
+    async fn a_feed_in_pieces_reads_back_when_the_plugin_sets_no_result_limits() {
+        use crate::test_support::{sqlite, Profile};
+        let caps = bookclerk_plugin_abi::DbCapabilities {
+            max_result_rows: 0,
+            max_result_bytes: 0,
+            ..bookclerk_plugin_abi::DbCapabilities::advertised_sqlite()
+        };
+        let store = sqlite::memory(Profile::FirstParty)
+            .await
+            .into_store()
+            .with_db_capabilities(caps);
+        assert_eq!(super::super::keyset::result_page(&store), 256);
+        let alice = DiscoverSubject::User(1);
+        let wide = "w".repeat(3 * crate::control_plane::chunk_bytes(store.db_capabilities()));
+        store
+            .put_discover_feed(&alice, &wide, SeedScope::Own, None)
+            .await
+            .unwrap();
+        let feed = store.get_discover_feed(&alice).await.unwrap().unwrap();
+        assert_eq!(feed.feed_json, wide);
+    }
+
+    #[tokio::test]
+    async fn a_feed_wider_than_a_piece_is_stored_in_pieces_under_every_profile() {
+        use crate::test_support::{sqlite, Profile};
+        for profile in Profile::ALL {
+            let name = profile.name();
+            let store = sqlite::memory(profile).await.into_store();
+            let alice = DiscoverSubject::User(1);
+            // Multi-byte text, so a piece boundary can fall inside a character.
+            let wide = "é\"".repeat(100_000);
+            store
+                .put_discover_feed(&alice, &wide, SeedScope::Household, None)
+                .await
+                .unwrap();
+            let feed = store.get_discover_feed(&alice).await.unwrap().unwrap();
+            assert_eq!(feed.feed_json, wide, "{name}");
+            assert_eq!(feed.seed_scope, SeedScope::Household, "{name}");
+            let pieces = discover_feed_parts::Entity::find()
+                .count(store.db())
+                .await
+                .unwrap();
+            assert!(pieces > 1, "{name}: stored in pieces");
+
+            // A newer wide feed replaces the pieces, leaving only its own.
+            let newer = "n".repeat(300_000);
+            store
+                .put_discover_feed(&alice, &newer, SeedScope::Own, None)
+                .await
+                .unwrap();
+            let feed = store.get_discover_feed(&alice).await.unwrap().unwrap();
+            assert_eq!(feed.feed_json, newer, "{name}");
+            let versions: std::collections::BTreeSet<String> = discover_feed_parts::Entity::find()
+                .all(store.db())
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|piece| piece.version)
+                .collect();
+            assert_eq!(versions.len(), 1, "{name}: the older pieces are dropped");
+
+            store
+                .put_discover_feed(&alice, "{}", SeedScope::Own, None)
+                .await
+                .unwrap();
+            let feed = store.get_discover_feed(&alice).await.unwrap().unwrap();
+            assert_eq!(feed.feed_json, "{}", "{name}");
+            assert_eq!(
+                discover_feed_parts::Entity::find()
+                    .count(store.db())
+                    .await
+                    .unwrap(),
+                0,
+                "{name}: a feed stored whole leaves no pieces"
+            );
+
+            store
+                .put_discover_feed(&alice, &wide, SeedScope::Own, None)
+                .await
+                .unwrap();
+            store.forget_discover_subject(&alice).await.unwrap();
+            assert!(store.get_discover_feed(&alice).await.unwrap().is_none());
+            assert_eq!(
+                discover_feed_parts::Entity::find()
+                    .count(store.db())
+                    .await
+                    .unwrap(),
+                0,
+                "{name}: forgetting the subject drops its pieces"
+            );
+        }
+    }
+
+    /// A feed whose pieces are not all there reads as no feed rather than
+    /// as a truncated one.
+    #[tokio::test]
+    async fn a_feed_missing_a_piece_reads_as_no_feed() {
+        use crate::test_support::{sqlite, Profile};
+        let store = sqlite::memory(Profile::Minimum).await.into_store();
+        let alice = DiscoverSubject::User(1);
+        store
+            .put_discover_feed(&alice, &"x".repeat(20_000), SeedScope::Own, None)
+            .await
+            .unwrap();
+        discover_feed_parts::Entity::delete_many()
+            .filter(discover_feed_parts::Column::Seq.eq(1))
+            .exec(store.db())
+            .await
+            .unwrap();
+        assert!(store.get_discover_feed(&alice).await.unwrap().is_none());
     }
 
     #[tokio::test]

@@ -1,0 +1,144 @@
+api_version = 3
+id = "metadata_files"
+name = "Metadata files"
+version = "0.1.0"
+runtime = "workerd"
+entrypoints = ["metadataFiles"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[workerd.limits]
+cpu_ms = 2000
+subrequests = 0
+
+[[modules]]
+name = "index.js"
+path = "index.js"
+type = "js"
+
+[[modules]]
+name = "dialects.js"
+path = "dialects.js"
+type = "js"
+
+[[modules]]
+name = "text.js"
+path = "text.js"
+type = "js"
+
+[[modules]]
+name = "html.js"
+path = "html.js"
+type = "js"
+
+[[modules]]
+name = "libation.js"
+path = "libation.js"
+type = "js"
+
+[[modules]]
+name = "xml.js"
+path = "xml.js"
+type = "js"
+
+[[modules]]
+name = "opf.js"
+path = "opf.js"
+type = "js"
+
+[[modules]]
+name = "album-nfo.js"
+path = "album-nfo.js"
+type = "js"
+
+[[modules]]
+name = "cue.js"
+path = "cue.js"
+type = "js"
+
+[vars]
+
+[[metadata_files.dialects]]
+id = "libation_json"
+name = "Libation catalog record"
+suffixes = [".metadata.json"]
+fields = [
+    "title",
+    "subtitle",
+    "description",
+    "publisher",
+    "publishedAt",
+    "language",
+    "genres",
+    "abridgement",
+    "identifiers",
+    "credits",
+    "series",
+    "chapters",
+    "duration",
+]
+credit_roles = [
+    "author",
+    "narrator",
+]
+writes = false
+
+[[metadata_files.dialects]]
+id = "opf"
+name = "OPF package document"
+suffixes = [".opf"]
+fields = [
+    "title",
+    "description",
+    "publisher",
+    "publishedAt",
+    "language",
+    "genres",
+    "identifiers",
+    "credits",
+    "series",
+]
+credit_roles = [
+    "author",
+    "narrator",
+    "translator",
+    "editor",
+    "illustrator",
+]
+writes = true
+
+[[metadata_files.dialects]]
+id = "kodi_album_nfo"
+name = "Kodi album.nfo"
+file_names = ["album.nfo"]
+fields = [
+    "title",
+    "description",
+    "publisher",
+    "publishedAt",
+    "genres",
+    "credits",
+]
+credit_roles = ["author"]
+writes = true
+
+[[metadata_files.dialects]]
+id = "cue"
+name = "CUE sheet"
+suffixes = [".cue"]
+fields = [
+    "title",
+    "publishedAt",
+    "genres",
+    "credits",
+    "chapters",
+]
+credit_roles = ["author"]
+writes = true
+
+[capabilities.network]
+mode = "deny"

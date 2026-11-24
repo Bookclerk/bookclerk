@@ -302,7 +302,9 @@ capability. Under workerd:
 
 1. The trusted adapter isolate mints a per-`open`, events-only grant token
    on the launcher's `GRANTED` channel.
-2. It hands the author a `GrantedEvents` `RpcTarget`.
+2. It hands the author a settled transport for `EVENTS`, which reports a
+   failure as a value so its code survives the hop to the author (see
+   [Binding errors between the isolates](../internals/workerd-bridge.md#binding-errors-between-the-isolates)).
 3. `publish()` POSTs the event to `/events/publish`. The launcher checks
    the grant again (unknown, expired or database-only grants are
    `forbidden`) and enforces the payload cap, before forwarding to the host
@@ -509,7 +511,7 @@ The rules mirror `event(batch)`:
 - **Transports.** Native guests receive producers on `Bindings.queues` as
   Cap'n Proto capabilities, and the batch on `QueueConsumer.queue`. Under
   workerd, the adapter isolate mints one queue-only grant token per
-  binding and hands the author a `GrantedQueue` `RpcTarget`. `send` and
+  binding and hands the author a settled transport for it. `send` and
   `sendBatch` POST to `/queues/send` on the launcher's `GRANTED` channel,
   where the grant and the caps are checked again before the host producer
   writes the outbox.
@@ -638,7 +640,15 @@ are UTF-8 JSON, so any SDK reads what another stored. See the
   endpoints do) can be reached by sending up to 4 trust anchors, DER
   root certificates of at most 8 KiB each: the server's chain must then
   end in one of them, and Mozilla's roots don't count for that socket.
-  Only a `tls://` socket takes trust anchors. Closing a stream sends TLS
+  Only a `tls://` socket takes trust anchors. An endpoint dialed at one
+  name that answers for another (a Cloudflare Tunnel edge is dialed at
+  `region1.v2.argotunnel.com` and serves `h2.cftunnel.com`) takes a
+  `serverName`: the DNS name sent as SNI and checked against the
+  server's certificate instead of the URL's host. It must be on a `tcp`
+  grant for the URL's port as well, so naming another service can't
+  route past the grant, and it may not be an IP address or hold an
+  `xn--` label (at most 253 bytes). Only a `tls://` socket takes a
+  server name. Closing a stream sends TLS
   `close_notify` and waits up to 5 seconds for the server to end its
   side; the close reports the plugin's code.
 - **Handler.** A plugin that declares `[sockets]` may return a
@@ -1928,6 +1938,51 @@ every minute, and `stop` before it retires or replaces the instance.
 Every `ORIGIN` request is the `tunnel` transport: the operator's own
 paths and credentials are refused, and the operator's exposure choice
 decides the rest (see [Public address](../server/ingress.md)).
+
+### Guided setup (`provisioning`)
+
+A plugin that declares [`[provisioning]`](manifest.md#provisioning-guided-setup)
+exports `provisioning` with two methods:
+
+- `provision(request) -> ProvisionReply`: `request.grant` holds the
+  operator's token (`kind = apiToken`), used for this run only, and
+  `request.inputsJson` the operator's choices. The reply is the settings
+  to store (`settingsJson`, a JSON object), credentials (`secrets`, key
+  and value pairs) and a few summary lines for the screen.
+- `deprovision(request)`: removes what `provision` created. Without a
+  grant the plugin uses its stored credentials; when they cannot do it,
+  it refuses with `unauthorized` and the operator retries with a token.
+  The default answers `unsupported`.
+
+The host opens a short-lived guest for each run with
+`Invocation.purpose = provision`. `CONFIG` holds the stored settings with
+the inputs laid over them and `SECRETS` the stored secrets, so a second
+run sees the first run's results and can rotate rather than duplicate.
+Required settings may still be missing, and the host calls only
+`provisioning`, so `open` should return that entrypoint alone for this
+purpose. The run gets the instance's normal network grant; there is no
+egress only for provisioning.
+
+The host checks the reply before it stores anything, against the
+manifest's `outputs`:
+
+- settings are declared non-secret keys with string (single line, within
+  the setting cap), number or boolean values, at most 16 KiB of JSON;
+- credentials are declared secret keys, each once, non-empty, single
+  line, trimmed and at most 1,024 bytes, at most 16 of them;
+- the summary is at most 8 lines of 200 bytes;
+- no credential, and not the grant token, appears in a setting or the
+  summary.
+
+The token is dropped unless the plugin returns it as a credential. The
+host seals the credentials, then writes the inputs and settings as one
+revision, which restarts a running instance with them. The reply is read
+by `bookclerk-plugin-abi::provision`, a fuzzed boundary.
+
+In TypeScript, extend `ProvisioningEntrypoint` and return `provisioned({
+settings, secrets, summary })`; in Python, `ProvisioningEntrypoint` and
+`provisioned(...)`; in Rust, implement `Provisioning` and return it from
+`open` when `invocation.purpose` is `InvocationPurpose::Provision`.
 
 ### Model plugins
 

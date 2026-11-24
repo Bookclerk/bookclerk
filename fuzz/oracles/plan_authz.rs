@@ -13,8 +13,9 @@
 //! The invariant, checked against this file's own model of the library and
 //! not the planner's queries: every job planned for the Member names an
 //! account, and every store account that job's needle reaches at run time
-//! (its id or label, ignoring ASCII case, within the pinned instance's
-//! plugin when it is pinned) is linked to the Member. A refusal is
+//! (its id or label, ignoring ASCII case, or only the exact id when the job
+//! says so, within the pinned instance's plugin when it is pinned) is linked
+//! to the Member. A refusal is
 //! `Forbidden` or `Invalid`, never a database error.
 
 use std::collections::BTreeMap;
@@ -23,6 +24,7 @@ use bookclerk_library::control_plane::{
     create_plugin_instance, plan_acquire, plan_scan, ConfigActor, ScanRequester,
 };
 use bookclerk_library::{LibraryError, LibraryStore, NewBook, UserRole};
+use bookclerk_storefront::AccountMatch;
 
 /// Largest input worth decoding; the scenario reads a few dozen bytes.
 pub const MAX_INPUT_BYTES: usize = 256;
@@ -353,8 +355,12 @@ async fn run(s: &Scenario) -> usize {
             .iter()
             .filter(|a| plugin.is_none_or(|p| p == a.plugin))
             .filter(|a| {
-                a.id.eq_ignore_ascii_case(needle)
-                    || a.label.is_some_and(|l| l.eq_ignore_ascii_case(needle))
+                if job.account_match == AccountMatch::ExactId {
+                    a.id == needle
+                } else {
+                    a.id.eq_ignore_ascii_case(needle)
+                        || a.label.is_some_and(|l| l.eq_ignore_ascii_case(needle))
+                }
             })
             .collect();
         assert!(

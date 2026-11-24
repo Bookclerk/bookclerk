@@ -128,6 +128,23 @@ impl Embedder for ModelEmbedder {
     }
 
     async fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>, DiscoverError> {
+        self.run(texts, AiTextRole::Document, AI_RUN_TIMEOUT).await
+    }
+}
+
+impl ModelEmbedder {
+    /// Runs the model on `texts`, each marked as `role`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the model cannot be reached, misses `deadline`, or now
+    /// answers with another revision than this embedder's space.
+    async fn run(
+        &self,
+        texts: &[String],
+        role: AiTextRole,
+        deadline: Duration,
+    ) -> Result<Vec<Vec<f32>>, DiscoverError> {
         let params = AiRunParams {
             model: self.name.clone(),
             input: AiInput {
@@ -136,7 +153,7 @@ impl Embedder for ModelEmbedder {
                         .iter()
                         .map(|text| AiEmbedText {
                             text: model_text(text),
-                            role: AiTextRole::Document,
+                            role,
                         })
                         .collect(),
                 },
@@ -144,7 +161,7 @@ impl Embedder for ModelEmbedder {
         };
         let reply = self
             .router
-            .run(None, params, AI_RUN_TIMEOUT)
+            .run(None, params, deadline)
             .await
             .map_err(|err| DiscoverError::Embed(format!("`{}`: {err}", self.name)))?;
         let output = reply.output.text_embeddings;
@@ -158,6 +175,31 @@ impl Embedder for ModelEmbedder {
             )));
         }
         Ok(embedding_vectors(&output))
+    }
+
+    /// The space of this model's vectors.
+    pub(crate) fn vector_space(&self) -> &VectorSpace {
+        &self.space
+    }
+
+    /// The vector of a search query: `text` embedded as a query, which
+    /// the model places near the documents that answer it.
+    ///
+    /// # Errors
+    ///
+    /// Fails as [`Self::run`] does, or when the model answers without a
+    /// vector.
+    pub(crate) async fn embed_query(
+        &self,
+        text: &str,
+        deadline: Duration,
+    ) -> Result<Vec<f32>, DiscoverError> {
+        self.run(&[text.to_string()], AiTextRole::Query, deadline)
+            .await?
+            .into_iter()
+            .next()
+            .filter(|vector| !vector.is_empty())
+            .ok_or_else(|| DiscoverError::Embed(format!("`{}` returned no vector", self.name)))
     }
 }
 
@@ -358,6 +400,8 @@ pub(crate) async fn run_discover_embed(
         }
     }
     let serving = bookclerk_discover::serving_space(&library, &space).await?;
+    // Searches on this node read the new vectors at once.
+    state.work_vectors.changed().await;
     let pruned = bookclerk_discover::prune_vectors(&library, &serving)
         .await
         .unwrap_or_else(|err| {
@@ -414,15 +458,20 @@ async fn rerank_every_feed(state: &AppState, library: &LibraryStore) -> usize {
     queued
 }
 
-/// Starts the task that queues a `discover_embed` job when the models
-/// served on this node change: a model was installed, which is when the
-/// library can first be embedded with it.
+/// Starts the task that queues a `discover_embed` job at start and when
+/// the models served on this node change: a model was installed, which is
+/// when the library can first be embedded with it. A job that finds every
+/// work embedded writes nothing.
 ///
 /// # Arguments
 ///
 /// * `state` - The daemon.
 pub(crate) fn spawn_model_watcher(state: Arc<AppState>) {
     let mut changes = state.deployment_runtime().ai.changes();
+    // Look once at start as well: a model that was already on disk may
+    // have been listed before this task subscribed, and nothing would
+    // report it again.
+    changes.mark_changed();
     tokio::spawn(async move {
         while changes.changed().await.is_ok() {
             let router = Arc::clone(&state.deployment_runtime().ai);
@@ -437,7 +486,7 @@ pub(crate) fn spawn_model_watcher(state: Arc<AppState>) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::atomic::AtomicUsize;
 
     use bookclerk_integrations::{Integration, IntegrationContext, IntegrationHealth};
@@ -452,7 +501,7 @@ mod tests {
 
     /// A model plugin serving one three-number text embedding model, whose
     /// revision the test can change.
-    struct FakeModel {
+    pub(crate) struct FakeModel {
         /// The revision it lists and answers with.
         revision: std::sync::Mutex<String>,
         /// Texts embedded so far.
@@ -463,12 +512,17 @@ mod tests {
 
     impl FakeModel {
         /// A model at revision `r1`.
-        fn new() -> Arc<Self> {
+        pub(crate) fn new() -> Arc<Self> {
             Arc::new(Self {
                 revision: std::sync::Mutex::new("r1".into()),
                 texts: AtomicUsize::new(0),
                 answers_as: std::sync::Mutex::new(None),
             })
+        }
+
+        /// Texts it has embedded so far.
+        pub(crate) fn texts_embedded(&self) -> usize {
+            self.texts.load(Ordering::SeqCst)
         }
 
         /// The revision it lists.
@@ -557,7 +611,7 @@ mod tests {
     }
 
     /// A daemon over a library of `titles`, with `model` deployed when given.
-    async fn daemon(
+    pub(crate) async fn daemon(
         files: &tempfile::TempDir,
         titles: &[&str],
         model: Option<&Arc<FakeModel>>,
@@ -585,7 +639,7 @@ mod tests {
     }
 
     /// The payload of a `discover_embed` job for this node.
-    async fn payload(state: &AppState) -> JobPayload {
+    pub(crate) async fn payload(state: &AppState) -> JobPayload {
         JobPayload {
             node_id: Some(this_node(state).await.unwrap()),
             ..JobPayload::default()
@@ -776,8 +830,25 @@ mod tests {
         let (state, library) = daemon(&files, &["Dune"], Some(&model)).await;
         spawn_model_watcher(Arc::clone(&state));
         state.deployment_runtime().ai.forget_listings().await;
+        wait_for_embed_job(&library).await;
+    }
+
+    #[tokio::test]
+    async fn a_model_already_there_at_start_queues_the_embedding() {
+        let files = tempfile::tempdir().unwrap();
+        let model = FakeModel::new();
+        let (state, library) = daemon(&files, &["Dune"], Some(&model)).await;
+        // Listed, and its change reported, before anything watches.
+        state.deployment_runtime().ai.forget_listings().await;
+        spawn_model_watcher(Arc::clone(&state));
+        wait_for_embed_job(&library).await;
+    }
+
+    /// Waits until one `discover_embed` job is pending; panics when none
+    /// comes.
+    async fn wait_for_embed_job(library: &LibraryStore) {
         for _ in 0..200 {
-            if pending(&library, JobKind::DiscoverEmbed).await == 1 {
+            if pending(library, JobKind::DiscoverEmbed).await == 1 {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(25)).await;

@@ -42,9 +42,10 @@ use std::time::Duration;
 use bookclerk_library::control_plane::{
     claim_remote_job, finish_remote_job, record_node_heartbeat, record_remote_observation,
     release_remote_job, remote_deployments_for_node, remote_instance_for_node, renew_remote_job,
-    resolve_instance_bindings, write_back_job_secret, DeploymentStatus, JobClaimFilter,
-    JobSecretRef, NodeHeartbeat, NodeTrust, PluginVersion, RemoteClaimSettings, RemoteFinish,
-    RemoteJobClaim, RemoteObservation, RemoteOutcome, RemoteRenew, WriteBack, SECRETS_UNAVAILABLE,
+    resolve_instance_bindings, write_back_job_secret, BudgetShare, DeploymentStatus,
+    JobClaimFilter, JobSecretRef, NodeHeartbeat, NodeTrust, PluginVersion, RemoteClaimSettings,
+    RemoteFinish, RemoteJobClaim, RemoteObservation, RemoteOutcome, RemoteRenew, WriteBack,
+    SECRETS_UNAVAILABLE,
 };
 use bookclerk_library::{JobResourceClass, LibraryStore};
 use bookclerk_node_proto::{
@@ -144,6 +145,8 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
             memory_available_bytes,
             files_dir_free_bytes,
             public_origin,
+            budget_cpu_millicores,
+            budget_memory_bytes,
         } => {
             let heartbeat = NodeHeartbeat {
                 incarnation: host.incarnation.clone(),
@@ -165,6 +168,12 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
                     .as_deref()
                     .and_then(BranchOrigin::parse)
                     .map(BranchOrigin::into_string),
+                // The branch's own budget for this library; memory alone,
+                // with no CPU named, bounds nothing.
+                budget_share: budget_cpu_millicores.map(|cpu| BudgetShare {
+                    cpu_millicores: cpu.max(0),
+                    memory_bytes: budget_memory_bytes.map(|v| v.max(0)),
+                }),
             };
             record_node_heartbeat(library, &host.node_id, &heartbeat)
                 .await
@@ -561,6 +570,7 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
             fence,
             store,
             product_id,
+            marketplace,
             files,
         } => {
             super::host_catalog::upload(
@@ -568,7 +578,11 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
                 host,
                 id.clone(),
                 fence,
-                (store, product_id),
+                &bookclerk_node_proto::CatalogRef {
+                    store,
+                    product_id,
+                    marketplace,
+                },
                 files,
             )
             .await
@@ -582,8 +596,13 @@ pub(crate) async fn answer(library: &LibraryStore, host: &HostContext, frame: Fr
         } => {
             super::host_accounts::remove(library, host, id.clone(), &plugin_key, &account_id).await
         }
-        Body::AccountsUpdate { sealed, revision } => {
-            super::host_accounts::update(library, host, id.clone(), &sealed, revision).await
+        Body::AccountsUpdate {
+            sealed,
+            revision,
+            keeps_own,
+        } => {
+            super::host_accounts::update(library, host, id.clone(), &sealed, revision, keeps_own)
+                .await
         }
         Body::CatalogQuestions {} => super::host_lookup::questions(library, host, id.clone()).await,
         Body::CatalogFound { answers, missing } => {

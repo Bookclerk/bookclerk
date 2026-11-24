@@ -150,6 +150,9 @@ import type {
   OriginRequest,
   IngressHealth,
   IngressStarted,
+  DeprovisionRequest,
+  ProvisionRequest,
+  Provisioned,
   PlainFetch,
   PluginCapabilities as WirePluginCapabilities,
   PluginDescribe as WirePluginDescribe,
@@ -847,11 +850,11 @@ export interface GrantedContext {
   /** `WORK_FS` object store, when granted. */
   storage?: Destination;
   /** `EVENTS` publisher, when `[[events.producers]]` is granted. */
-  events?: EventPublisherBinding;
+  events?: SettledTransport;
   /** `NOTIFY` binding, when `[[notifications.types]]` is declared. */
-  notify?: NotifyBinding;
+  notify?: SettledTransport;
   /** `AI` binding, when `[ai].calls` is declared and granted. */
-  ai?: AiBinding;
+  ai?: SettledTransport;
   /** Named `[[databases]]` bindings. */
   databases?: NamedDatabase[];
   /** `[[queues.producers]]` bindings, when granted. */
@@ -871,6 +874,99 @@ export interface GrantedContext {
   network?: NetworkGrant;
 }
 
+/**
+ * Outcome of one granted binding call as it crosses the adapter → author
+ * Workers RPC hop: the method's value, or the failure's wire code, message
+ * and `details` JSON text.
+ *
+ * Workers RPC keeps an error's own properties (such as `code`) only under the
+ * enhanced error serialization of newer compatibility dates, so a binding
+ * that threw across the hop would reach an author on an older date as a
+ * plain `Error`. Failures therefore travel as values and the author side
+ * rebuilds the {@link PluginError}.
+ */
+export type GrantedReply =
+  { ok: unknown } | { err: { code: string; message: string; details?: string } };
+
+/**
+ * A granted binding (`EVENTS`, `NOTIFY`, `AI`, a queue producer or a KV
+ * namespace) as the author isolate reaches it. Never throws: every failure
+ * comes back as `err`.
+ */
+export interface SettledTransport {
+  /**
+   * Run one binding method in the adapter.
+   *
+   * @param method - Method name on the binding (`publish`, `get`, ...).
+   * @param args - That method's arguments, structured-clonable.
+   * @returns `{ ok }` with the method's value, or `{ err }`.
+   */
+  settle(method: string, args: unknown[]): Promise<GrantedReply>;
+}
+
+/** Methods of `EVENTS` that cross the RPC hop. */
+const EVENTS_METHODS = ["publish", "read"] as const;
+/** Methods of `NOTIFY` that cross the RPC hop. */
+const NOTIFY_METHODS = ["raise"] as const;
+/** Methods of `AI` that cross the RPC hop. */
+const AI_METHODS = ["run"] as const;
+/** Methods of a queue producer that cross the RPC hop. */
+const QUEUE_METHODS = ["send", "sendBatch"] as const;
+/** Methods of a KV namespace that cross the RPC hop. */
+const KV_METHODS = ["get", "getWithMetadata", "put", "delete", "list"] as const;
+
+/**
+ * Unwraps one {@link GrantedReply}, rebuilding the typed error.
+ *
+ * @param reply - Reply from {@link SettledTransport.settle}.
+ * @returns The method's value.
+ * @throws {PluginError} The failure the adapter settled, with its code and
+ *   `details`; `internal` for a reply that is neither arm.
+ */
+function unwrapGrantedReply(reply: GrantedReply): unknown {
+  if (reply && typeof reply === "object") {
+    if ("err" in reply && reply.err && typeof reply.err === "object") {
+      return throwGranted(reply.err);
+    }
+    if ("ok" in reply) return reply.ok;
+  }
+  throw PluginError.fromWire("internal", "granted binding reply has neither ok nor err");
+}
+
+/**
+ * Throws the {@link PluginError} an `err` arm names.
+ *
+ * @param err - The `err` arm.
+ * @returns Never.
+ */
+function throwGranted(err: { code?: unknown; message?: unknown; details?: unknown }): never {
+  throw PluginError.fromWire(
+    typeof err.code === "string" && err.code ? err.code : "internal",
+    typeof err.message === "string" ? err.message : "",
+    typeof err.details === "string" ? err.details : "",
+  );
+}
+
+/**
+ * Rebuilds the author-facing binding over a {@link SettledTransport}: each
+ * listed method calls `settle` and throws the rebuilt {@link PluginError} on
+ * `err`, so the code survives whatever the author's compatibility date.
+ *
+ * @param transport - Transport stub from the granted context.
+ * @param methods - Method names the binding exposes.
+ * @returns The binding installed on `env`.
+ */
+function settledBinding<T>(transport: SettledTransport, methods: readonly string[]): T {
+  const binding: Record<string, (...args: unknown[]) => Promise<unknown>> = {};
+  for (const method of methods) {
+    // Always `transport.settle(...)`: a detached property of a Workers RPC
+    // stub is itself a stub (see `transportDatabase`).
+    binding[method] = async (...args: unknown[]) =>
+      unwrapGrantedReply(await transport.settle(method, args));
+  }
+  return Object.freeze(binding) as T;
+}
+
 /** The granted `[sockets]` binding on the granted context. */
 export interface NamedSockets {
   /** Binding name (`env.<name>`, `SOCKETS` unless renamed). */
@@ -883,16 +979,16 @@ export interface NamedSockets {
 export interface NamedKv {
   /** Binding name (`env.<name>`). */
   name: string;
-  /** Ready namespace (crosses the adapter → author RPC boundary). */
-  kv: KvNamespaceBinding;
+  /** The adapter's namespace grant (crosses the adapter → author RPC boundary). */
+  kv: SettledTransport;
 }
 
 /** One granted `[[queues.producers]]` binding on the granted context. */
 export interface NamedQueue {
   /** Binding name (`env.<name>`). */
   name: string;
-  /** Ready producer (crosses the adapter → author RPC boundary). */
-  queue: QueueBinding;
+  /** The adapter's producer grant (crosses the adapter → author RPC boundary). */
+  queue: SettledTransport;
 }
 
 /**
@@ -1083,9 +1179,13 @@ function invocationEnv(rawEnv: unknown, context: GrantedContext | undefined): Bo
     if (context.config !== undefined) merged.CONFIG = decodeExtensibleConfig(context.config);
     if (context.secrets !== undefined) merged.SECRETS = decodeExtensibleConfig(context.secrets);
     if (context.storage) merged.WORK_FS = context.storage;
-    if (context.events) merged.EVENTS = context.events;
-    if (context.notify) merged.NOTIFY = context.notify;
-    if (context.ai) merged.AI = context.ai;
+    if (context.events) {
+      merged.EVENTS = settledBinding<EventPublisherBinding>(context.events, EVENTS_METHODS);
+    }
+    if (context.notify) {
+      merged.NOTIFY = settledBinding<NotifyBinding>(context.notify, NOTIFY_METHODS);
+    }
+    if (context.ai) merged.AI = settledBinding<AiBinding>(context.ai, AI_METHODS);
     if (Array.isArray(context.databases)) {
       for (const entry of context.databases) {
         if (!entry || typeof entry.name !== "string" || !entry.name) continue;
@@ -1099,13 +1199,13 @@ function invocationEnv(rawEnv: unknown, context: GrantedContext | undefined): Bo
     if (Array.isArray(context.queues)) {
       for (const entry of context.queues) {
         if (!entry || typeof entry.name !== "string" || !entry.name || !entry.queue) continue;
-        merged[entry.name] = entry.queue;
+        merged[entry.name] = settledBinding<QueueBinding>(entry.queue, QUEUE_METHODS);
       }
     }
     if (Array.isArray(context.kv)) {
       for (const entry of context.kv) {
         if (!entry || typeof entry.name !== "string" || !entry.name || !entry.kv) continue;
-        merged[entry.name] = entry.kv;
+        merged[entry.name] = settledBinding<KvNamespaceBinding>(entry.kv, KV_METHODS);
       }
     }
     const sockets = socketsTransportOf(context);
@@ -1227,6 +1327,7 @@ export function invocationOf(context: GrantedContext | undefined): Invocation {
     deadlineUnixMs: Number(inv.deadlineUnixMs ?? 0) || 0,
     correlationId: String(inv.correlationId ?? ""),
     causationId: String(inv.causationId ?? ""),
+    purpose: inv.purpose === "provision" ? "provision" : "serve",
   });
 }
 
@@ -3196,6 +3297,66 @@ export class AiEntrypoint<Env extends BookclerkEnv = BookclerkEnv> extends Named
 }
 
 /**
+ * `provisioning` entrypoint (`Provisioning`): guided setup at a cloud
+ * provider. The host collects a short-lived grant from the operator (a pasted
+ * API token), hands it to `provision`, and stores what it returns: settings
+ * listed in `[provisioning] outputs` and credentials it seals. The grant is
+ * dropped after the call, so return any lasting credential you create. On a
+ * re-run `env.CONFIG` and `env.SECRETS` hold the earlier outputs: update or
+ * rotate rather than create again. Export it as
+ * `export class Provisioning extends ProvisioningEntrypoint`.
+ */
+export class ProvisioningEntrypoint<
+  Env extends BookclerkEnv = BookclerkEnv,
+> extends NamedEntrypoint<Env> {
+  static override bookclerkMethods = Object.freeze(["provision", "deprovision"]);
+
+  /**
+   * Creates (or updates) what the instance needs.
+   *
+   * @param request - The operator's grant and choices (`inputsJson`, a JSON
+   *   object keyed by `[provisioning] inputs`).
+   * @returns Settings to store (`settingsJson`), credentials to seal and
+   *   summary lines for the setup screen; see {@link provisioned}.
+   */
+  provision(request: ProvisionRequest): Promise<Provisioned> {
+    void request;
+    return Promise.reject(unsupported("provision"));
+  }
+  /**
+   * Removes what `provision` created. Removing what is already gone is not
+   * an error.
+   *
+   * @param request - The operator's grant, or kind `none` to use the stored
+   *   secrets.
+   * @returns Resolves once the resources are gone.
+   */
+  deprovision(request: DeprovisionRequest): Promise<void> {
+    void request;
+    return Promise.reject(unsupported("deprovision"));
+  }
+}
+
+/**
+ * Builds a {@link Provisioned} answer from plain objects.
+ *
+ * @param answer - Settings to store, credentials to seal (by `secret`
+ *   setting key) and summary lines.
+ * @returns The wire shape `provision` returns.
+ */
+export function provisioned(answer: {
+  settings?: Record<string, string | number | boolean>;
+  secrets?: Record<string, string>;
+  summary?: string[];
+}): Provisioned {
+  return {
+    settingsJson: JSON.stringify(answer.settings ?? {}),
+    secrets: Object.entries(answer.secrets ?? {}).map(([key, value]) => ({ key, value })),
+    summary: answer.summary ?? [],
+  };
+}
+
+/**
  * `notifier` entrypoint (`Notifier`): delivers messages the host already
  * rendered to one outside service (a chat webhook, a mail relay, a paging
  * service). The host decides what to send and where; the entrypoint only
@@ -3298,7 +3459,8 @@ export type EntrypointName =
   | "metadataFiles"
   | "notifier"
   | "ingress"
-  | "ai";
+  | "ai"
+  | "provisioning";
 
 /** Adapter binding name for each named entrypoint. */
 export const ENTRYPOINT_BINDINGS: Readonly<Record<EntrypointName, string>> = Object.freeze({
@@ -3314,6 +3476,7 @@ export const ENTRYPOINT_BINDINGS: Readonly<Record<EntrypointName, string>> = Obj
   notifier: "PLUGIN_NOTIFIER",
   ingress: "PLUGIN_INGRESS",
   ai: "PLUGIN_AI",
+  provisioning: "PLUGIN_PROVISIONING",
 });
 
 /** Exported class name the launcher binds for each named entrypoint. */
@@ -3330,6 +3493,7 @@ export const ENTRYPOINT_CLASSES: Readonly<Record<EntrypointName, string>> = Obje
   notifier: "Notifier",
   ingress: "Ingress",
   ai: "Ai",
+  provisioning: "Provisioning",
 });
 
 /** Reverse-channel fetcher bound as `GRANTED` on the adapter isolate. */
@@ -3580,13 +3744,89 @@ export function unpackEmbeddingVectors(bytes: Uint8Array, dimensions: number): n
   return out;
 }
 
+/** `error` object of a granted-channel reply. */
+interface GrantedErrorBody {
+  /** Wire code (`forbidden`, `invalid_cursor`, ...). */
+  code?: string;
+  /** Operator-facing text. */
+  message?: string;
+  /** Structured detail object as JSON text, when the host sent one. */
+  details?: string;
+}
+
+/**
+ * The {@link PluginError} a granted-channel `error` object names.
+ *
+ * @param error - The reply's `error` object.
+ * @returns Typed error carrying the code, message and `details`.
+ */
+function grantedError(error: GrantedErrorBody): PluginError {
+  return PluginError.fromWire(
+    error.code || "internal",
+    error.message || "",
+    typeof error.details === "string" ? error.details : "",
+  );
+}
+
+/**
+ * Adapter-side {@link SettledTransport}: runs one allow-listed method of a
+ * granted binding and settles its outcome into a {@link GrantedReply}, so no
+ * failure is thrown across the Workers RPC hop to the author isolate.
+ */
+class SettledTarget extends RpcTarget implements SettledTransport {
+  /** Binding the methods run on. */
+  #inner: object;
+  /** Method names `settle` may run. */
+  #methods: ReadonlySet<string>;
+
+  /**
+   * @param inner - Granted binding implementation.
+   * @param methods - Method names the author may call.
+   */
+  constructor(inner: object, methods: readonly string[]) {
+    super();
+    this.#inner = inner;
+    this.#methods = new Set(methods);
+  }
+
+  /**
+   * Run one binding method.
+   *
+   * @param method - Allow-listed method name.
+   * @param args - Its arguments.
+   * @returns `{ ok }` with the value, or `{ err }`; never throws.
+   */
+  async settle(method: string, args: unknown[]): Promise<GrantedReply> {
+    if (typeof method !== "string" || !this.#methods.has(method)) {
+      return {
+        err: { code: "unsupported", message: `binding has no method \`${String(method)}\`` },
+      };
+    }
+    try {
+      const fn = (this.#inner as Record<string, unknown>)[method] as (
+        ...a: unknown[]
+      ) => Promise<unknown>;
+      const value = await fn.apply(this.#inner, Array.isArray(args) ? args : []);
+      return { ok: value };
+    } catch (err) {
+      if (err instanceof PluginError) {
+        const details = err.detailsText;
+        return {
+          err: { code: err.wireCode, message: err.message, ...(details ? { details } : {}) },
+        };
+      }
+      return { err: { code: "internal", message: errorMessage(err) } };
+    }
+  }
+}
+
 /**
  * `AI` binding handed to the author: the adapter exchanges the host's ai
  * grant token on the granted channel, so the author isolate never holds the
  * bearer itself. The host checks every run, the tasks granted and the
  * plugin's budget.
  */
-class GrantedAi extends RpcTarget implements AiBinding {
+class GrantedAi implements AiBinding {
   #granted: GrantedFetcher;
   #auth: Record<string, string>;
 
@@ -3595,7 +3835,6 @@ class GrantedAi extends RpcTarget implements AiBinding {
    * @param auth - Bearer header for the ai grant.
    */
   constructor(granted: GrantedFetcher, auth: Record<string, string>) {
-    super();
     this.#granted = granted;
     this.#auth = auth;
   }
@@ -3630,7 +3869,7 @@ class GrantedAi extends RpcTarget implements AiBinding {
       body: JSON.stringify(wire),
     });
     const value = (await resp.json().catch(() => ({}))) as {
-      error?: { code?: string; message?: string };
+      error?: GrantedErrorBody;
       model?: unknown;
       output?: {
         textEmbeddings?: {
@@ -3642,7 +3881,7 @@ class GrantedAi extends RpcTarget implements AiBinding {
       };
     };
     if (value && value.error) {
-      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+      throw grantedError(value.error);
     }
     if (!resp.ok) {
       throw PluginError.fromWire("internal", `ai run HTTP ${resp.status}`);
@@ -3685,7 +3924,7 @@ function notifyFields(fields: NotifyRaise["fields"]): NotificationField[] {
  * holds the bearer itself. The host checks every raise against the
  * plugin's declared types.
  */
-class GrantedNotify extends RpcTarget implements NotifyBinding {
+class GrantedNotify implements NotifyBinding {
   #granted: GrantedFetcher;
   #auth: Record<string, string>;
 
@@ -3694,7 +3933,6 @@ class GrantedNotify extends RpcTarget implements NotifyBinding {
    * @param auth - Bearer header for the notify grant.
    */
   constructor(granted: GrantedFetcher, auth: Record<string, string>) {
-    super();
     this.#granted = granted;
     this.#auth = auth;
   }
@@ -3724,11 +3962,11 @@ class GrantedNotify extends RpcTarget implements NotifyBinding {
       body: JSON.stringify(wire),
     });
     const value = (await resp.json().catch(() => ({}))) as {
-      error?: { code?: string; message?: string };
+      error?: GrantedErrorBody;
       notificationId?: unknown;
     };
     if (value && value.error) {
-      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+      throw grantedError(value.error);
     }
     if (!resp.ok) {
       throw PluginError.fromWire("internal", `notify raise HTTP ${resp.status}`);
@@ -3742,7 +3980,7 @@ class GrantedNotify extends RpcTarget implements NotifyBinding {
  * events grant token on the granted channel, so the author isolate never
  * holds the bearer itself.
  */
-class GrantedEvents extends RpcTarget implements EventPublisherBinding {
+class GrantedEvents implements EventPublisherBinding {
   #granted: GrantedFetcher;
   #auth: Record<string, string>;
 
@@ -3751,7 +3989,6 @@ class GrantedEvents extends RpcTarget implements EventPublisherBinding {
    * @param auth - Bearer header for the events grant.
    */
   constructor(granted: GrantedFetcher, auth: Record<string, string>) {
-    super();
     this.#granted = granted;
     this.#auth = auth;
   }
@@ -3788,12 +4025,12 @@ class GrantedEvents extends RpcTarget implements EventPublisherBinding {
       body: JSON.stringify(wire),
     });
     const value = (await resp.json().catch(() => ({}))) as {
-      error?: { code?: string; message?: string };
+      error?: GrantedErrorBody;
       eventId?: unknown;
       duplicate?: unknown;
     };
     if (value && value.error) {
-      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+      throw grantedError(value.error);
     }
     if (!resp.ok) {
       throw PluginError.fromWire("internal", `events publish HTTP ${resp.status}`);
@@ -3837,10 +4074,10 @@ class GrantedEvents extends RpcTarget implements EventPublisherBinding {
       }
       return {};
     })) as {
-      error?: { code?: string; message?: string };
+      error?: GrantedErrorBody;
     } & Partial<EventReadPage>;
     if (value && value.error) {
-      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+      throw grantedError(value.error);
     }
     if (!resp.ok) {
       throw PluginError.fromWire("internal", `events read HTTP ${resp.status}`);
@@ -3892,7 +4129,7 @@ function queueBodyBytes(
  * the binding's queue-only grant token on `POST /queues/send`, so the author
  * isolate never holds the bearer itself.
  */
-class GrantedQueue extends RpcTarget implements QueueBinding {
+class GrantedQueue implements QueueBinding {
   #granted: GrantedFetcher;
   #auth: Record<string, string>;
 
@@ -3901,7 +4138,6 @@ class GrantedQueue extends RpcTarget implements QueueBinding {
    * @param auth - Bearer header for the queue grant.
    */
   constructor(granted: GrantedFetcher, auth: Record<string, string>) {
-    super();
     this.#granted = granted;
     this.#auth = auth;
   }
@@ -3961,11 +4197,11 @@ class GrantedQueue extends RpcTarget implements QueueBinding {
       body: JSON.stringify(wire),
     });
     const value = (await resp.json().catch(() => ({}))) as {
-      error?: { code?: string; message?: string };
+      error?: GrantedErrorBody;
       messageIds?: unknown;
     };
     if (value && value.error) {
-      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+      throw grantedError(value.error);
     }
     if (!resp.ok) {
       throw PluginError.fromWire("internal", `queue send HTTP ${resp.status}`);
@@ -4034,7 +4270,7 @@ function decodeKvValue(bytes: Uint8Array, type: KvValueType): unknown {
  * here before the request leaves; the host applies the namespace's own
  * `max_value_bytes` and `max_keys`.
  */
-class GrantedKv extends RpcTarget implements KvNamespaceBinding {
+class GrantedKv implements KvNamespaceBinding {
   #granted: GrantedFetcher;
   #auth: Record<string, string>;
 
@@ -4043,7 +4279,6 @@ class GrantedKv extends RpcTarget implements KvNamespaceBinding {
    * @param auth - Bearer header for the kv grant.
    */
   constructor(granted: GrantedFetcher, auth: Record<string, string>) {
-    super();
     this.#granted = granted;
     this.#auth = auth;
   }
@@ -4055,10 +4290,10 @@ class GrantedKv extends RpcTarget implements KvNamespaceBinding {
       body: JSON.stringify(toBridgeJson(body)),
     });
     const value = (await resp.json().catch(() => ({}))) as Record<string, unknown> & {
-      error?: { code?: string; message?: string };
+      error?: GrantedErrorBody;
     };
     if (value && value.error) {
-      throw PluginError.fromWire(value.error.code || "internal", value.error.message || "");
+      throw grantedError(value.error);
     }
     if (!resp.ok) {
       throw PluginError.fromWire("internal", `kv ${op} HTTP ${resp.status}`);
@@ -4209,7 +4444,7 @@ class GrantedSockets extends RpcTarget implements SocketsTransport {
       return { err: { code: "unavailable", message: `sockets ${op}: ${errorMessage(err)}` } };
     }
     const value = (await resp.json().catch(() => null)) as
-      (Record<string, unknown> & { error?: { code?: string; message?: string } }) | null;
+      (Record<string, unknown> & { error?: GrantedErrorBody }) | null;
     if (value && value.error) {
       return {
         err: { code: value.error.code || "internal", message: value.error.message || "" },
@@ -4314,7 +4549,7 @@ class GrantedWebhooks extends RpcTarget implements WebhooksTransport {
       return { err: { code: "unavailable", message: `webhooks ${op}: ${errorMessage(err)}` } };
     }
     const value = (await resp.json().catch(() => null)) as
-      (Record<string, unknown> & { error?: { code?: string; message?: string } }) | null;
+      (Record<string, unknown> & { error?: GrantedErrorBody }) | null;
     if (value && value.error) {
       return {
         err: { code: value.error.code || "internal", message: value.error.message || "" },
@@ -4857,19 +5092,22 @@ function createInvocationAdapter() {
       const bound: GrantedContext = rest;
       const granted = this.env.GRANTED;
       if (typeof eventsToken === "string" && eventsToken && granted) {
-        bound.events = new GrantedEvents(granted, {
-          Authorization: `Bearer ${eventsToken}`,
-        });
+        bound.events = new SettledTarget(
+          new GrantedEvents(granted, { Authorization: `Bearer ${eventsToken}` }),
+          EVENTS_METHODS,
+        );
       }
       if (typeof notifyToken === "string" && notifyToken && granted) {
-        bound.notify = new GrantedNotify(granted, {
-          Authorization: `Bearer ${notifyToken}`,
-        });
+        bound.notify = new SettledTarget(
+          new GrantedNotify(granted, { Authorization: `Bearer ${notifyToken}` }),
+          NOTIFY_METHODS,
+        );
       }
       if (typeof aiToken === "string" && aiToken && granted) {
-        bound.ai = new GrantedAi(granted, {
-          Authorization: `Bearer ${aiToken}`,
-        });
+        bound.ai = new SettledTarget(
+          new GrantedAi(granted, { Authorization: `Bearer ${aiToken}` }),
+          AI_METHODS,
+        );
       }
       if (databases && typeof databases === "object" && !Array.isArray(databases) && granted) {
         const named: NamedDatabase[] = [];
@@ -4888,7 +5126,10 @@ function createInvocationAdapter() {
           if (!name || typeof token !== "string" || !token) continue;
           named.push({
             name,
-            queue: new GrantedQueue(granted, { Authorization: `Bearer ${token}` }),
+            queue: new SettledTarget(
+              new GrantedQueue(granted, { Authorization: `Bearer ${token}` }),
+              QUEUE_METHODS,
+            ),
           });
         }
         if (named.length > 0) bound.queues = named;
@@ -4897,7 +5138,13 @@ function createInvocationAdapter() {
         const named: NamedKv[] = [];
         for (const [name, token] of Object.entries(kv)) {
           if (!name || typeof token !== "string" || !token) continue;
-          named.push({ name, kv: new GrantedKv(granted, { Authorization: `Bearer ${token}` }) });
+          named.push({
+            name,
+            kv: new SettledTarget(
+              new GrantedKv(granted, { Authorization: `Bearer ${token}` }),
+              KV_METHODS,
+            ),
+          });
         }
         if (named.length > 0) bound.kv = named;
       }

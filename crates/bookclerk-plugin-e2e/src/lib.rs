@@ -42,7 +42,10 @@ pub const OPTIONAL_PLUGINS: &[&str] = &[
     "audnexus",
     "openlibrary",
     "cloudflare_relay",
+    "ngrok",
+    "cloudflare_tunnel",
     "webhook",
+    "email",
 ];
 
 /// Reference Echo guests staged under `$BOOKCLERK_PLUGIN_ARTIFACTS`.

@@ -32,6 +32,7 @@ const SETTINGS: RemoteClaimSettings = RemoteClaimSettings {
         class: 8,
         plugin_instance: 8,
     },
+    node_bound: None,
 };
 
 /// A store on a fresh SQLite file in `dir`, with the host schema and a master key.
@@ -5027,8 +5028,11 @@ async fn a_job_upload_takes_over_a_branch_delivered_copy_of_its_edition() {
         branch,
         opened.fence,
         "owner",
-        "test",
-        "t1",
+        &bookclerk_node_proto::CatalogRef {
+            store: "test".into(),
+            product_id: "t1".into(),
+            marketplace: "us".into(),
+        },
         &files,
         &[GrantedDestination::new("local", 0)],
     )

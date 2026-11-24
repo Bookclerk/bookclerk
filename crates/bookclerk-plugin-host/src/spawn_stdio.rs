@@ -3475,9 +3475,15 @@ pub(crate) fn with_spawn_detail(err: PluginError, extra: String) -> PluginError 
             PluginError::unavailable(format!("{message}; {extra}"))
         }
         PluginError::Message(message) => PluginError::message(format!("{message}; {extra}")),
-        PluginError::Abi { code, message } => {
-            PluginError::from_abi(Some(&code), format!("{message}; {extra}"))
-        }
+        PluginError::Abi {
+            code,
+            message,
+            details,
+        } => PluginError::Abi {
+            code,
+            message: format!("{message}; {extra}"),
+            details,
+        },
         other => PluginError::message(format!("{other}; {extra}")),
     }
 }

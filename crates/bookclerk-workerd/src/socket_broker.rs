@@ -510,10 +510,12 @@ async fn dial(
     target: &SocketTarget,
 ) -> Result<(Conn, Option<String>)> {
     if target.scheme.is_stream() {
-        // Settle the TLS settings first, so a bad trust anchor costs no dial.
+        // Settle the TLS settings and name first, so a bad trust anchor or
+        // an ungranted name costs no dial.
         let config = stream_tls(shared, request)?;
+        let name = stream_server_name(&shared.policy, request, target)?;
         let stream = dial_tcp(shared, target).await?;
-        return secure_stream(config, request, target, stream).await;
+        return secure_stream(config, name, request, stream).await;
     }
     let stream = dial_tcp(shared, target).await?;
     let upgrade = upgrade_request(&shared.policy, request, target)?;
@@ -572,12 +574,10 @@ async fn dial(
 /// `deadline_exceeded` when the handshake timed out.
 async fn secure_stream(
     config: ClientConfig,
+    name: ServerName<'static>,
     request: &SocketConnectRequest,
-    target: &SocketTarget,
     stream: Box<dyn BrokerIo>,
 ) -> Result<(Conn, Option<String>)> {
-    let name = ServerName::try_from(target.host.clone())
-        .map_err(|err| PluginError::invalid_params(format!("TLS name: {err}")))?;
     let handshake = tokio_rustls::TlsConnector::from(Arc::new(config)).connect(name, stream);
     let tls = tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake)
         .await
@@ -596,6 +596,39 @@ async fn secure_stream(
         }
     }
     Ok((Conn::Stream(Box::new(tls)), protocol))
+}
+
+/// The name a `tls://` stream sends as SNI and checks the certificate
+/// against: the request's server name when it has one, else the URL's host.
+///
+/// A server name must be on a `tcp` grant for the URL's port as well, so a
+/// guest granted one endpoint can't reach another service behind the same
+/// front by naming it.
+///
+/// # Errors
+///
+/// `network_not_granted` when the server name is not on a grant;
+/// `invalid_params` when the name is not one TLS can carry.
+fn stream_server_name(
+    policy: &EgressPolicy,
+    request: &SocketConnectRequest,
+    target: &SocketTarget,
+) -> Result<ServerName<'static>> {
+    let host = if request.server_name.is_empty() {
+        target.host.clone()
+    } else {
+        let named = SocketTarget {
+            scheme: target.scheme,
+            host: request.server_name.to_ascii_lowercase(),
+            port: target.port,
+        };
+        if !policy.allows_tcp(&named.host, named.port) {
+            return Err(not_granted(policy, &named));
+        }
+        named.host
+    };
+    ServerName::try_from(host)
+        .map_err(|err| PluginError::invalid_params(format!("TLS name: {err}")))
 }
 
 /// TLS settings for a `tls://` stream: Mozilla's roots, or only the guest's

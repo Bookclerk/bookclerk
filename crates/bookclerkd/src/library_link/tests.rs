@@ -92,6 +92,7 @@ impl HeartbeatSource for FixedSampler {
             files_dir_free_bytes: Some(1 << 40),
             cache: None,
             public_origin: None,
+            budget_share: None,
         }
     }
 }
@@ -1485,6 +1486,10 @@ mod results_and_uploads {
         latest_seen: Arc<Mutex<Vec<Option<Vec<u8>>>>>,
         /// This install's own copies of accounts it keeps.
         keeper: Option<Arc<dyn super::super::host_jobs::LocalKeeper>>,
+        /// File keys another edition in this install's own library holds.
+        held_keys: Vec<String>,
+        /// Whether reading this install's own library for held keys fails.
+        key_check_fails: bool,
     }
 
     /// A [`super::super::host_jobs::LocalKeeper`] that keeps every account,
@@ -1654,6 +1659,18 @@ mod results_and_uploads {
                 .lock()
                 .unwrap()
                 .push((copy.holding_id.to_owned(), copy.files.to_vec()));
+        }
+
+        async fn local_key_held_elsewhere(
+            &self,
+            _book: &NewBook,
+            _destination: &bookclerk_config::DestinationId,
+            key: &str,
+        ) -> anyhow::Result<bool> {
+            if self.key_check_fails {
+                anyhow::bail!("library unreadable");
+            }
+            Ok(self.held_keys.iter().any(|held| held == key))
         }
 
         fn work_dir(&self) -> PathBuf {
@@ -3161,6 +3178,7 @@ mod results_and_uploads {
                     class: 8,
                     plugin_instance: 8,
                 },
+                node_bound: None,
             },
             None,
         )
@@ -3285,6 +3303,7 @@ mod results_and_uploads {
                     class: 8,
                     plugin_instance: 8,
                 },
+                node_bound: None,
             },
             None,
         )
@@ -3747,6 +3766,7 @@ mod results_and_uploads {
                     class: 8,
                     plugin_instance: 8,
                 },
+                node_bound: None,
             },
             None,
         )
@@ -4121,6 +4141,7 @@ mod results_and_uploads {
                     class: 8,
                     plugin_instance: 8,
                 },
+                node_bound: None,
             },
             None,
         )
@@ -5413,6 +5434,7 @@ mod results_and_uploads {
             ..StubGuests::default()
         };
         let outbox = work.path().join("t1");
+        let book = owner_book("riley-acct", "P1");
         let key = "Author/Title/Title.m4b".to_string();
         let source = destination_outbox(&outbox, 0).join(&key);
         tokio::fs::create_dir_all(source.parent().unwrap())
@@ -5425,9 +5447,10 @@ mod results_and_uploads {
             keys: vec![vec![key.clone()]],
         };
         let copied = Mutex::new(Vec::new());
-        let placed = copy_to_local_destinations(&guests, "t1", &outbox, &acquired, &copied, None)
-            .await
-            .unwrap();
+        let placed =
+            copy_to_local_destinations(&guests, &book, "t1", &outbox, &acquired, &copied, None)
+                .await
+                .unwrap();
         assert_eq!(
             placed,
             vec![(
@@ -5452,7 +5475,7 @@ mod results_and_uploads {
             .unwrap();
         tokio::fs::write(&copy, b"earlier").await.unwrap();
         let copied = Mutex::new(Vec::new());
-        copy_to_local_destinations(&guests, "t1", &outbox, &acquired, &copied, None)
+        copy_to_local_destinations(&guests, &book, "t1", &outbox, &acquired, &copied, None)
             .await
             .unwrap();
         let copies = copied.into_inner().unwrap();
@@ -5463,6 +5486,68 @@ mod results_and_uploads {
             "the rollback leaves a key it did not create"
         );
     }
+
+    /// A key another edition in this host's own library holds is never
+    /// overwritten, and neither is one whose holder cannot be told: the
+    /// host keeps no copy of the title at all.
+    #[tokio::test]
+    async fn local_copy_skips_a_key_another_edition_holds() {
+        let key = "Author/Title/Title.m4b".to_string();
+        local_copy_keeps_nothing(|local| StubGuests {
+            local: Some(local),
+            held_keys: vec![key.clone()],
+            ..StubGuests::default()
+        })
+        .await;
+        local_copy_keeps_nothing(|local| StubGuests {
+            local: Some(local),
+            key_check_fails: true,
+            ..StubGuests::default()
+        })
+        .await;
+    }
+
+    /// Copies a title whose key already holds another file to this host's
+    /// own destination through the guests `stub` builds over it, and
+    /// asserts nothing is kept and the file there is untouched.
+    async fn local_copy_keeps_nothing(stub: impl FnOnce(PathBuf) -> StubGuests) {
+        use super::super::host_jobs::copy_to_local_destinations;
+
+        let host_local = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let key = "Author/Title/Title.m4b".to_string();
+        let guests = stub(host_local.path().to_path_buf());
+        let book = owner_book("riley-acct", "P1");
+        let outbox = work.path().join("t1");
+        let source = destination_outbox(&outbox, 0).join(&key);
+        tokio::fs::create_dir_all(source.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&source, b"audio").await.unwrap();
+        let theirs = host_local.path().join(&key);
+        tokio::fs::create_dir_all(theirs.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&theirs, b"another edition").await.unwrap();
+        let acquired = AcquiredTitle {
+            primary_key: key.clone(),
+            pdf_key: None,
+            keys: vec![vec![key.clone()]],
+        };
+        let copied = Mutex::new(Vec::new());
+        let placed =
+            copy_to_local_destinations(&guests, &book, "t1", &outbox, &acquired, &copied, None)
+                .await
+                .unwrap();
+        assert!(placed.is_empty(), "no copy is kept here");
+        assert!(copied.into_inner().unwrap().is_empty());
+        assert_eq!(
+            tokio::fs::read(&theirs).await.unwrap(),
+            b"another edition",
+            "the other edition's file is untouched"
+        );
+    }
+
     /// With a copy ledger, a copy to this host's own destination claims its
     /// key in this install's library first: another title's copy of the
     /// same key fails that title and leaves the first file as it was
@@ -5503,6 +5588,7 @@ mod results_and_uploads {
                 let copied = Mutex::new(Vec::new());
                 copy_to_local_destinations(
                     guests,
+                    &owner_book("riley-acct", holding),
                     holding,
                     &outbox,
                     acquired,
@@ -6120,6 +6206,7 @@ async fn leaving_stops_the_running_client() {
         "node-leave".into(),
         Arc::clone(&stop),
         shutdown,
+        super::HeldDialLease::default(),
     ));
     shut.send(true).unwrap();
     let why = tokio::time::timeout(Duration::from_secs(5), watcher)
@@ -6139,6 +6226,7 @@ async fn leaving_stops_the_running_client() {
         "node-leave".into(),
         Arc::clone(&stop),
         shutdown,
+        super::HeldDialLease::default(),
     ));
     assert!(
         tokio::time::timeout(Duration::from_millis(300), stopped.changed())
@@ -6186,6 +6274,7 @@ async fn a_rejoin_as_another_node_stops_the_previous_client() {
         "node-old".into(),
         Arc::new(stop),
         shutdown,
+        super::HeldDialLease::default(),
     ));
     assert!(
         tokio::time::timeout(Duration::from_millis(300), stopped.changed())
@@ -6202,6 +6291,103 @@ async fn a_rejoin_as_another_node_stops_the_previous_client() {
         .unwrap();
     assert!(*stopped.borrow());
     assert_eq!(watcher.await.unwrap(), super::LinkStop::Replaced);
+}
+
+/// A shared branch whose sibling took the link's dial lease stops its
+/// client, so the two never dial the parent as the same node at once.
+#[tokio::test]
+async fn a_lost_dial_lease_stops_the_client() {
+    use bookclerk_library::control_plane::{acquire_lease, release_lease};
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let _owner = crate::node_api::tests::test_state(&owner_files).await;
+    let host_files = tempfile::tempdir().unwrap();
+    let host = host_store(host_files.path()).await;
+    bookclerk_library::control_plane::record_library_link(
+        &host,
+        &bookclerk_library::control_plane::NewLibraryLink {
+            parent_library_id: "library-lease".into(),
+            owner_origin: "https://owner.example".into(),
+            remote_node_id: "node-lease".into(),
+            spki_pin: None,
+        },
+        &bookclerk_library::control_plane::LibraryLinkKeys::generate(),
+    )
+    .await
+    .unwrap();
+    let name = super::dial_lease_name("library-lease");
+    let ours = acquire_lease(&host, &name, "install-a", super::DIAL_LEASE_TTL)
+        .await
+        .unwrap()
+        .expect("a free lease");
+    let held: super::HeldDialLease = Arc::new(Mutex::new(Some(ours.clone())));
+
+    let (stop, mut stopped) = watch::channel(false);
+    let (_shut, shutdown) = watch::channel(false);
+    let watcher = tokio::spawn(super::stop_when_inactive(
+        host.clone(),
+        "library-lease".into(),
+        "node-lease".into(),
+        Arc::new(stop),
+        shutdown,
+        Arc::clone(&held),
+    ));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), stopped.changed())
+            .await
+            .is_err(),
+        "the holder keeps its client"
+    );
+    // The sibling takes the lease over (as after this install stalled past
+    // its expiry).
+    release_lease(&host, &ours).await.unwrap();
+    acquire_lease(&host, &name, "install-b", super::DIAL_LEASE_TTL)
+        .await
+        .unwrap()
+        .expect("the released lease");
+    tokio::time::timeout(super::consent::CONSENT_POLL * 3, stopped.changed())
+        .await
+        .expect("the client is stopped once the lease is lost")
+        .unwrap();
+    assert_eq!(watcher.await.unwrap(), super::LinkStop::LeaseLost);
+    assert!(held.lock().unwrap().is_none(), "nothing is left to release");
+}
+
+/// Through the running supervisor: a link whose dial lease a sibling
+/// install holds is not dialed, and is dialed once that lease is free.
+#[tokio::test]
+async fn a_link_a_sibling_dials_is_not_dialed_twice() {
+    use bookclerk_library::control_plane::{acquire_lease, release_lease};
+    let _dek = crate::auth::tests::process_dek_lock().await;
+    let owner_files = tempfile::tempdir().unwrap();
+    let host_files = tempfile::tempdir().unwrap();
+    let (state, owner) = crate::node_api::tests::test_state(&owner_files).await;
+    let addr = serve(crate::api::router(Arc::clone(&state), None)).await;
+    let origin = public_origin(&state, &format!("http://127.0.0.1:{}", addr.port())).await;
+    let (member, _token) = owner_account(&owner, b"riley-token-v1").await;
+
+    let (host_state, host) = crate::node_api::tests::test_state(&host_files).await;
+    let link = join(&owner, &host, member, &origin, None).await.unwrap();
+    let sibling = acquire_lease(
+        &host,
+        &super::dial_lease_name(&link.parent_library_id),
+        "sibling-install",
+        super::DIAL_LEASE_TTL,
+    )
+    .await
+    .unwrap()
+    .expect("a free lease");
+    super::spawn_library_links(Arc::clone(&host_state));
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        !crate::node_api::ws::node_session_live(&link.remote_node_id),
+        "the sibling holds the dial lease"
+    );
+    release_lease(&host, &sibling).await.unwrap();
+    eventually("the link to connect once the lease is free", || async {
+        crate::node_api::ws::node_session_live(&link.remote_node_id)
+    })
+    .await;
 }
 
 /// Through the running supervisor: after the host joins the same library

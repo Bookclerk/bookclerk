@@ -104,7 +104,10 @@ operator, a household user, or a portal identity) has a **subject key**
    `discover_feed` job, which ranks the stored candidates into shelves with
    no network calls and stores the result. It uses only candidates fetched
    for the person's current seeds (their own, or the household's), and none
-   when `discovery.storefront_candidates` is off.
+   when `discovery.storefront_candidates` is off. A feed wider than one
+   cell or statement of the database plugin (the stored feed may reach
+   192 KiB, and D1 statements are much smaller) is stored in
+   `discover_feed_parts` pieces that the feed row names by version.
 
    The fetch reads the library once: the taste and the set of titles the
    library already holds (by ASIN, ISBN and store product id, used to keep
@@ -357,12 +360,19 @@ Per [Open Library API guidelines](https://openlibrary.org/developers/api):
   and author, and only a result with the same title (ignoring case and
   punctuation) is used. The first record that fills a gap wins, and the
   work only takes the fields it lacks
-- Editions already enriched are skipped (the edition's `enrich_source`
-  `metadata:<provider>`, or the legacy `openlibrary`) — provenance cache.
-  The work, expression and cover are written first, each taking only the
-  fields it lacks, and the edition is marked last. A failure before
+- Only editions with a gap are asked. The work, expression and cover are
+  written first, each taking only the fields it lacks, and the edition is
+  marked last (`enrich_source` `metadata:<provider>`). A failure before
   the mark keeps whatever was already written and leaves the edition
   unmarked, so a later run asks again while any of its gaps is still open
+- An ask that leaves gaps open is recorded in `edition_enrich_attempts`:
+  `unmatched` when no record matched or filled a gap, `partial` when the
+  record filled only some. Such an edition is not asked again for 30
+  days, so titles that never match do not spend every run's 25 requests
+  ahead of titles that would, and a partly filled title is asked again
+  later for the rest. An ask that a provider failed is not recorded, so
+  the next run asks again
+- With no provider deployed, nothing is read or asked
 - For bulk data, use [monthly dumps](https://openlibrary.org/data), not the API
 
 WorldCat remains reserved (API key + ToS).
@@ -440,7 +450,8 @@ makes them itself while the stand-in serves.
 A model's work vectors are made by a `discover_embed` job, pinned to the
 node whose plugin serves the model. It is queued when:
 
-- a model is installed on the node (the model router reports a change);
+- the daemon starts, or a model is installed on the node (the model
+  router reports a change);
 - a ranking finds that the node's model does not serve yet;
 - a ranking runs and the node has not looked for changed works for an
   hour.
@@ -491,6 +502,78 @@ centroid of the reader's taste works.
 > The model weights are a first setting, chosen so that similarity
 > counts for about as much as it did with the stand-in. They are tested
 > on small built libraries, not measured on real ones.
+
+### Searching by meaning
+
+Once a model serves the library, its work vectors answer two more
+questions, both in the Library:
+
+- **Search by meaning**: `GET /api/library/works?q=…&search=meaning`
+  finds the works whose descriptions are about the query, in any words
+  and any language the model knows. The filters and the cursor work as
+  they do for a search by words.
+- **More like this**: `GET /api/library/works/{id}/similar` lists the
+  held works closest to one work, most alike first.
+
+`GET /api/library/works/meaning` says whether each is `ready`, has
+`no_model`, or waits while the library is `embedding`. The web app asks
+it before it offers either.
+
+**The index.** Each node keeps the work vectors of the serving space in
+memory as one flat matrix of unit-length rows, and scans all of it for
+every question. The scan is exact; there is no approximate index and no
+engine-specific vector type. The `embeddings` table stays the one
+durable copy:
+
+- The matrix is built on the first question, from one keyset read of the
+  space's work vectors.
+- At most every 5 seconds a question compares the space's row count and
+  newest write with what the matrix was built from, and rebuilds it when
+  they differ. The node that ran `discover_embed` looks at once.
+- A library of 10,000 works at 384 numbers takes about 15 MB.
+
+**Which space is read.** Both read the space that
+[serves](#which-space-serves). A scan adds works without vectors, which
+costs a model's space its cover until they are embedded, and rankings
+fall back to the stand-in meanwhile. These routes do not: while the
+stand-in serves they read a model's space that holds vectors for at
+least 9 in 10 works (this node's model first), so a search misses only
+the newest books for the minutes their embedding takes. A search by
+meaning also queues `discover_embed` when the model's space does not
+serve.
+
+**The query.** A search embeds its text with the library's model as a
+*query* (models that tell queries from passages get the right prefix).
+The node that answers must run the model plugin; the model has 15
+seconds, which covers a sleeping plugin loading it. The vectors of the
+last 32 queries are kept, so the pages of one search run the model once.
+A query is at most 1,024 bytes.
+
+**What matches.** A model's cosines sit in a narrow band, so no fixed
+cosine separates a match from the rest. A work matches when its
+similarity to the query stands at least one standard deviation above the
+mean over the whole library. Matches come best first, ties in work id
+order, so pages agree.
+
+> [!NOTE]
+> One deviation is a first setting, not yet measured on real libraries.
+> On a library with no clear match for a query it still lists the works
+> that stand out the most.
+
+**When it is not ready.** A search that cannot run answers `503` with a
+message the web app shows; More like this answers `200` with a `state`
+and no works.
+
+| Case | Search by meaning | More like this |
+| --- | --- | --- |
+| The node that answers runs no model plugin | `503` | Lists works when a model serves the library, else `no_model` |
+| Model present, library not embedded with it yet | `503`, and queues `discover_embed` | `embedding` |
+| Model did not answer in 15 seconds | `503` | Not affected |
+
+More like this compares two stored vectors, so it needs no model on the
+node that answers. It lists only held works inside the caller's
+[patron scope](../guide/sharing.md#limit-what-a-patron-sees), and a work outside the scope
+answers `404` as its own page does.
 
 ### OSV / `paste`
 
@@ -646,7 +729,9 @@ title is **not** in the household library.
   declares `catalog.detailByProductId` (Audible, Libro.fm, GraphicAudio) for its own
   product (two at most), then the stores that declare `catalog.detailByIsbn`
   (Libro.fm) for the ISBN, three lookups and 3.5 s at most. No plugin id is
-  named. `POST /api/discover/title-meta/batch` answers every title within
+  named. The server caches each answer under the set of deployed metadata
+  providers, so deploying or removing one asks again rather than serving
+  what the old set answered. `POST /api/discover/title-meta/batch` answers every title within
   6 s: a title still being looked up then answers with what it has and is
   flagged in the response's `incomplete` list, so the page shows it but
   does not cache it, and the log names the lookup it was waiting on. An
@@ -984,6 +1069,14 @@ expression (recording) than the card's own store editions
 but an ASIN is checked as that Audible product. A price for a product the
 pool never listed stays, and so does every price when the pool knows none
 of the card's editions.
+
+A store's product id names one edition per marketplace, and the same id
+can name another recording in another marketplace. So the card's editions
+and its prices are placed by the pool's listings in the card's own
+marketplace (its `region`); a product the pool lists in no such
+marketplace falls back to its listings in every marketplace. Title-search
+records are pooled under the card's marketplace, and catalog search places
+its hits the same way.
 
 The batch route checks all of its cards in one pool read with its own
 1.5 second budget after the batch answers, so a batch that used its whole

@@ -731,18 +731,53 @@ async fn databases_binding_vectors(client: &PluginClient) {
 
 #[tokio::test(flavor = "current_thread")]
 async fn workerd_author_event_vectors() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/events");
+    run_events_fixture(&fixture, true).await;
+}
+
+/// Binding errors keep their wire codes for an author on a compatibility
+/// date before Workers RPC's enhanced error serialization: the adapter
+/// settles failures into values instead of throwing them across the hop.
+#[tokio::test(flavor = "current_thread")]
+async fn workerd_author_binding_errors_keep_codes_on_an_old_compatibility_date() {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/events");
+    let copy = tempfile::tempdir().expect("fixture copy");
+    let manifest = std::fs::read_to_string(source.join("plugin.toml")).expect("plugin.toml");
+    let old = manifest.replace(
+        "compatibility_date = \"2026-08-01\"",
+        "compatibility_date = \"2025-01-01\"",
+    );
+    assert_ne!(old, manifest, "fixture pins the date this test rewrites");
+    std::fs::write(copy.path().join("plugin.toml"), old).expect("write plugin.toml");
+    let modules = copy.path().join("modules");
+    std::fs::create_dir(&modules).expect("modules dir");
+    for entry in std::fs::read_dir(source.join("modules")).expect("fixture modules") {
+        let entry = entry.expect("module entry");
+        std::fs::copy(entry.path(), modules.join(entry.file_name())).expect("copy module");
+    }
+    run_events_fixture(copy.path(), false).await;
+}
+
+/// Spawns the events fixture at `fixture` behind `bookclerk-workerd` and
+/// runs the event vectors against it.
+///
+/// # Arguments
+///
+/// * `fixture` - Plugin root holding `plugin.toml` and `modules/`.
+/// * `all` - Run every vector set; `false` runs only the `EVENTS` binding
+///   vectors.
+async fn run_events_fixture(fixture: &Path, all: bool) {
     let Some(workerd) = find_workerd() else {
         panic!(
             "pinned workerd binary missing; run `cargo ensure-workerd`. Do not set BOOKCLERK_SKIP_WORKERD."
         );
     };
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/events");
     let tmp = tempfile::tempdir().expect("tmpdir");
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
             let mut child = Command::new(env!("CARGO_BIN_EXE_bookclerk-workerd"))
-                .env("BOOKCLERK_PLUGIN_ROOT", &fixture)
+                .env("BOOKCLERK_PLUGIN_ROOT", fixture)
                 .env("BOOKCLERK_WORKERD_BIN", &workerd)
                 .env("TMPDIR", tmp.path())
                 .stdin(Stdio::piped())
@@ -761,9 +796,13 @@ async fn workerd_author_event_vectors() {
                 .expect("describe");
             assert_eq!(desc.api_version, PRODUCT_API_VERSION);
             assert_eq!(desc.id, "events_fixture");
-            event_result_vectors(&client).await;
+            if all {
+                event_result_vectors(&client).await;
+            }
             events_binding_vectors(&client).await;
-            databases_binding_vectors(&client).await;
+            if all {
+                databases_binding_vectors(&client).await;
+            }
             let _ = child.kill().await;
         })
         .await;
