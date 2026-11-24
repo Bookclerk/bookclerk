@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use sea_orm::{ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter};
 use sea_orm::{QueryOrder, QuerySelect};
 
+use super::work_texts::WorkTexts;
 use super::{now_str, parse_dt, LibraryStore};
 use crate::entities::{
     edition_enrich_attempts, edition_identifiers, editions, expressions, holdings, store_listings,
@@ -356,23 +357,23 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?;
         if let Some(expression) = &expression {
-            if let Some(mut work) = works::Entity::find_by_id(expression.work_id.clone())
-                .one(self.db())
-                .await
-                .map_err(LibraryError::Orm)?
-            {
-                self.complete_work_texts(std::slice::from_mut(&mut work))
-                    .await?;
+            // What the work lacks is decided again on every write attempt,
+            // so a value another writer stored meanwhile is kept.
+            self.update_work_texts(&expression.work_id, |work| {
                 let work_fill = WorkEnrichment {
                     description: lacking(work.description.as_deref(), fill.description.as_ref()),
                     subjects: lacking(work.subjects.as_deref(), fill.subjects.as_ref()),
                     categories: lacking(work.categories.as_deref(), fill.categories.as_ref()),
                     cover_url: lacking(work.cover_url.as_deref(), fill.cover_url.as_ref()),
                 };
-                if !work_fill.is_empty() {
-                    self.set_work_enrichment(&work.id, &work_fill).await?;
-                }
-            }
+                (!work_fill.is_empty()).then(|| WorkTexts {
+                    description: work_fill.description.or_else(|| work.description.clone()),
+                    subjects: work_fill.subjects.or_else(|| work.subjects.clone()),
+                    categories: work_fill.categories.or_else(|| work.categories.clone()),
+                    cover_url: work_fill.cover_url.or_else(|| work.cover_url.clone()),
+                })
+            })
+            .await?;
             if let Some(language) = lacking(expression.language.as_deref(), fill.language.as_ref())
             {
                 let mut am: expressions::ActiveModel = expression.clone().into();

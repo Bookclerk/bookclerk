@@ -320,6 +320,19 @@ pub async fn load_document(
     store: &LibraryStore,
     key: &DocumentKey,
 ) -> Result<Option<StoredDocument>> {
+    Ok(load_row(store, key).await?.map(|(_, document)| document))
+}
+
+/// Reads one document like [`load_document`], with the set of pieces its row
+/// names (`None` when the body is inline).
+///
+/// # Errors
+///
+/// As [`load_document`].
+async fn load_row(
+    store: &LibraryStore,
+    key: &DocumentKey,
+) -> Result<Option<(Option<String>, StoredDocument)>> {
     for _ in 0..PART_READ_ATTEMPTS {
         let Some(row) = configuration_documents::Entity::find_by_id((
             key.scope_type.clone(),
@@ -333,13 +346,17 @@ pub async fn load_document(
             return Ok(None);
         };
         if row.document_parts == 0 {
-            return Ok(Some(stored_from_model(row)));
+            return Ok(Some((None, stored_from_model(row))));
         }
         if let Some(body) = read_parts(store, &row).await? {
-            return Ok(Some(StoredDocument {
-                document_json: body,
-                ..stored_from_model(row)
-            }));
+            let parts_id = row.document_json.clone();
+            return Ok(Some((
+                Some(parts_id),
+                StoredDocument {
+                    document_json: body,
+                    ..stored_from_model(row)
+                },
+            )));
         }
     }
     Err(LibraryError::Unavailable(format!(
@@ -350,7 +367,8 @@ pub async fn load_document(
 
 /// The body `row`'s pieces join into, or `None` when they are not a
 /// gapless run of `row.document_parts` pieces from 0 (a later replacement
-/// dropped them).
+/// dropped them). A pieced row's `document_json` holds the id of its set of
+/// pieces.
 ///
 /// # Errors
 ///
@@ -373,10 +391,7 @@ async fn read_parts(
             .filter(configuration_document_parts::Column::ScopeType.eq(row.scope_type.clone()))
             .filter(configuration_document_parts::Column::ScopeId.eq(row.scope_id.clone()))
             .filter(configuration_document_parts::Column::Namespace.eq(row.namespace.clone()))
-            .filter(
-                configuration_document_parts::Column::WriteOperationId
-                    .eq(row.write_operation_id.clone()),
-            ),
+            .filter(configuration_document_parts::Column::PartsId.eq(row.document_json.clone())),
         &[configuration_document_parts::Column::Seq],
         &mut page,
     )
@@ -389,16 +404,23 @@ async fn read_parts(
 /// How a body is stored: the text the document row holds, its piece count,
 /// and the piece inserts to run before the row names them.
 struct StoredBody {
-    /// `document_json`: the whole body, or empty when it is in pieces.
+    /// `document_json`: the whole body, or the id of its set of pieces.
     inline: String,
+    /// The id of the set of pieces, unique to this write; `None` when the
+    /// body is inline.
+    parts_id: Option<String>,
     /// `document_parts`: `0` when the body is inline.
     parts: i64,
     /// One insert per piece, empty when the body is inline.
     inserts: Vec<TypedDbStatement>,
 }
 
-/// Cuts `document_json` into pieces under `operation_id` when it is wider
-/// than one piece the database plugin carries.
+/// Cuts `document_json` into pieces when it is wider than one piece the
+/// database plugin carries.
+///
+/// The pieces get a set id of their own, `operation_id` plus a random
+/// suffix, so two calls that reuse an operation id never share or overwrite
+/// each other's pieces.
 fn stored_body(
     store: &LibraryStore,
     key: &DocumentKey,
@@ -409,22 +431,24 @@ fn stored_body(
     if document_json.len() <= width {
         return StoredBody {
             inline: document_json.to_string(),
+            parts_id: None,
             parts: 0,
             inserts: Vec::new(),
         };
     }
+    let parts_id = format!("{operation_id}:{}", uuid::Uuid::new_v4());
     let inserts: Vec<TypedDbStatement> = (0_i64..)
         .zip(super::cut_text(document_json, width))
         .map(|(seq, body)| {
             exec(
                 "INSERT OR IGNORE INTO configuration_document_parts (
-                    scope_type, scope_id, namespace, write_operation_id, seq, body
+                    scope_type, scope_id, namespace, parts_id, seq, body
                  ) VALUES (?, ?, ?, ?, ?, ?)",
                 vec![
                     text(&key.scope_type),
                     text(&key.scope_id),
                     text(&key.namespace),
-                    text(operation_id),
+                    text(&parts_id),
                     int(seq),
                     text(body),
                 ],
@@ -432,22 +456,27 @@ fn stored_body(
         })
         .collect();
     StoredBody {
-        inline: String::new(),
+        inline: parts_id.clone(),
+        parts_id: Some(parts_id),
         parts: i64::try_from(inserts.len()).unwrap_or(i64::MAX),
         inserts,
     }
 }
 
 /// Writes `body`'s pieces in as few batches as the database plugin's
-/// limits allow. They are invisible until a document row names
-/// `operation_id`, and a write that never commits leaves them for the next
-/// committed write of the document to drop.
+/// limits allow. They are invisible until a document row names their set.
+/// When a batch fails, the pieces already written are dropped again; a
+/// write that stops for good before its row names them (a crash) leaves
+/// them unnamed, taking space but never read.
 ///
 /// # Errors
 ///
 /// Returns the database error, or a limit error when one piece does not
 /// fit a batch.
-async fn write_parts(store: &LibraryStore, body: StoredBody, operation_id: &str) -> Result<()> {
+async fn write_parts(store: &LibraryStore, key: &DocumentKey, body: StoredBody) -> Result<()> {
+    let Some(parts_id) = body.parts_id else {
+        return Ok(());
+    };
     let mut batches = crate::store::write_batches::WriteBatches::new(
         store.db_capabilities(),
         "configuration piece",
@@ -458,36 +487,61 @@ async fn write_parts(store: &LibraryStore, body: StoredBody, operation_id: &str)
     }
     full.extend(batches.finish());
     for (part, statements) in full.into_iter().enumerate() {
-        batch::execute_host_batch(
-            store,
-            request(&format!("{operation_id}:parts:{part}"), statements),
-        )
-        .await?;
+        if let Err(err) =
+            batch::execute_host_batch(store, request(&format!("{parts_id}:{part}"), statements))
+                .await
+        {
+            if let Some(drop) = drop_unnamed_parts(key, &[parts_id.as_str()]) {
+                // A failed clean-up leaves only unnamed pieces.
+                let _ = batch::execute_host_batch(
+                    store,
+                    request(&format!("{parts_id}:drop"), vec![drop]),
+                )
+                .await;
+            }
+            return Err(err);
+        }
     }
     Ok(())
 }
 
-/// Drops every piece of `key`'s document its row does not name: those of an
-/// earlier write, of a write that lost its revision check, or every piece
-/// when the body is inline.
-fn drop_unnamed_parts(key: &DocumentKey) -> TypedDbStatement {
-    exec(
-        "DELETE FROM configuration_document_parts
-          WHERE scope_type = ? AND scope_id = ? AND namespace = ?
-            AND write_operation_id NOT IN (
-                SELECT write_operation_id FROM configuration_documents
-                 WHERE scope_type = ? AND scope_id = ? AND namespace = ?
-                   AND document_parts > 0
-            )",
-        vec![
-            text(&key.scope_type),
-            text(&key.scope_id),
-            text(&key.namespace),
-            text(&key.scope_type),
-            text(&key.scope_id),
-            text(&key.namespace),
-        ],
-    )
+/// Drops the pieces of `key`'s document in the sets `parts_ids` that its
+/// row does not name: the set a replacement replaced, and the set a write
+/// staged when it did not commit. A set the row names is kept, and so is
+/// every other set, which another write may be staging.
+///
+/// # Returns
+///
+/// `None` when there is no set to drop.
+fn drop_unnamed_parts(key: &DocumentKey, parts_ids: &[&str]) -> Option<TypedDbStatement> {
+    if parts_ids.is_empty() {
+        return None;
+    }
+    let mut binds = vec![
+        text(&key.scope_type),
+        text(&key.scope_id),
+        text(&key.namespace),
+    ];
+    binds.extend(parts_ids.iter().map(|id| text(id)));
+    binds.extend([
+        text(&key.scope_type),
+        text(&key.scope_id),
+        text(&key.namespace),
+    ]);
+    let marks = vec!["?"; parts_ids.len()].join(", ");
+    Some(exec(
+        &format!(
+            "DELETE FROM configuration_document_parts
+              WHERE scope_type = ? AND scope_id = ? AND namespace = ?
+                AND parts_id IN ({marks})
+                AND parts_id NOT IN (
+                    SELECT document_json FROM configuration_documents
+                     WHERE scope_type = ? AND scope_id = ? AND namespace = ?
+                       AND document_parts > 0
+                )"
+        ),
+        binds,
+    ))
 }
 
 /// Inserts `document_json` when the key is absent.
@@ -514,14 +568,10 @@ pub async fn import_if_absent(
         return Ok(existing);
     }
     let body = stored_body(store, key, document_json, operation_id);
-    let (inline, parts) = (body.inline.clone(), body.parts);
-    write_parts(store, body, operation_id).await?;
+    let (inline, parts, parts_id) = (body.inline.clone(), body.parts, body.parts_id.clone());
+    write_parts(store, key, body).await?;
     let now = Utc::now().to_rfc3339();
-    batch::execute_host_batch(
-        store,
-        request(
-            operation_id,
-            vec![
+    let mut statements = vec![
                 exec(
                     "INSERT OR IGNORE INTO configuration_documents (
                     scope_type, scope_id, namespace, schema_version, revision,
@@ -599,11 +649,12 @@ pub async fn import_if_absent(
                         1,
                     ),
                 ),
-                drop_unnamed_parts(key),
-            ],
-        ),
-    )
-    .await?;
+    ];
+    statements.extend(drop_unnamed_parts(
+        key,
+        &parts_id.iter().map(String::as_str).collect::<Vec<_>>(),
+    ));
+    batch::execute_host_batch(store, request(operation_id, statements)).await?;
     load_document(store, key)
         .await?
         .ok_or_else(|| LibraryError::not_found(EntityKind::Configuration, &key.namespace))
@@ -650,7 +701,7 @@ pub async fn replace_document(
     }
     // A commit can land after the empty lookup and before the revision read.
     pause_after_empty_receipt_lookup(operation_id).await;
-    let current = load_document(store, key)
+    let (replaced_parts, current) = load_row(store, key)
         .await?
         .ok_or_else(|| LibraryError::not_found(EntityKind::Configuration, &key.namespace))?;
     if current.schema_version != schema_version {
@@ -665,16 +716,12 @@ pub async fn replace_document(
         });
     }
     let body = stored_body(store, key, document_json, operation_id);
-    let (inline, parts) = (body.inline.clone(), body.parts);
-    write_parts(store, body, operation_id).await?;
+    let (inline, parts, parts_id) = (body.inline.clone(), body.parts, body.parts_id.clone());
+    write_parts(store, key, body).await?;
     let now = Utc::now().to_rfc3339();
     let expires = (Utc::now() + Duration::hours(24)).to_rfc3339();
     let slot = format!("config-cas:{operation_id}");
-    let reply = batch::execute_host_batch(
-        store,
-        request(
-            operation_id,
-            vec![
+    let mut statements = vec![
                 exec(
                     "INSERT OR IGNORE INTO bookclerk_slots (slot_key, bump) \
                      SELECT ?, 0 WHERE NOT EXISTS ( \
@@ -812,11 +859,14 @@ pub async fn replace_document(
                     vec![text(operation_id)],
                     1,
                 ),
-                drop_unnamed_parts(key),
-            ],
-        ),
-    )
-    .await?;
+    ];
+    // The receipt read stays statement 8; the clean-up goes after it.
+    let stale: Vec<&str> = [replaced_parts.as_deref(), parts_id.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect();
+    statements.extend(drop_unnamed_parts(key, &stale));
+    let reply = batch::execute_host_batch(store, request(operation_id, statements)).await?;
 
     let rows = batch::rows(&reply, 8);
     let Some(row) = rows.first() else {
@@ -1126,7 +1176,7 @@ mod tests {
             .await
             .unwrap();
         rows.retain(|row| row.namespace == key.namespace);
-        rows.sort_by(|a, b| (&a.write_operation_id, a.seq).cmp(&(&b.write_operation_id, b.seq)));
+        rows.sort_by(|a, b| (&a.parts_id, a.seq).cmp(&(&b.parts_id, b.seq)));
         rows
     }
 
@@ -1165,7 +1215,7 @@ mod tests {
             .unwrap();
             let first = pieces(&store, &key).await;
             if wide.len() > width {
-                assert!(row.document_json.is_empty(), "{name}");
+                assert!(row.document_json.starts_with("op-import:"), "{name}");
                 assert_eq!(
                     i64::try_from(first.len()).unwrap(),
                     row.document_parts,
@@ -1198,7 +1248,7 @@ mod tests {
                 pieces(&store, &key)
                     .await
                     .iter()
-                    .all(|piece| piece.write_operation_id == "op-wider"),
+                    .all(|piece| piece.parts_id.starts_with("op-wider:")),
                 "{name}"
             );
 
@@ -1218,7 +1268,7 @@ mod tests {
                 pieces(&store, &key)
                     .await
                     .iter()
-                    .all(|piece| piece.write_operation_id == "op-wider"),
+                    .all(|piece| piece.parts_id.starts_with("op-wider:")),
                 "{name}"
             );
             assert_eq!(
@@ -1248,6 +1298,66 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_losing_replacement_keeps_pieces_another_write_is_staging() {
+        use sea_orm::{ActiveModelTrait, ActiveValue::Set};
+
+        let store = sqlite::memory(Profile::Minimum).await.into_store();
+        let key = DocumentKey::library("test.wide");
+        let width = super::super::chunk_bytes(store.db_capabilities());
+        let wide = wide_document(width * 3);
+        import_if_absent(&store, &operator(), &key, 1, &wide, "op-import")
+            .await
+            .unwrap();
+        replace_document(&store, &operator(), &key, 1, 1, &wide, "op-second")
+            .await
+            .unwrap();
+        // Another write has staged its pieces and not committed yet.
+        configuration_document_parts::ActiveModel {
+            scope_type: Set(key.scope_type.clone()),
+            scope_id: Set(key.scope_id.clone()),
+            namespace: Set(key.namespace.clone()),
+            parts_id: Set("op-staging:x".into()),
+            seq: Set(0),
+            body: Set("{}".into()),
+        }
+        .insert(store.db())
+        .await
+        .unwrap();
+        let lost = replace_document(&store, &operator(), &key, 1, 1, &wide, "op-lost")
+            .await
+            .unwrap();
+        assert!(matches!(lost, ReplaceOutcome::Conflict { .. }), "{lost:?}");
+        let sets: std::collections::BTreeSet<String> = pieces(&store, &key)
+            .await
+            .into_iter()
+            .map(|piece| piece.parts_id)
+            .collect();
+        assert_eq!(sets.len(), 2, "{sets:?}");
+        assert!(sets.contains("op-staging:x"));
+        assert!(sets.iter().any(|id| id.starts_with("op-second:")));
+    }
+
+    #[tokio::test]
+    async fn a_failed_piece_batch_drops_the_pieces_it_staged() {
+        let kit = sqlite::memory(Profile::Minimum).await;
+        let store = kit.store();
+        let key = DocumentKey::library("test.wide");
+        let width = super::super::chunk_bytes(store.db_capabilities());
+        let wide = wide_document(
+            width
+                .saturating_mul(40)
+                .min(MAX_CONFIGURATION_DOCUMENT_BYTES - 64),
+        );
+        kit.lose_next_replies(1);
+        let err = import_if_absent(store, &operator(), &key, 1, &wide, "op-import")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LibraryError::Unavailable(_)), "{err:?}");
+        assert!(pieces(store, &key).await.is_empty());
+        assert!(load_document(store, &key).await.unwrap().is_none());
     }
 
     #[tokio::test]

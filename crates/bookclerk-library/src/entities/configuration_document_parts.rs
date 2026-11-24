@@ -17,10 +17,11 @@ pub struct Model {
     /// Typed domain name of the document (`configuration_documents.namespace`).
     #[sea_orm(primary_key, auto_increment = false)]
     pub namespace: String,
-    /// The write this piece belongs to; the document row's
-    /// `write_operation_id` names the one to read.
+    /// The set of pieces this one belongs to, unique to the write that
+    /// staged it; a pieced document row's `document_json` names the set to
+    /// read.
     #[sea_orm(primary_key, auto_increment = false)]
-    pub write_operation_id: String,
+    pub parts_id: String,
     /// The piece's place in the document, from 0.
     #[sea_orm(primary_key, auto_increment = false)]
     pub seq: i64,

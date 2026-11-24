@@ -143,8 +143,8 @@ Physical table `configuration_documents`, one row per
 | `namespace` | Domain name. Not a plugin capability and not a `PluginKey` |
 | `schema_version` | Domain schema, starting at 1. Independent of library `SCHEMA_VERSION` |
 | `revision` | Monotonic compare-and-swap counter, starting at 1 |
-| `document_json` | JSON body of one typed document, at most 16 KiB; empty when the body is stored in pieces |
-| `document_parts` | Pieces in `configuration_document_parts` that hold a body wider than one database cell or statement, written under `write_operation_id`; `0` when `document_json` holds it |
+| `document_json` | JSON body of one typed document, at most 16 KiB; the id of its set of pieces when the body is stored in pieces |
+| `document_parts` | Pieces in `configuration_document_parts` that hold a body wider than one database cell or statement, under a set id unique to the write that staged them; `0` when `document_json` holds the body |
 | `updated_at` / `updated_by` | Audit time and actor |
 | `write_operation_id` | Idempotency token of the commit that produced this revision |
 

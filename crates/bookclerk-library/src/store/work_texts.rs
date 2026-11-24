@@ -5,11 +5,19 @@
 //! plugin carries (the smallest of its cell, statement and result limits)
 //! or when keeping it inline would make the work's row wider than one
 //! reply. Its own column then holds an empty string, and the row's
-//! `text_version` names the pieces. Writes stage the pieces first, then
-//! change the row with a compare-and-swap on its `updated_at` and
-//! `text_version` in the batch that drops the pieces the row no longer
-//! names, so a row never names pieces that are gone. Readers join the
-//! pieces again with [`LibraryStore::complete_work_texts`].
+//! `text_version` names the pieces. Writes stage the pieces under a new
+//! version first, then change the row with a compare-and-swap on its
+//! `updated_at` and `text_version`. The same batch drops the version the
+//! row replaced and, when the swap lost, the version it staged, each only
+//! while no row names it. Pieces of a named version are never dropped, so
+//! a row never names pieces that are gone, and a write that loses never
+//! touches another writer's staged pieces. Readers join the pieces again
+//! with [`LibraryStore::complete_work_texts`] and accept them only while
+//! the row still names their version.
+//!
+//! A write that stops between staging and its swap (a crash or a failed
+//! batch it could not clean up) leaves its staged pieces unnamed; they
+//! take space but are never read.
 //!
 //! On a plugin without cell or result caps (the first-party SQLite one)
 //! every text stays inline and nothing here changes what is stored.
@@ -118,8 +126,10 @@ impl LibraryStore {
     /// pieces with the joined text.
     ///
     /// Pieces are read in keyset pages sized to the database plugin's
-    /// result limits. A row whose pieces a concurrent write dropped is read
-    /// again, up to a few times.
+    /// result limits, then the rows are read again: a row's pieces are
+    /// taken only while it still names their version, so pages read across
+    /// a concurrent swap are never mixed. A row a concurrent write changed
+    /// is completed from its new version, up to a few times.
     ///
     /// # Errors
     ///
@@ -135,13 +145,42 @@ impl LibraryStore {
             if pieced.is_empty() {
                 return Ok(());
             }
-            let ids: Vec<String> = pieced.iter().map(|&at| rows[at].id.clone()).collect();
-            let pieces = self.read_text_parts(&ids).await?;
+            let ids: Vec<String> = pieced
+                .iter()
+                .map(|&at| rows[at].id.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            let mut by_version: BTreeMap<(String, String), Vec<work_text_parts::Model>> =
+                BTreeMap::new();
+            for piece in self.read_text_parts(&ids).await? {
+                by_version
+                    .entry((piece.work_id.clone(), piece.version.clone()))
+                    .or_default()
+                    .push(piece);
+            }
+            // Read the rows again: pieces count only for the version a row
+            // still names, since a named version's pieces are never dropped.
+            let fresh: BTreeMap<String, works::Model> =
+                super::library_model::find_chunked::<works::Entity, _>(self, &ids, |part| {
+                    works::Entity::find().filter(works::Column::Id.is_in(part.iter().cloned()))
+                })
+                .await?
+                .into_iter()
+                .map(|row| (row.id.clone(), row))
+                .collect();
             let mut stale: Vec<usize> = Vec::new();
             for at in pieced {
                 let row = &mut rows[at];
                 let version = row.text_version.clone().unwrap_or_default();
-                match joined(&pieces, &row.id, &version) {
+                let named = fresh
+                    .get(&row.id)
+                    .is_some_and(|now| now.text_version.as_deref() == Some(version.as_str()));
+                let texts = by_version
+                    .get(&(row.id.clone(), version))
+                    .filter(|_| named)
+                    .and_then(|run| joined(run));
+                match texts {
                     Some(texts) if !texts.is_empty() => {
                         for (field, text) in texts {
                             *field.of_mut(row) = Some(text);
@@ -160,16 +199,7 @@ impl LibraryStore {
                     rows[stale[0]].id
                 )));
             }
-            // A later write replaced these texts: read the rows again.
-            let ids: Vec<String> = stale.iter().map(|&at| rows[at].id.clone()).collect();
-            let fresh: BTreeMap<String, works::Model> =
-                super::library_model::find_chunked::<works::Entity, _>(self, &ids, |part| {
-                    works::Entity::find().filter(works::Column::Id.is_in(part.iter().cloned()))
-                })
-                .await?
-                .into_iter()
-                .map(|row| (row.id.clone(), row))
-                .collect();
+            // A later write replaced these texts: start from the new rows.
             for at in stale {
                 if let Some(row) = fresh.get(&rows[at].id) {
                     rows[at] = row.clone();
@@ -270,8 +300,25 @@ impl LibraryStore {
         staged.extend(batches.finish());
         for statements in staged {
             let operation_id = format!("work-text-parts-{}", uuid::Uuid::new_v4());
-            self.execute_host_batch(batch::request(&operation_id, statements))
-                .await?;
+            if let Err(err) = self
+                .execute_host_batch(batch::request(&operation_id, statements))
+                .await
+            {
+                // Drop what this write staged before the failure; a failed
+                // clean-up leaves only unnamed pieces, which are never read.
+                if let Some(version) = placed.version.as_deref() {
+                    let operation_id = format!("work-text-parts-drop-{}", uuid::Uuid::new_v4());
+                    let _ = self
+                        .execute_host_batch(batch::request(
+                            &operation_id,
+                            drop_unnamed_versions(&row.id, &[version])
+                                .into_iter()
+                                .collect(),
+                        ))
+                        .await;
+                }
+                return Err(err);
+            }
         }
         let column = |field: TextField| {
             batch::text_opt(
@@ -282,29 +329,29 @@ impl LibraryStore {
             )
         };
         let operation_id = format!("work-texts-{}", uuid::Uuid::new_v4());
-        let reply = self
-            .execute_host_batch(batch::request(
-                &operation_id,
-                vec![
-                    batch::exec(
-                        "UPDATE works SET description = ?, subjects = ?, categories = ?, \
+        let mut statements = vec![batch::exec(
+            "UPDATE works SET description = ?, subjects = ?, categories = ?, \
                          cover_url = ?, text_version = ?, updated_at = ? \
                          WHERE id = ? AND updated_at = ? AND COALESCE(text_version, '') = ?",
-                        vec![
-                            column(TextField::Description),
-                            column(TextField::Subjects),
-                            column(TextField::Categories),
-                            batch::text_opt(texts.cover_url.as_deref()),
-                            batch::text_opt(placed.version.as_deref()),
-                            batch::text(&now_str()),
-                            batch::text(&row.id),
-                            batch::text(&row.updated_at),
-                            batch::text(row.text_version.as_deref().unwrap_or_default()),
-                        ],
-                    ),
-                    drop_unnamed_parts(&row.id),
-                ],
-            ))
+            vec![
+                column(TextField::Description),
+                column(TextField::Subjects),
+                column(TextField::Categories),
+                batch::text_opt(texts.cover_url.as_deref()),
+                batch::text_opt(placed.version.as_deref()),
+                batch::text(&now_str()),
+                batch::text(&row.id),
+                batch::text(&row.updated_at),
+                batch::text(row.text_version.as_deref().unwrap_or_default()),
+            ],
+        )];
+        let versions: Vec<&str> = [row.text_version.as_deref(), placed.version.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect();
+        statements.extend(drop_unnamed_versions(&row.id, &versions));
+        let reply = self
+            .execute_host_batch(batch::request(&operation_id, statements))
             .await?;
         Ok(batch::rows_affected(&reply, 0) > 0)
     }
@@ -388,29 +435,37 @@ impl LibraryStore {
     }
 }
 
-/// Drops every piece of `work_id`'s texts its row does not name: those of
-/// an earlier write, of a write that lost its compare-and-swap, or every
-/// piece when the texts are inline.
-fn drop_unnamed_parts(work_id: &str) -> TypedDbStatement {
-    batch::exec(
-        "DELETE FROM work_text_parts WHERE work_id = ? AND version NOT IN \
-         (SELECT text_version FROM works WHERE id = ? AND text_version IS NOT NULL)",
-        vec![batch::text(work_id), batch::text(work_id)],
-    )
+/// Drops the pieces of `work_id`'s texts under `versions` that its row
+/// does not name: the version a swap replaced, and the version a write
+/// staged when its swap lost. A version the row names is kept, and so is
+/// every other version, which another write may be staging.
+///
+/// # Returns
+///
+/// `None` when there is no version to drop.
+fn drop_unnamed_versions(work_id: &str, versions: &[&str]) -> Option<TypedDbStatement> {
+    if versions.is_empty() {
+        return None;
+    }
+    let mut binds = vec![batch::text(work_id)];
+    binds.extend(versions.iter().map(|version| batch::text(version)));
+    binds.push(batch::text(work_id));
+    let marks = vec!["?"; versions.len()].join(", ");
+    Some(batch::exec(
+        &format!(
+            "DELETE FROM work_text_parts WHERE work_id = ? AND version IN ({marks}) \
+             AND version NOT IN \
+             (SELECT text_version FROM works WHERE id = ? AND text_version IS NOT NULL)"
+        ),
+        binds,
+    ))
 }
 
-/// The texts `version`'s pieces of `work_id` join into, or `None` when a
-/// text's pieces are not a gapless run of its piece count from 0.
-fn joined(
-    pieces: &[work_text_parts::Model],
-    work_id: &str,
-    version: &str,
-) -> Option<BTreeMap<TextField, String>> {
+/// The texts one version's `pieces` join into, or `None` when a text's
+/// pieces are not a gapless run of its piece count from 0.
+fn joined(pieces: &[work_text_parts::Model]) -> Option<BTreeMap<TextField, String>> {
     let mut by_field: BTreeMap<TextField, Vec<&work_text_parts::Model>> = BTreeMap::new();
-    for piece in pieces
-        .iter()
-        .filter(|piece| piece.work_id == work_id && piece.version == version)
-    {
+    for piece in pieces {
         by_field
             .entry(TextField::parse(&piece.field)?)
             .or_default()
@@ -709,6 +764,116 @@ mod tests {
         assert!(matches!(err, LibraryError::Conflict(_)), "{err:?}");
         let work = store.get_work(&work_id).await.unwrap().unwrap();
         assert_ne!(work.description.as_deref(), Some("Spice."));
+    }
+
+    #[tokio::test]
+    async fn a_failed_staging_batch_drops_what_it_staged() {
+        let kit = sqlite::memory(Profile::Minimum).await;
+        let store = kit.store();
+        store
+            .upsert_account("audible", "a1", "us", None, true, "audible")
+            .await
+            .unwrap();
+        let record = store
+            .upsert_book(&NewBook::minimal("B00X", "a1", "US", "Dune"))
+            .await
+            .unwrap();
+        let work_id = store
+            .work_of_holding(&record.holding_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let piece = crate::control_plane::chunk_bytes(store.db_capabilities());
+        // The first staging batch is applied but its reply is lost.
+        kit.lose_next_replies(1);
+        let err = store
+            .set_work_enrichment(
+                &work_id,
+                &WorkEnrichment {
+                    description: Some(long_text(piece * 40)),
+                    ..WorkEnrichment::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, LibraryError::Unavailable(_)), "{err:?}");
+        assert!(pieces(store).await.is_empty());
+        let work = store.get_work(&work_id).await.unwrap().unwrap();
+        assert!(work.description.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_losing_write_keeps_pieces_another_write_is_staging() {
+        use sea_orm::{ActiveModelTrait, ActiveValue::Set};
+
+        let (store, work_id) = one_work(Profile::Minimum).await;
+        let piece = crate::control_plane::chunk_bytes(store.db_capabilities());
+        let stale = uncapped(works::Entity::find_by_id(work_id.clone()).one(store.db()))
+            .await
+            .unwrap()
+            .unwrap();
+        store
+            .set_work_enrichment(
+                &work_id,
+                &WorkEnrichment {
+                    description: Some("Spice.".into()),
+                    ..WorkEnrichment::default()
+                },
+            )
+            .await
+            .unwrap();
+        // Another write has staged its pieces and not swapped yet.
+        work_text_parts::ActiveModel {
+            work_id: Set(work_id.clone()),
+            version: Set("staging".into()),
+            field: Set("description".into()),
+            seq: Set(0),
+            parts: Set(1),
+            body: Set("Arrakis.".into()),
+        }
+        .insert(store.db())
+        .await
+        .unwrap();
+        let applied = store
+            .swap_work_texts(
+                &stale,
+                &WorkTexts {
+                    description: Some(long_text(piece * 2)),
+                    ..WorkTexts::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(!applied);
+        let left = pieces(&store).await;
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].version, "staging");
+    }
+
+    #[tokio::test]
+    async fn the_same_work_twice_is_completed_twice() {
+        let (store, work_id) = one_work(Profile::Minimum).await;
+        let piece = crate::control_plane::chunk_bytes(store.db_capabilities());
+        let description = long_text(piece * 2);
+        store
+            .set_work_enrichment(
+                &work_id,
+                &WorkEnrichment {
+                    description: Some(description.clone()),
+                    ..WorkEnrichment::default()
+                },
+            )
+            .await
+            .unwrap();
+        let row = uncapped(works::Entity::find_by_id(work_id.clone()).one(store.db()))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut rows = [row.clone(), row];
+        store.complete_work_texts(&mut rows).await.unwrap();
+        for row in rows {
+            assert_eq!(row.description.as_deref(), Some(description.as_str()));
+        }
     }
 
     #[tokio::test]

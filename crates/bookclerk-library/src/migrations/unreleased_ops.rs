@@ -1228,10 +1228,10 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         scope_type TEXT NOT NULL,
         scope_id TEXT NOT NULL,
         namespace TEXT NOT NULL,
-        write_operation_id TEXT NOT NULL,
+        parts_id TEXT NOT NULL,
         seq INTEGER NOT NULL,
         body TEXT NOT NULL,
-        PRIMARY KEY (scope_type, scope_id, namespace, write_operation_id, seq)
+        PRIMARY KEY (scope_type, scope_id, namespace, parts_id, seq)
     )",
     ),
     MigrationOp::Schema(
