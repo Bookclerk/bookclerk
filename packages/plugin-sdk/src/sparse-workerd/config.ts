@@ -105,6 +105,7 @@ const SDK_PY_SIBLING_MODULES: ReadonlyArray<readonly [string, string, string]> =
   ["bookclerk_plugin_sdk/db_value.py", "db_value.py", "sdk-db-value.py"],
   ["bookclerk_plugin_sdk/scan_page.py", "scan_page.py", "sdk-scan-page.py"],
   ["bookclerk_plugin_sdk/object_store.py", "object_store.py", "sdk-object-store.py"],
+  ["bookclerk_plugin_sdk/tcp.py", "tcp.py", "sdk-tcp.py"],
 ];
 const PYODIDE_EGRESS_HOSTS = ["cdn.jsdelivr.net", "pypi.org", "files.pythonhosted.org"] as const;
 

@@ -71,7 +71,8 @@ the `http` feature puts an HTTPS client on top. Only hosts the plugin's
 A protocol that starts in the clear and upgrades (SMTP's `STARTTLS`) or
 speaks TLS without HTTP takes the socket with `Socket::into_stream` and
 calls `http::start_tls(hostname, stream)`, which checks the server's
-certificate against the Mozilla roots. A destination the operator types
+certificate against the Mozilla roots. Workerd plugins get the same
+behavior from the TypeScript and Python SDKs' `connect()`. A destination the operator types
 into a `network = "tcp"` setting arrives in `Bindings::network`
 (`NetworkGrant`, with a `SettingGrantState` of approved, pending, unset or
 invalid for each setting); the first-party email notifier reads its mail

@@ -210,6 +210,31 @@ if row and row["state"] == "pending":
 A refused fetch answers `403` with an `x-bookclerk-error:
 network_not_granted` header; report it rather than retrying.
 
+## TCP sockets
+
+`bookclerk_plugin_sdk.tcp.connect()` opens a socket to a host the `tcp`
+grant names, and its `start_tls()` works under Bookclerk: the launcher
+starts TLS and checks the certificate (see
+[STARTTLS through the relay](../../../internals/workerd-bridge.md#starttls-through-the-relay)).
+Reads and writes are plaintext bytes.
+
+```python
+from bookclerk_plugin_sdk.tcp import connect
+
+sock = await connect(("smtp.example.com", 587), secure_transport="starttls")
+# ... read the greeting, send EHLO and STARTTLS, read "220" ...
+sock = await sock.start_tls()  # raises ConnectionError when the certificate doesn't verify
+```
+
+`secure_transport="on"` starts in TLS.
+
+In tests, `TestConnect` from `bookclerk_plugin_sdk.testkit` is a scripted
+server behind a fake relay that speaks the same frames: pass `fake.dial` as
+`connect(..., dial=fake.dial)` or call `fake.connect(...)`. `allows` refuses
+a grant, `tls_failure` fails a handshake, and `fake.dials` lists what the
+plugin opened. The TypeScript testkit's `createTestConnect` behaves the same
+way.
+
 ## Testing database code
 
 `create_test_database()` from `bookclerk_plugin_sdk.testkit` gives a

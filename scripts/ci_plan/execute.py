@@ -1159,6 +1159,7 @@ def check_commands(check: str, plan: Plan, ctx: Context, *, event: str = "", com
             "test:stream-copy",
             "test:object-store",
             "test:testkit-bindings",
+            "test:tcp",
             "test:webhooks",
             "test:db-adapter",
             "test:plugin-migrations",

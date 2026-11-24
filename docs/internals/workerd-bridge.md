@@ -102,6 +102,38 @@ drops proxy and hop-by-hop headers, and adds TLS for `https` (Mozilla's
 roots, the hosts' rustls provider). TLS and HTTP stay inside the jail; the
 host only parses the `CONNECT` line, as it does for native guests.
 
+### STARTTLS through the relay
+
+The pinned workerd can't upgrade a socket it relays through the egress
+worker, so the SDKs' `connect()` asks the relay to do it. A socket opened
+with `secureTransport: "starttls"` or `"on"` dials its host with the suffix
+`.starttls.bookclerk.invalid` appended. The egress gate strips the suffix,
+checks the real host against the `tcp` grant (a bracketed IPv6 host is
+refused), and dials with the suffix kept; the relay strips it again and
+opens the host tunnel to the real host, so the host checks and resolves
+the same name as for a plain socket.
+
+From then on every byte between the plugin and the relay is a frame: a
+kind byte, a big-endian 16-bit payload length, then the payload
+(`bookclerk_workerd::egress_starttls`).
+
+| Kind | From | Payload | Meaning |
+| --- | --- | --- | --- |
+| 0 | either | 1 to 16,384 bytes | Plaintext for the other side |
+| 1 | plugin | empty | Start TLS now |
+| 1 | relay | empty | TLS is ready |
+| 2 | relay | UTF-8, up to 512 bytes | The handshake failed, and why |
+
+On a start frame the relay runs a rustls client handshake over the host
+tunnel with SNI set to the real host and Mozilla's roots, then answers
+ready or failed. A tunnel upgrades at most once; a second start frame or a
+malformed frame ends it. The `egress_starttls_frames` fuzz target checks the
+decoder against an independent reading of the layout.
+
+Server bytes that arrive together with the tunnel's `200` (a server that
+speaks first, as SMTP does) reach the plugin on plain and framed tunnels
+alike.
+
 The host link carries no TCP half-close. When a plugin closes its socket's
 writer and keeps reading (`allowHalfOpen`), the relay keeps the tunnel open
 and relays the reply until the server ends it, so the server never sees the

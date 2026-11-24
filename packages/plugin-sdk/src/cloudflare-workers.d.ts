@@ -53,3 +53,14 @@ declare module "cloudflare:workers" {
     exec(query: string): Promise<D1ExecResult>;
   }
 }
+
+/**
+ * Minimal ambient types for the virtual `cloudflare:sockets` module, enough
+ * for the SDK's `connect()` wrapper.
+ */
+declare module "cloudflare:sockets" {
+  export function connect(
+    address: { hostname: string; port: number },
+    options?: { secureTransport?: "off" | "on" | "starttls"; allowHalfOpen?: boolean },
+  ): import("./tcp.js").TcpSocket;
+}

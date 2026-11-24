@@ -77,12 +77,18 @@ def _runtime_imports(source: str) -> set[str]:
 
 
 def _closure() -> set[str]:
-    """Every SDK module reachable from ``workerd.py``, ``scan_page.py`` or ``object_store.py``.
+    """Every SDK module reachable from the modules authors import.
 
-    Authors import both directly. ``__init__.py`` is left out: the isolate's
+    Authors import ``workerd.py``, ``scan_page.py``, ``object_store.py`` and
+    ``tcp.py`` directly. ``__init__.py`` is left out: the isolate's
     is a stub, not the package's own.
     """
-    pending = [SDK_PY_WORKERD_MODULE, f"{PACKAGE}/scan_page.py", f"{PACKAGE}/object_store.py"]
+    pending = [
+        SDK_PY_WORKERD_MODULE,
+        f"{PACKAGE}/scan_page.py",
+        f"{PACKAGE}/object_store.py",
+        f"{PACKAGE}/tcp.py",
+    ]
     reached: set[str] = set()
     while pending:
         module = pending.pop()

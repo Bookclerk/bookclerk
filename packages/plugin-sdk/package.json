@@ -64,6 +64,7 @@
     "test:egress-bridge": "node scripts/test-egress-bridge.mjs",
     "test:testkit": "node scripts/test-testkit.mjs",
     "test:testkit-bindings": "node scripts/test-testkit-bindings.mjs",
+    "test:tcp": "node scripts/test-tcp.mjs",
     "build:embed": "node scripts/build-embed.mjs"
   },
   "engines": {

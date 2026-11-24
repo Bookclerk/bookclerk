@@ -733,6 +733,30 @@ function parseAuthority(authority) {
   };
 }
 
+/**
+ * Host-name suffix that asks for a STARTTLS-capable tunnel: the SDK's
+ * `connect()` adds it, and the launcher's egress relay
+ * (`bookclerk-workerd::egress_starttls`) frames the tunnel and originates TLS
+ * when the plugin calls `startTls()`. `.invalid` is reserved, so no real host
+ * ends this way.
+ */
+const STARTTLS_HOST_SUFFIX = ".starttls.bookclerk.invalid";
+
+/**
+ * Splits a `connect()` host into the real host and whether it asked for a
+ * framed tunnel. A host that is only the suffix, or has an empty label
+ * before it, is not framed and fails the checks as written.
+ */
+function splitStarttlsHost(hostname) {
+  if (typeof hostname !== "string") return { hostname, framed: false };
+  const lower = hostname.toLowerCase();
+  if (lower.endsWith(STARTTLS_HOST_SUFFIX)) {
+    const real = hostname.slice(0, hostname.length - STARTTLS_HOST_SUFFIX.length);
+    if (real && !real.endsWith(".")) return { hostname: real, framed: true };
+  }
+  return { hostname, framed: false };
+}
+
 /** Workerd `json` bindings arrive as objects; keep string parse for tests. */
 /**
  * The pending network setting whose destination is `host:port`, if any.
@@ -890,9 +914,15 @@ export default {
     const authority = (opened && opened.localAddress) || "";
     const parsed = parseAuthority(authority);
     const port = parsed.port;
+    // The SDK asks for a STARTTLS-capable (framed) tunnel by dialing the host
+    // with STARTTLS_HOST_SUFFIX appended; the launcher's relay does the TLS.
+    // The suffix comes off before any check, so the grant judges the real
+    // host, and goes back on the dial, so the relay knows to frame.
+    const split = splitStarttlsHost(parsed.hostname);
     // Judge and dial the canonical host, so the check and the socket agree
     // on which host it is.
-    const hostname = canonicalSocketHost(parsed.hostname);
+    let hostname = canonicalSocketHost(split.hostname);
+    if (split.framed && hostname != null && hostname.startsWith("[")) hostname = null;
     if (hostname == null || !allowsTcp(hostname, port, policy)) {
       try {
         await socket.close();
@@ -909,7 +939,10 @@ export default {
     }
     // `connect()` takes IPv6 without the URL form's brackets.
     const dial = hostname.startsWith("[") ? hostname.slice(1, -1) : hostname;
-    const outbound = connect({ hostname: dial, port });
+    const outbound = connect({
+      hostname: split.framed ? `${dial}${STARTTLS_HOST_SUFFIX}` : dial,
+      port,
+    });
     await outbound.opened;
     await Promise.all([
       socket.readable.pipeTo(outbound.writable),

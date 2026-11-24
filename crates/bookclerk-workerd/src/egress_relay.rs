@@ -151,6 +151,11 @@ impl TunnelTarget {
 pub enum RelayRequest {
     /// A `connect()` socket: open a tunnel and splice raw bytes.
     Tunnel(TunnelTarget),
+    /// A `connect()` socket from the SDK that may upgrade to TLS: open a
+    /// tunnel to the real host (the dialed name without
+    /// [`crate::egress_starttls::STARTTLS_HOST_SUFFIX`]) and speak the
+    /// framed protocol ([`crate::egress_starttls`]) with workerd.
+    FramedTunnel(TunnelTarget),
     /// A `fetch()` request: open a tunnel, add TLS for `https`, then send
     /// [`Self::Forward::head`] followed by the request body as workerd sends
     /// it.
@@ -344,7 +349,9 @@ const DROPPED_REQUEST_HEADERS: [&str; 6] = [
 ///
 /// # Returns
 ///
-/// [`RelayRequest::Tunnel`] for `CONNECT host:port`, or
+/// [`RelayRequest::Tunnel`] for `CONNECT host:port`,
+/// [`RelayRequest::FramedTunnel`] for a host ending in
+/// [`crate::egress_starttls::STARTTLS_HOST_SUFFIX`], or
 /// [`RelayRequest::Forward`] with the head rewritten to origin form: `host`
 /// set from the URL, proxy and hop-by-hop headers dropped, and `connection:
 /// close` (or `connection: upgrade` when the request carries `upgrade`).
@@ -365,7 +372,14 @@ pub fn parse_request_head(head: &[u8]) -> std::result::Result<RelayRequest, Head
         return Err(HeadError::BadStartLine);
     }
     if method == "CONNECT" {
-        return Ok(RelayRequest::Tunnel(parse_target(target, None)?));
+        let target = parse_target(target, None)?;
+        if let Some(real) = crate::egress_starttls::strip_starttls_suffix(&target.host) {
+            return Ok(RelayRequest::FramedTunnel(TunnelTarget {
+                host: real.to_string(),
+                port: target.port,
+            }));
+        }
+        return Ok(RelayRequest::Tunnel(target));
     }
     let (scheme, rest) = if let Some(rest) = strip_prefix_ignore_case(target, "https://") {
         (Scheme::Https, rest)
@@ -567,8 +581,38 @@ impl TunnelOpener for bookclerk_plugin_sdk::mux::Mux {
 /// # Errors
 ///
 /// When the stream cannot be opened, the host refuses (any status but 200),
-/// or the host does not answer within 30 seconds.
+/// the server's bytes arrive with the answer (a request-first protocol such
+/// as HTTP never sends any first), or the host does not answer within 30
+/// seconds.
 pub async fn open_tunnel<O: TunnelOpener>(opener: &O, target: &TunnelTarget) -> Result<O::Stream> {
+    let (stream, early) = open_tunnel_with_early_bytes(opener, target).await?;
+    if !early.is_empty() {
+        bail!("host proxy refused the tunnel");
+    }
+    Ok(stream)
+}
+
+/// Asks the host for a tunnel to `target` and keeps any server bytes that
+/// arrived with the answer, for server-first protocols (SMTP greets before
+/// the client speaks).
+///
+/// # Arguments
+///
+/// * `opener` - Opens streams on the host's proxy link.
+/// * `target` - Where the tunnel should go.
+///
+/// # Returns
+///
+/// The stream and the server bytes read past the host's answer, in order.
+///
+/// # Errors
+///
+/// When the stream cannot be opened, the host refuses (any status but 200),
+/// or the host does not answer within 30 seconds.
+pub async fn open_tunnel_with_early_bytes<O: TunnelOpener>(
+    opener: &O,
+    target: &TunnelTarget,
+) -> Result<(O::Stream, Vec<u8>)> {
     let mut stream = opener.open().await?;
     let authority = target.authority();
     let request = format!("CONNECT {authority} HTTP/1.1\r\nhost: {authority}\r\n\r\n");
@@ -578,10 +622,10 @@ pub async fn open_tunnel<O: TunnelOpener>(opener: &O, target: &TunnelTarget) -> 
         .await
         .context("host proxy did not answer the tunnel request")??;
     let ok = head.starts_with(b"HTTP/1.1 200 ") || head.starts_with(b"HTTP/1.0 200 ");
-    if !ok || !rest.is_empty() {
+    if !ok {
         bail!("host proxy refused the tunnel");
     }
-    Ok(stream)
+    Ok((stream, rest))
 }
 
 /// Opens the host's proxy link that the host delivered to this process.
@@ -724,6 +768,135 @@ where
         .map_err(Into::into)
 }
 
+/// How a framed pump phase ended.
+enum FramedEnd {
+    /// The plugin asked to upgrade; frames after the request stay in the
+    /// decoder.
+    StartTls,
+    /// The tunnel is done.
+    Closed,
+}
+
+/// Relays one phase of a framed tunnel: data frames from the plugin go to
+/// `upstream` as bytes, and `upstream`'s bytes go back as data frames.
+///
+/// Half-close works as in [`pump_tunnel`]: EOF from workerd keeps the tunnel
+/// open for the reply, bounded by [`HALF_CLOSE_GRACE`] of upstream silence.
+///
+/// # Arguments
+///
+/// * `client` - workerd's side of the tunnel.
+/// * `upstream` - The server, plain or inside TLS.
+/// * `frames` - Decoder holding any plugin bytes already read.
+/// * `may_upgrade` - Whether a start-TLS frame is allowed in this phase.
+///
+/// # Errors
+///
+/// A malformed frame, a start-TLS frame when `may_upgrade` is false, or a
+/// read or write failure on either side.
+async fn framed_phase<C, U>(
+    client: &mut C,
+    upstream: &mut U,
+    frames: &mut crate::egress_starttls::FrameDecoder,
+    may_upgrade: bool,
+) -> Result<FramedEnd>
+where
+    C: AsyncRead + AsyncWrite + Unpin,
+    U: AsyncRead + AsyncWrite + Unpin,
+{
+    use crate::egress_starttls::{encode_data, ClientFrame};
+
+    let mut client_buf = vec![0_u8; 16 * 1024];
+    let mut upstream_buf = vec![0_u8; 16 * 1024];
+    let mut client_open = true;
+    loop {
+        while let Some(frame) = frames.next_frame()? {
+            match frame {
+                ClientFrame::Data(bytes) => {
+                    upstream.write_all(&bytes).await?;
+                    upstream.flush().await?;
+                }
+                ClientFrame::StartTls if may_upgrade => return Ok(FramedEnd::StartTls),
+                ClientFrame::StartTls => bail!("the tunnel already upgraded to TLS"),
+            }
+        }
+        tokio::select! {
+            n = client.read(&mut client_buf), if client_open => {
+                let n = n?;
+                if n == 0 {
+                    client_open = false;
+                } else {
+                    frames.push(&client_buf[..n]);
+                }
+            }
+            n = read_upstream(upstream, &mut upstream_buf, client_open) => {
+                let n = n?;
+                if n == 0 {
+                    let _ = client.shutdown().await;
+                    return Ok(FramedEnd::Closed);
+                }
+                client.write_all(&encode_data(&upstream_buf[..n])).await?;
+                client.flush().await?;
+            }
+        }
+    }
+}
+
+/// Serves a framed tunnel: relays plaintext until the plugin asks for TLS,
+/// originates TLS to `host` with the relay's settings, reports the outcome,
+/// then relays the session's plaintext.
+///
+/// # Arguments
+///
+/// * `client` - workerd's side of the tunnel, after the `CONNECT` answer.
+/// * `upstream` - The host's tunnel to the server.
+/// * `frames` - Decoder holding any bytes workerd sent after its head.
+/// * `host` - The real host the plugin dialed, for SNI and the certificate.
+/// * `tls` - Client TLS settings (Mozilla's roots).
+///
+/// # Errors
+///
+/// A malformed frame, a failed handshake (after the TLS-failed frame is
+/// sent), or a transport failure.
+async fn pump_framed<C, U>(
+    mut client: C,
+    mut upstream: U,
+    mut frames: crate::egress_starttls::FrameDecoder,
+    host: &str,
+    tls: Arc<ClientConfig>,
+) -> Result<()>
+where
+    C: AsyncRead + AsyncWrite + Unpin,
+    U: AsyncRead + AsyncWrite + Unpin,
+{
+    use crate::egress_starttls::{encode_tls_failed, encode_tls_ready};
+
+    if let FramedEnd::Closed = framed_phase(&mut client, &mut upstream, &mut frames, true).await? {
+        return Ok(());
+    }
+    let handshake = async {
+        let name = ServerName::try_from(host.to_string())
+            .map_err(|_| anyhow::anyhow!("the host is not a valid TLS server name"))?;
+        tokio::time::timeout(TLS_TIMEOUT, TlsConnector::from(tls).connect(name, upstream))
+            .await
+            .map_err(|_| anyhow::anyhow!("the TLS handshake timed out"))?
+            .map_err(|err| anyhow::anyhow!("the TLS handshake failed: {err}"))
+    };
+    let mut session = match handshake.await {
+        Ok(session) => session,
+        Err(err) => {
+            let _ = client.write_all(&encode_tls_failed(&err.to_string())).await;
+            let _ = client.flush().await;
+            let _ = client.shutdown().await;
+            return Err(err);
+        }
+    };
+    client.write_all(&encode_tls_ready()).await?;
+    client.flush().await?;
+    let _ = framed_phase(&mut client, &mut session, &mut frames, false).await?;
+    Ok(())
+}
+
 /// Serves one workerd connection end to end.
 ///
 /// # Errors
@@ -740,16 +913,31 @@ where
             .context("workerd did not send a request head")??;
     match parse_request_head(&head)? {
         RelayRequest::Tunnel(target) => {
-            let mut upstream = open_tunnel(opener.as_ref(), &target).await?;
+            let (mut upstream, early) =
+                open_tunnel_with_early_bytes(opener.as_ref(), &target).await?;
             client
                 .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 .await?;
+            client.write_all(&early).await?;
             client.flush().await?;
             if !body_start.is_empty() {
                 upstream.write_all(&body_start).await?;
             }
             let _ = pump_tunnel(&mut client, &mut upstream).await;
             Ok(())
+        }
+        RelayRequest::FramedTunnel(target) => {
+            let (upstream, early) = open_tunnel_with_early_bytes(opener.as_ref(), &target).await?;
+            client
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await?;
+            client
+                .write_all(&crate::egress_starttls::encode_data(&early))
+                .await?;
+            client.flush().await?;
+            let mut frames = crate::egress_starttls::FrameDecoder::new();
+            frames.push(&body_start);
+            pump_framed(client, upstream, frames, &target.host, tls).await
         }
         RelayRequest::Forward {
             scheme,
@@ -875,7 +1063,9 @@ mod tests {
                 target,
                 head,
             } => (scheme, target, String::from_utf8(head).unwrap()),
-            RelayRequest::Tunnel(t) => panic!("expected forward, got tunnel {t:?}"),
+            RelayRequest::Tunnel(t) | RelayRequest::FramedTunnel(t) => {
+                panic!("expected forward, got tunnel {t:?}")
+            }
         }
     }
 
@@ -1201,5 +1391,244 @@ mod tests {
             assert_eq!(got, b"ping\n");
             let _ = relay.await;
         }
+    }
+
+    /// A self-signed certificate for `name` and client settings that trust
+    /// only it.
+    fn tls_pair(name: &str) -> (Arc<tokio_rustls::rustls::ServerConfig>, Arc<ClientConfig>) {
+        use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+        use tokio_rustls::rustls::{RootCertStore, ServerConfig};
+
+        let issued = rcgen::generate_simple_self_signed(vec![name.to_string()]).unwrap();
+        let cert = CertificateDer::from(issued.cert.der().to_vec());
+        let key =
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(issued.signing_key.serialize_der()));
+        let server = ServerConfig::builder_with_provider(bookclerk_tls::crypto_provider())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert.clone()], key)
+            .unwrap();
+        let mut roots = RootCertStore::empty();
+        roots.add(cert).unwrap();
+        let client = ClientConfig::builder_with_provider(bookclerk_tls::crypto_provider())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        (Arc::new(server), Arc::new(client))
+    }
+
+    /// Stands in for the host proxy and an SMTP-like server that upgrades:
+    /// greets in the clear, answers `STARTTLS`, then speaks inside TLS.
+    struct StartTlsHost {
+        /// Server settings for the upgrade.
+        server: Arc<tokio_rustls::rustls::ServerConfig>,
+        /// `CONNECT` lines the host saw.
+        seen: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl TunnelOpener for StartTlsHost {
+        type Stream = tokio::io::DuplexStream;
+
+        async fn open(&self) -> Result<Self::Stream> {
+            let (ours, mut theirs) = tokio::io::duplex(64 * 1024);
+            let (server, seen) = (Arc::clone(&self.server), Arc::clone(&self.seen));
+            tokio::spawn(async move {
+                let Ok((connect, _)) = read_head(&mut theirs, Vec::new()).await else {
+                    return;
+                };
+                seen.lock().unwrap().push(connect);
+                let _ = theirs
+                    .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n220 hi\r\n")
+                    .await;
+                let mut line = [0_u8; 10];
+                if theirs.read_exact(&mut line).await.is_err() || &line != b"STARTTLS\r\n" {
+                    return;
+                }
+                let _ = theirs.write_all(b"220 go\r\n").await;
+                let Ok(mut tls) = tokio_rustls::TlsAcceptor::from(server).accept(theirs).await
+                else {
+                    return;
+                };
+                let mut ehlo = [0_u8; 6];
+                if tls.read_exact(&mut ehlo).await.is_ok() && &ehlo == b"EHLO\r\n" {
+                    let _ = tls.write_all(b"250 ok\r\n").await;
+                    let _ = tls.shutdown().await;
+                }
+            });
+            Ok(ours)
+        }
+    }
+
+    /// Reads data frames from `reader` until `want` bytes of payload arrive.
+    async fn read_data<R: AsyncRead + Unpin>(reader: &mut R, want: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        while out.len() < want {
+            let mut header = [0_u8; 3];
+            reader.read_exact(&mut header).await.unwrap();
+            assert_eq!(header[0], 0, "expected a data frame, got {header:?}");
+            let mut payload = vec![0_u8; usize::from(u16::from_be_bytes([header[1], header[2]]))];
+            reader.read_exact(&mut payload).await.unwrap();
+            out.extend_from_slice(&payload);
+        }
+        out
+    }
+
+    /// Starts a framed relay connection to `host` and returns workerd's side
+    /// after the `CONNECT` answer.
+    async fn framed_connect<O: TunnelOpener>(
+        opener: O,
+        tls: Arc<ClientConfig>,
+        host: &str,
+    ) -> (tokio::io::DuplexStream, tokio::task::JoinHandle<Result<()>>) {
+        let (mut workerd, relay_side) = tokio::io::duplex(64 * 1024);
+        let task = tokio::spawn(relay_one(relay_side, Arc::new(opener), tls));
+        workerd
+            .write_all(
+                format!("CONNECT {host}.starttls.bookclerk.invalid:587 HTTP/1.1\r\n\r\n")
+                    .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut head = [0_u8; 39];
+        workerd.read_exact(&mut head).await.unwrap();
+        assert_eq!(&head[..], b"HTTP/1.1 200 Connection Established\r\n\r\n");
+        (workerd, task)
+    }
+
+    #[test]
+    fn a_suffixed_connect_becomes_a_framed_tunnel_to_the_real_host() {
+        assert_eq!(
+            parse_request_head(
+                b"CONNECT Mail.Example.com.starttls.bookclerk.invalid:587 HTTP/1.1\r\n\r\n"
+            )
+            .unwrap(),
+            RelayRequest::FramedTunnel(TunnelTarget {
+                host: "mail.example.com".into(),
+                port: 587
+            })
+        );
+        assert_eq!(
+            parse_request_head(b"CONNECT starttls.bookclerk.invalid:587 HTTP/1.1\r\n\r\n").unwrap(),
+            RelayRequest::Tunnel(TunnelTarget {
+                host: "starttls.bookclerk.invalid".into(),
+                port: 587
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_framed_tunnel_upgrades_to_tls_and_relays_the_session() {
+        use crate::egress_starttls::{encode_client_frame, ClientFrame};
+
+        let (server, client_tls) = tls_pair("mail.example.com");
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let opener = StartTlsHost {
+            server,
+            seen: Arc::clone(&seen),
+        };
+        let (mut workerd, task) = framed_connect(opener, client_tls, "mail.example.com").await;
+        assert_eq!(read_data(&mut workerd, 8).await, b"220 hi\r\n");
+        workerd
+            .write_all(&encode_client_frame(&ClientFrame::Data(
+                b"STARTTLS\r\n".to_vec(),
+            )))
+            .await
+            .unwrap();
+        assert_eq!(read_data(&mut workerd, 8).await, b"220 go\r\n");
+        // The start and the first TLS-bound data arrive together: the data
+        // waits in the decoder until the handshake is done.
+        let mut both = encode_client_frame(&ClientFrame::StartTls);
+        both.extend(encode_client_frame(&ClientFrame::Data(
+            b"EHLO\r\n".to_vec(),
+        )));
+        workerd.write_all(&both).await.unwrap();
+        let mut ready = [0_u8; 3];
+        workerd.read_exact(&mut ready).await.unwrap();
+        assert_eq!(ready, [1, 0, 0]);
+        assert_eq!(read_data(&mut workerd, 8).await, b"250 ok\r\n");
+        let mut rest = Vec::new();
+        let _ = workerd.read_to_end(&mut rest).await;
+        assert!(rest.is_empty(), "{rest:?}");
+        let _ = task.await;
+        assert_eq!(
+            seen.lock().unwrap()[0],
+            b"CONNECT mail.example.com:587 HTTP/1.1\r\nhost: mail.example.com:587\r\n\r\n".to_vec()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_certificate_for_another_name_fails_the_upgrade_with_a_reason() {
+        use crate::egress_starttls::{encode_client_frame, ClientFrame};
+
+        let (server, client_tls) = tls_pair("other.example.com");
+        let opener = StartTlsHost {
+            server,
+            seen: Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
+        let (mut workerd, task) = framed_connect(opener, client_tls, "mail.example.com").await;
+        assert_eq!(read_data(&mut workerd, 8).await, b"220 hi\r\n");
+        workerd
+            .write_all(&encode_client_frame(&ClientFrame::Data(
+                b"STARTTLS\r\n".to_vec(),
+            )))
+            .await
+            .unwrap();
+        assert_eq!(read_data(&mut workerd, 8).await, b"220 go\r\n");
+        workerd
+            .write_all(&encode_client_frame(&ClientFrame::StartTls))
+            .await
+            .unwrap();
+        let mut rest = Vec::new();
+        let _ = workerd.read_to_end(&mut rest).await;
+        assert_eq!(rest[0], 2, "expected TLS failed, got {rest:?}");
+        let len = usize::from(u16::from_be_bytes([rest[1], rest[2]]));
+        assert_eq!(rest.len(), 3 + len);
+        assert!(String::from_utf8_lossy(&rest[3..]).contains("TLS handshake failed"));
+        assert!(task.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_malformed_or_second_start_frame_ends_the_tunnel() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let host = FakeHost {
+            reply: "HTTP/1.1 200 Connection Established\r\n\r\n",
+            response: b"",
+            seen,
+        };
+        let tls = crate::socket_broker::default_tls().unwrap();
+        let (mut workerd, task) = framed_connect(host, tls, "db.example.com").await;
+        workerd.write_all(&[9, 0, 0]).await.unwrap();
+        let mut rest = Vec::new();
+        let _ = workerd.read_to_end(&mut rest).await;
+        assert!(rest.is_empty());
+        let err = task.await.unwrap().unwrap_err();
+        assert!(err.to_string().contains("unknown frame kind 9"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn server_bytes_that_arrive_with_the_tunnel_answer_reach_the_plugin() {
+        let host = FakeHost {
+            reply: "HTTP/1.1 200 Connection Established\r\n\r\n220 smtp ready\r\n",
+            response: b"",
+            seen: Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
+        let (mut workerd, relay_side) = tokio::io::duplex(64 * 1024);
+        let tls = crate::socket_broker::default_tls().unwrap();
+        let task = tokio::spawn(relay_one(relay_side, Arc::new(host), tls));
+        workerd
+            .write_all(b"CONNECT mail.example.com:25 HTTP/1.1\r\n\r\n")
+            .await
+            .unwrap();
+        let mut got = [0_u8; 39 + 16];
+        workerd.read_exact(&mut got).await.unwrap();
+        assert_eq!(
+            &got[..],
+            b"HTTP/1.1 200 Connection Established\r\n\r\n220 smtp ready\r\n"
+        );
+        drop(workerd);
+        let _ = task.await;
     }
 }

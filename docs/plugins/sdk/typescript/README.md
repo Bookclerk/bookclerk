@@ -261,6 +261,32 @@ if (res.headers.get("x-bookclerk-error") === "network_not_granted") {
 }
 ```
 
+## TCP sockets
+
+`connect()` from `@bookclerk/plugin-sdk/workerd` opens a socket to a host
+the `tcp` grant names, with Workers' `connect()` signature. Use it instead
+of `cloudflare:sockets`: its `startTls()` works under Bookclerk, where the
+pinned workerd's doesn't (the launcher starts TLS and checks the
+certificate; see
+[STARTTLS through the relay](../../../internals/workerd-bridge.md#starttls-through-the-relay)).
+
+```ts
+import { connect } from "@bookclerk/plugin-sdk/workerd";
+
+const plain = connect({ hostname: "smtp.example.com", port: 587 }, { secureTransport: "starttls" });
+// ... read the greeting, send EHLO and STARTTLS, read "220" ...
+const secure = plain.startTls(); // the plain socket is spent
+await secure.opened; // rejects when the certificate doesn't verify
+```
+
+`secureTransport: "on"` starts in TLS. A refused grant rejects `opened`
+with `network_not_granted`.
+
+In tests, `createTestConnect` from `@bookclerk/plugin-sdk/testkit` stands in
+for `connect()`: a scripted server behind a fake relay that speaks the same
+frames, with `allows` to refuse a grant and `tlsFailure` to fail a
+handshake. `connect.dials` lists what the plugin opened.
+
 ## Testing database code
 
 `createTestDatabase()` from `@bookclerk/plugin-sdk/testkit` gives a

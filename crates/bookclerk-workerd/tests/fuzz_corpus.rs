@@ -1,6 +1,6 @@
 //! Replays the checked-in `granted_http`, `workerd_control`, `socket_broker`,
-//! `socket_route`, `webhook_route`, `webhook_request`, `egress_bridge` and
-//! `egress_relay_head` fuzz corpora in
+//! `socket_route`, `webhook_route`, `webhook_request`, `egress_bridge`,
+//! `egress_relay_head` and `egress_starttls_frames` fuzz corpora in
 //! PR CI (no libFuzzer required), so an input that once broke one of them
 //! stays fixed
 //! (`docs/adr/untrusted-input-fuzzing.md`).
@@ -738,6 +738,35 @@ fn fuzz_corpus_egress_relay_head_holds_the_oracle() {
     for path in egress_relay_head_corpus() {
         let data = std::fs::read(&path).expect("read");
         egress_relay_head_oracle::check(&data);
+    }
+}
+
+/// The `egress_starttls_frames` oracle, shared with the fuzz target: it
+/// checks the relay's frame decoder against an independent reading.
+#[path = "../../../fuzz/oracles/egress_starttls_frames.rs"]
+mod egress_starttls_frames_oracle;
+
+/// Every checked-in `egress_starttls_frames` input still holds the oracle, so
+/// a frame stream that once broke the relay's decoder stays fixed.
+#[test]
+#[allow(clippy::expect_used)]
+fn fuzz_corpus_egress_starttls_frames_holds_the_oracle() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fuzz/corpus/egress_starttls_frames")
+        .canonicalize()
+        .expect("canonicalize egress_starttls_frames corpus");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .expect("egress_starttls_frames corpus")
+        .map(|entry| entry.expect("entry").path())
+        // Inline canonicalize → starts_with at each sink (CodeQL two-state barrier).
+        .filter_map(|path| path.canonicalize().ok())
+        .filter(|path| path.starts_with(&dir) && path.is_file())
+        .collect();
+    files.sort();
+    assert!(!files.is_empty(), "empty egress_starttls_frames corpus");
+    for path in files {
+        let data = std::fs::read(&path).expect("read");
+        egress_starttls_frames_oracle::check(&data);
     }
 }
 

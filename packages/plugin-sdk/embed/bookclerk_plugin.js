@@ -8,6 +8,350 @@
  * relative embed path. Native guests use Rust `serve` / `PluginWorker` instead.
  */
 
+// dist/workerd.js
+import { connect as workersConnect } from "cloudflare:sockets";
+
+// dist/tcp.js
+var STARTTLS_HOST_SUFFIX = ".starttls.bookclerk.invalid";
+var MAX_TCP_FRAME_PAYLOAD = 16 * 1024;
+var MAX_TLS_FAILURE_REASON_BYTES = 512;
+var KIND_DATA = 0;
+var KIND_TLS = 1;
+var KIND_TLS_FAILED = 2;
+var HEADER_BYTES = 3;
+var RelayFrameDecoder = class {
+  /** Bytes received and not yet consumed as a frame. */
+  #buf = new Uint8Array(0);
+  /**
+   * Appends bytes read from the relay.
+   *
+   * @param bytes - The next bytes, in order.
+   */
+  push(bytes) {
+    const next = new Uint8Array(this.#buf.length + bytes.length);
+    next.set(this.#buf, 0);
+    next.set(bytes, this.#buf.length);
+    this.#buf = next;
+  }
+  /**
+   * Bytes buffered that do not yet make a whole frame.
+   *
+   * @returns The byte count.
+   */
+  get buffered() {
+    return this.#buf.length;
+  }
+  /**
+   * Takes the next complete frame, if one is buffered.
+   *
+   * @returns The frame, or `null` when more bytes are needed.
+   * @throws TypeError when the header shows a malformed frame.
+   */
+  next() {
+    if (this.#buf.length < HEADER_BYTES)
+      return null;
+    const kind = this.#buf[0];
+    const len = this.#buf[1] << 8 | this.#buf[2];
+    if (kind === KIND_DATA) {
+      if (len === 0 || len > MAX_TCP_FRAME_PAYLOAD) {
+        throw new TypeError(`relay sent a data frame of ${len} bytes`);
+      }
+    } else if (kind === KIND_TLS) {
+      if (len !== 0)
+        throw new TypeError(`relay sent a TLS-ready frame with ${len} bytes`);
+    } else if (kind === KIND_TLS_FAILED) {
+      if (len > MAX_TLS_FAILURE_REASON_BYTES) {
+        throw new TypeError(`relay sent a TLS-failed reason of ${len} bytes`);
+      }
+    } else {
+      throw new TypeError(`relay sent unknown frame kind ${kind}`);
+    }
+    if (this.#buf.length < HEADER_BYTES + len)
+      return null;
+    const payload = this.#buf.slice(HEADER_BYTES, HEADER_BYTES + len);
+    this.#buf = this.#buf.slice(HEADER_BYTES + len);
+    if (kind === KIND_DATA)
+      return { kind: "data", bytes: payload };
+    if (kind === KIND_TLS)
+      return { kind: "tlsReady" };
+    return { kind: "tlsFailed", reason: new TextDecoder().decode(payload) };
+  }
+};
+function encodeDataFrames(bytes) {
+  const count = Math.ceil(bytes.length / MAX_TCP_FRAME_PAYLOAD);
+  const out = new Uint8Array(bytes.length + count * HEADER_BYTES);
+  let at = 0;
+  for (let start = 0; start < bytes.length; start += MAX_TCP_FRAME_PAYLOAD) {
+    const chunk = bytes.subarray(start, start + MAX_TCP_FRAME_PAYLOAD);
+    out[at] = KIND_DATA;
+    out[at + 1] = chunk.length >> 8;
+    out[at + 2] = chunk.length & 255;
+    out.set(chunk, at + HEADER_BYTES);
+    at += HEADER_BYTES + chunk.length;
+  }
+  return out;
+}
+function encodeStartTlsFrame() {
+  return Uint8Array.of(KIND_TLS, 0, 0);
+}
+function parseTcpAddress(address) {
+  let hostname;
+  let port;
+  if (typeof address === "string") {
+    const idx = address.lastIndexOf(":");
+    if (idx <= 0)
+      throw new TypeError(`connect address ${address} has no port`);
+    hostname = address.slice(0, idx);
+    if (hostname.startsWith("[") && hostname.endsWith("]"))
+      hostname = hostname.slice(1, -1);
+    port = Number(address.slice(idx + 1));
+  } else {
+    hostname = address.hostname;
+    port = address.port;
+  }
+  if (typeof hostname !== "string" || hostname.length === 0) {
+    throw new TypeError("connect address has no host");
+  }
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new TypeError(`connect port ${String(port)} is not 1 to 65535`);
+  }
+  return { hostname, port };
+}
+function withoutSuffix(text) {
+  if (text === void 0)
+    return void 0;
+  const at = text.toLowerCase().indexOf(STARTTLS_HOST_SUFFIX);
+  return at === -1 ? text : text.slice(0, at) + text.slice(at + STARTTLS_HOST_SUFFIX.length);
+}
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  promise.catch(() => void 0);
+  return { promise, resolve, reject };
+}
+var FramedTunnel = class {
+  /** The raw socket to the relay. */
+  #raw;
+  /** Writer on the raw socket, shared by every view in order. */
+  #writer;
+  /** Frames from the relay. */
+  #decoder = new RelayFrameDecoder();
+  /** Info the raw socket reported, with the suffix removed. */
+  #info;
+  /** Writes queued so far, so frames go out in order. */
+  #writes = Promise.resolve();
+  /** Controller of the view that receives server data now. */
+  #sink = null;
+  /** The upgrade awaiting the relay's answer. */
+  #upgrade = null;
+  /** Whether the tunnel has upgraded or is upgrading. */
+  #upgraded = false;
+  /** Set once the tunnel failed; later reads and writes report it. */
+  #failure = null;
+  /** Resolves when the raw socket closes. */
+  closed;
+  /**
+   * @param raw - The raw socket to the relay.
+   */
+  constructor(raw) {
+    this.#raw = raw;
+    this.#writer = raw.writable.getWriter();
+    this.#info = raw.opened.then((info) => ({
+      remoteAddress: withoutSuffix(info?.remoteAddress),
+      localAddress: withoutSuffix(info?.localAddress)
+    }));
+    this.#info.catch(() => void 0);
+    this.closed = raw.closed;
+    this.closed.catch(() => void 0);
+    void this.#pump();
+  }
+  /** Reads relay frames and routes them until the raw socket ends. */
+  async #pump() {
+    const reader = this.#raw.readable.getReader();
+    try {
+      for (; ; ) {
+        const { value, done } = await reader.read();
+        if (done)
+          break;
+        this.#decoder.push(value);
+        for (let frame2 = this.#decoder.next(); frame2; frame2 = this.#decoder.next()) {
+          this.#route(frame2);
+        }
+      }
+      if (this.#decoder.buffered > 0)
+        throw new TypeError("relay ended inside a frame");
+      this.#upgrade?.reject(new Error("the connection closed before TLS was ready"));
+      this.#upgrade = null;
+      try {
+        this.#sink?.close();
+      } catch {
+      }
+    } catch (err) {
+      this.#fail(err);
+    } finally {
+      reader.releaseLock();
+    }
+  }
+  /**
+   * Handles one relay frame.
+   *
+   * @param frame - The frame the relay sent.
+   */
+  #route(frame2) {
+    switch (frame2.kind) {
+      case "data":
+        try {
+          this.#sink?.enqueue(frame2.bytes);
+        } catch {
+        }
+        return;
+      case "tlsReady":
+        if (!this.#upgrade)
+          throw new TypeError("relay sent TLS ready unasked");
+        this.#upgrade.resolve();
+        this.#upgrade = null;
+        return;
+      case "tlsFailed": {
+        if (!this.#upgrade)
+          throw new TypeError("relay sent TLS failed unasked");
+        const err = new Error(`TLS handshake failed: ${frame2.reason}`);
+        this.#upgrade.reject(err);
+        this.#upgrade = null;
+        this.#fail(err);
+        return;
+      }
+    }
+  }
+  /**
+   * Ends the tunnel with `err`.
+   *
+   * @param err - Why the tunnel ended.
+   */
+  #fail(err) {
+    if (this.#failure === null)
+      this.#failure = err;
+    this.#upgrade?.reject(err);
+    this.#upgrade = null;
+    try {
+      this.#sink?.error(err);
+    } catch {
+    }
+    void this.#raw.close().catch(() => void 0);
+  }
+  /**
+   * Queues `bytes` (already framed) behind earlier writes.
+   *
+   * @param bytes - Framed bytes for the relay.
+   * @returns Settles when the bytes are written.
+   */
+  #write(bytes) {
+    const next = this.#writes.then(() => {
+      if (this.#failure !== null)
+        throw this.#failure;
+      return this.#writer.write(bytes);
+    });
+    this.#writes = next.catch(() => void 0);
+    return next;
+  }
+  /**
+   * A socket view that receives server data from now on.
+   *
+   * @param opened - What the view's `opened` resolves to.
+   * @param canUpgrade - Whether the view offers `startTls()`.
+   * @returns The view.
+   */
+  view(opened, canUpgrade) {
+    let usable = true;
+    const readable = new ReadableStream({
+      start: (controller) => {
+        this.#sink = controller;
+      }
+    });
+    const writable = new WritableStream({
+      write: async (chunk) => {
+        if (!usable)
+          throw new TypeError("the socket upgraded; write to the secure socket");
+        await opened;
+        if (chunk.length > 0)
+          await this.#write(encodeDataFrames(chunk));
+      },
+      close: async () => {
+        await this.#writes;
+      }
+    });
+    const socket = {
+      readable,
+      writable,
+      opened,
+      closed: this.closed,
+      close: async () => {
+        usable = false;
+        await this.#raw.close();
+      },
+      startTls: () => {
+        if (!canUpgrade || !usable || this.#upgraded) {
+          throw new TypeError('startTls() needs a socket opened with secureTransport: "starttls"');
+        }
+        usable = false;
+        return this.startTls();
+      }
+    };
+    return socket;
+  }
+  /**
+   * Sends the start-TLS frame and returns the secure view.
+   *
+   * @returns The view whose `opened` settles with the relay's answer.
+   */
+  startTls() {
+    this.#upgraded = true;
+    const previous = this.#sink;
+    const upgrade = deferred();
+    this.#upgrade = upgrade;
+    const secure = this.view(Promise.all([this.#info, upgrade.promise]).then(([info]) => info), false);
+    try {
+      previous?.close();
+    } catch {
+    }
+    this.#write(encodeStartTlsFrame()).catch((err) => this.#fail(err));
+    return secure;
+  }
+  /**
+   * What the plain view's `opened` resolves to.
+   *
+   * @returns The connection info promise.
+   */
+  get info() {
+    return this.#info;
+  }
+};
+function createConnect(dial) {
+  return (address, options = {}) => {
+    const target = parseTcpAddress(address);
+    const mode = options.secureTransport ?? "off";
+    const allowHalfOpen = options.allowHalfOpen ?? false;
+    if (mode === "off") {
+      return dial(target, { secureTransport: "off", allowHalfOpen });
+    }
+    if (mode !== "on" && mode !== "starttls") {
+      throw new TypeError(`secureTransport ${String(mode)} is not off, on or starttls`);
+    }
+    if (target.hostname.includes(":")) {
+      throw new TypeError("TLS sockets need a host name or IPv4 address, not IPv6");
+    }
+    if (target.hostname.toLowerCase().endsWith(STARTTLS_HOST_SUFFIX)) {
+      throw new TypeError(`connect host may not end in ${STARTTLS_HOST_SUFFIX}`);
+    }
+    const raw = dial({ hostname: `${target.hostname}${STARTTLS_HOST_SUFFIX}`, port: target.port }, { secureTransport: "off", allowHalfOpen });
+    const tunnel = new FramedTunnel(raw);
+    return mode === "on" ? tunnel.startTls() : tunnel.view(tunnel.info, true);
+  };
+}
+
 // dist/plugin.js
 import { WorkerEntrypoint, RpcTarget } from "cloudflare:workers";
 
@@ -17602,6 +17946,9 @@ var QueueFeed = class {
     return this.#handOut(state, events, receipts, full, complete);
   }
 };
+
+// dist/workerd.js
+var connect = createConnect(workersConnect);
 export {
   AdapterDatabaseSession,
   AiEntrypoint,
@@ -17646,6 +17993,8 @@ export {
   MAX_PLUGIN_MIGRATION_TOTAL_OPS,
   MAX_SCALAR_BYTES,
   MAX_STREAM_WINDOW_BYTES,
+  MAX_TCP_FRAME_PAYLOAD,
+  MAX_TLS_FAILURE_REASON_BYTES,
   MAX_WRITE_KEY_BYTES,
   MediaDownloadEntrypoint,
   MetadataEntrypoint,
@@ -17663,8 +18012,10 @@ export {
   QueueBatch,
   QueueFeed,
   QueueMessage,
+  RelayFrameDecoder,
   RemoteLibraryEntrypoint,
   STAGE_FOLDER,
+  STARTTLS_HOST_SUFFIX,
   STREAM_COPY_COMMAND,
   STREAM_FRAME_TARGET_BYTES,
   Source,
@@ -17679,6 +18030,8 @@ export {
   clampPageLimit,
   cliArgs,
   collectExecuteStream,
+  connect,
+  createConnect,
   createDatabaseBinding,
   dataMigrationOp,
   decodeDbValue,
@@ -17687,10 +18040,12 @@ export {
   decodeExecuteStream,
   decodeExtensibleConfig,
   dispatchInvoke,
+  encodeDataFrames,
   encodeDbValue,
   encodeExecuteRequest,
   encodeExecuteResultReply,
   encodeExecuteStream,
+  encodeStartTlsFrame,
   eventBatchResults,
   executeAdapterBatch,
   executeAdapterBatchStreamed,
@@ -17708,6 +18063,7 @@ export {
   parseDbValue,
   parseHostKey,
   parseQueueCursor,
+  parseTcpAddress,
   provisioned,
   queueBatchResults,
   rawStreamCeiling,
