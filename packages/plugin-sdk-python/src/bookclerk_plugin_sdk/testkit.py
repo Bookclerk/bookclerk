@@ -58,6 +58,9 @@ from .db_value import (
     encode_execute_request,
 )
 from .limits import limit_exceeded_details, parse_limit_exceeded
+from .testkit_bindings import TestKv as TestKv
+from .testkit_bindings import TestKvOperation as TestKvOperation
+from .testkit_bindings import TestWebhooks as TestWebhooks
 from .workerd import PluginError
 
 TestDatabaseProfile = Literal["first-party", "d1", "minimum"]

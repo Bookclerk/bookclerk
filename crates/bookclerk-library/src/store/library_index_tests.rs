@@ -1398,3 +1398,119 @@ async fn author_values(store: &LibraryStore, scope: Option<&WorkScope>) -> Vec<S
         }
     }
 }
+
+#[tokio::test]
+async fn a_catalog_cover_on_a_held_edition_refreshes_its_row() {
+    use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
+    let store = store().await;
+    let work = scan(&store, "B0CAT1", "acct-1", "Held Cover", "A. Author").await;
+    store
+        .refresh_library_works(std::slice::from_ref(&work))
+        .await
+        .unwrap();
+    let stamp = |store: &LibraryStore, work: &str| {
+        let db = store.db().clone();
+        let work = work.to_owned();
+        async move {
+            crate::entities::library_work_rows::Entity::find_by_id(work)
+                .one(&db)
+                .await
+                .unwrap()
+                .map(|row| row.refreshed_at)
+        }
+    };
+    let before = stamp(&store, &work).await.expect("the held work has a row");
+    let edition = row_of(&store, &work)
+        .await
+        .unwrap()
+        .cover_edition_id
+        .unwrap();
+    let updates = |store: &LibraryStore, edition: &str| {
+        let db = store.db().clone();
+        let edition = edition.to_owned();
+        async move {
+            crate::entities::domain_events::Entity::find()
+                .filter(crate::entities::domain_events::Column::EventType.eq("edition_updated"))
+                .filter(crate::entities::domain_events::Column::OrderingKey.eq(edition))
+                .count(&db)
+                .await
+                .unwrap()
+        }
+    };
+    let announced = updates(&store, &edition).await;
+    assert_eq!(
+        store
+            .held_works_of_editions(&[edition.clone(), "no-such-edition".into()])
+            .await
+            .unwrap(),
+        std::slice::from_ref(&work)
+    );
+    // Another store's catalog answer names the same edition (by its ASIN)
+    // with a cover, beside a title nobody holds.
+    let listing = |plugin: &str, product: &str, title: &str| crate::CatalogListing {
+        draft: bookclerk_resolve::ListingDraft {
+            plugin_key: plugin.into(),
+            marketplace: Some("us".into()),
+            product_id: product.into(),
+            title: title.into(),
+            work_kind: Some(WorkKind::Book),
+            expression_kind: Some(bookclerk_resolve::ExpressionKind::Narration),
+            media_kind: Some(MediaKind::Audio),
+            identifiers: vec![(
+                bookclerk_resolve::IdentifierScheme::Asin,
+                product.into(),
+                Some("us".into()),
+            )],
+            credits: vec![
+                (
+                    "A. Author".into(),
+                    bookclerk_resolve::CreditRole::Author,
+                    None,
+                ),
+                (
+                    "N. Reader".into(),
+                    bookclerk_resolve::CreditRole::Narrator,
+                    None,
+                ),
+            ],
+            ..bookclerk_resolve::ListingDraft::default()
+        },
+        detail: crate::ListingDetail {
+            cover_url: Some(format!("https://img.example/{product}.jpg")),
+            ..crate::ListingDetail::default()
+        },
+        offers: Vec::new(),
+    };
+    let recorded = store
+        .record_catalog_listings(&[
+            listing("libro", "B0CAT1", "Held Cover"),
+            listing("libro", "B0CAT2", "Nobody Holds This"),
+        ])
+        .await
+        .unwrap();
+    assert!(recorded.ids.iter().all(Option::is_some), "{recorded:?}");
+    let after = stamp(&store, &work).await.unwrap();
+    assert!(after > before, "the held work's row was refreshed");
+    let unheld = store
+        .work_of_listing(recorded.ids[1].as_deref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stamp(&store, &unheld).await,
+        None,
+        "an unheld work gets no row"
+    );
+    // The catalog answer fills its listing's fields on the held edition
+    // (one announcement) and adds the narrator as a new credit (a second,
+    // after the credit batches); the unheld edition announces nothing.
+    assert_eq!(updates(&store, &edition).await, announced + 2);
+    let unheld_edition =
+        crate::entities::store_listings::Entity::find_by_id(recorded.ids[1].clone().unwrap())
+            .one(store.db())
+            .await
+            .unwrap()
+            .unwrap()
+            .edition_id;
+    assert_eq!(updates(&store, &unheld_edition).await, 0);
+}

@@ -213,6 +213,23 @@ mod tests {
     }
 
     #[test]
+    fn commit_token_matches_the_other_sdks() {
+        // The same vectors run in the TypeScript (`test-stream-copy.mjs`) and
+        // Python (`test_stream_copy.py`) SDK tests.
+        let invocation = JobInvocation::stream_copy("job/a:b", "{}");
+        assert_eq!(
+            stream_copy_commit_token(&invocation, "out/book.m4b"),
+            "sc-d860fba581892fced82f4b4bba5c6d37"
+        );
+        let mut stepped = JobInvocation::stream_copy("dedup-stable", "{}");
+        stepped.step_id = Some("step-2".into());
+        assert_eq!(
+            stream_copy_commit_token(&stepped, "library/title.m4b"),
+            "sc-a8f88bc8ccfa06a5848f2b02b5d6abb2"
+        );
+    }
+
+    #[test]
     fn commit_token_is_stable_across_attempts_and_generations() {
         let first = JobInvocation::stream_copy_from_lease(
             crate::rpc_types::JobInvocationLease {

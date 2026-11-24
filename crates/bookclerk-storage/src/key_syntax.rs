@@ -354,6 +354,35 @@ mod tests {
         HostKey::parse(text).unwrap()
     }
 
+    /// Translation vectors shared with the TypeScript and Python SDKs'
+    /// object-store helpers. `UPDATE_OBJECT_STORE_KEY_VECTORS=1` rewrites
+    /// the expected keys from this implementation.
+    #[test]
+    fn object_store_translation_matches_the_shared_vectors() {
+        const PATH: &str = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../packages/plugin-sdk/scripts/fixtures/object-store-keys.json"
+        );
+        let text = std::fs::read_to_string(PATH).unwrap();
+        let mut cases: Vec<serde_json::Value> = serde_json::from_str(&text).unwrap();
+        let update = std::env::var_os("UPDATE_OBJECT_STORE_KEY_VECTORS").is_some();
+        for case in &mut cases {
+            let host = key(case["key"].as_str().unwrap());
+            let prefix = usize::try_from(case["prefixBytes"].as_u64().unwrap()).unwrap();
+            let got = translate_for_object_store(&host, prefix);
+            if update {
+                case["expected"] = serde_json::Value::String(got);
+            } else {
+                assert_eq!(got, case["expected"].as_str().unwrap(), "{}", case["key"]);
+            }
+        }
+        if update {
+            let mut out = serde_json::to_string_pretty(&cases).unwrap();
+            out.push('\n');
+            std::fs::write(PATH, out).unwrap();
+        }
+    }
+
     #[test]
     fn host_keys_refuse_what_the_syntax_forbids() {
         for bad in [

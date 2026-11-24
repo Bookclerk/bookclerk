@@ -53,7 +53,7 @@ Entrypoint = Literal[
     "cli",
     "oidc",
     "metadata",
-    "covers",
+    "mediaDownload",
     "metadataFiles",
     "notifier",
     "ingress",
@@ -174,7 +174,7 @@ InvocationPurpose = Literal["serve", "provision"]
 """Why the host opens a plugin's entrypoints (`Invocation.purpose`)."""
 
 RemoteMedia = Literal["image", "audio"]
-"""The kind of public media `CoverFetcher.fetchCovers` downloads."""
+"""The kind of public media `MediaDownloader.downloadMedia` downloads."""
 
 MetadataField = Literal[
     "title",
@@ -935,8 +935,8 @@ class Entrypoints(TypedDict):
             Null when the guest does not export this capability.
         metadata: `metadata` entrypoint. Null when the guest does not export this
             capability.
-        covers: `covers` entrypoint. Null when the guest does not export this
-            capability.
+        mediaDownload: `mediaDownload` entrypoint. Null when the guest does not export
+            this capability.
         socketHandler: `[sockets]` handler: messages and closes on host-brokered
             sockets. Null when the guest does not export this capability.
         metadataFiles: `metadataFiles` entrypoint. Null when the guest does not export
@@ -963,7 +963,7 @@ class Entrypoints(TypedDict):
     queueConsumer: NotRequired[QueueConsumer | None]
     scheduledHandler: NotRequired[ScheduledHandler | None]
     metadata: NotRequired[MetadataProvider | None]
-    covers: NotRequired[CoverFetcher | None]
+    mediaDownload: NotRequired[MediaDownloader | None]
     socketHandler: NotRequired[SocketHandler | None]
     metadataFiles: NotRequired[MetadataFiles | None]
     notifier: NotRequired[Notifier | None]
@@ -3396,12 +3396,12 @@ class MetadataProvider(Protocol):
         ...
 
 
-class CoverFetcher(Protocol):
-    """`covers` entrypoint: downloads cover images on the host's behalf, so the
-    host itself never makes an outbound request to a URL a plugin or a store
-    supplied. The fetcher only transports bytes: the host sniffs, decodes and
-    re-encodes every image in its media worker before anything stores or
-    serves it. Network access is limited to what the manifest's
+class MediaDownloader(Protocol):
+    """`mediaDownload` entrypoint: downloads public media (cover images and
+    storefronts' audio samples) on the host's behalf, so the host itself never
+    makes an outbound request to a URL a plugin or a store supplied. The
+    downloader only transports bytes: the host sniffs, decodes and re-encodes
+    every body in its media worker before anything stores or serves it. Network access is limited to what the manifest's
     `[capabilities.network]` declares.
     """
 
@@ -3413,17 +3413,17 @@ class CoverFetcher(Protocol):
         """
         ...
 
-    async def fetch_covers(self, params: CoverFetchParams, sink: Destination) -> CoverImagesReply:
+    async def download_media(self, params: MediaDownloadParams, sink: Destination) -> DownloadResultsReply:
         """Fetches every URL concurrently and streams each body into `sink` under
         its index in `params.urls` (`"0"`, `"1"`, ...). The reply says, per URL,
         whether its body was stored.
 
         Args:
-            params: URLs and the per-image byte cap.
+            params: URLs, media kind and the per-body byte cap.
             sink: Host-served store that accepts only those keys.
 
         Returns:
-            ``CoverImagesReply``
+            ``DownloadResultsReply``
         """
         ...
 
@@ -4777,9 +4777,9 @@ class CatalogHit(TypedDict):
         sampleUrl: Absolute `https://` URL of a short audio sample of this edition that
             the storefront offers publicly (a few minutes, in any format the media
             worker decodes). The host never hands it to a client: a book's details play
-            it through a same-origin path, fetched by a `covers` plugin with `media =
-            audio` and re-encoded in the media worker. Empty when the store has none.
-            Omitted when absent (wire zero value).
+            it through a same-origin path, fetched by a `mediaDownload` plugin with
+            `media = audio` and re-encoded in the media worker. Empty when the store has
+            none. Omitted when absent (wire zero value).
     """
 
     productId: str
@@ -6139,14 +6139,15 @@ MetadataChaptersReply = Union[
 """Result union of `MetadataProvider.chapters`."""
 
 
-class CoverFetchParams(TypedDict):
-    """Params of `CoverFetcher.fetchCovers`.
+class MediaDownloadParams(TypedDict):
+    """Params of `MediaDownloader.downloadMedia`.
 
     Attributes:
-        urls: Absolute `https://` URLs to fetch, at most `maxCoverUrls`; never empty.
+        urls: Absolute `https://` URLs to fetch, at most `maxDownloadUrls`; never empty.
             The host has already checked each one against its URL policy.
-        maxBytes: Largest body, in bytes, the host accepts for one image; at most
-            `maxCoverBytes`. The sink refuses a larger body, which fails that URL only.
+        maxBytes: Largest body, in bytes, the host accepts for one URL; at most
+            `maxImageBytes` for images and `maxAudioBytes` for audio. The sink refuses a
+            larger body, which fails that URL only.
         conditions: Conditional request headers per URL, in the same order as `urls`,
             from the host's cached copy. Empty, or shorter than `urls`, means the
             remaining URLs are fetched unconditionally.
@@ -6158,11 +6159,11 @@ class CoverFetchParams(TypedDict):
 
     urls: list[str]
     maxBytes: int
-    conditions: list[CoverCondition]
+    conditions: list[DownloadCondition]
     media: RemoteMedia
 
 
-class CoverCondition(TypedDict):
+class DownloadCondition(TypedDict):
     """Validators the host already holds for one URL, sent as conditional request
     headers so an unchanged image costs a `304` instead of its body.
 
@@ -6177,7 +6178,7 @@ class CoverCondition(TypedDict):
     ifModifiedSince: NotRequired[str]
 
 
-class CoverImage(TypedDict):
+class DownloadResult(TypedDict):
     """What happened to one requested URL.
 
     Attributes:
@@ -6215,18 +6216,18 @@ class CoverImage(TypedDict):
     age: NotRequired[str]
 
 
-class CoverImages(TypedDict):
-    """Success payload of `CoverFetcher.fetchCovers`.
+class DownloadResults(TypedDict):
+    """Success payload of `MediaDownloader.downloadMedia`.
 
     Attributes:
-        images: One entry per requested URL, in request order.
+        downloads: One entry per requested URL, in request order.
     """
 
-    images: list[CoverImage]
+    downloads: list[DownloadResult]
 
 
-class CoverImagesReplyOk(TypedDict):
-    """``CoverImagesReply`` member ``ok``.
+class DownloadResultsReplyOk(TypedDict):
+    """``DownloadResultsReply`` member ``ok``.
 
     Success: one entry per requested URL.
 
@@ -6236,11 +6237,11 @@ class CoverImagesReplyOk(TypedDict):
     """
 
     kind: Literal["ok"]
-    value: CoverImages
+    value: DownloadResults
 
 
-class CoverImagesReplyErr(TypedDict):
-    """``CoverImagesReply`` member ``err``.
+class DownloadResultsReplyErr(TypedDict):
+    """``DownloadResultsReply`` member ``err``.
 
     Typed failure; `code` is a `PluginErrorCode` wire string.
 
@@ -6253,11 +6254,11 @@ class CoverImagesReplyErr(TypedDict):
     value: PluginError
 
 
-CoverImagesReply = Union[
-    CoverImagesReplyOk,
-    CoverImagesReplyErr,
+DownloadResultsReply = Union[
+    DownloadResultsReplyOk,
+    DownloadResultsReplyErr,
 ]
-"""Result union of `CoverFetcher.fetchCovers`."""
+"""Result union of `MediaDownloader.downloadMedia`."""
 
 
 class MetadataFileRecord(TypedDict):
@@ -9374,7 +9375,7 @@ __all__ = [
     "PluginCli",
     "Oidc",
     "MetadataProvider",
-    "CoverFetcher",
+    "MediaDownloader",
     "MetadataFiles",
     "Notifier",
     "NotificationRaiser",
@@ -9539,13 +9540,13 @@ __all__ = [
     "MetadataChaptersReplyOk",
     "MetadataChaptersReplyErr",
     "MetadataChaptersReply",
-    "CoverFetchParams",
-    "CoverCondition",
-    "CoverImage",
-    "CoverImages",
-    "CoverImagesReplyOk",
-    "CoverImagesReplyErr",
-    "CoverImagesReply",
+    "MediaDownloadParams",
+    "DownloadCondition",
+    "DownloadResult",
+    "DownloadResults",
+    "DownloadResultsReplyOk",
+    "DownloadResultsReplyErr",
+    "DownloadResultsReply",
     "MetadataFileRecord",
     "MetadataFileParseParams",
     "MetadataFileParsed",

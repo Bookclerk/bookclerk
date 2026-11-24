@@ -37,7 +37,7 @@ const {
   CliEntrypoint,
   DatabaseAdapterEntrypoint,
   MetadataEntrypoint,
-  CoverEntrypoint,
+  MediaDownloadEntrypoint,
   MAX_BATCH_KEYS,
   MetadataFilesEntrypoint,
   AiEntrypoint,
@@ -408,8 +408,8 @@ class Metadata extends MetadataEntrypoint {
   }
 }
 
-class Covers extends CoverEntrypoint {
-  async fetchCovers(params, sink) {
+class MediaDownload extends MediaDownloadEntrypoint {
+  async downloadMedia(params, sink) {
     // The wire envelope is not a valid return value.
     if (params.urls[0] === "https://wrapped.example/") return { images: [] };
     // A granted sink cannot carry preconditions, so it refuses them.
@@ -863,7 +863,7 @@ const env = {
   PLUGIN_DATABASE_ADAPTER: new DatabaseAdapter({}, {}),
   PLUGIN_CLI: new Cli({}, {}),
   PLUGIN_METADATA: new Metadata({}, {}),
-  PLUGIN_COVERS: new Covers({}, {}),
+  PLUGIN_MEDIA_DOWNLOAD: new MediaDownload({}, {}),
   PLUGIN_METADATA_FILES: new MetadataFiles({}, {}),
   PLUGIN_NOTIFIER: new Notifier({}, {}),
   PLUGIN_AI: new Ai({}, {}),
@@ -2377,12 +2377,12 @@ const jobParams = (commandType) => ({
   assert.equal(number.value.code, "internal");
 }
 
-// --- CoverFetcher --------------------------------------------------------
+// --- MediaDownloader --------------------------------------------------------
 
 {
   const health = decodeReply(
-    await invoke("CoverFetcher", "health", W.CoverFetcherHealthParamsCodec, {}),
-    W.CoverFetcherHealthResultsCodec,
+    await invoke("MediaDownloader", "health", W.MediaDownloaderHealthParamsCodec, {}),
+    W.MediaDownloaderHealthResultsCodec,
   );
   assert.deepEqual(health, { kind: "ok", value: { ok: true, detail: "" } });
 
@@ -2390,9 +2390,9 @@ const jobParams = (commandType) => ({
   granted.puts = [];
   const fetched = decodeReply(
     await invoke(
-      "CoverFetcher",
-      "fetchCovers",
-      W.CoverFetcherFetchCoversParamsCodec,
+      "MediaDownloader",
+      "downloadMedia",
+      W.MediaDownloaderDownloadMediaParamsCodec,
       {
         params: {
           urls: ["https://a.example/1.jpg", "https://a.example/missing.jpg", "https://b.example/3"],
@@ -2402,11 +2402,11 @@ const jobParams = (commandType) => ({
       },
       { caps: [{ kind: "destination", token: "tok-sink" }] },
     ),
-    W.CoverFetcherFetchCoversResultsCodec,
+    W.MediaDownloaderDownloadMediaResultsCodec,
   );
   assert.equal(fetched.kind, "ok");
   assert.deepEqual(
-    fetched.value.images.map((i) => [i.url, i.stored, i.error ?? ""]),
+    fetched.value.downloads.map((i) => [i.url, i.stored, i.error ?? ""]),
     [
       ["https://a.example/1.jpg", true, ""],
       ["https://a.example/missing.jpg", false, "HTTP 404"],
@@ -2427,31 +2427,31 @@ const jobParams = (commandType) => ({
 
   const wrapped = decodeReply(
     await invoke(
-      "CoverFetcher",
-      "fetchCovers",
-      W.CoverFetcherFetchCoversParamsCodec,
+      "MediaDownloader",
+      "downloadMedia",
+      W.MediaDownloaderDownloadMediaParamsCodec,
       { params: { urls: ["https://wrapped.example/"], maxBytes: 1 }, sink: "sink" },
       { caps: [{ kind: "destination", token: "tok-sink" }] },
     ),
-    W.CoverFetcherFetchCoversResultsCodec,
+    W.MediaDownloaderDownloadMediaResultsCodec,
   );
   assert.equal(wrapped.kind, "err");
   assert.equal(wrapped.value.code, "internal");
-  assert.match(wrapped.value.message, /CoverImage\[\]/);
+  assert.match(wrapped.value.message, /DownloadResult\[\]/);
 
   granted.requests.length = 0;
   const conditional = decodeReply(
     await invoke(
-      "CoverFetcher",
-      "fetchCovers",
-      W.CoverFetcherFetchCoversParamsCodec,
+      "MediaDownloader",
+      "downloadMedia",
+      W.MediaDownloaderDownloadMediaParamsCodec,
       { params: { urls: ["https://conditional.example/"], maxBytes: 1 }, sink: "sink" },
       { caps: [{ kind: "destination", token: "tok-sink" }] },
     ),
-    W.CoverFetcherFetchCoversResultsCodec,
+    W.MediaDownloaderDownloadMediaResultsCodec,
   );
   assert.equal(conditional.kind, "ok");
-  assert.equal(conditional.value.images[0].error, "refused");
+  assert.equal(conditional.value.downloads[0].error, "refused");
   assert.equal(
     granted.requests.filter((r) => r.path === "/put").length,
     0,
@@ -2459,10 +2459,10 @@ const jobParams = (commandType) => ({
   );
 
   const noSink = decodeReply(
-    await invoke("CoverFetcher", "fetchCovers", W.CoverFetcherFetchCoversParamsCodec, {
+    await invoke("MediaDownloader", "downloadMedia", W.MediaDownloaderDownloadMediaParamsCodec, {
       params: { urls: ["https://a.example/1.jpg"], maxBytes: 1 },
     }),
-    W.CoverFetcherFetchCoversResultsCodec,
+    W.MediaDownloaderDownloadMediaResultsCodec,
   );
   assert.equal(noSink.kind, "err");
   assert.equal(noSink.value.code, "invalid_params");

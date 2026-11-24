@@ -52,7 +52,7 @@ const ALL = [
   "cli",
   "oidc",
   "metadata",
-  "covers",
+  "mediaDownload",
 ];
 
 {
@@ -85,7 +85,7 @@ const ALL = [
     "remoteLibrary",
     "oidc",
     "metadata",
-    "covers",
+    "mediaDownload",
   ]);
 }
 

@@ -92,13 +92,13 @@ pub const CANCEL_POLL_WINDOW: std::time::Duration = std::time::Duration::from_se
 const CANCEL_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// One grant token's host stubs (vat-thread only): a `JobRunner.job`
-/// invocation, a `CoverFetcher.fetchCovers` sink, a named database binding,
+/// invocation, a `MediaDownloader.downloadMedia` sink, a named database binding,
 /// or an `EVENTS` publisher.
 pub struct GrantedSlot {
     /// Host-granted input source.
     pub input: Option<Box<dyn Source>>,
     /// Host-granted output destination. Shared, so several `PUT /put`
-    /// requests on one grant may stream at once (a cover fetcher puts each
+    /// requests on one grant may stream at once (a media downloader puts each
     /// image as it arrives).
     pub output: Option<Rc<dyn Destination>>,
     /// Progress sink.

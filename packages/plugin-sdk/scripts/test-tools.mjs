@@ -1067,8 +1067,8 @@ console.log("ok materialize rejects disk-only python even with both flags");
     console.error("FAIL smoke probes every health entrypoint", probed);
     process.exit(1);
   }
-  const files = healthInterfaces(["metadataFiles", "covers"]);
-  if (JSON.stringify(files) !== JSON.stringify(["CoverFetcher", "MetadataFiles"])) {
+  const files = healthInterfaces(["metadataFiles", "mediaDownload"]);
+  if (JSON.stringify(files) !== JSON.stringify(["MediaDownloader", "MetadataFiles"])) {
     console.error("FAIL smoke probes metadataFiles health", files);
     process.exit(1);
   }

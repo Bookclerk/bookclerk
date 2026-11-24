@@ -18,6 +18,9 @@ export const PLAYER_APPROVE_PATH = "/apps/approve";
 /** The page a mailed link that verifies an email address opens. */
 export const VERIFY_EMAIL_PATH = "/verify-email";
 
+/** The page a mailed password-reset link opens. */
+export const RESET_PASSWORD_PATH = "/reset-password";
+
 /** Document paths the React app owns (served as `index.html` by bookclerkd). */
 const APP_PATHS = new Set([
   "/",
@@ -38,8 +41,10 @@ const APP_PATHS = new Set([
   CLERK_CALLBACK_PATH,
   // A player app's browser sign-in: the library's consent page.
   PLAYER_APPROVE_PATH,
-  // A mailed link that verifies an email address; needs no sign-in.
+  // Mailed links that verify an email address or reset a password; they
+  // need no sign-in.
   VERIFY_EMAIL_PATH,
+  RESET_PASSWORD_PATH,
 ]);
 
 /**
@@ -206,6 +211,16 @@ export function isInvitePath(pathname: string = window.location.pathname): boole
  */
 export function isVerifyEmailPath(pathname: string = window.location.pathname): boolean {
   return normalizePathname(pathname) === VERIFY_EMAIL_PATH;
+}
+
+/**
+ * True when this document is the page a mailed password-reset link opens.
+ *
+ * @param pathname - Document pathname.
+ * @returns True for `/reset-password` (trailing slash ignored).
+ */
+export function isResetPasswordPath(pathname: string = window.location.pathname): boolean {
+  return normalizePathname(pathname) === RESET_PASSWORD_PATH;
 }
 
 /**

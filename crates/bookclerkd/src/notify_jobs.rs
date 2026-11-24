@@ -83,7 +83,8 @@ pub async fn notify_queue_limits(state: &AppState) -> NotifyQueueLimits {
 ///
 /// * `state` - Daemon state (library, integrations, config).
 /// * `payload` - The job payload; `notify_delivery` names the delivery, or
-///   `account_mail` an account mail ([`crate::account_mail`]).
+///   `account_mail` an account mail, or `password_reset_request` a
+///   self-service reset request ([`crate::account_mail`]).
 /// * `ctx` - Lease and cancel token; needed to park a retry.
 ///
 /// # Returns
@@ -104,6 +105,9 @@ pub async fn run_notify_send(
 ) -> anyhow::Result<String> {
     if payload.account_mail.is_some() {
         return crate::account_mail::run_account_mail_send(state, payload, ctx).await;
+    }
+    if payload.password_reset_request.is_some() {
+        return crate::account_mail::run_password_reset_request(state, payload, ctx).await;
     }
     let delivery_id = payload
         .notify_delivery
@@ -982,6 +986,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_invite_names_the_administrator_who_asked_for_it() {
+        use bookclerk_library::notifications::AccountMailKind;
+        let (state, fake, instance, _files) =
+            mail_daemon(vec![Ok(NotifySent { provider_id: None })]).await;
+        state.config.write().await.integrations.public_origin =
+            Some("https://library.example".into());
+        let library = state.library_snapshot().await;
+        let admin = library
+            .create_user_with_profile(
+                bookclerk_library::UserRole::Administrator,
+                Some("  Alex   Rivera "),
+                None,
+                Some("alex@example.com"),
+                None,
+            )
+            .await
+            .expect("admin")
+            .id;
+        let user = library
+            .create_user_with_profile(
+                bookclerk_library::UserRole::Member,
+                Some("Sam"),
+                None,
+                Some("sam@example.com"),
+                None,
+            )
+            .await
+            .expect("user")
+            .id;
+        let id = library
+            .queue_account_mail_unless_since(
+                bookclerk_library::notifications::AccountMailRequest {
+                    kind: AccountMailKind::Invite,
+                    user_id: user,
+                    address: "sam@example.com",
+                    requested_by: Some(admin),
+                },
+                &instance,
+                NotifyQueueLimits {
+                    max_pending: 1_000,
+                    max_attempts: 3,
+                },
+                None,
+            )
+            .await
+            .expect("queued")
+            .expect("recorded");
+        let payload = JobPayload {
+            account_mail: Some(id),
+            ..JobPayload::default()
+        };
+        run_notify_send(&state, &payload, None).await.expect("sent");
+        let sent = fake.sent.lock().unwrap()[0].clone();
+        assert_eq!(
+            sent.message.title,
+            "Alex Rivera has invited you to a Bookclerk library"
+        );
+        assert_eq!(sent.message.fields.len(), 1);
+        assert_eq!(sent.message.fields[0].name, "Invited by");
+        assert_eq!(sent.message.fields[0].value, "Alex Rivera");
+    }
+
+    #[tokio::test]
     async fn an_invite_mints_its_ticket_at_send_and_only_the_newest_works() {
         use bookclerk_library::notifications::AccountMailKind;
         let (state, fake, instance, _files) = mail_daemon(vec![
@@ -1011,6 +1078,18 @@ mod tests {
         assert_eq!(sent.len(), 2);
         for params in &sent {
             assert!(params.message.sensitive);
+            // No one asked for this one, so it names no inviter.
+            assert_eq!(params.message.notification_type, "account_invite");
+            assert_eq!(
+                params.message.title,
+                "You're invited to a Bookclerk library"
+            );
+            assert!(params.message.fields.is_empty());
+            assert!(params.message.text.starts_with("Set up your sign-in"));
+            assert_eq!(
+                params.message.library_origin.as_deref(),
+                Some("https://library.example/")
+            );
             assert_eq!(
                 params.destination.kind,
                 bookclerk_plugin_abi::NotifyDestinationKind::Personal
@@ -1054,6 +1133,91 @@ mod tests {
                 .unwrap()
                 .email_verified
         );
+    }
+
+    #[tokio::test]
+    async fn a_reset_link_is_minted_at_send_only_for_a_verified_address() {
+        use bookclerk_library::notifications::{parse_password_reset_link, AccountMailKind};
+        let (state, fake, instance, _files) = mail_daemon(vec![
+            Ok(NotifySent { provider_id: None }),
+            Ok(NotifySent { provider_id: None }),
+        ])
+        .await;
+        state.config.write().await.integrations.public_origin =
+            Some("https://library.example".into());
+        let library = state.library_snapshot().await;
+        let (user_id, payload) = queued_mail(
+            &library,
+            &instance,
+            AccountMailKind::PasswordReset,
+            "rio@example.com",
+        )
+        .await;
+        // The address is not verified: the mail is dropped, not sent.
+        run_notify_send(&state, &payload, None).await.expect("ran");
+        assert!(fake.sent.lock().unwrap().is_empty());
+
+        assert!(library
+            .verify_user_email_if(user_id, "rio@example.com")
+            .await
+            .unwrap());
+        let id = library
+            .queue_account_mail(
+                AccountMailKind::PasswordReset,
+                user_id,
+                "rio@example.com",
+                &instance,
+                NotifyQueueLimits {
+                    max_pending: 1_000,
+                    max_attempts: 3,
+                },
+            )
+            .await
+            .expect("queued");
+        let payload = JobPayload {
+            account_mail: Some(id),
+            ..JobPayload::default()
+        };
+        run_notify_send(&state, &payload, None).await.expect("sent");
+        let sent = fake.sent.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].message.sensitive);
+        assert_eq!(sent[0].message.title, "Reset your password");
+        let link = sent[0].message.link.clone().expect("link");
+        assert!(link.starts_with("https://library.example/reset-password?token="));
+        let body = format!(r#"{{"token":"{}"}}"#, query_value(&link, "token"));
+        let token = parse_password_reset_link(body.as_bytes()).expect("token");
+        assert_eq!(
+            library
+                .password_reset_user(&token, chrono::Utc::now())
+                .await
+                .unwrap(),
+            Some(user_id)
+        );
+
+        // The password-changed notice carries no link.
+        let id = library
+            .queue_account_mail(
+                AccountMailKind::PasswordChanged,
+                user_id,
+                "rio@example.com",
+                &instance,
+                NotifyQueueLimits {
+                    max_pending: 1_000,
+                    max_attempts: 3,
+                },
+            )
+            .await
+            .expect("queued");
+        let payload = JobPayload {
+            account_mail: Some(id),
+            ..JobPayload::default()
+        };
+        run_notify_send(&state, &payload, None).await.expect("sent");
+        let sent = fake.sent.lock().unwrap().clone();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[1].message.title, "Your password was changed");
+        assert!(sent[1].message.link.is_none());
     }
 
     #[tokio::test]

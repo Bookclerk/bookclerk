@@ -98,6 +98,7 @@ pub mod oidc_clients;
 pub mod oidc_refresh_tokens;
 pub mod oidc_rp_states;
 pub mod operator_sessions;
+pub mod password_resets;
 pub mod patron_controls;
 pub mod patron_scope_keys;
 pub mod patron_scopes;

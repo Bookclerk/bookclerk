@@ -75,7 +75,7 @@ export function checkWebhookName(name: unknown): string {
  * @returns The ids as strings.
  * @throws PluginError `invalid_params` for a malformed id or too many ids.
  */
-function checkLeases(leases: unknown): string[] {
+export function checkLeases(leases: unknown): string[] {
   const list = Array.isArray(leases) ? leases.map(String) : [];
   if (list.length > MAX_WEBHOOK_PULL_BATCH) {
     throw PluginError.fromWire(

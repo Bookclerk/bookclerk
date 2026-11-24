@@ -241,8 +241,13 @@ const LINK_ATTEMPTS: usize = 3;
 /// with room for the receipt statements.
 const CREDIT_BATCH_STATEMENTS: usize = 30;
 
+/// Most row inserts in one credit batch: one statement of every batch is
+/// kept for the `edition_updated` event the last batch carries
+/// ([`announce_credits`]), so the event commits with the rows it announces.
+const CREDIT_ROW_STATEMENTS: usize = CREDIT_BATCH_STATEMENTS - 1;
+
 // One listing's series (a series row and an entry each) fit in one batch.
-const _: () = assert!(2 * resolve::listing::MAX_SERIES <= CREDIT_BATCH_STATEMENTS);
+const _: () = assert!(2 * resolve::listing::MAX_SERIES <= CREDIT_ROW_STATEMENTS);
 
 /// Fresh UUIDs for new rows; an edition's is derived from the listing that
 /// first named it ([`edition_id_for_listing`]) unless `random_editions`.
@@ -656,7 +661,7 @@ fn link_params(
 }
 
 /// The credit and series batches for `plan`, each within
-/// [`CREDIT_BATCH_STATEMENTS`]; every batch carries the contributors and
+/// [`CREDIT_ROW_STATEMENTS`]; every batch carries the contributors and
 /// series its rows reference.
 fn credit_batches(plan: &resolve::Plan) -> Vec<CreditBatchParams> {
     let mut batches = Vec::new();
@@ -666,7 +671,7 @@ fn credit_batches(plan: &resolve::Plan) -> Vec<CreditBatchParams> {
     let mut writes: Vec<&resolve::CreditWrite> = plan.credits.iter().collect();
     writes.sort_by_key(|w| std::cmp::Reverse(w.position));
     for write in writes {
-        if batch.statement_count() + 2 > CREDIT_BATCH_STATEMENTS {
+        if batch.statement_count() + 2 > CREDIT_ROW_STATEMENTS {
             batches.push(std::mem::take(&mut batch));
         }
         let name_key = write.credit.name_key();
@@ -690,7 +695,7 @@ fn credit_batches(plan: &resolve::Plan) -> Vec<CreditBatchParams> {
     // A work's series go in one batch: the snapshot treats any stored entry
     // as the whole set, so they must never be part-written.
     if batch.statement_count() > 0
-        && batch.statement_count() + 2 * plan.series.len() > CREDIT_BATCH_STATEMENTS
+        && batch.statement_count() + 2 * plan.series.len() > CREDIT_ROW_STATEMENTS
     {
         batches.push(std::mem::take(&mut batch));
     }
@@ -713,6 +718,46 @@ fn credit_batches(plan: &resolve::Plan) -> Vec<CreditBatchParams> {
     }
     if batch.statement_count() > 0 {
         batches.push(batch);
+    }
+    batches
+}
+
+/// `batches` with one `edition_updated` for the listing's edition in the
+/// last of them (which always has room for it), committed with the rows
+/// it announces, so consumers that derive from credits and series see
+/// them once they are written: the link that refreshed the edition's work
+/// ran before them, in its own batch (#986). No credit batch, no event.
+/// The event is written only while some listing of any edition of the
+/// edition's work is held (checked in the batch itself), so a catalog
+/// listing filling credits or series on a held work announces them, even
+/// through a sibling edition nobody holds, while one for a work nobody
+/// holds (a Discover or lookup answer) publishes nothing.
+fn announce_credits(
+    mut batches: Vec<CreditBatchParams>,
+    listing: &resolve::Listing,
+    plan: &resolve::Plan,
+) -> Vec<CreditBatchParams> {
+    if batches.is_empty() || plan.listing.edition_id.is_empty() {
+        return batches;
+    }
+    let edition_id = plan.listing.edition_id.clone();
+    let id = Uuid::new_v4().to_string();
+    let event = LinkEvent {
+        event_type: resolve::Event::EditionUpdated {
+            edition_id: edition_id.clone(),
+        }
+        .event_type()
+        .to_string(),
+        account_id: String::new(),
+        source: listing.key.plugin_key.clone(),
+        dedup_key: format!("edition_updated:{edition_id}:{id}"),
+        payload: serde_json::json!({ "editionId": edition_id }).to_string(),
+        ordering_key: edition_id,
+        id,
+    };
+    // The last batch always has room: rows stop at CREDIT_ROW_STATEMENTS.
+    if let Some(last) = batches.last_mut() {
+        last.events.push(event);
     }
     batches
 }
@@ -1426,7 +1471,7 @@ impl LibraryStore {
                     continue;
                 }
             }
-            for batch in credit_batches(&plan) {
+            for batch in announce_credits(credit_batches(&plan), listing, &plan) {
                 self.run_write_credits(batch).await?;
             }
             return Ok(Some(plan));
@@ -4143,9 +4188,19 @@ mod store_tests {
         assert!(batches.len() > 1);
         assert!(batches
             .iter()
-            .all(|b| b.statement_count() <= CREDIT_BATCH_STATEMENTS));
+            .all(|b| b.statement_count() <= CREDIT_ROW_STATEMENTS));
         let credits: usize = batches.iter().map(|b| b.credits.len()).sum();
         assert_eq!(credits, 40);
+
+        // The announcing event rides in the last batch, never one of its
+        // own, and every batch stays inside the cap.
+        let count = batches.len();
+        let announced = announce_credits(batches, &listing, &plan);
+        assert_eq!(announced.len(), count);
+        assert_eq!(announced.last().map(|b| b.events.len()), Some(1));
+        assert!(announced
+            .iter()
+            .all(|b| b.statement_count() <= CREDIT_BATCH_STATEMENTS));
     }
 
     #[test]

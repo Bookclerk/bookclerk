@@ -14,10 +14,11 @@
 //! deadline for its format and for each round trip. A seek is a new stream:
 //! dropping a [`PcmStream`] kills its worker.
 //!
-//! A book sample takes the same path: [`crate::MediaPool::cut_sample`]
-//! opens the worker with `Sample` instead of `Open`, and gets back a short
-//! MP3 the worker encoded, capped at [`MAX_SAMPLE_BYTES`] and
-//! [`SAMPLE_TIMEOUT`].
+//! A book sample takes the same path: [`crate::MediaPool::stream_sample`]
+//! opens the worker with `Sample` instead of `Open`, and gets back a
+//! [`SampleStream`] of the short MP3 the worker encodes, chunk by chunk as
+//! it encodes them, capped at [`MAX_SAMPLE_BYTES`] and [`SAMPLE_TIMEOUT`];
+//! [`crate::MediaPool::cut_sample`] reads one to its end.
 //!
 //! With isolation off, playback is refused rather than decoded here: the
 //! player has no reason to put a codec next to the master key.
@@ -81,6 +82,103 @@ pub struct EncodedSample {
     pub mp3: Vec<u8>,
 }
 
+/// A book sample being cut: the MP3 bytes a worker sends, as it encodes
+/// them.
+///
+/// The bytes are checked as they arrive: a worker that sends PCM instead,
+/// more than [`MAX_SAMPLE_BYTES`] in all, or misses [`SAMPLE_TIMEOUT`]
+/// (counted from the worker's start) ends the stream with an error.
+/// Dropping it stops the worker and frees its sample slot.
+#[derive(Debug)]
+pub struct SampleStream {
+    /// The worker's frames.
+    stream: PcmStream,
+    /// Bytes handed out so far.
+    sent: usize,
+    /// When the whole sample must be done.
+    deadline: tokio::time::Instant,
+    /// Whether the stream ended (its end or an error); nothing is read after.
+    done: bool,
+    /// The pool's sample slot this cut holds, released on drop.
+    _slot: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl SampleStream {
+    /// The encoded layout (mono), where the sample starts, and the file's
+    /// stated duration.
+    #[must_use]
+    pub fn header(&self) -> PcmHeader {
+        self.stream.header
+    }
+
+    /// Holds `slot` until this stream is dropped.
+    pub(crate) fn hold(mut self, slot: tokio::sync::OwnedSemaphorePermit) -> Self {
+        self._slot = Some(slot);
+        self
+    }
+
+    /// The next MP3 bytes the worker encoded.
+    ///
+    /// # Returns
+    ///
+    /// `None` once the sample is complete (or after an error was returned).
+    ///
+    /// # Errors
+    ///
+    /// What the worker reports, or [`MediaError::Worker`] when it sends
+    /// samples instead of bytes, more than [`MAX_SAMPLE_BYTES`] in all, or
+    /// misses [`SAMPLE_TIMEOUT`]. The stream ends after an error.
+    pub async fn next_bytes(&mut self) -> Option<Result<Vec<u8>>> {
+        if self.done {
+            return None;
+        }
+        let answer = match tokio::time::timeout_at(self.deadline, self.stream.chunks.recv()).await {
+            Err(_) => Some(Err(sample_timeout())),
+            Ok(None) => None,
+            Ok(Some(Err(err))) => Some(Err(err)),
+            Ok(Some(Ok(Piece::Pcm(_)))) => Some(Err(worker_error(
+                "pcm worker sent samples instead of a sample".into(),
+            ))),
+            Ok(Some(Ok(Piece::Encoded(bytes)))) => {
+                if self.sent.saturating_add(bytes.len()) > MAX_SAMPLE_BYTES {
+                    Some(Err(worker_error(format!(
+                        "pcm worker sent a sample over {MAX_SAMPLE_BYTES} bytes"
+                    ))))
+                } else {
+                    self.sent += bytes.len();
+                    return Some(Ok(bytes));
+                }
+            }
+        };
+        self.done = true;
+        answer
+    }
+
+    /// Reads the sample to its end.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::next_bytes`].
+    pub async fn collect(mut self) -> Result<EncodedSample> {
+        let mut mp3 = Vec::new();
+        while let Some(bytes) = self.next_bytes().await {
+            mp3.extend_from_slice(&bytes?);
+        }
+        Ok(EncodedSample {
+            header: self.header(),
+            mp3,
+        })
+    }
+}
+
+/// The error of a worker that missed [`SAMPLE_TIMEOUT`].
+fn sample_timeout() -> MediaError {
+    worker_error(format!(
+        "pcm worker did not finish a sample within {}s",
+        SAMPLE_TIMEOUT.as_secs()
+    ))
+}
+
 /// Decoded samples of one file from one start position.
 ///
 /// Dropping it stops the worker.
@@ -139,37 +237,6 @@ impl PcmStream {
             Err(err) => Some(Err(err)),
         }
     }
-
-    /// Reads a sample's MP3 bytes to the end.
-    ///
-    /// # Errors
-    ///
-    /// What the worker reports, or [`MediaError::Worker`] when it sends
-    /// samples instead of bytes or more than [`MAX_SAMPLE_BYTES`].
-    async fn collect_encoded(mut self) -> Result<EncodedSample> {
-        let mut mp3 = Vec::new();
-        while let Some(piece) = self.chunks.recv().await {
-            match piece? {
-                Piece::Encoded(bytes) => {
-                    if mp3.len() + bytes.len() > MAX_SAMPLE_BYTES {
-                        return Err(worker_error(format!(
-                            "pcm worker sent a sample over {MAX_SAMPLE_BYTES} bytes"
-                        )));
-                    }
-                    mp3.extend_from_slice(&bytes);
-                }
-                Piece::Pcm(_) => {
-                    return Err(worker_error(
-                        "pcm worker sent samples instead of a sample".into(),
-                    ))
-                }
-            }
-        }
-        Ok(EncodedSample {
-            header: self.header,
-            mp3,
-        })
-    }
 }
 
 /// Where PCM work runs.
@@ -209,15 +276,15 @@ impl PcmRunner {
         }
     }
 
-    /// Cuts `length_ms` of a file of `size` bytes from `source`, starting
-    /// at `start_ms`, encoded as MP3.
-    pub(crate) async fn cut_sample<S: RangeSource + 'static>(
+    /// Starts cutting `length_ms` of a file of `size` bytes from `source`,
+    /// starting at `start_ms`, encoded as MP3.
+    pub(crate) async fn stream_sample<S: RangeSource + 'static>(
         &self,
         size: u64,
         start_ms: u64,
         length_ms: u64,
         source: S,
-    ) -> Result<EncodedSample> {
+    ) -> Result<SampleStream> {
         match self {
             Self::Refuse(detail) => Err(MediaError::NotIsolated {
                 job: LABEL,
@@ -260,13 +327,13 @@ fn start(
     Ok((stdin, stdout, child))
 }
 
-/// Opens a worker with a `Sample` request and reads the sample to its end
-/// within [`SAMPLE_TIMEOUT`].
+/// Opens a worker with a `Sample` request and waits for its format; the
+/// stream returned has [`SAMPLE_TIMEOUT`], counted from now, to finish.
 ///
 /// # Errors
 ///
-/// What the worker reports, or a [`MediaError::Worker`] when it breaks the
-/// protocol, sends too much, or misses the deadline.
+/// What the worker reports before its format, or a [`MediaError::Worker`]
+/// when it breaks the protocol or misses the deadline.
 pub(crate) async fn sample_through<I, O, S>(
     input: I,
     output: O,
@@ -274,26 +341,24 @@ pub(crate) async fn sample_through<I, O, S>(
     request: PcmRequest,
     size: u64,
     source: S,
-) -> Result<EncodedSample>
+) -> Result<SampleStream>
 where
     I: AsyncWrite + Unpin + Send + 'static,
     O: AsyncRead + Unpin + Send + 'static,
     S: RangeSource + 'static,
 {
-    let work = async move {
-        drive_request(input, output, child, request, size, source)
-            .await?
-            .collect_encoded()
-            .await
-    };
-    tokio::time::timeout(SAMPLE_TIMEOUT, work)
+    let deadline = tokio::time::Instant::now() + SAMPLE_TIMEOUT;
+    let opened = drive_request(input, output, child, request, size, source);
+    let stream = tokio::time::timeout_at(deadline, opened)
         .await
-        .map_err(|_| {
-            worker_error(format!(
-                "pcm worker did not finish a sample within {}s",
-                SAMPLE_TIMEOUT.as_secs()
-            ))
-        })?
+        .map_err(|_| sample_timeout())??;
+    Ok(SampleStream {
+        stream,
+        sent: 0,
+        deadline,
+        done: false,
+        _slot: None,
+    })
 }
 
 /// Starts one worker in PCM mode.
@@ -725,7 +790,10 @@ mod tests {
             start_ms,
             length_ms,
         };
-        sample_through(host_in, host_out, None, request, size, Buffer(file)).await
+        sample_through(host_in, host_out, None, request, size, Buffer(file))
+            .await?
+            .collect()
+            .await
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -791,7 +859,10 @@ mod tests {
                 start_ms: 0,
                 length_ms: 1,
             };
-            sample_through(host_in, host_out, None, request, 64, Buffer(vec![0; 64])).await
+            sample_through(host_in, host_out, None, request, 64, Buffer(vec![0; 64]))
+                .await?
+                .collect()
+                .await
         };
         // PCM in a sample's stream.
         let err = sample(vec![PcmReply::Format(mono), PcmReply::Pcm(vec![1])])
@@ -935,7 +1006,7 @@ mod tests {
         let err = runner.open(1, 0, Buffer(vec![0])).await.unwrap_err();
         assert!(matches!(err, MediaError::NotIsolated { .. }));
         let err = runner
-            .cut_sample(1, 0, 1, Buffer(vec![0]))
+            .stream_sample(1, 0, 1, Buffer(vec![0]))
             .await
             .unwrap_err();
         assert!(matches!(err, MediaError::NotIsolated { .. }));

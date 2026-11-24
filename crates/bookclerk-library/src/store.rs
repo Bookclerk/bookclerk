@@ -4867,12 +4867,23 @@ impl LibraryStore {
         write: event_outbox::AcquireStatusWrite<'_>,
     ) -> Result<()> {
         if let Some(atomic) = &self.atomic {
-            let event = event_outbox::acquire_status_event(
+            let mut event = event_outbox::acquire_status_event(
                 write.title,
                 &write.holding.edition_id,
                 write.status,
                 write.storage_key,
             )?;
+            if write.status == AcquireStatus::Acquired {
+                if let Some(key) = event_outbox::acquired_event_key(
+                    &self.db,
+                    write.title,
+                    &write.holding.edition_id,
+                )
+                .await?
+                {
+                    event.dedup_key = key;
+                }
+            }
             return atomic
                 .set_acquire_status(
                     write.holding,
@@ -7252,7 +7263,8 @@ pub use edition_enrichment::{
 };
 pub use edition_files::{
     AcquireWriter, AudioStream, CopyHolder, EditionAcquisition, EditionFile, FileOwner, FileProbe,
-    FileRole, ProbedAudioFile, RecordedFile, TitleHolding, UnlabelledAudio, ACQUIRE_WRITER,
+    FileRole, ProbedAudioFile, RecordedFile, TitleHolding, UnlabelledAudio, UnprobedFile,
+    ACQUIRE_WRITER,
 };
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
 pub use holdings::{HoldingSelection, NodeHoldingSelection, HOLDING_REMOVED};

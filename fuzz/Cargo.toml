@@ -115,8 +115,8 @@ doc = false
 bench = false
 
 [[bin]]
-name = "cover_sink_key"
-path = "fuzz_targets/cover_sink_key.rs"
+name = "download_sink_key"
+path = "fuzz_targets/download_sink_key.rs"
 test = false
 doc = false
 bench = false
@@ -313,6 +313,13 @@ bench = false
 [[bin]]
 name = "node_account_bundle"
 path = "fuzz_targets/node_account_bundle.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shared_branch_bootstrap"
+path = "fuzz_targets/shared_branch_bootstrap.rs"
 test = false
 doc = false
 bench = false
@@ -523,6 +530,13 @@ bench = false
 [[bin]]
 name = "account_mail_request"
 path = "fuzz_targets/account_mail_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "password_reset_request"
+path = "fuzz_targets/password_reset_request.rs"
 test = false
 doc = false
 bench = false

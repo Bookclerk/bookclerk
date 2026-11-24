@@ -1,0 +1,425 @@
+/**
+ * Fetches cover images, or a store's audio samples, and streams each body
+ * into the host's sink.
+ *
+ * `fetch` and the sink are passed in so the unit tests can answer them; in
+ * the isolate `fetch` is the global one, which the host's egress gate limits
+ * to public hostnames, and the sink is the host-served `Destination` the call
+ * received. Nothing here trusts a body: the host sniffs, decodes and
+ * re-encodes every image it stores. This module only keeps a guest from
+ * spending its budget on answers that cannot be covers (or, for a request
+ * with `media = "audio"`, samples).
+ */
+/** Most URLs one call may ask for (the ABI's `maxDownloadUrls`). */
+export const MAX_URLS = 32;
+/** Largest per-image cap the host may ask for (the ABI's `maxImageBytes`). */
+export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+/** Largest per-sample cap the host may ask for (the ABI's `maxAudioBytes`). */
+export const MAX_AUDIO_BYTES = 32 * 1024 * 1024;
+/**
+ * Largest cap the host may ask for one body of `media`.
+ *
+ * @param media - What the URLs name.
+ * @returns `MAX_IMAGE_BYTES` or `MAX_AUDIO_BYTES`.
+ */
+export function maxBytesFor(media) {
+    return media === "audio" ? MAX_AUDIO_BYTES : MAX_IMAGE_BYTES;
+}
+/** Longest URL accepted, in bytes. */
+export const MAX_URL_BYTES = 4096;
+/** Requests in flight at once; keeps one call's buffered chunks small. */
+export const CONCURRENCY = 4;
+/** Longest one image may take, headers and body, in milliseconds. */
+export const REQUEST_TIMEOUT_MS = 15_000;
+/**
+ * Longest one audio sample may take, headers and body, in milliseconds:
+ * `MAX_AUDIO_BYTES` at about 5 Mbit/s.
+ */
+export const AUDIO_TIMEOUT_MS = 60_000;
+/** A failure with the `PluginError` code it maps to. */
+export class DownloadFailure extends Error {
+    /** `PluginError` wire code. */
+    code;
+    /**
+     * Creates a failure.
+     *
+     * @param message - What was wrong with the request.
+     */
+    constructor(message) {
+        super(message);
+        this.code = "invalid_params";
+    }
+}
+/** Longest validator or response header value passed on, in bytes (the ABI's `maxDownloadHeaderBytes`). */
+export const MAX_HEADER_BYTES = 1024;
+/**
+ * Whether `value` may be sent as a header value: at most `MAX_HEADER_BYTES`
+ * bytes of visible ASCII, spaces and tabs.
+ *
+ * @param value - The candidate value.
+ * @returns `true` when it is safe to send or pass on.
+ */
+export function headerValueOk(value) {
+    return value.length <= MAX_HEADER_BYTES && /^[\t\x20-\x7e]*$/.test(value);
+}
+/**
+ * Reads one condition from the params.
+ *
+ * @param raw - One `DownloadCondition` as received.
+ * @returns The condition, without empty values.
+ * @throws {DownloadFailure} When a value is not a string, is too long, or holds
+ *   bytes a header may not carry.
+ */
+function checkCondition(raw) {
+    const c = (raw ?? {});
+    const out = {};
+    for (const key of ["ifNoneMatch", "ifModifiedSince"]) {
+        const value = c[key];
+        if (value === undefined || value === null || value === "")
+            continue;
+        if (typeof value !== "string" || !headerValueOk(value)) {
+            throw new DownloadFailure(`${key} must be a header value of at most ${MAX_HEADER_BYTES} bytes`);
+        }
+        out[key] = value;
+    }
+    return out;
+}
+/**
+ * Checks the host's params. The host has checked them already; this keeps a
+ * malformed call from reaching the network.
+ *
+ * @param params - `MediaDownloadParams` as received.
+ * @returns The request.
+ * @throws {DownloadFailure} When `urls` is not 1 to `MAX_URLS` strings,
+ *   `media` is not `"image"` or `"audio"`, or `maxBytes` is not a whole
+ *   number from 1 to that media's cap (`MAX_IMAGE_BYTES` or
+ *   `MAX_AUDIO_BYTES`).
+ */
+export function checkParams(params) {
+    const p = (params ?? {});
+    const urls = p.urls;
+    if (!Array.isArray(urls) || urls.length === 0 || urls.length > MAX_URLS) {
+        throw new DownloadFailure(`urls must hold 1 to ${MAX_URLS} entries`);
+    }
+    if (!urls.every((u) => typeof u === "string")) {
+        throw new DownloadFailure("every url must be a string");
+    }
+    const media = p.media ?? "image";
+    if (media !== "image" && media !== "audio") {
+        throw new DownloadFailure('media must be "image" or "audio"');
+    }
+    const maxBytes = p.maxBytes;
+    const cap = maxBytesFor(media);
+    if (typeof maxBytes !== "number" ||
+        !Number.isInteger(maxBytes) ||
+        maxBytes < 1 ||
+        maxBytes > cap) {
+        throw new DownloadFailure(`maxBytes must be a whole number from 1 to ${cap}`);
+    }
+    const rawConditions = p.conditions ?? [];
+    if (!Array.isArray(rawConditions) || rawConditions.length > urls.length) {
+        throw new DownloadFailure("conditions must hold at most one entry per url");
+    }
+    return { urls, media, maxBytes, conditions: rawConditions.map(checkCondition) };
+}
+/**
+ * Whether `url` is one the fetcher will request: absolute `https`, the
+ * default port, no user name or password, a hostname (no empty labels)
+ * rather than an address, and no longer than `MAX_URL_BYTES`. The egress
+ * gate enforces the address rules too; checking here gives a clear per-URL
+ * error instead. The fetcher applies it to every redirect hop as well.
+ *
+ * @param url - The requested URL.
+ * @returns The URL as the parser serialized it, or `undefined` when refused.
+ */
+export function checkUrl(url) {
+    if (url.length > MAX_URL_BYTES || /[\u0000- \u007f]/.test(url))
+        return undefined;
+    let parsed;
+    try {
+        parsed = new URL(url);
+    }
+    catch {
+        return undefined;
+    }
+    if (parsed.protocol !== "https:" || parsed.port !== "" || parsed.username || parsed.password) {
+        return undefined;
+    }
+    const host = parsed.hostname;
+    if (host.startsWith("["))
+        return undefined;
+    // One trailing dot is a fully qualified name; any other empty label is no
+    // real hostname. A numeric last label is how the URL parser spots IPv4.
+    const labels = (host.endsWith(".") ? host.slice(0, -1) : host).split(".");
+    const last = labels[labels.length - 1] ?? "";
+    if (labels.includes("") || /^(?:\d+|0x[0-9a-f]*)$/i.test(last))
+        return undefined;
+    return parsed.href;
+}
+/**
+ * The body length a response declares, when it is exact.
+ *
+ * A length only describes the decoded body when the response has no
+ * `Content-Encoding`, so an encoded response declares none here.
+ *
+ * @param headers - Response headers.
+ * @returns The length in bytes, or `undefined` when absent, encoded or not a
+ *   plain decimal number.
+ */
+export function declaredLength(headers) {
+    if (headers.get("content-encoding"))
+        return undefined;
+    const raw = headers.get("content-length")?.trim();
+    if (raw === undefined || !/^[0-9]{1,15}$/.test(raw))
+        return undefined;
+    return Number(raw);
+}
+/**
+ * A `Content-Type`'s type and subtype, lowercased: the text before its
+ * first `;`, without the spaces and tabs (HTTP's optional whitespace)
+ * around it. Other characters are kept, so a type padded with anything
+ * else names no known type.
+ *
+ * @param contentType - The header value.
+ * @returns The essence, possibly empty.
+ */
+function mediaEssence(contentType) {
+    return (contentType.split(";")[0] ?? "").replace(/^[ \t]+|[ \t]+$/g, "").toLowerCase();
+}
+/**
+ * Whether a `Content-Type` could be an image. Absent and generic binary types
+ * pass, since the host sniffs the bytes anyway; text, HTML and JSON (an error
+ * page, usually) do not.
+ *
+ * @param contentType - The header value, or `null` when absent.
+ * @returns `true` unless the type names something other than an image.
+ */
+export function maybeImage(contentType) {
+    if (contentType === null)
+        return true;
+    const essence = mediaEssence(contentType);
+    return (essence === "" ||
+        essence.startsWith("image/") ||
+        essence === "application/octet-stream" ||
+        essence === "binary/octet-stream");
+}
+/**
+ * Whether a `Content-Type` could be an audio sample. Absent and generic
+ * binary types pass, since the host decodes the bytes anyway; so do
+ * `video/mp4` and `application/ogg`, which some CDNs send for M4A and Ogg
+ * audio. Text, HTML and JSON (an error page, usually) do not.
+ *
+ * @param contentType - The header value, or `null` when absent.
+ * @returns `true` unless the type names something other than audio.
+ */
+export function maybeAudio(contentType) {
+    if (contentType === null)
+        return true;
+    const essence = mediaEssence(contentType);
+    return (essence === "" ||
+        essence.startsWith("audio/") ||
+        essence === "video/mp4" ||
+        essence === "application/ogg" ||
+        essence === "application/octet-stream" ||
+        essence === "binary/octet-stream");
+}
+/**
+ * Passes `body` through, failing the stream once it passes `max` bytes.
+ *
+ * @param body - The response body.
+ * @param max - Most bytes accepted.
+ * @param state - Set to exceeded when the cap is passed.
+ * @returns The capped stream.
+ */
+export function capped(body, max, state) {
+    let total = 0;
+    return body.pipeThrough(new TransformStream({
+        transform(chunk, controller) {
+            total += chunk.byteLength;
+            if (total > max) {
+                state.exceeded = true;
+                controller.error(new Error(`body exceeds ${max} bytes`));
+                return;
+            }
+            controller.enqueue(chunk);
+        },
+    }));
+}
+/**
+ * Cancels a body the fetcher will not read, ignoring failures.
+ *
+ * @param response - The response to drop.
+ */
+async function drop(response) {
+    try {
+        await response.body?.cancel();
+    }
+    catch {
+        // The connection is going away either way.
+    }
+}
+/**
+ * The message of an unknown thrown value.
+ *
+ * @param err - What was thrown.
+ * @returns Its message.
+ */
+function reason(err) {
+    return err instanceof Error ? err.message : String(err);
+}
+/** Most redirects followed for one URL. */
+export const MAX_REDIRECTS = 5;
+/** Response headers passed on to the host, by `DownloadResult` field. */
+const PASSED_HEADERS = [
+    ["etag", "etag"],
+    ["lastModified", "last-modified"],
+    ["cacheControl", "cache-control"],
+    ["expires", "expires"],
+    ["date", "date"],
+    ["age", "age"],
+];
+/**
+ * Copies the response headers the host uses for freshness and revalidation
+ * into `image`, skipping any too long or holding bytes a header may not
+ * carry. The host parses them again; this only bounds what crosses the RPC.
+ *
+ * @param headers - Response headers.
+ * @param image - The answer to fill.
+ */
+export function passHeaders(headers, image) {
+    for (const [field, name] of PASSED_HEADERS) {
+        const value = headers.get(name);
+        if (value !== null && value !== "" && headerValueOk(value))
+            image[field] = value;
+    }
+}
+/** Statuses that redirect to their `Location`. */
+const REDIRECTS = new Set([301, 302, 303, 307, 308]);
+/**
+ * Fetches one URL and puts its body into the sink under `index`.
+ *
+ * @param options - How to reach the network.
+ * @param url - The requested URL.
+ * @param index - Its position in the request.
+ * @param maxBytes - Largest body accepted.
+ * @param sink - The host's destination.
+ * @param condition - Validators to send, so an unchanged image answers `304`.
+ * @param media - What the URL names: an image, or an audio sample.
+ * @returns What happened; a failure is an answer, never a throw.
+ */
+export async function fetchOne(options, url, index, maxBytes, sink, condition = {}, media = "image") {
+    const failed = (error) => ({
+        url,
+        stored: false,
+        notModified: false,
+        error,
+    });
+    const target = checkUrl(url);
+    if (target === undefined)
+        return failed("not an https URL on a public hostname");
+    let response;
+    const signal = AbortSignal.timeout(media === "audio" ? AUDIO_TIMEOUT_MS : REQUEST_TIMEOUT_MS);
+    let current = target;
+    const headers = {
+        accept: media === "audio" ? "audio/*" : "image/*",
+        "user-agent": `Bookclerk-Media/${options.version} (+https://bookclerk.app)`,
+    };
+    if (condition.ifNoneMatch !== undefined)
+        headers["if-none-match"] = condition.ifNoneMatch;
+    if (condition.ifModifiedSince !== undefined)
+        headers["if-modified-since"] = condition.ifModifiedSince;
+    for (let hop = 0;; hop += 1) {
+        try {
+            response = await options.fetch(current, {
+                method: "GET",
+                headers,
+                // Each hop must pass `checkUrl` too, so redirects are followed here.
+                redirect: "manual",
+                signal,
+            });
+        }
+        catch (err) {
+            return failed(`request failed: ${reason(err)}`);
+        }
+        if (!REDIRECTS.has(response.status))
+            break;
+        await drop(response);
+        if (hop >= MAX_REDIRECTS)
+            return failed("too many redirects");
+        const location = response.headers.get("location");
+        if (location === null)
+            return failed(`HTTP ${response.status} without a location`);
+        let next;
+        try {
+            next = checkUrl(new URL(location, current).href);
+        }
+        catch {
+            next = undefined;
+        }
+        if (next === undefined)
+            return failed("redirect to a URL that is not https on a public hostname");
+        current = next;
+    }
+    if (response.status === 304) {
+        await drop(response);
+        const unchanged = { url, stored: false, notModified: true };
+        passHeaders(response.headers, unchanged);
+        return unchanged;
+    }
+    if (!response.ok) {
+        await drop(response);
+        return failed(`HTTP ${response.status}`);
+    }
+    const contentType = response.headers.get("content-type");
+    if (media === "audio" ? !maybeAudio(contentType) : !maybeImage(contentType)) {
+        await drop(response);
+        const kind = media === "audio" ? "audio" : "an image";
+        return failed(`not ${kind} (${(contentType ?? "").slice(0, 100)})`);
+    }
+    const length = declaredLength(response.headers);
+    if (length !== undefined && length > maxBytes) {
+        await drop(response);
+        return failed(`body exceeds ${maxBytes} bytes`);
+    }
+    if (response.body === null)
+        return failed("empty body");
+    const state = { exceeded: false };
+    const put = {};
+    if (contentType !== null)
+        put.contentType = contentType;
+    if (length !== undefined)
+        put.contentLength = length;
+    try {
+        await sink.put(String(index), capped(response.body, maxBytes, state), put);
+    }
+    catch (err) {
+        return failed(state.exceeded ? `body exceeds ${maxBytes} bytes` : `store failed: ${reason(err)}`);
+    }
+    const image = { url, stored: true, notModified: false };
+    if (contentType !== null)
+        image.contentType = contentType;
+    passHeaders(response.headers, image);
+    return image;
+}
+/**
+ * Answers `MediaDownloader.downloadMedia`: fetches every URL, `CONCURRENCY` at a
+ * time, and returns one answer per URL in request order.
+ *
+ * @param options - How to reach the network.
+ * @param params - `MediaDownloadParams` from the host.
+ * @param sink - The host's destination.
+ * @returns One `DownloadResult` per URL.
+ * @throws {DownloadFailure} When the params are malformed.
+ */
+export async function downloadMedia(options, params, sink) {
+    const { urls, media, maxBytes, conditions } = checkParams(params);
+    const out = new Array(urls.length);
+    let next = 0;
+    const worker = async () => {
+        for (let i = next++; i < urls.length; i = next++) {
+            out[i] = await fetchOne(options, urls[i], i, maxBytes, sink, conditions[i], media);
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, urls.length) }, worker));
+    return out;
+}

@@ -72,14 +72,19 @@ const maxEventPayloadBytes :UInt32 = 65536;
 # Largest `KvNamespace` value in bytes; a `[[kv_namespaces]]` row may lower
 # its own cap but never raise it past this.
 const maxKvValueBytes :UInt32 = 1048576;
-# Most URLs in one `CoverFetcher.fetchCovers` call.
-const maxCoverUrls :UInt32 = 32;
-# Largest image body `CoverFetcher.fetchCovers` may return for one URL.
-const maxCoverBytes :UInt32 = 10485760;
-# Longest cache header value, in bytes, `CoverFetcher.fetchCovers` carries in
+# Most URLs in one `MediaDownloader.downloadMedia` call.
+const maxDownloadUrls :UInt32 = 32;
+# Largest image body `MediaDownloader.downloadMedia` may return for one URL
+# (`media = image`).
+const maxImageBytes :UInt32 = 10485760;
+# Largest audio body `MediaDownloader.downloadMedia` may return for one URL
+# (`media = audio`): a storefront's sample of up to ten minutes at a store's
+# own bitrate.
+const maxAudioBytes :UInt32 = 33554432;
+# Longest cache header value, in bytes, `MediaDownloader.downloadMedia` carries in
 # either direction (a condition the host sends, a header the server sent).
 # The host ignores a longer header the fetcher returns.
-const maxCoverHeaderBytes :UInt32 = 1024;
+const maxDownloadHeaderBytes :UInt32 = 1024;
 # Largest metadata file `MetadataFiles.parse` reads and `MetadataFiles.render`
 # returns. The host skips a larger sidecar before any plugin sees it.
 const maxMetadataFileBytes :UInt32 = 262144;
@@ -776,8 +781,8 @@ struct Entrypoints {
   scheduledHandler @9 :ScheduledHandler;
   # `metadata` entrypoint.
   metadata @10 :MetadataProvider;
-  # `covers` entrypoint.
-  covers @11 :CoverFetcher;
+  # `mediaDownload` entrypoint.
+  mediaDownload @11 :MediaDownloader;
   # `[sockets]` handler: messages and closes on host-brokered sockets.
   socketHandler @12 :SocketHandler;
   # `metadataFiles` entrypoint.
@@ -1833,22 +1838,22 @@ interface MetadataProvider {
   ) -> (result :MetadataChaptersReply);
 }
 
-# `covers` entrypoint: downloads cover images on the host's behalf, so the
-# host itself never makes an outbound request to a URL a plugin or a store
-# supplied. The fetcher only transports bytes: the host sniffs, decodes and
-# re-encodes every image in its media worker before anything stores or
-# serves it. Network access is limited to what the manifest's
+# `mediaDownload` entrypoint: downloads public media (cover images and
+# storefronts' audio samples) on the host's behalf, so the host itself never
+# makes an outbound request to a URL a plugin or a store supplied. The
+# downloader only transports bytes: the host sniffs, decodes and re-encodes
+# every body in its media worker before anything stores or serves it. Network access is limited to what the manifest's
 # `[capabilities.network]` declares.
-interface CoverFetcher {
+interface MediaDownloader {
   # Liveness / readiness probe.
   health @0 () -> (result :HealthReply);
   # Fetches every URL concurrently and streams each body into `sink` under
   # its index in `params.urls` (`"0"`, `"1"`, ...). The reply says, per URL,
   # whether its body was stored.
-  fetchCovers @1 (
-      params :CoverFetchParams,  # URLs and the per-image byte cap.
+  downloadMedia @1 (
+      params :MediaDownloadParams,  # URLs, media kind and the per-body byte cap.
       sink :Destination  # Host-served store that accepts only those keys.
-  ) -> (result :CoverImagesReply);
+  ) -> (result :DownloadResultsReply);
 }
 
 # `metadataFiles` entrypoint: reads and writes metadata files that sit next
@@ -2022,8 +2027,8 @@ enum Entrypoint {
   # Metadata provider: `lookup`, `search` and `chapters`
   # (`MetadataProvider`).
   metadata @6;
-  # Cover fetcher: `fetchCovers` (`CoverFetcher`).
-  covers @7;
+  # Public media downloader: `downloadMedia` (`MediaDownloader`).
+  mediaDownload @7;
   # Metadata file dialects: `parse` and `render` (`MetadataFiles`).
   metadataFiles @8;
   # Notification delivery: `send` and `validateDestination` (`Notifier`).
@@ -3042,7 +3047,7 @@ struct CatalogHit {
   # Absolute `https://` URL of a short audio sample of this edition that
   # the storefront offers publicly (a few minutes, in any format the media
   # worker decodes). The host never hands it to a client: a book's details
-  # play it through a same-origin path, fetched by a `covers` plugin with
+  # play it through a same-origin path, fetched by a `mediaDownload` plugin with
   # `media = audio` and re-encoded in the media worker. Empty when the store
   # has none.
   sampleUrl @27 :Text $optional;
@@ -3771,19 +3776,19 @@ struct MetadataChaptersReply {
   }
 }
 
-# Params of `CoverFetcher.fetchCovers`.
-struct CoverFetchParams {
-  # Absolute `https://` URLs to fetch, at most `maxCoverUrls`; never empty.
+# Params of `MediaDownloader.downloadMedia`.
+struct MediaDownloadParams {
+  # Absolute `https://` URLs to fetch, at most `maxDownloadUrls`; never empty.
   # The host has already checked each one against its URL policy.
   urls @0 :List(Text);
-  # Largest body, in bytes, the host accepts for one image; at most
-  # `maxCoverBytes`. The sink refuses a larger body, which fails that URL
+  # Largest body, in bytes, the host accepts for one URL; at most
+  # `maxImageBytes` for images and `maxAudioBytes` for audio. The sink refuses a larger body, which fails that URL
   # only.
   maxBytes @1 :UInt32;
   # Conditional request headers per URL, in the same order as `urls`, from
   # the host's cached copy. Empty, or shorter than `urls`, means the
   # remaining URLs are fetched unconditionally.
-  conditions @2 :List(CoverCondition);
+  conditions @2 :List(DownloadCondition);
   # What the URLs name: cover art (the default) or a storefront's audio
   # sample (`CatalogHit.sampleUrl`). A fetcher sends a matching `Accept`
   # header and refuses a body whose `Content-Type` names something else;
@@ -3791,7 +3796,7 @@ struct CoverFetchParams {
   media @3 :RemoteMedia;
 }
 
-# The kind of public media `CoverFetcher.fetchCovers` downloads.
+# The kind of public media `MediaDownloader.downloadMedia` downloads.
 enum RemoteMedia {
   # Cover art or another image.
   image @0;
@@ -3801,7 +3806,7 @@ enum RemoteMedia {
 
 # Validators the host already holds for one URL, sent as conditional request
 # headers so an unchanged image costs a `304` instead of its body.
-struct CoverCondition {
+struct DownloadCondition {
   # `If-None-Match` value: the `ETag` the host stored, verbatim; empty for
   # none.
   ifNoneMatch @0 :Text $optional;
@@ -3811,7 +3816,7 @@ struct CoverCondition {
 }
 
 # What happened to one requested URL.
-struct CoverImage {
+struct DownloadResult {
   # The requested URL, verbatim.
   url @0 :Text;
   # Whether the body was put into the sink under this URL's index.
@@ -3838,17 +3843,17 @@ struct CoverImage {
   age @10 :Text $optional;
 }
 
-# Success payload of `CoverFetcher.fetchCovers`.
-struct CoverImages {
+# Success payload of `MediaDownloader.downloadMedia`.
+struct DownloadResults {
   # One entry per requested URL, in request order.
-  images @0 :List(CoverImage);
+  downloads @0 :List(DownloadResult);
 }
 
-# Result union of `CoverFetcher.fetchCovers`.
-struct CoverImagesReply {
+# Result union of `MediaDownloader.downloadMedia`.
+struct DownloadResultsReply {
   union {
     # Success: one entry per requested URL.
-    ok @0 :CoverImages;
+    ok @0 :DownloadResults;
     # Typed failure; `code` is a `PluginErrorCode` wire string.
     err @1 :PluginError;
   }

@@ -77,8 +77,8 @@ same-origin path (`/api/samples/{token}`) with this node's own key, as
 cover paths are signed, and fetches only paths it issued. The token is
 authenticated, not secret: it carries the URL in readable form, so
 anyone holding the path can read it, but nobody can make this node fetch
-a URL it did not sign. The download goes through the deployed `covers`
-plugins with `media = audio` (`CoverFetchParams.media`), in order, until
+a URL it did not sign. The download goes through the deployed `mediaDownload`
+plugins with `media = audio` (`MediaDownloadParams.media`), in order, until
 one returns the body (a plugin that refuses audio passes it on): public
 `https` hosts only and a size cap. The plugin refuses an answer whose
 `Content-Type` names something else (text, HTML, JSON, an image); it
@@ -107,6 +107,14 @@ next store's.
   listing stores for a sample when the library holds no playable copy;
   answers are cached as above. A library whose editions have no audio on
   this node (the hosted demo's seeded books) offers the stores' samples.
+- A sample not yet kept is answered as the media worker encodes it, so
+  playback starts with the first encoded bytes instead of after the whole
+  cut; the cut runs to its end and is kept even when the listener leaves.
+  Until it is kept, the answer has no length and ignores `Range`.
+- Store samples are downloaded by the `mediaDownload` entrypoint (the
+  `media_download` plugin, formerly `covers`), whose audio cap
+  (`maxAudioBytes`, 32 MiB) is separate from the image cap
+  (`maxImageBytes`, 10 MiB).
 - Samples use cache space (bounded) and media worker time on first play.
 - The desktop window plays samples in its web view, not through its
   native audio engine.

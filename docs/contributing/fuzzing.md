@@ -34,7 +34,7 @@ boundary extends it.
 | `abi_decode` | Every generated Cap'n Proto `read_*` codec, the database envelope decoders, and the reply helpers every payload-free guest reply and guest error goes through (`read_empty`, `read_error`) | `bookclerk-plugin-abi` |
 | `provision_reply` | A plugin's answer to its guided setup (`Provisioning.provision`): the Cap'n Proto reply, then the settings JSON, credentials and summary checked against the manifest's `[provisioning] outputs` before anything is stored or sealed | `bookclerk-plugin-abi::provision` |
 | `db_stream` | `executeStreamed` frames an adapter sends, reassembled by the host and the SDKs under the streamed result budget. The TypeScript and Python SDK tests replay the same corpus as shared vectors against their own decoders | `bookclerk-plugin-abi::ExecuteStreamDecoder` |
-| `cover_sink_key` | The key a cover fetcher writes each image under, mapped to a URL slot | `bookclerk-plugin-abi::cover_sink_slot` |
+| `download_sink_key` | The key a media downloader writes each body under, mapped to a URL slot | `bookclerk-plugin-abi::download_sink_slot` |
 | `cover_process` | Cover images from any public website: sniff, decode under limits, resize, re-encode | `bookclerk-cover::process` |
 | `cover_token` | Cover tokens in `/api/covers` and `/api/images` paths, store-sample tokens in `/api/samples` paths, and Gravatar hashes in `/api/avatars` paths: which remote URL a route may fetch | `bookclerk-cover::token` |
 | `cover_wire` | Cover worker frames: requests the worker reads, replies the host reads | `bookclerk-cover::wire` |
@@ -78,6 +78,7 @@ boundary extends it.
 | `library_resolve` | Store listings resolved into works, expressions and editions | `bookclerk-resolve` |
 | `node_frame` | Node-to-node frames on the library socket, including the public origin a branch reports in its heartbeat | `bookclerk-node-proto::Frame`, `BranchOrigin::parse` |
 | `node_account_bundle` | Store accounts and their secrets a library sends a joining branch for its person, a branch offers its library (`accounts.add`), and a sign-in a keeping branch pushes there (`accounts.update`) or the library answers its first push with (`reconcile`) | `bookclerk-node-proto::parse_account_bundle` |
+| `shared_branch_bootstrap` | The bootstrap a library sends a joining shared branch: its `[database]` connection, the database plugin's credential (D1's API token; a PostgreSQL URL is its own) and the data-encryption key, which the shared branch writes as its own and keeps in its master key store | `bookclerk-node-proto::parse_shared_branch_bootstrap` |
 | `destination_filter` | A storage destination's filter: the body of `PUT /api/config/plugin-instances/{id}/filter` and the stored `core.destination` document | `bookclerk-config::parse_destination_filter` |
 | `intake_settings` | A drop folder's settings: the body of `PUT /api/config/plugin-instances/{id}/intake` and the stored `core.intake` document | `bookclerk-config::parse_intake_settings` |
 | `intake_items` | A drop folder's listing: object keys, sizes and change signatures grouped into items and settled | `bookclerk-intake::ItemGrouper`, `step` |
@@ -122,6 +123,7 @@ boundary extends it.
 | `collections_request` | An Administrator's collections for the library, the body of `PUT /api/library/collections` and the stored `core.collections` document | `bookclerk-library::control_plane::parse_collections_request` |
 | `connections_request` | A branch Owner's store connections to add to one library, or one to disconnect: the bodies of `POST /api/config/join/connections` and `POST /api/config/join/connections/disconnect` | `bookclerk-library::control_plane::parse_add_connections_request`, `parse_disconnect_request` |
 | `account_mail_request` | Account mail's notifier, the body of `PUT /api/notifications/account-mail`, and the token of a verification link, the body of `POST /api/auth/verify-email` | `bookclerk-library::notifications::parse_account_mail_settings`, `parse_verify_email_request` (the routes read the same request types with the JSON extractor) |
+| `password_reset_request` | Self-service password reset: the address from `POST /api/auth/password-reset`, a link's token from `/check` and `/passkey`, and the finish body from `/finish` | `bookclerk-library::notifications::parse_password_reset_ask`, `parse_password_reset_link`, `parse_password_reset_finish` (the routes read the same request types with the JSON extractor) |
 | `pace_request` | A person's pace for one of their store accounts, the body of `POST /api/portal/sources/{source}/connections/{account_id}/pace` | `bookclerk-library::pacing::parse_pace_request` |
 | `title_meta_fill` | A signed-in user's title-meta query (the body of `POST /api/discover/title-meta`, each entry of its batch route, and the body of `POST /api/discover/title-sample`) and the storefront catalog-detail lookups its store editions and ISBN plan | `bookclerk-discover::check_title_meta_query`, `plan_title_meta_fill` |
 | `window_policy` | Requests a page sends on the desktop window's custom scheme, which reach the router with the window's own credential (the operator token or its patron's session cookies) unless refused, the URLs the window is asked to open, and which pages may start the window's live updates | `bookclerk-window-policy` |
@@ -241,10 +243,10 @@ only that. The others check:
   run, a fixed set of mutants derived from them with a seeded generator
   (a flipped byte, a truncation, an inserted byte, a duplicated slice),
   holding the first two invariants and typing every refusal.
-- **`cover_sink_key`**: a key names a slot exactly when it is the
+- **`download_sink_key`**: a key names a slot exactly when it is the
   canonical decimal spelling of an index below the URL count, read digit
   by digit without `str::parse`, so no two keys name one slot. The shared
-  oracle is `fuzz/oracles/cover_sink_key.rs`, replayed from
+  oracle is `fuzz/oracles/download_sink_key.rs`, replayed from
   `bookclerk-plugin-abi`.
 - **`cover_process`**: an input without a JPEG, PNG or WebP signature is
   refused. An accepted cover yields three JPEGs whose markers and frame
@@ -848,6 +850,16 @@ only that. The others check:
   bundle serializes and parses back to an equal bundle. The shared oracle
   is `fuzz/oracles/node_account_bundle.rs`, replayed from
   `bookclerk-node-proto`.
+- **`shared_branch_bootstrap`**: an accepted bootstrap is within the size
+  limit, has the bootstrap version, names the library and node it was
+  opened for, and carries a 32-byte DEK. A credential secret and a
+  PostgreSQL URL are 1 byte to their limit of UTF-8 with no whitespace or
+  control character, a credential id is 1 byte to its limit of ASCII
+  letters, digits, `-` and `_`, and a PostgreSQL bootstrap never carries a
+  separate credential, checked in the oracle rather than through the
+  parser's own rule. An accepted bootstrap serializes and parses back to an equal
+  one. The shared oracle is `fuzz/oracles/shared_branch_bootstrap.rs`,
+  replayed from `bookclerk-node-proto`.
 - **`plan_authz`**: decodes a small library (store accounts on two plugins
   whose ids and labels collide, who each is linked to, library rows and
   plugin instances) and one Member's scan or acquire request into an
@@ -1205,6 +1217,19 @@ only that. The others check:
   `VerifyEmailRequest` types with axum's JSON extractor and call the same
   `validate`, so the target covers their reading and validation. The
   shared oracle is `fuzz/oracles/account_mail_request.rs`, replayed from
+  `bookclerk-library`.
+- **`password_reset_request`**: the first byte picks the body (modulo 3:
+  ask, link, finish) and the rest is read as an untyped JSON value. Each
+  body must be one object with no repeated keys and no keys but its own.
+  An accepted ask address equals the `email` string trimmed and
+  lowercased, is at most 254 bytes and has a dotted domain, and a plain
+  address is never refused. A link is `token`, exactly 64 lowercase hex
+  characters. A finish body carries `token` and `password` (1 to 1024
+  bytes once trimmed), and at most one of `totp_code` (six digits) and
+  `passkey` (exactly `challenge_id`, 1 to 64 printable ASCII bytes, and an
+  object `credential`), `null` counting as absent; the parsed values equal
+  the ones written. Anything else is refused as `Invalid`. The shared
+  oracle is `fuzz/oracles/password_reset_request.rs`, replayed from
   `bookclerk-library`.
 - **`download_resume`**: the input is a flags byte (the length is already
   known; the answer sent `Content-Length`; it sent `Content-Range`), the
@@ -2108,9 +2133,9 @@ tree and on its text, in `npm test` (the `workerd_guests` check).
   `MAX_CHAPTERS`. `found` exactly when that walk finds any. Durations are
   positive safe integers.
 
-### Cover fetcher guest
+### Media download guest
 
-The `covers` guest decides which URLs it requests: the host's URLs and every
+The `media_download` guest decides which URLs it requests: the host's URLs and every
 redirect `Location` an upstream server sends. It also passes header values
 both ways: the host's validators out as request headers, and an upstream
 server's caching headers back in its answer, and it decides from an answer's
@@ -2121,7 +2146,7 @@ server's caching headers back in its answer, and it decides from an answer's
 pick another run.
 
 - **Cover URL policy** (`checkUrl` in
-  `crates/bookclerk-plugins/optional/covers/src/fetcher.ts`). Oracle,
+  `crates/bookclerk-plugins/optional/media_download/src/fetcher.ts`). Oracle,
   written from the policy and the WHATWG URL rules: accept exactly an
   `https` URL with the default port, no credentials, no control characters
   or spaces, at most 4096 code units, and a hostname whose labels are
@@ -2133,7 +2158,7 @@ pick another run.
   against the URL that sent it, no more than `MAX_REDIRECTS` are followed,
   and a body is stored only after a chain the policy allowed in full.
 - **Header values** (`headerValueOk`, `checkParams` conditions and
-  `passHeaders`). Oracle, written from the ABI's `maxCoverHeaderBytes` and
+  `passHeaders`). Oracle, written from the ABI's `maxDownloadHeaderBytes` and
   the visible-ASCII part of RFC 9110's `field-value`: a value passes
   exactly when it is at most 1024 bytes of tab, space and `VCHAR`. A
   condition outside that is refused, and a response header outside it is

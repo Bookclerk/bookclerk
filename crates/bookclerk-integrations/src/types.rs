@@ -15,12 +15,12 @@ pub struct IntegrationHealth {
     pub detail: Option<String>,
 }
 
-/// One image a `covers` plugin downloaded, or why it could not.
+/// One image a `media_download` plugin downloaded, or why it could not.
 ///
 /// The body is untrusted bytes as the remote server sent them: callers must
 /// sniff, decode and re-encode it before storing or serving it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct FetchedCover {
+pub struct FetchedMedia {
     /// The requested URL, verbatim.
     pub url: String,
     /// Response body, at most the `max_bytes` the call asked for; `None` when
@@ -40,8 +40,8 @@ pub struct FetchedCover {
 }
 
 /// The caching headers an image server sent with one answer, verbatim as
-/// the `covers` plugin passed them on (each at most the ABI's
-/// `maxCoverHeaderBytes`); `None` for a header it did not send.
+/// the `media_download` plugin passed them on (each at most the ABI's
+/// `maxDownloadHeaderBytes`); `None` for a header it did not send.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CoverHeaders {
     /// `ETag`.

@@ -41,7 +41,7 @@ matching name extending its base: `Storefront(StorefrontEntrypoint)`,
 `Storage(StorageEntrypoint)`, `RemoteLibrary(RemoteLibraryEntrypoint)`,
 `DatabaseAdapter(DatabaseAdapterEntrypoint)`, `Cli(CliEntrypoint)`,
 `Oidc(OidcEntrypoint)`, `Metadata(MetadataEntrypoint)`,
-`Covers(CoverEntrypoint)`, `MetadataFiles(MetadataFilesEntrypoint)`,
+`MediaDownload(MediaDownloadEntrypoint)`, `MetadataFiles(MetadataFilesEntrypoint)`,
 `Notifier(NotifierEntrypoint)`, `Ingress(IngressEntrypoint)`,
 `Provisioning(ProvisioningEntrypoint)` and `Ai(AiEntrypoint)`. The Python SDK serves `direct`
 [`[ingress]`](../../manifest.md#ingress-public-address) plugins only; the
@@ -119,7 +119,14 @@ batches resumably; see
 storefront's `scan` can hand its paging to `scan_page(params, fetch)`
 (`from bookclerk_plugin_sdk.scan_page import scan_page`, which also works
 inside a workerd isolate), which slices the store's own pages into replies
-the host accepts; see [Paged scans](../../abi.md#paged-scans). Generate a typed `Env` protocol from `plugin.toml`:
+the host accepts; see [Paged scans](../../abi.md#paged-scans). A storage
+plugin can build its entrypoint from `ObjectStoreDestination` over a small
+backend, follow bucket notifications with `QueueFeed` and
+`webhook_queue(env.WEBHOOKS, name)` (all from
+`bookclerk_plugin_sdk.object_store`, injected into workerd isolates too), and
+answer the `stream_copy` job with `stream_copy(job)` from
+`bookclerk_plugin_sdk.workerd`; see
+[Translating keys](../../abi.md#translating-keys). Generate a typed `Env` protocol from `plugin.toml`:
 
 ```bash
 python -m bookclerk_plugin_sdk types .   # writes bookclerk_configuration.py
@@ -224,6 +231,13 @@ is a worked plugin: a `notes` table it writes with `chunk()`, lists with
 every profile. A plugin's own `pyproject.toml` is what makes
 `bookclerk-plugin test` run pytest. See
 [Testing against the limits](../../database-limits.md#testing-against-the-limits).
+
+`bookclerk_plugin_sdk.testkit` also has in-memory `KV` and `WEBHOOKS`
+bindings that apply the host's limits and error codes:
+`TestKv(max_value_bytes=..., max_keys=...)` and `TestWebhooks()`, whose
+`deliver(name, body)` stands in for an outside service and whose `acked`,
+`retried` and `mark_missed` let a test check how a plugin settles its
+leases. `fail_next(op, error)` makes one KV call fail.
 
 ## Author tools
 

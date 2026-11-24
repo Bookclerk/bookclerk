@@ -4,12 +4,15 @@ import { Input } from "@/components/ui/input";
 import {
   authMe,
   fetchSigninMethods,
+  isApiError,
   login,
   passkeyLoginBegin,
   passkeyLoginFinish,
   passwordLogin,
+  passwordResetAvailable,
   portalLoginIntegration,
   portalRedeem,
+  requestPasswordReset,
   totpLogin,
   type AuthSession,
   type OidcProvider,
@@ -86,6 +89,11 @@ export function LoginPage({ onSuccess }: { onSuccess: (session: AuthSession) => 
   const [operatorToken, setOperatorToken] = useState(false);
   const [oidc, setOidc] = useState<OidcProvider[]>([]);
   const [integrations, setIntegrations] = useState<{ id: string; name: string }[]>([]);
+  // "Forgot password": offered only once account mail can deliver a link.
+  const [resetAvailable, setResetAvailable] = useState(false);
+  const [forgotOpen, setForgotOpen] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotSent, setForgotSent] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -104,6 +112,20 @@ export function LoginPage({ onSuccess }: { onSuccess: (session: AuthSession) => 
         }
       }
     })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void passwordResetAvailable()
+      .then((available) => {
+        if (!cancelled) setResetAvailable(available);
+      })
+      .catch(() => {
+        if (!cancelled) setResetAvailable(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -191,6 +213,28 @@ export function LoginPage({ onSuccess }: { onSuccess: (session: AuthSession) => 
       await finishPortal();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Passkey sign-in failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onForgotSubmit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await requestPasswordReset(forgotEmail.trim());
+      setForgotSent(true);
+    } catch (err) {
+      setError(
+        isApiError(err) && err.status === 429
+          ? "Too many attempts from this device. Wait a few minutes, then try again."
+          : isApiError(err) && err.status === 409
+            ? "Password reset by email is not set up. Ask an administrator to reset your password."
+            : isApiError(err) && err.status === 400
+              ? "Enter a valid email address."
+              : "The library did not answer. Check your connection and try again.",
+      );
     } finally {
       setBusy(false);
     }
@@ -369,6 +413,62 @@ export function LoginPage({ onSuccess }: { onSuccess: (session: AuthSession) => 
                 {busy ? "Waiting for passkey…" : "Sign in with passkey"}
               </Button>
             </form>
+
+            {resetAvailable ? (
+              <div className="mt-4">
+                {forgotOpen ? (
+                  forgotSent ? (
+                    <p
+                      className="rounded-md border border-ink/10 bg-card-mid p-3 text-sm text-ink/70"
+                      role="status"
+                    >
+                      If an account has that address verified, a reset link is on its way. It works
+                      once, for 30 minutes. Check your inbox and spam folder.
+                    </p>
+                  ) : (
+                    <form
+                      onSubmit={onForgotSubmit}
+                      className="space-y-3 rounded-md border border-ink/10 bg-card-mid p-3"
+                    >
+                      <p className="text-sm text-ink/70">
+                        Enter the email address on your account. The library mails a link that lets
+                        you choose a new password.
+                      </p>
+                      <label className="block text-sm font-semibold" htmlFor="forgot-email">
+                        Email address
+                      </label>
+                      <Input
+                        id="forgot-email"
+                        type="email"
+                        autoComplete="email"
+                        value={forgotEmail}
+                        onChange={(e) => setForgotEmail(e.target.value)}
+                        required
+                      />
+                      <Button
+                        type="submit"
+                        className="w-full"
+                        disabled={busy || !forgotEmail.trim()}
+                      >
+                        {busy ? "Sending…" : "Email me a link"}
+                      </Button>
+                    </form>
+                  )
+                ) : (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="w-full"
+                    onClick={() => {
+                      setError(null);
+                      setForgotOpen(true);
+                    }}
+                  >
+                    Forgot your password?
+                  </Button>
+                )}
+              </div>
+            ) : null}
 
             {otherMethods ? (
               <div className="mt-8">

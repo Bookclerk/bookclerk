@@ -550,3 +550,17 @@ async fn the_sweep_enqueues_mail_that_found_the_queue_full() {
         bookclerk_library::notifications::DeliveryState::Pending
     );
 }
+
+#[test]
+fn a_long_inviter_name_is_cut_at_a_character_boundary_within_the_title_limit() {
+    let name = "😀".repeat(64);
+    let cut = super::cut_to_bytes(&name, super::MAX_INVITER_BYTES);
+    assert_eq!(cut.len(), super::MAX_INVITER_BYTES);
+    assert!(cut.chars().all(|c| c == '😀'));
+    let title = super::invite_title(Some(cut));
+    let limit =
+        usize::try_from(bookclerk_plugin_abi::MAX_NOTIFICATION_TITLE_BYTES).unwrap_or(usize::MAX);
+    assert!(title.len() <= limit);
+    assert_eq!(super::cut_to_bytes("aé", 2), "a");
+    assert_eq!(super::cut_to_bytes("Alex", 128), "Alex");
+}

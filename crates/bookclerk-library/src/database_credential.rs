@@ -1,12 +1,16 @@
-//! A hosted database's API credential, sealed with the DEK and kept where
+//! The database plugin's own credential, sealed with the DEK and kept where
 //! the master key is.
 //!
-//! A hosted database (Cloudflare D1) needs an API token before the library
-//! can open, so it can't live in `encrypted_secrets` like a store login.
-//! `bookclerk database setup d1` mints one and keeps it here instead of in
-//! an environment variable:
+//! A database plugin needs its credential before the library can open, so
+//! it can't live in `encrypted_secrets` like a store login or a storage
+//! plugin's keys. Whatever the plugin, it is kept here instead of in an
+//! environment variable or a plaintext file: the API token
+//! `bookclerk config database setup d1` mints for Cloudflare D1, and the
+//! database credential a joining shared branch receives from its library
+//! (D1's token, or the connection URL of a PostgreSQL library). Each is
+//! tagged with the plugin it belongs to, so it is never handed to another:
 //!
-//! 1. The token is sealed with the data-encryption key (XChaCha20-Poly1305),
+//! 1. The credential is sealed with the data-encryption key (XChaCha20-Poly1305),
 //!    so its bytes are never stored in the clear anywhere.
 //! 2. The sealed blob goes in the same store as the master key: in
 //!    `database.credential` itself on a file install, or in an OS keychain
@@ -32,7 +36,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
 
-use bookclerk_config::KeyStoreKind;
+use bookclerk_config::{DatabasePluginKind, KeyStoreKind};
 use bookclerk_keystore::{ItemKind, KeychainItemId, OsKeychain, SystemdCredsVault, Vault};
 use zeroize::Zeroizing;
 
@@ -56,100 +60,136 @@ const FINGERPRINT_LEN: usize = 32;
 const NONCE_LEN: usize = 24;
 /// Length of a keychain item id.
 const ITEM_LEN: usize = 16;
-/// The longest token accepted, in bytes. Cloudflare tokens are about 40.
-const MAX_TOKEN_LEN: usize = 1024;
-/// The longest token id accepted, in bytes.
-const MAX_TOKEN_ID_LEN: usize = 128;
-/// Version of the sealed payload.
-const PAYLOAD_VERSION: u8 = 1;
+/// The longest secret accepted, in bytes: a Cloudflare token is about 40,
+/// a PostgreSQL URL rarely past a few hundred.
+pub const MAX_SECRET_LEN: usize = 4096;
+/// The longest secret id accepted, in bytes.
+pub const MAX_SECRET_ID_LEN: usize = 128;
+/// Version of the sealed payload: 2 names the plugin; 1 (D1 only) did not.
+const PAYLOAD_VERSION: u8 = 2;
+/// The first payload version, written for D1 before credentials named their
+/// plugin.
+const PAYLOAD_VERSION_D1: u8 = 1;
 
-/// A hosted database's API token, and the provider's id for it.
+/// A database plugin's credential (an API token, a connection URL), the
+/// plugin it belongs to, and the provider's id for it.
 ///
 /// The id lets a later setup run revoke the token it replaces.
 #[derive(Clone)]
 pub struct DatabaseCredential {
-    /// The bearer token; zeroized on drop.
-    token: Zeroizing<String>,
-    /// The provider's id for the token, when it reported one.
-    token_id: Option<String>,
+    /// The database plugin the secret is for.
+    plugin: DatabasePluginKind,
+    /// The secret; zeroized on drop.
+    secret: Zeroizing<String>,
+    /// The provider's id for the secret, when it reported one.
+    secret_id: Option<String>,
 }
 
 impl DatabaseCredential {
-    /// A credential from a token and the provider's id for it.
+    /// A credential for `plugin` from a secret and the provider's id for it.
     ///
     /// # Arguments
     ///
-    /// * `token` - the bearer token; surrounding whitespace is trimmed.
-    /// * `token_id` - the provider's id for the token, if known.
+    /// * `plugin` - the database plugin the secret is for.
+    /// * `secret` - the API token or connection URL; surrounding whitespace
+    ///   is trimmed.
+    /// * `secret_id` - the provider's id for the secret, if known.
     ///
     /// # Errors
     ///
-    /// [`LibraryError::Invalid`] when the token is empty, longer than
-    /// 1024 bytes or holds whitespace or control characters, or the id is
-    /// longer than 128 bytes or holds anything but ASCII letters, digits,
-    /// `-` and `_`.
-    pub fn new(token: &str, token_id: Option<&str>) -> Result<Self> {
-        let token = token.trim();
-        if token.is_empty() || token.len() > MAX_TOKEN_LEN {
+    /// [`LibraryError::Invalid`] when the secret is empty, longer than
+    /// [`MAX_SECRET_LEN`] bytes or holds whitespace or control characters,
+    /// or the id is longer than [`MAX_SECRET_ID_LEN`] bytes or holds
+    /// anything but ASCII letters, digits, `-` and `_`.
+    pub fn new(plugin: DatabasePluginKind, secret: &str, secret_id: Option<&str>) -> Result<Self> {
+        let secret = secret.trim();
+        if secret.is_empty() || secret.len() > MAX_SECRET_LEN {
             return Err(LibraryError::Invalid(format!(
-                "a database API token is 1 to {MAX_TOKEN_LEN} bytes"
+                "a database credential is 1 to {MAX_SECRET_LEN} bytes"
             )));
         }
-        if token.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        if secret.chars().any(|c| c.is_whitespace() || c.is_control()) {
             return Err(LibraryError::Invalid(
-                "a database API token holds no spaces or control characters".into(),
+                "a database credential holds no spaces or control characters".into(),
             ));
         }
-        let token_id = token_id.map(str::trim).filter(|id| !id.is_empty());
-        if let Some(id) = token_id {
-            let valid = id.len() <= MAX_TOKEN_ID_LEN
+        let secret_id = secret_id.map(str::trim).filter(|id| !id.is_empty());
+        if let Some(id) = secret_id {
+            let valid = id.len() <= MAX_SECRET_ID_LEN
                 && id
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
             if !valid {
                 return Err(LibraryError::Invalid(format!(
-                    "a database API token id is up to {MAX_TOKEN_ID_LEN} letters, digits, `-` or `_`"
+                    "a database credential id is up to {MAX_SECRET_ID_LEN} letters, digits, `-` or `_`"
                 )));
             }
         }
         Ok(Self {
-            token: Zeroizing::new(token.to_string()),
-            token_id: token_id.map(str::to_string),
+            plugin,
+            secret: Zeroizing::new(secret.to_string()),
+            secret_id: secret_id.map(str::to_string),
         })
     }
 
-    /// The bearer token.
+    /// The database plugin the secret is for.
     #[must_use]
-    pub fn token(&self) -> &str {
-        &self.token
+    pub fn plugin(&self) -> DatabasePluginKind {
+        self.plugin
     }
 
-    /// The provider's id for the token, when known.
+    /// The secret (an API token, a connection URL).
     #[must_use]
-    pub fn token_id(&self) -> Option<&str> {
-        self.token_id.as_deref()
+    pub fn secret(&self) -> &str {
+        &self.secret
+    }
+
+    /// The provider's id for the secret, when known.
+    #[must_use]
+    pub fn secret_id(&self) -> Option<&str> {
+        self.secret_id.as_deref()
     }
 }
 
 impl std::fmt::Debug for DatabaseCredential {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DatabaseCredential")
-            .field("token", &"***")
-            .field("token_id", &self.token_id)
+            .field("plugin", &self.plugin)
+            .field("secret", &"***")
+            .field("secret_id", &self.secret_id)
             .finish()
     }
 }
 
-/// The sealed payload's JSON shape.
+/// The sealed payload's JSON shape: version 2 names the plugin and holds
+/// `secret` / `secret_id`; version 1 (D1 only) held `token` / `token_id`.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Payload {
-    /// Always [`PAYLOAD_VERSION`].
+    /// [`PAYLOAD_VERSION`], or [`PAYLOAD_VERSION_D1`] for an older file.
     v: u8,
-    /// The bearer token.
-    token: String,
-    /// The provider's id for the token.
+    /// The database plugin (version 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plugin: Option<DatabasePluginKind>,
+    /// The secret (version 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    secret: Option<String>,
+    /// The provider's id for the secret (version 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    secret_id: Option<String>,
+    /// The D1 token (version 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    token: Option<String>,
+    /// The provider's id for the D1 token (version 1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     token_id: Option<String>,
+}
+
+impl Drop for Payload {
+    fn drop(&mut self) {
+        for secret in [&mut self.secret, &mut self.token].into_iter().flatten() {
+            zeroize::Zeroize::zeroize(secret);
+        }
+    }
 }
 
 /// Which store holds the sealed blob.
@@ -253,14 +293,15 @@ fn fingerprint(dek: &MasterKey) -> [u8; FINGERPRINT_LEN] {
 fn seal(credential: &DatabaseCredential, dek: &MasterKey) -> Result<Zeroizing<Vec<u8>>> {
     let payload = Payload {
         v: PAYLOAD_VERSION,
-        token: credential.token().to_string(),
-        token_id: credential.token_id.clone(),
+        plugin: Some(credential.plugin),
+        secret: Some(credential.secret().to_string()),
+        secret_id: credential.secret_id.clone(),
+        token: None,
+        token_id: None,
     };
     let json = Zeroizing::new(
         serde_json::to_vec(&payload).map_err(|err| LibraryError::Other(err.into()))?,
     );
-    let mut payload = payload;
-    zeroize::Zeroize::zeroize(&mut payload.token);
     let (ciphertext, nonce) = seal_with_dek(&json, dek)?;
     let mut blob = Zeroizing::new(nonce);
     blob.extend_from_slice(&ciphertext);
@@ -276,21 +317,32 @@ fn unseal(blob: &[u8], dek: &MasterKey, source: &str) -> Result<DatabaseCredenti
     }
     let (nonce, ciphertext) = blob.split_at(NONCE_LEN);
     let json = Zeroizing::new(unseal_with_dek(ciphertext, nonce, dek)?);
-    let mut payload: Payload = serde_json::from_slice(&json).map_err(|err| {
+    let payload: Payload = serde_json::from_slice(&json).map_err(|err| {
         LibraryError::Other(anyhow::anyhow!(
             "{source} holds an unreadable credential: {err}"
         ))
     })?;
-    let credential = if payload.v == PAYLOAD_VERSION {
-        DatabaseCredential::new(&payload.token, payload.token_id.as_deref())
-    } else {
-        Err(LibraryError::Other(anyhow::anyhow!(
+    let unreadable = || {
+        LibraryError::Other(anyhow::anyhow!(
             "{source} is credential version {}, which this version can't read",
             payload.v
-        )))
+        ))
     };
-    zeroize::Zeroize::zeroize(&mut payload.token);
-    credential
+    match payload.v {
+        PAYLOAD_VERSION => match (payload.plugin, payload.secret.as_deref()) {
+            (Some(plugin), Some(secret)) => {
+                DatabaseCredential::new(plugin, secret, payload.secret_id.as_deref())
+            }
+            _ => Err(unreadable()),
+        },
+        PAYLOAD_VERSION_D1 => match payload.token.as_deref() {
+            Some(token) => {
+                DatabaseCredential::new(DatabasePluginKind::D1, token, payload.token_id.as_deref())
+            }
+            None => Err(unreadable()),
+        },
+        _ => Err(unreadable()),
+    }
 }
 
 /// The parsed `database.credential`.
@@ -401,34 +453,15 @@ fn master_key_store(files_dir: &Path) -> Result<KeyStoreKind> {
         })
 }
 
-/// Seals `credential` with `dek` and keeps it in the master key's store,
-/// replacing (and deleting the item of) any credential stored before.
-///
-/// The new item is written and read back before `database.credential`
-/// names it; a failure leaves the previous credential as it was.
-///
-/// # Arguments
-///
-/// * `files_dir` - the files directory holding `master.key`.
-/// * `dek` - the library's data-encryption key (from `master.key`).
-/// * `credential` - the token to keep.
-///
-/// # Returns
-///
-/// The store the sealed credential went to.
-///
-/// # Errors
-///
-/// Returns an error when there is no master key, the store can't take the
-/// item, or the file can't be written.
-pub fn store_database_credential(
+/// Puts `credential`'s sealed blob where `target` keeps it and returns
+/// the `database.credential` bytes that name it: the blob itself for the
+/// file store, or a pointer to the item this call wrote and read back.
+fn place(
     files_dir: &Path,
     dek: &MasterKey,
     credential: &DatabaseCredential,
-) -> Result<KeyStoreKind> {
-    let path = database_credential_path(files_dir);
-    let target = master_key_store(files_dir)?;
-    let previous = read_record(&path).ok().flatten().map(|record| record.home);
+    target: KeyStoreKind,
+) -> Result<(Home, Zeroizing<Vec<u8>>)> {
     let blob = seal(credential, dek)?;
     let home = match target {
         KeyStoreKind::File => Home::File,
@@ -452,7 +485,131 @@ pub fn store_database_credential(
             }
         }
     }
-    let record = encode_record(&fingerprint(dek), home, &blob);
+    Ok((home, encode_record(&fingerprint(dek), home, &blob)))
+}
+
+/// A credential [`stage_database_credential`] placed, waiting for its
+/// `database.credential` to be published.
+pub struct StagedDatabaseCredential {
+    /// `database.credential`'s contents: the sealed blob, or a pointer.
+    bytes: Zeroizing<Vec<u8>>,
+    /// Where the sealed blob went.
+    home: Home,
+    /// The files directory the item's store belongs to.
+    files_dir: PathBuf,
+}
+
+impl StagedDatabaseCredential {
+    /// The bytes `database.credential` must hold (write them with mode
+    /// `0600`).
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// The store the credential went to.
+    #[must_use]
+    pub fn store(&self) -> KeyStoreKind {
+        self.home.kind()
+    }
+
+    /// Deletes the store item again, for a caller whose
+    /// `database.credential` was never published. Does nothing for a
+    /// credential kept in the file.
+    pub fn discard(self) {
+        delete_item_logged(
+            self.home,
+            &self.files_dir,
+            "a credential item whose database.credential was never published",
+        );
+    }
+}
+
+/// Seals `credential` with a DEK given as raw bytes and puts it in
+/// `target`, for a caller that publishes `database.credential` itself: a
+/// shared branch applying its library's bootstrap as one recoverable step,
+/// beside the `master.key` it stages the same way.
+///
+/// # Arguments
+///
+/// * `files_dir` - the files directory `database.credential` will be
+///   written in (where a `systemd-creds` credential lives beside it).
+/// * `dek` - the library's 32-byte data-encryption key.
+/// * `credential` - the credential to keep.
+/// * `target` - the store the master key went to.
+///
+/// # Errors
+///
+/// [`LibraryError::Invalid`] when `dek` is not 32 bytes, and an error when
+/// the store can't take the item or reads it back wrong.
+pub fn stage_database_credential(
+    files_dir: &Path,
+    dek: &[u8],
+    credential: &DatabaseCredential,
+    target: KeyStoreKind,
+) -> Result<StagedDatabaseCredential> {
+    let bytes: [u8; 32] = dek
+        .try_into()
+        .map_err(|_| LibraryError::Invalid("a data-encryption key is 32 bytes".into()))?;
+    let key = MasterKey::from_bytes(bytes);
+    let (home, bytes) = place(files_dir, &key, credential, target)?;
+    Ok(StagedDatabaseCredential {
+        bytes,
+        home,
+        files_dir: files_dir.to_path_buf(),
+    })
+}
+
+/// Deletes the store item `database.credential` names, leaving the file:
+/// for undoing a shared branch join whose own file restore removes it.
+/// Does nothing when there is no file or the credential is in it.
+///
+/// # Arguments
+///
+/// * `files_dir` - the files directory holding `database.credential`.
+pub fn forget_database_credential_item(files_dir: &Path) {
+    match read_record(&database_credential_path(files_dir)) {
+        Ok(Some(record)) => {
+            delete_item_logged(
+                record.home,
+                files_dir,
+                "an undone join's database credential",
+            );
+        }
+        Ok(None) => {}
+        Err(err) => tracing::warn!("could not read the database credential to delete: {err}"),
+    }
+}
+
+/// Seals `credential` with `dek` and keeps it in the master key's store,
+/// replacing (and deleting the item of) any credential stored before.
+///
+/// The new item is written and read back before `database.credential`
+/// names it; a failure leaves the previous credential as it was.
+///
+/// # Arguments
+///
+/// * `files_dir` - the files directory holding `master.key`.
+/// * `dek` - the library's data-encryption key (from `master.key`).
+/// * `credential` - the credential to keep.
+///
+/// # Returns
+///
+/// The store the sealed credential went to.
+///
+/// # Errors
+///
+/// Returns an error when there is no master key, the store can't take the
+/// item, or the file can't be written.
+pub fn store_database_credential(
+    files_dir: &Path,
+    dek: &MasterKey,
+    credential: &DatabaseCredential,
+) -> Result<KeyStoreKind> {
+    let path = database_credential_path(files_dir);
+    let target = master_key_store(files_dir)?;
+    let previous = read_record(&path).ok().flatten().map(|record| record.home);
+    let (home, record) = place(files_dir, dek, credential, target)?;
     if let Err(err) = crate::master_key::write_secret_file_atomic(&path, &record) {
         delete_item_logged(
             home,
@@ -467,6 +624,7 @@ pub fn store_database_credential(
     tracing::info!(
         path = %path.display(),
         store = home.kind().as_str(),
+        plugin = credential.plugin.as_str(),
         "stored the database credential in {}",
         home.describe()
     );
@@ -498,8 +656,8 @@ pub fn load_database_credential(
     };
     if record.fingerprint != fingerprint(dek) {
         return Err(LibraryError::Other(anyhow::anyhow!(
-            "database credential {} was sealed under a different master key; run \
-             `bookclerk database setup d1` again",
+            "database credential {} was sealed under a different master key; run the \
+             database setup again (`bookclerk config database setup d1`) or join the library again",
             path.display()
         )));
     }
@@ -508,12 +666,43 @@ pub fn load_database_credential(
         None => record.blob,
         Some((vault, item)) => vault.get(item).map_err(|err| {
             LibraryError::Other(anyhow::anyhow!(
-                "{source} keeps the token in {}, which could not be read: {err}",
+                "{source} keeps the credential in {}, which could not be read: {err}",
                 record.home.describe()
             ))
         })?,
     };
     unseal(&blob, dek, &source).map(Some)
+}
+
+/// [`load_database_credential`] for `plugin`: a stored credential that
+/// belongs to another database plugin is an error, never handed over.
+///
+/// # Arguments
+///
+/// * `files_dir` - the files directory holding `database.credential`.
+/// * `dek` - the library's data-encryption key.
+/// * `plugin` - the database plugin that needs the credential.
+///
+/// # Errors
+///
+/// Whatever [`load_database_credential`] returns, and an error when the
+/// stored credential is another plugin's.
+pub fn load_database_credential_for(
+    files_dir: &Path,
+    dek: &MasterKey,
+    plugin: DatabasePluginKind,
+) -> Result<Option<DatabaseCredential>> {
+    match load_database_credential(files_dir, dek)? {
+        Some(credential) if credential.plugin != plugin => {
+            Err(LibraryError::Other(anyhow::anyhow!(
+                "database credential {} is for the {} plugin, but this server's database is {}",
+                database_credential_path(files_dir).display(),
+                credential.plugin.as_str(),
+                plugin.as_str()
+            )))
+        }
+        stored => Ok(stored),
+    }
 }
 
 /// Removes the stored credential and its item.
@@ -573,7 +762,7 @@ pub fn rehome_database_credential(files_dir: &Path, dek: &MasterKey) -> Result<(
 
 /// The Cloudflare D1 API token: `BOOKCLERK_D1_API_TOKEN` or
 /// `CLOUDFLARE_API_TOKEN` when set, else the credential
-/// `bookclerk database setup d1` stored. A stored token is registered for
+/// `bookclerk config database setup d1` stored. A stored token is registered for
 /// log redaction.
 ///
 /// The master key is loaded only when a stored credential exists, so a
@@ -597,6 +786,42 @@ pub fn resolve_d1_api_token(files_dir: &Path) -> Result<Zeroizing<String>> {
     resolve_d1_token_with(env, files_dir, None)
 }
 
+/// The D1 credential this install uses, for a shared branch joining it:
+/// the environment's token (with no id) when one is set, else the stored
+/// credential, else `None`.
+///
+/// # Arguments
+///
+/// * `files_dir` - the files directory holding `database.credential`.
+/// * `dek` - the library's data-encryption key.
+///
+/// # Errors
+///
+/// [`LibraryError`] when the environment's token is malformed or the stored
+/// credential can't be read.
+pub fn current_d1_credential(
+    files_dir: &Path,
+    dek: &MasterKey,
+) -> Result<Option<DatabaseCredential>> {
+    current_d1_credential_with(
+        bookclerk_config::resolve_d1_api_token().ok(),
+        files_dir,
+        dek,
+    )
+}
+
+/// [`current_d1_credential`] with the environment's token passed in.
+fn current_d1_credential_with(
+    env_token: Option<String>,
+    files_dir: &Path,
+    dek: &MasterKey,
+) -> Result<Option<DatabaseCredential>> {
+    match env_token {
+        Some(token) => DatabaseCredential::new(DatabasePluginKind::D1, &token, None).map(Some),
+        None => load_database_credential_for(files_dir, dek, DatabasePluginKind::D1),
+    }
+}
+
 /// [`resolve_d1_api_token`] with the environment's token passed in.
 fn resolve_d1_token_with(
     env_token: Option<String>,
@@ -607,16 +832,16 @@ fn resolve_d1_token_with(
         return Ok(Zeroizing::new(token));
     }
     let stored = match dek {
-        Some(dek) => load_database_credential(files_dir, dek)?,
+        Some(dek) => load_database_credential_for(files_dir, dek, DatabasePluginKind::D1)?,
         None => None,
     };
     match stored {
         Some(credential) => {
-            bookclerk_config::register_secret(credential.token());
-            Ok(Zeroizing::new(credential.token().to_string()))
+            bookclerk_config::register_secret(credential.secret());
+            Ok(Zeroizing::new(credential.secret().to_string()))
         }
         None => Err(LibraryError::Invalid(
-            "D1 API token not configured: run `bookclerk database setup d1`, or set \
+            "D1 API token not configured: run `bookclerk config database setup d1`, or set \
              BOOKCLERK_D1_API_TOKEN or CLOUDFLARE_API_TOKEN (see docs/server/database.md)"
                 .into(),
         )),
@@ -632,6 +857,47 @@ fn resolve_d1_token_with(
 pub fn d1_api_token_configured(files_dir: &Path) -> bool {
     bookclerk_config::resolve_d1_api_token().is_ok()
         || database_credential_path(files_dir).is_file()
+}
+
+/// The PostgreSQL connection URL: `[database.postgres].url_file` or
+/// `url` (or their environment overrides) when set, else, with
+/// `stored_credential = true`, the URL kept in `database.credential` (where a
+/// joined shared branch keeps its library's). A stored URL is registered for
+/// log redaction.
+///
+/// # Arguments
+///
+/// * `config` - the loaded configuration.
+///
+/// # Errors
+///
+/// Returns an error when no URL is configured, or the stored one can't be
+/// read.
+pub fn resolve_postgres_url(config: &bookclerk_config::Config) -> Result<Zeroizing<String>> {
+    let postgres = &config.database.postgres;
+    let configured = postgres.url_file.is_some()
+        || postgres
+            .url
+            .as_deref()
+            .is_some_and(|url| !url.trim().is_empty());
+    if configured || !postgres.stored_credential {
+        return bookclerk_config::resolve_postgres_url(config)
+            .map(Zeroizing::new)
+            .map_err(|err| LibraryError::Invalid(err.to_string()));
+    }
+    let files_dir = &config.paths().files_dir;
+    let dek = crate::master_key::require_master_key(Some(files_dir))?;
+    match load_database_credential_for(files_dir, &dek, DatabasePluginKind::Postgres)? {
+        Some(credential) => {
+            bookclerk_config::register_secret(credential.secret());
+            Ok(Zeroizing::new(credential.secret().to_string()))
+        }
+        None => Err(LibraryError::Invalid(format!(
+            "[database.postgres].stored_credential is set but {} holds no URL; join the \
+             library again or set [database.postgres].url_file",
+            database_credential_path(files_dir).display()
+        ))),
+    }
 }
 
 #[cfg(test)]

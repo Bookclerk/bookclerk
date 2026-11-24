@@ -11,7 +11,7 @@ import {
   type SetStateAction,
 } from "react";
 import { createPortal } from "react-dom";
-import { Check, Copy, Headphones, MoreHorizontal, Search, UserPlus, X } from "lucide-react";
+import { Check, Copy, Headphones, Mail, MoreHorizontal, Search, UserPlus, X } from "lucide-react";
 import { AddBranchDialog } from "@/components/AddBranchDialog";
 import { AvatarPickerDialog } from "@/components/AvatarPickerDialog";
 import { AdminControlsEditor } from "@/components/AdminControlsEditor";
@@ -405,10 +405,16 @@ export function UserManagementPanel({
     ticket: string;
     label: string;
     inviteUrl?: string | null;
+    /** The user the reset is for; a link can be mailed instead while they have an address. */
+    userId?: number;
   } | null>(null);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "disabled">("all");
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  // Email edits not yet saved, by user id. They stay out of `users` so
+  // everything else on the panel (the invite's recipient above all) names
+  // the address the server holds, not one still being typed.
+  const [emailDrafts, setEmailDrafts] = useState<Record<number, string>>({});
   const [impersonateBusy, setImpersonateBusy] = useState(false);
   const [menuOpenId, setMenuOpenId] = useState<number | null>(null);
   const [inviteCopied, setInviteCopied] = useState(false);
@@ -665,12 +671,13 @@ export function UserManagementPanel({
       login_name?: string;
       email?: string;
     },
-  ) {
+  ): Promise<boolean> {
     setBusy(true);
     setError(null);
     try {
       const res = await patchUser(id, patch);
       setUsers((current) => current.map((u) => (u.id === id ? { ...u, ...res.user } : u)));
+      return true;
     } catch (err) {
       if (isApiError(err) && err.status === 409) {
         setError("Cannot demote or disable the last active owner.");
@@ -678,6 +685,7 @@ export function UserManagementPanel({
         setError(err instanceof Error ? err.message : "Update failed");
       }
       await onUsersChanged();
+      return false;
     } finally {
       setBusy(false);
     }
@@ -692,6 +700,7 @@ export function UserManagementPanel({
         ticket: res.claim_ticket,
         inviteUrl: res.invite_url,
         label: `Password reset for ${u.display_name || u.login_name || `user #${u.id}`}`,
+        userId: u.id,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Password reset failed");
@@ -716,6 +725,12 @@ export function UserManagementPanel({
       setBusy(false);
     }
   }
+
+  // Read from the current user list, so an address changed since the
+  // reset is the one shown and mailed.
+  const mailTo = claimTicket?.userId
+    ? users.find((u) => u.id === claimTicket.userId && u.email && u.status !== "disabled")
+    : undefined;
 
   async function onEmailInvite(u: ListedUser) {
     setBusy(true);
@@ -806,9 +821,25 @@ export function UserManagementPanel({
               >
                 {inviteCopied
                   ? "Copied to clipboard."
-                  : "Copy and send this magic link manually. Email notifications can be added later."}
+                  : mailTo
+                    ? `Copy and send this magic link yourself, or email a new one to ${mailTo.email ?? "the user"}.`
+                    : "Copy and send this magic link yourself."}
               </p>
             </div>
+            {mailTo ? (
+              <Button
+                type="button"
+                variant="secondary"
+                className="h-8 shrink-0"
+                disabled={busy}
+                onClick={() => {
+                  void onEmailInvite(mailTo);
+                }}
+              >
+                <Mail className="h-4 w-4" aria-hidden />
+                Email the link
+              </Button>
+            ) : null}
             <Button
               type="button"
               variant="secondary"
@@ -1356,20 +1387,28 @@ export function UserManagementPanel({
                 <Input
                   aria-label={`Email for user ${selected.id}`}
                   type="email"
-                  value={selected.email ?? ""}
-                  aria-invalid={!isOptionalEmailValid(selected.email ?? "")}
+                  value={emailDrafts[selected.id] ?? selected.email ?? ""}
+                  aria-invalid={
+                    !isOptionalEmailValid(emailDrafts[selected.id] ?? selected.email ?? "")
+                  }
                   disabled={busy || !selectedEditable}
                   onChange={(e) => {
                     const value = e.target.value;
-                    setUsers((current) =>
-                      current.map((user) =>
-                        user.id === selected.id ? { ...user, email: value } : user,
-                      ),
-                    );
+                    const id = selected.id;
+                    setEmailDrafts((current) => ({ ...current, [id]: value }));
                   }}
                   onBlur={(e) => {
+                    const id = selected.id;
+                    if (emailDrafts[id] === undefined) return;
                     if (!isOptionalEmailValid(e.target.value)) return;
-                    void onPatchUser(selected.id, { email: e.target.value });
+                    void onPatchUser(id, { email: e.target.value }).then((saved) => {
+                      // A failed save keeps the draft, so the address typed is not lost.
+                      if (!saved) return;
+                      setEmailDrafts((current) => {
+                        const { [id]: _saved, ...rest } = current;
+                        return rest;
+                      });
+                    });
                   }}
                 />
               </div>

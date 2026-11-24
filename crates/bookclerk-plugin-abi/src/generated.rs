@@ -86,8 +86,8 @@ pub enum Entrypoint {
     /// Metadata provider: `lookup`, `search` and `chapters`
     /// (`MetadataProvider`).
     Metadata,
-    /// Cover fetcher: `fetchCovers` (`CoverFetcher`).
-    Covers,
+    /// Public media downloader: `downloadMedia` (`MediaDownloader`).
+    MediaDownload,
     /// Metadata file dialects: `parse` and `render` (`MetadataFiles`).
     MetadataFiles,
     /// Notification delivery: `send` and `validateDestination` (`Notifier`).
@@ -112,7 +112,7 @@ impl Entrypoint {
             Self::Cli => "cli",
             Self::Oidc => "oidc",
             Self::Metadata => "metadata",
-            Self::Covers => "covers",
+            Self::MediaDownload => "mediaDownload",
             Self::MetadataFiles => "metadataFiles",
             Self::Notifier => "notifier",
             Self::Ingress => "ingress",
@@ -132,7 +132,7 @@ impl Entrypoint {
             "cli" => Some(Self::Cli),
             "oidc" => Some(Self::Oidc),
             "metadata" => Some(Self::Metadata),
-            "covers" => Some(Self::Covers),
+            "mediaDownload" => Some(Self::MediaDownload),
             "metadataFiles" => Some(Self::MetadataFiles),
             "notifier" => Some(Self::Notifier),
             "ingress" => Some(Self::Ingress),
@@ -153,7 +153,7 @@ impl From<Entrypoint> for plugin_capnp::Entrypoint {
             Entrypoint::Cli => Self::Cli,
             Entrypoint::Oidc => Self::Oidc,
             Entrypoint::Metadata => Self::Metadata,
-            Entrypoint::Covers => Self::Covers,
+            Entrypoint::MediaDownload => Self::MediaDownload,
             Entrypoint::MetadataFiles => Self::MetadataFiles,
             Entrypoint::Notifier => Self::Notifier,
             Entrypoint::Ingress => Self::Ingress,
@@ -173,7 +173,7 @@ impl From<plugin_capnp::Entrypoint> for Entrypoint {
             plugin_capnp::Entrypoint::Cli => Self::Cli,
             plugin_capnp::Entrypoint::Oidc => Self::Oidc,
             plugin_capnp::Entrypoint::Metadata => Self::Metadata,
-            plugin_capnp::Entrypoint::Covers => Self::Covers,
+            plugin_capnp::Entrypoint::MediaDownload => Self::MediaDownload,
             plugin_capnp::Entrypoint::MetadataFiles => Self::MetadataFiles,
             plugin_capnp::Entrypoint::Notifier => Self::Notifier,
             plugin_capnp::Entrypoint::Ingress => Self::Ingress,
@@ -1394,7 +1394,7 @@ impl From<plugin_capnp::InvocationPurpose> for InvocationPurpose {
     }
 }
 
-/// The kind of public media `CoverFetcher.fetchCovers` downloads.
+/// The kind of public media `MediaDownloader.downloadMedia` downloads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RemoteMedia {
@@ -3110,7 +3110,7 @@ pub struct CatalogHit {
     /// Absolute `https://` URL of a short audio sample of this edition that
     /// the storefront offers publicly (a few minutes, in any format the media
     /// worker decodes). The host never hands it to a client: a book's details
-    /// play it through a same-origin path, fetched by a `covers` plugin with
+    /// play it through a same-origin path, fetched by a `mediaDownload` plugin with
     /// `media = audio` and re-encoded in the media worker. Empty when the store
     /// has none.
     /// `None` when absent (wire zero value).
@@ -3910,16 +3910,16 @@ pub struct MetadataChapters {
     pub accurate: bool,
 }
 
-/// Params of `CoverFetcher.fetchCovers`.
+/// Params of `MediaDownloader.downloadMedia`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CoverFetchParams {
-    /// Absolute `https://` URLs to fetch, at most `maxCoverUrls`; never empty.
+pub struct MediaDownloadParams {
+    /// Absolute `https://` URLs to fetch, at most `maxDownloadUrls`; never empty.
     /// The host has already checked each one against its URL policy.
     #[serde(default)]
     pub urls: Vec<String>,
-    /// Largest body, in bytes, the host accepts for one image; at most
-    /// `maxCoverBytes`. The sink refuses a larger body, which fails that URL
+    /// Largest body, in bytes, the host accepts for one URL; at most
+    /// `maxImageBytes` for images and `maxAudioBytes` for audio. The sink refuses a larger body, which fails that URL
     /// only.
     #[serde(default)]
     pub max_bytes: u32,
@@ -3927,7 +3927,7 @@ pub struct CoverFetchParams {
     /// the host's cached copy. Empty, or shorter than `urls`, means the
     /// remaining URLs are fetched unconditionally.
     #[serde(default)]
-    pub conditions: Vec<CoverCondition>,
+    pub conditions: Vec<DownloadCondition>,
     /// What the URLs name: cover art (the default) or a storefront's audio
     /// sample (`CatalogHit.sampleUrl`). A fetcher sends a matching `Accept`
     /// header and refuses a body whose `Content-Type` names something else;
@@ -3940,7 +3940,7 @@ pub struct CoverFetchParams {
 /// headers so an unchanged image costs a `304` instead of its body.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CoverCondition {
+pub struct DownloadCondition {
     /// `If-None-Match` value: the `ETag` the host stored, verbatim; empty for
     /// none.
     /// `None` when absent (wire zero value).
@@ -3956,7 +3956,7 @@ pub struct CoverCondition {
 /// What happened to one requested URL.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CoverImage {
+pub struct DownloadResult {
     /// The requested URL, verbatim.
     #[serde(default)]
     pub url: String,
@@ -4002,13 +4002,13 @@ pub struct CoverImage {
     pub age: Option<String>,
 }
 
-/// Success payload of `CoverFetcher.fetchCovers`.
+/// Success payload of `MediaDownloader.downloadMedia`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CoverImages {
+pub struct DownloadResults {
     /// One entry per requested URL, in request order.
     #[serde(default)]
-    pub images: Vec<CoverImage>,
+    pub downloads: Vec<DownloadResult>,
 }
 
 /// What one metadata file says about the edition it sits beside. A field the
@@ -9082,14 +9082,14 @@ pub fn read_metadata_chapters_reply(
     }
 }
 
-/// Encode a [`CoverFetchParams`] onto a Cap'n Proto builder.
+/// Encode a [`MediaDownloadParams`] onto a Cap'n Proto builder.
 ///
 /// # Errors
 ///
 /// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
-pub fn write_cover_fetch_params(
-    mut b: plugin_capnp::cover_fetch_params::Builder<'_>,
-    v: &CoverFetchParams,
+pub fn write_media_download_params(
+    mut b: plugin_capnp::media_download_params::Builder<'_>,
+    v: &MediaDownloadParams,
 ) -> capnp::Result<()> {
     {
         let mut items = b.reborrow().init_urls(list_len(v.urls.len())?);
@@ -9101,41 +9101,41 @@ pub fn write_cover_fetch_params(
     {
         let mut items = b.reborrow().init_conditions(list_len(v.conditions.len())?);
         for (i, item) in v.conditions.iter().enumerate() {
-            write_cover_condition(items.reborrow().get(list_len(i)?), item)?;
+            write_download_condition(items.reborrow().get(list_len(i)?), item)?;
         }
     }
     b.set_media(v.media.into());
     Ok(())
 }
 
-/// Decode a [`CoverFetchParams`] from a Cap'n Proto reader.
+/// Decode a [`MediaDownloadParams`] from a Cap'n Proto reader.
 ///
 /// # Errors
 ///
 /// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
-pub fn read_cover_fetch_params(
-    r: plugin_capnp::cover_fetch_params::Reader<'_>,
-) -> capnp::Result<CoverFetchParams> {
-    Ok(CoverFetchParams {
+pub fn read_media_download_params(
+    r: plugin_capnp::media_download_params::Reader<'_>,
+) -> capnp::Result<MediaDownloadParams> {
+    Ok(MediaDownloadParams {
         urls: read_text_list(r.get_urls()?)?,
         max_bytes: r.get_max_bytes(),
         conditions: r
             .get_conditions()?
             .iter()
-            .map(|item| read_cover_condition(item))
+            .map(|item| read_download_condition(item))
             .collect::<capnp::Result<Vec<_>>>()?,
         media: r.get_media()?.into(),
     })
 }
 
-/// Encode a [`CoverCondition`] onto a Cap'n Proto builder.
+/// Encode a [`DownloadCondition`] onto a Cap'n Proto builder.
 ///
 /// # Errors
 ///
 /// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
-pub fn write_cover_condition(
-    mut b: plugin_capnp::cover_condition::Builder<'_>,
-    v: &CoverCondition,
+pub fn write_download_condition(
+    mut b: plugin_capnp::download_condition::Builder<'_>,
+    v: &DownloadCondition,
 ) -> capnp::Result<()> {
     if let Some(value) = &v.if_none_match {
         b.set_if_none_match(value);
@@ -9146,28 +9146,28 @@ pub fn write_cover_condition(
     Ok(())
 }
 
-/// Decode a [`CoverCondition`] from a Cap'n Proto reader.
+/// Decode a [`DownloadCondition`] from a Cap'n Proto reader.
 ///
 /// # Errors
 ///
 /// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
-pub fn read_cover_condition(
-    r: plugin_capnp::cover_condition::Reader<'_>,
-) -> capnp::Result<CoverCondition> {
-    Ok(CoverCondition {
+pub fn read_download_condition(
+    r: plugin_capnp::download_condition::Reader<'_>,
+) -> capnp::Result<DownloadCondition> {
+    Ok(DownloadCondition {
         if_none_match: opt_text(r.get_if_none_match()?)?,
         if_modified_since: opt_text(r.get_if_modified_since()?)?,
     })
 }
 
-/// Encode a [`CoverImage`] onto a Cap'n Proto builder.
+/// Encode a [`DownloadResult`] onto a Cap'n Proto builder.
 ///
 /// # Errors
 ///
 /// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
-pub fn write_cover_image(
-    mut b: plugin_capnp::cover_image::Builder<'_>,
-    v: &CoverImage,
+pub fn write_download_result(
+    mut b: plugin_capnp::download_result::Builder<'_>,
+    v: &DownloadResult,
 ) -> capnp::Result<()> {
     b.set_url(&v.url);
     b.set_stored(v.stored);
@@ -9199,13 +9199,15 @@ pub fn write_cover_image(
     Ok(())
 }
 
-/// Decode a [`CoverImage`] from a Cap'n Proto reader.
+/// Decode a [`DownloadResult`] from a Cap'n Proto reader.
 ///
 /// # Errors
 ///
 /// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
-pub fn read_cover_image(r: plugin_capnp::cover_image::Reader<'_>) -> capnp::Result<CoverImage> {
-    Ok(CoverImage {
+pub fn read_download_result(
+    r: plugin_capnp::download_result::Reader<'_>,
+) -> capnp::Result<DownloadResult> {
+    Ok(DownloadResult {
         url: r.get_url()?.to_string()?,
         stored: r.get_stored(),
         content_type: opt_text(r.get_content_type()?)?,
@@ -9220,50 +9222,52 @@ pub fn read_cover_image(r: plugin_capnp::cover_image::Reader<'_>) -> capnp::Resu
     })
 }
 
-/// Encode a [`CoverImages`] onto a Cap'n Proto builder.
+/// Encode a [`DownloadResults`] onto a Cap'n Proto builder.
 ///
 /// # Errors
 ///
 /// Returns a Cap'n Proto error when a list is too long or a nested field cannot be encoded.
-pub fn write_cover_images(
-    mut b: plugin_capnp::cover_images::Builder<'_>,
-    v: &CoverImages,
+pub fn write_download_results(
+    mut b: plugin_capnp::download_results::Builder<'_>,
+    v: &DownloadResults,
 ) -> capnp::Result<()> {
     {
-        let mut items = b.reborrow().init_images(list_len(v.images.len())?);
-        for (i, item) in v.images.iter().enumerate() {
-            write_cover_image(items.reborrow().get(list_len(i)?), item)?;
+        let mut items = b.reborrow().init_downloads(list_len(v.downloads.len())?);
+        for (i, item) in v.downloads.iter().enumerate() {
+            write_download_result(items.reborrow().get(list_len(i)?), item)?;
         }
     }
     Ok(())
 }
 
-/// Decode a [`CoverImages`] from a Cap'n Proto reader.
+/// Decode a [`DownloadResults`] from a Cap'n Proto reader.
 ///
 /// # Errors
 ///
 /// Returns a Cap'n Proto error when a text field is not UTF-8 or a pointer is malformed.
-pub fn read_cover_images(r: plugin_capnp::cover_images::Reader<'_>) -> capnp::Result<CoverImages> {
-    Ok(CoverImages {
-        images: r
-            .get_images()?
+pub fn read_download_results(
+    r: plugin_capnp::download_results::Reader<'_>,
+) -> capnp::Result<DownloadResults> {
+    Ok(DownloadResults {
+        downloads: r
+            .get_downloads()?
             .iter()
-            .map(|item| read_cover_image(item))
+            .map(|item| read_download_result(item))
             .collect::<capnp::Result<Vec<_>>>()?,
     })
 }
 
-/// Encode a `CoverImagesReply` union from a typed result.
+/// Encode a `DownloadResultsReply` union from a typed result.
 ///
 /// # Errors
 ///
 /// Returns a Cap'n Proto error when a nested field cannot be encoded.
-pub fn write_cover_images_reply(
-    b: plugin_capnp::cover_images_reply::Builder<'_>,
-    v: &Result<CoverImages, crate::PluginError>,
+pub fn write_download_results_reply(
+    b: plugin_capnp::download_results_reply::Builder<'_>,
+    v: &Result<DownloadResults, crate::PluginError>,
 ) -> capnp::Result<()> {
     match v {
-        Ok(ok) => write_cover_images(b.init_ok(), ok),
+        Ok(ok) => write_download_results(b.init_ok(), ok),
         Err(err) => {
             crate::rpc::write_error(b.init_err(), err);
             Ok(())
@@ -9271,17 +9275,17 @@ pub fn write_cover_images_reply(
     }
 }
 
-/// Decode a `CoverImagesReply` union into a typed result.
+/// Decode a `DownloadResultsReply` union into a typed result.
 ///
 /// # Errors
 ///
 /// Returns a Cap'n Proto error when the union is unset or a field is malformed.
-pub fn read_cover_images_reply(
-    r: plugin_capnp::cover_images_reply::Reader<'_>,
-) -> capnp::Result<Result<CoverImages, crate::PluginError>> {
+pub fn read_download_results_reply(
+    r: plugin_capnp::download_results_reply::Reader<'_>,
+) -> capnp::Result<Result<DownloadResults, crate::PluginError>> {
     match r.which()? {
-        plugin_capnp::cover_images_reply::Ok(ok) => Ok(Ok(read_cover_images(ok?)?)),
-        plugin_capnp::cover_images_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
+        plugin_capnp::download_results_reply::Ok(ok) => Ok(Ok(read_download_results(ok?)?)),
+        plugin_capnp::download_results_reply::Err(err) => Ok(Err(crate::rpc::read_error(err?))),
     }
 }
 
@@ -12360,25 +12364,28 @@ pub fn read_any_message(selector: u8, bytes: &[u8]) -> capnp::Result<()> {
             )?;
         }
         107 => {
-            let _ = read_cover_fetch_params(
-                reader.get_root::<plugin_capnp::cover_fetch_params::Reader<'_>>()?,
+            let _ = read_media_download_params(
+                reader.get_root::<plugin_capnp::media_download_params::Reader<'_>>()?,
             )?;
         }
         108 => {
-            let _ = read_cover_condition(
-                reader.get_root::<plugin_capnp::cover_condition::Reader<'_>>()?,
+            let _ = read_download_condition(
+                reader.get_root::<plugin_capnp::download_condition::Reader<'_>>()?,
             )?;
         }
         109 => {
-            let _ = read_cover_image(reader.get_root::<plugin_capnp::cover_image::Reader<'_>>()?)?;
+            let _ = read_download_result(
+                reader.get_root::<plugin_capnp::download_result::Reader<'_>>()?,
+            )?;
         }
         110 => {
-            let _ =
-                read_cover_images(reader.get_root::<plugin_capnp::cover_images::Reader<'_>>()?)?;
+            let _ = read_download_results(
+                reader.get_root::<plugin_capnp::download_results::Reader<'_>>()?,
+            )?;
         }
         111 => {
-            let _ = read_cover_images_reply(
-                reader.get_root::<plugin_capnp::cover_images_reply::Reader<'_>>()?,
+            let _ = read_download_results_reply(
+                reader.get_root::<plugin_capnp::download_results_reply::Reader<'_>>()?,
             )?;
         }
         112 => {
@@ -17325,12 +17332,12 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
             }
         }
         107 => {
-            let first = read_cover_fetch_params(
-                reader.get_root::<plugin_capnp::cover_fetch_params::Reader<'_>>()?,
+            let first = read_media_download_params(
+                reader.get_root::<plugin_capnp::media_download_params::Reader<'_>>()?,
             )?;
             let mut message = capnp::message::Builder::new_default();
-            write_cover_fetch_params(
-                message.init_root::<plugin_capnp::cover_fetch_params::Builder<'_>>(),
+            write_media_download_params(
+                message.init_root::<plugin_capnp::media_download_params::Builder<'_>>(),
                 &first,
             )
             .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
@@ -17340,8 +17347,8 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 capnp::message::ReaderOptions::new(),
             )
             .and_then(|again| {
-                read_cover_fetch_params(
-                    again.get_root::<plugin_capnp::cover_fetch_params::Reader<'_>>()?,
+                read_media_download_params(
+                    again.get_root::<plugin_capnp::media_download_params::Reader<'_>>()?,
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
@@ -17351,8 +17358,8 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 // byte check also covers fields whose `Debug` redacts (credential
                 // DTOs), which the rendering alone would hide.
                 let mut message = capnp::message::Builder::new_default();
-                write_cover_fetch_params(
-                    message.init_root::<plugin_capnp::cover_fetch_params::Builder<'_>>(),
+                write_media_download_params(
+                    message.init_root::<plugin_capnp::media_download_params::Builder<'_>>(),
                     &again,
                 )
                 .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
@@ -17363,18 +17370,18 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                     // credential fields, and the failing input is what a harness
                     // needs to reproduce the difference.
                     return Err(RoundTripFailure::Codec(
-                        "round trip changed the decoded CoverFetchParams value".to_string(),
+                        "round trip changed the decoded MediaDownloadParams value".to_string(),
                     ));
                 }
             }
         }
         108 => {
-            let first = read_cover_condition(
-                reader.get_root::<plugin_capnp::cover_condition::Reader<'_>>()?,
+            let first = read_download_condition(
+                reader.get_root::<plugin_capnp::download_condition::Reader<'_>>()?,
             )?;
             let mut message = capnp::message::Builder::new_default();
-            write_cover_condition(
-                message.init_root::<plugin_capnp::cover_condition::Builder<'_>>(),
+            write_download_condition(
+                message.init_root::<plugin_capnp::download_condition::Builder<'_>>(),
                 &first,
             )
             .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
@@ -17384,7 +17391,9 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 capnp::message::ReaderOptions::new(),
             )
             .and_then(|again| {
-                read_cover_condition(again.get_root::<plugin_capnp::cover_condition::Reader<'_>>()?)
+                read_download_condition(
+                    again.get_root::<plugin_capnp::download_condition::Reader<'_>>()?,
+                )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again {
@@ -17393,8 +17402,8 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 // byte check also covers fields whose `Debug` redacts (credential
                 // DTOs), which the rendering alone would hide.
                 let mut message = capnp::message::Builder::new_default();
-                write_cover_condition(
-                    message.init_root::<plugin_capnp::cover_condition::Builder<'_>>(),
+                write_download_condition(
+                    message.init_root::<plugin_capnp::download_condition::Builder<'_>>(),
                     &again,
                 )
                 .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
@@ -17405,17 +17414,18 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                     // credential fields, and the failing input is what a harness
                     // needs to reproduce the difference.
                     return Err(RoundTripFailure::Codec(
-                        "round trip changed the decoded CoverCondition value".to_string(),
+                        "round trip changed the decoded DownloadCondition value".to_string(),
                     ));
                 }
             }
         }
         109 => {
-            let first =
-                read_cover_image(reader.get_root::<plugin_capnp::cover_image::Reader<'_>>()?)?;
+            let first = read_download_result(
+                reader.get_root::<plugin_capnp::download_result::Reader<'_>>()?,
+            )?;
             let mut message = capnp::message::Builder::new_default();
-            write_cover_image(
-                message.init_root::<plugin_capnp::cover_image::Builder<'_>>(),
+            write_download_result(
+                message.init_root::<plugin_capnp::download_result::Builder<'_>>(),
                 &first,
             )
             .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
@@ -17425,7 +17435,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 capnp::message::ReaderOptions::new(),
             )
             .and_then(|again| {
-                read_cover_image(again.get_root::<plugin_capnp::cover_image::Reader<'_>>()?)
+                read_download_result(again.get_root::<plugin_capnp::download_result::Reader<'_>>()?)
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again {
@@ -17434,8 +17444,8 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 // byte check also covers fields whose `Debug` redacts (credential
                 // DTOs), which the rendering alone would hide.
                 let mut message = capnp::message::Builder::new_default();
-                write_cover_image(
-                    message.init_root::<plugin_capnp::cover_image::Builder<'_>>(),
+                write_download_result(
+                    message.init_root::<plugin_capnp::download_result::Builder<'_>>(),
                     &again,
                 )
                 .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
@@ -17446,17 +17456,18 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                     // credential fields, and the failing input is what a harness
                     // needs to reproduce the difference.
                     return Err(RoundTripFailure::Codec(
-                        "round trip changed the decoded CoverImage value".to_string(),
+                        "round trip changed the decoded DownloadResult value".to_string(),
                     ));
                 }
             }
         }
         110 => {
-            let first =
-                read_cover_images(reader.get_root::<plugin_capnp::cover_images::Reader<'_>>()?)?;
+            let first = read_download_results(
+                reader.get_root::<plugin_capnp::download_results::Reader<'_>>()?,
+            )?;
             let mut message = capnp::message::Builder::new_default();
-            write_cover_images(
-                message.init_root::<plugin_capnp::cover_images::Builder<'_>>(),
+            write_download_results(
+                message.init_root::<plugin_capnp::download_results::Builder<'_>>(),
                 &first,
             )
             .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
@@ -17466,7 +17477,9 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 capnp::message::ReaderOptions::new(),
             )
             .and_then(|again| {
-                read_cover_images(again.get_root::<plugin_capnp::cover_images::Reader<'_>>()?)
+                read_download_results(
+                    again.get_root::<plugin_capnp::download_results::Reader<'_>>()?,
+                )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
             if first != again {
@@ -17475,8 +17488,8 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 // byte check also covers fields whose `Debug` redacts (credential
                 // DTOs), which the rendering alone would hide.
                 let mut message = capnp::message::Builder::new_default();
-                write_cover_images(
-                    message.init_root::<plugin_capnp::cover_images::Builder<'_>>(),
+                write_download_results(
+                    message.init_root::<plugin_capnp::download_results::Builder<'_>>(),
                     &again,
                 )
                 .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
@@ -17487,18 +17500,18 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                     // credential fields, and the failing input is what a harness
                     // needs to reproduce the difference.
                     return Err(RoundTripFailure::Codec(
-                        "round trip changed the decoded CoverImages value".to_string(),
+                        "round trip changed the decoded DownloadResults value".to_string(),
                     ));
                 }
             }
         }
         111 => {
-            let first = read_cover_images_reply(
-                reader.get_root::<plugin_capnp::cover_images_reply::Reader<'_>>()?,
+            let first = read_download_results_reply(
+                reader.get_root::<plugin_capnp::download_results_reply::Reader<'_>>()?,
             )?;
             let mut message = capnp::message::Builder::new_default();
-            write_cover_images_reply(
-                message.init_root::<plugin_capnp::cover_images_reply::Builder<'_>>(),
+            write_download_results_reply(
+                message.init_root::<plugin_capnp::download_results_reply::Builder<'_>>(),
                 &first,
             )
             .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
@@ -17508,8 +17521,8 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 capnp::message::ReaderOptions::new(),
             )
             .and_then(|again| {
-                read_cover_images_reply(
-                    again.get_root::<plugin_capnp::cover_images_reply::Reader<'_>>()?,
+                read_download_results_reply(
+                    again.get_root::<plugin_capnp::download_results_reply::Reader<'_>>()?,
                 )
             })
             .map_err(|err| RoundTripFailure::Codec(format!("re-decode failed: {err}")))?;
@@ -17519,8 +17532,8 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                 // byte check also covers fields whose `Debug` redacts (credential
                 // DTOs), which the rendering alone would hide.
                 let mut message = capnp::message::Builder::new_default();
-                write_cover_images_reply(
-                    message.init_root::<plugin_capnp::cover_images_reply::Builder<'_>>(),
+                write_download_results_reply(
+                    message.init_root::<plugin_capnp::download_results_reply::Builder<'_>>(),
                     &again,
                 )
                 .map_err(|err| RoundTripFailure::Codec(format!("re-encode failed: {err}")))?;
@@ -17531,7 +17544,7 @@ pub fn roundtrip_any_message(selector: u8, bytes: &[u8]) -> Result<(), RoundTrip
                     // credential fields, and the failing input is what a harness
                     // needs to reproduce the difference.
                     return Err(RoundTripFailure::Codec(
-                        "round trip changed the decoded CoverImagesReply value".to_string(),
+                        "round trip changed the decoded DownloadResultsReply value".to_string(),
                     ));
                 }
             }

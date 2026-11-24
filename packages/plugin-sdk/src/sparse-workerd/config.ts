@@ -104,6 +104,7 @@ const SDK_PY_SIBLING_MODULES: ReadonlyArray<readonly [string, string, string]> =
   ["bookclerk_plugin_sdk/plugin_migration.py", "plugin_migration.py", "sdk-plugin-migration.py"],
   ["bookclerk_plugin_sdk/db_value.py", "db_value.py", "sdk-db-value.py"],
   ["bookclerk_plugin_sdk/scan_page.py", "scan_page.py", "sdk-scan-page.py"],
+  ["bookclerk_plugin_sdk/object_store.py", "object_store.py", "sdk-object-store.py"],
 ];
 const PYODIDE_EGRESS_HOSTS = ["cdn.jsdelivr.net", "pypi.org", "files.pythonhosted.org"] as const;
 
@@ -133,7 +134,7 @@ const ENTRYPOINT_SERVICE_BINDINGS: Readonly<Record<string, readonly [string, str
     cli: ["PLUGIN_CLI", "Cli"],
     oidc: ["PLUGIN_OIDC", "Oidc"],
     metadata: ["PLUGIN_METADATA", "Metadata"],
-    covers: ["PLUGIN_COVERS", "Covers"],
+    mediaDownload: ["PLUGIN_MEDIA_DOWNLOAD", "MediaDownload"],
     metadataFiles: ["PLUGIN_METADATA_FILES", "MetadataFiles"],
     notifier: ["PLUGIN_NOTIFIER", "Notifier"],
     ingress: ["PLUGIN_INGRESS", "Ingress"],

@@ -30,7 +30,7 @@ export {
   QueueBatch,
   QueueMessage,
   JobController,
-  CoverEntrypoint,
+  MediaDownloadEntrypoint,
   IngressEntrypoint,
   ProvisioningEntrypoint,
   provisioned,
@@ -84,6 +84,46 @@ export {
   MAX_CHANGES_CURSOR_BYTES,
 } from "./plugin.js";
 export { scanPage } from "./scan-page.js";
+export { STREAM_COPY_COMMAND, streamCopy, streamCopyCommitToken } from "./stream-copy.js";
+export type { StreamCopySpec } from "./stream-copy.js";
+export {
+  MAX_HOST_KEY_BYTES,
+  MAX_OBJECT_KEY_BYTES,
+  NO_FEED_CURSOR,
+  ObjectStoreDestination,
+  STAGE_FOLDER,
+  checkByteRange,
+  clampPageLimit,
+  parseHostKey,
+  requireDisjointPrefixes,
+  stageKey,
+  translateForObjectStore,
+  writeCondition,
+} from "./object-store.js";
+export type {
+  ChangeFeed,
+  ObjectPage,
+  ObjectStore,
+  ObjectWrite,
+  StoredObject,
+  WriteCondition,
+  WrittenObject,
+} from "./object-store.js";
+export {
+  QUEUE_LEASE_MS,
+  QueueFeed,
+  orderChanges,
+  parseQueueCursor,
+  webhookQueue,
+} from "./queue-feed.js";
+export type {
+  MessageParser,
+  NotificationQueue,
+  ParsedChange,
+  LeasedMessage,
+  QueueFeedOptions,
+  Received,
+} from "./queue-feed.js";
 export type { FetchStorePage, StorePage } from "./scan-page.js";
 export { decodeDbValue, encodeDbValue, parseDbValue } from "./db-value.js";
 export type { DbType, DbValue } from "./db-value.js";

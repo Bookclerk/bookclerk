@@ -1720,6 +1720,12 @@ mod results_and_uploads {
 
     /// Queues an acquire of the member's account.
     async fn enqueue_acquire(store: &LibraryStore) -> String {
+        enqueue_acquire_with_attempts(store, 3).await
+    }
+
+    /// Queues an acquire of `riley-acct` that may run `max_attempts` times;
+    /// answers its job id.
+    async fn enqueue_acquire_with_attempts(store: &LibraryStore, max_attempts: i64) -> String {
         match store
             .enqueue_job(EnqueueJobSpec {
                 kind: JobKind::Acquire,
@@ -1728,7 +1734,7 @@ mod results_and_uploads {
                     ..Default::default()
                 },
                 priority: 0,
-                max_attempts: 3,
+                max_attempts,
                 max_pending: 256,
                 run_after: None,
             })
@@ -2868,7 +2874,11 @@ mod results_and_uploads {
         };
         let (_handle, _stop) = start(&world, guests.clone()).await;
 
-        let job_id = enqueue_acquire(&world.owner).await;
+        // One attempt: a host failure is retried after 5 s and then 10 s
+        // of backoff, and waiting those out took the test past its 20 s
+        // window on slow runners. A local acquire of such a title is not
+        // retried either.
+        let job_id = enqueue_acquire_with_attempts(&world.owner, 1).await;
         eventually("the host acquire to fail", || async {
             job(&world.owner, &job_id).await.state == JobState::Failed
         })
@@ -3761,7 +3771,8 @@ mod results_and_uploads {
             &node_id,
             JobResourceClass::Network,
             RemoteClaimSettings {
-                lease_secs: 1,
+                // Long enough that only the explicit expiry below loses it.
+                lease_secs: 600,
                 limits: JobClaimLimits {
                     class: 8,
                     plugin_instance: 8,
@@ -3827,8 +3838,38 @@ mod results_and_uploads {
         tcp.write_all(head.as_bytes()).await.unwrap();
         tcp.write_all(&payload[..1 << 20]).await.unwrap();
         tcp.flush().await.unwrap();
-        // The host stalls past its lease; the owner reclaims the job.
-        tokio::time::sleep(Duration::from_millis(1500)).await;
+        // Wait until the owner has read every byte sent so far (the
+        // destination's temp file holds all of it). The owner answers
+        // `lost` and closes without reading the rest of the body; a close
+        // with sent bytes still unread resets the connection, and on
+        // Windows the reset can arrive before the answer is read, so
+        // `read_to_end` failed with `ConnectionAborted` instead of the 409.
+        // With the old 1 s lease a slow runner could lose the fence while
+        // those bytes were still unread.
+        eventually("the owner to read the first megabyte", || async {
+            files_under(owner_out.path())
+                .iter()
+                .filter_map(|path| std::fs::metadata(path).ok())
+                .map(|meta| meta.len())
+                .sum::<u64>()
+                == 1 << 20
+        })
+        .await;
+        // The host stalls past its lease; the owner reclaims the job. The
+        // lease is expired here rather than waited out, so a slow runner
+        // cannot lose the fence before the first megabyte is read.
+        {
+            use sea_orm::ConnectionTrait as _;
+            let past = (chrono::Utc::now() - chrono::Duration::seconds(5)).to_rfc3339();
+            world
+                .owner
+                .db()
+                .execute_unprepared(&format!(
+                    "UPDATE jobs SET lease_expires_at = '{past}' WHERE id = '{job_id}'"
+                ))
+                .await
+                .unwrap();
+        }
         assert_eq!(world.owner.reclaim_expired_leases().await.unwrap(), 1);
         let mut answer = Vec::new();
         tokio::time::timeout(Duration::from_secs(20), tcp.read_to_end(&mut answer))

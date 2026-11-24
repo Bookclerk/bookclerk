@@ -32,7 +32,7 @@ use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer
 use image::{DynamicImage, ImageFormat, ImageReader, Limits};
 
 /// Largest input accepted, in bytes. Matches the plugin ABI's
-/// `maxCoverBytes`, the most a cover fetcher may hand the host.
+/// `maxImageBytes`, the most a media downloader may hand the host.
 pub const MAX_INPUT_BYTES: usize = 10 * 1024 * 1024;
 
 /// Widest or tallest image decoded, in pixels. Store covers are at most a

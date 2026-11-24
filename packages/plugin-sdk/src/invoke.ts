@@ -33,7 +33,7 @@ import type {
   JobController as WireJobController,
   JobOutcome,
   ListeningProgress,
-  CoverImage,
+  DownloadResult,
   MetadataFileRecord,
   MetadataRecord,
   KeyOutcome as WireKeyOutcome,
@@ -275,18 +275,18 @@ const okRecords = (value: unknown) => {
   return okValue({ records: value as MetadataRecord[] });
 };
 /**
- * Wraps a cover fetcher's `fetchCovers` return as `CoverImages`. The Rust
+ * Wraps a media downloader's `downloadMedia` return as `DownloadResults`. The Rust
  * client checks the count and URLs against the request.
  *
  * @param value - The author method's return value.
  * @returns The `ok` arm carrying the per-URL answers.
  * @throws {PluginError} `internal` when `value` is not an array.
  */
-const okCoverImages = (value: unknown) => {
+const okDownloadResults = (value: unknown) => {
   if (!Array.isArray(value)) {
-    throw PluginError.fromWire("internal", "cover fetcher must return a CoverImage[]");
+    throw PluginError.fromWire("internal", "media downloader must return a DownloadResult[]");
   }
-  return okValue({ images: value as CoverImage[] });
+  return okValue({ downloads: value as DownloadResult[] });
 };
 /**
  * Wraps a metadata-file dialect's `parse` return as `MetadataFileParsed`. The
@@ -1158,25 +1158,28 @@ const METHODS: Readonly<Record<string, Readonly<Record<string, AnySpec>>>> = {
       okPass,
     ),
   },
-  CoverFetcher: {
+  MediaDownloader: {
     health: withoutParams(
-      "covers",
+      "mediaDownload",
       "health",
-      W.CoverFetcherHealthParamsCodec,
-      W.CoverFetcherHealthResultsCodec,
+      W.MediaDownloaderHealthParamsCodec,
+      W.MediaDownloaderHealthResultsCodec,
       okHealth,
     ),
-    fetchCovers: spec<W.CoverFetcherFetchCoversParams, W.CoverFetcherFetchCoversResults["result"]>({
-      params: W.CoverFetcherFetchCoversParamsCodec,
-      results: W.CoverFetcherFetchCoversResultsCodec,
-      stub: "covers",
+    downloadMedia: spec<
+      W.MediaDownloaderDownloadMediaParams,
+      W.MediaDownloaderDownloadMediaResults["result"]
+    >({
+      params: W.MediaDownloaderDownloadMediaParamsCodec,
+      results: W.MediaDownloaderDownloadMediaResultsCodec,
+      stub: "mediaDownload",
       call: (s, p, cx) => {
         if (!p.sink) {
-          throw PluginError.fromWire("invalid_params", "fetchCovers needs a sink");
+          throw PluginError.fromWire("invalid_params", "downloadMedia needs a sink");
         }
-        return named(s, cx.host.bindContext(cx.ctx), "fetchCovers", [p.params, p.sink]);
+        return named(s, cx.host.bindContext(cx.ctx), "downloadMedia", [p.params, p.sink]);
       },
-      ok: okCoverImages,
+      ok: okDownloadResults,
     }),
   },
   AiModels: {

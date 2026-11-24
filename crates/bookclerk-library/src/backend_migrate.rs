@@ -69,6 +69,10 @@ pub const LEFT_BEHIND_TABLES: &[(&str, &str)] = &[
         "transient: verification links, which patrons can ask for again",
     ),
     (
+        "password_resets",
+        "transient: password-reset links, which patrons can ask for again",
+    ),
+    (
         "plugin_webhook_chunks",
         "transient: bodies of stored webhook requests, which the plugins' listing fallback covers",
     ),

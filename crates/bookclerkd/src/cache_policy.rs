@@ -5,7 +5,7 @@
 //!
 //! | Class | `Cache-Control` |
 //! | --- | --- |
-//! | HTML documents | `no-cache` (`/invite` and `/verify-email`: `no-store, no-cache, must-revalidate`) |
+//! | HTML documents | `no-cache` (`/invite`, `/verify-email` and `/reset-password`: `no-store, no-cache, must-revalidate`) |
 //! | Hashed web app files under `/assets/` | [`IMMUTABLE_ASSET`] |
 //! | Other web app files (icons, manifest, fonts) | [`REVALIDATE`] |
 //! | Everything else (API JSON, errors including HTML error pages, legacy routes) | [`NO_STORE`] |
@@ -101,7 +101,7 @@ fn classify(path: &str, response: &Response) -> Class {
         .is_some_and(|ct| ct.starts_with("text/html"));
     // A mailed link carries its token in the address, so it is never
     // stored either.
-    let invite = path == "/invite" || path == "/verify-email";
+    let invite = matches!(path, "/invite" | "/verify-email" | "/reset-password");
     let status = response.status();
     let error = status.is_client_error() || status.is_server_error();
     if is_html && (invite || !error) {
@@ -237,6 +237,10 @@ mod tests {
                 get(|| async { axum::response::Html("<p>verify</p>") }),
             )
             .route(
+                "/reset-password",
+                get(|| async { axum::response::Html("<p>reset</p>") }),
+            )
+            .route(
                 "/gone",
                 get(|| async {
                     (
@@ -276,6 +280,7 @@ mod tests {
         assert_eq!(cache_control("/").await, REVALIDATE);
         assert_eq!(cache_control("/invite").await, INVITE_DOCUMENT);
         assert_eq!(cache_control("/verify-email").await, INVITE_DOCUMENT);
+        assert_eq!(cache_control("/reset-password").await, INVITE_DOCUMENT);
         assert_eq!(
             cache_control("/assets/app-1a2b3c.js").await,
             IMMUTABLE_ASSET

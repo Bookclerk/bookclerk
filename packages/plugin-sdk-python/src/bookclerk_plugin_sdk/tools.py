@@ -1533,7 +1533,7 @@ ENTRYPOINT_NAMES: tuple[str, ...] = (
     "cli",
     "oidc",
     "metadata",
-    "covers",
+    "mediaDownload",
     "metadataFiles",
     "notifier",
     "ingress",
@@ -2521,7 +2521,7 @@ ENTRYPOINT_EXPORT_CLASSES: dict[str, str] = {
     "cli": "Cli",
     "oidc": "Oidc",
     "metadata": "Metadata",
-    "covers": "Covers",
+    "mediaDownload": "MediaDownload",
     "metadataFiles": "MetadataFiles",
     "notifier": "Notifier",
     "ingress": "Ingress",
@@ -2555,7 +2555,7 @@ def check_main_module_source(
         raise ValueError(
             f"{main_name}: `BookclerkPlugin` was removed in api_version 3; extend `{base}` "
             "(default export with event()/job() triggers) and export named entrypoint classes "
-            "(Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc, Metadata, Covers, "
+            "(Storefront, Storage, RemoteLibrary, DatabaseAdapter, Cli, Oidc, Metadata, MediaDownload, "
             "MetadataFiles, Notifier, Ai)"
         )
     if language == "python":

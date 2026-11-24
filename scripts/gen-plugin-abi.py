@@ -227,7 +227,7 @@ def check_method_names() -> list[str]:
         "RemoteLibrary",
         "Oidc",
         "MetadataProvider",
-        "CoverFetcher",
+        "MediaDownloader",
         "MetadataFiles",
         "Notifier",
         "NotificationRaiser",

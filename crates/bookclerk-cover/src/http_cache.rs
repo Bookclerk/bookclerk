@@ -192,7 +192,7 @@ pub const FRESHNESS_DEFAULT: Duration = Duration::from_secs(24 * 60 * 60);
 pub const FRESHNESS_CEILING: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// Longest upstream header value read, in bytes (the plugin ABI's
-/// `maxCoverHeaderBytes`); a longer value is treated as absent.
+/// `maxDownloadHeaderBytes`); a longer value is treated as absent.
 pub const MAX_RESPONSE_HEADER_BYTES: usize = 1024;
 
 /// The caching headers of one upstream image response, as raw bytes; `None`

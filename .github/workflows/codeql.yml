@@ -97,12 +97,12 @@ jobs:
 
   analyze:
     name: Analyze (${{ matrix.language }})
-    # Pull request runs take turns in four slots: Rust in two, every other
-    # language in two more, each run in the pair its run id's parity picks,
-    # so they leave runners for the merge queue
-    # (docs/contributing/ci.md#pull-request-lanes).
+    # Pull request runs take turns in seven slots so they leave runners for
+    # the merge queue (docs/contributing/ci.md#pull-request-lanes): Rust,
+    # about 30 minutes, in five picked by the run id's last digit, every
+    # other language, a minute or two each, in two picked by its parity.
     concurrency:
-      group: ${{ github.event_name == 'pull_request' && format('codeql-pr-slot-{0}-{1}', matrix.language == 'rust' && 'rust' || 'other', (endsWith(format('{0}', github.run_id), '0') || endsWith(format('{0}', github.run_id), '2') || endsWith(format('{0}', github.run_id), '4') || endsWith(format('{0}', github.run_id), '6') || endsWith(format('{0}', github.run_id), '8')) && 'even' || 'odd') || format('codeql-{0}-{1}-{2}', github.run_id, github.run_attempt, matrix.language) }}
+      group: ${{ github.event_name == 'pull_request' && (matrix.language == 'rust' && format('codeql-pr-slot-rust-{0}', ((endsWith(format('{0}', github.run_id), '0') || endsWith(format('{0}', github.run_id), '5')) && '0' || (endsWith(format('{0}', github.run_id), '1') || endsWith(format('{0}', github.run_id), '6')) && '1' || (endsWith(format('{0}', github.run_id), '2') || endsWith(format('{0}', github.run_id), '7')) && '2' || (endsWith(format('{0}', github.run_id), '3') || endsWith(format('{0}', github.run_id), '8')) && '3' || '4')) || format('codeql-pr-slot-other-{0}', (endsWith(format('{0}', github.run_id), '0') || endsWith(format('{0}', github.run_id), '2') || endsWith(format('{0}', github.run_id), '4') || endsWith(format('{0}', github.run_id), '6') || endsWith(format('{0}', github.run_id), '8')) && 'even' || 'odd')) || format('codeql-{0}-{1}-{2}', github.run_id, github.run_attempt, matrix.language) }}
       queue: max
     needs: languages
     runs-on: ubuntu-latest

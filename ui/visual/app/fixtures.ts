@@ -975,6 +975,7 @@ function workSummary(b: Book): Record<string, unknown> {
     acquire_status: b.status,
     edition_count: 1,
     holding_count: b.status === "acquired" ? 1 : 0,
+    acquirable_editions: b.status === "not_acquired" || b.status === "error" ? 1 : 0,
     added_at: ago(b.boughtDaysAgo * DAY),
     length_minutes: b.minutes,
     purchased_at: ago(b.boughtDaysAgo * DAY),
@@ -1583,6 +1584,10 @@ const SIGNED_OUT: Routes = {
     },
   }),
   "POST /api/auth/verify-email": () => ({ json: { verified: true } }),
+  // Self-service reset is on; a sample link asks for an authenticator code.
+  "GET /api/auth/password-reset": () => ({ json: { available: true } }),
+  "POST /api/auth/password-reset": () => ({ status: 202, json: { accepted: true } }),
+  "POST /api/auth/password-reset/check": () => ({ json: { second_factor: "totp" } }),
   "GET /api/auth/signin": () => ({
     json: {
       operator_token: true,

@@ -18,6 +18,42 @@ const TOKEN: &str = "op-token-samples";
 /// it a track; the worker reads the bytes (a WAV) by their content.
 const KEY: &str = "Ann Author/First/First.m4b";
 
+/// A made sample handed over in `parts`.
+fn chunks(parts: Vec<Vec<u8>>) -> SampleChunks {
+    Box::pin(futures::stream::iter(parts.into_iter().map(Ok)))
+}
+
+/// A sample's bytes, read to the end.
+async fn drain(body: SampleBody) -> std::io::Result<Vec<u8>> {
+    match body {
+        SampleBody::Whole(bytes) => Ok(bytes),
+        SampleBody::Live(mut rx) => {
+            let mut out = Vec::new();
+            while let Some(part) = rx.recv().await {
+                out.extend_from_slice(&part?);
+            }
+            Ok(out)
+        }
+    }
+}
+
+/// Whether `dir` holds a kept sample.
+fn holds_a_sample(dir: &std::path::Path) -> bool {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some(SAMPLE_EXTENSION))
+}
+
+/// Waits until `done` holds, failing after five seconds.
+async fn eventually(what: &str, done: impl Fn() -> bool) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !done() {
+        assert!(tokio::time::Instant::now() < deadline, "{what}");
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
 #[test]
 fn chapters_off_the_copys_timeline_are_not_used() {
     assert!(on_copy_timeline(Some(3_600_000), Some(3_601_500)));
@@ -121,26 +157,33 @@ async fn requests_ending_together_leave_no_lock_behind() {
                 let service = Arc::clone(&service);
                 let key = format!("edition\n{round}");
                 tokio::spawn(async move {
-                    service
-                        .sample(&key, || async { Ok(vec![1]) })
+                    let body = service
+                        .sample(&key, || async { Ok(chunks(vec![vec![1]])) })
                         .await
-                        .unwrap()
+                        .unwrap();
+                    drain(body).await.unwrap()
                 })
             })
             .collect();
         for task in tasks {
-            task.await.unwrap();
+            assert_eq!(task.await.unwrap(), vec![1]);
         }
-        assert!(service.flights.lock().unwrap().is_empty());
+        // The last write releases its lock just after its listener read
+        // the end.
+        eventually("a lock outlived its requests", || {
+            service.flights.lock().unwrap().is_empty()
+        })
+        .await;
     }
 }
 
-/// A request cancelled while its sample is being written leaves no lock
-/// behind once the write finishes: the write is held at publication, the
-/// request is cancelled, the lock stays while the write is pending, and
-/// goes once the write is released and done.
+/// A listener that leaves while its sample is being cut and written
+/// still gets it kept, and leaves no lock behind once the write finishes:
+/// the write is held at publication, the answer is dropped, the lock stays
+/// while the write is pending, and goes once the write is released and
+/// done.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_request_cancelled_during_the_write_leaves_no_lock_behind() {
+async fn a_listener_that_leaves_early_still_gets_the_sample_kept() {
     let dir = tempfile::tempdir().unwrap();
     let samples = dir.path().join("samples");
     let service = Arc::new(SampleService::open(samples.clone()).unwrap());
@@ -154,30 +197,22 @@ async fn a_request_cancelled_during_the_write_leaves_no_lock_behind() {
         hold_rx.recv().unwrap();
     });
     held_rx.recv().unwrap();
-    let request = {
-        let service = Arc::clone(&service);
-        tokio::spawn(async move {
-            service
-                .sample("edition\nheld", || async { Ok(vec![2; 4096]) })
-                .await
+    let body = service
+        .sample("edition\nheld", || async {
+            Ok(chunks(vec![vec![2; 4096], vec![3; 4096]]))
         })
-    };
+        .await
+        .unwrap();
+    assert!(matches!(body, SampleBody::Live(_)), "a new sample is live");
+    // The listener leaves at once.
+    drop(body);
     let staged = || {
         std::fs::read_dir(&samples)
             .unwrap()
             .filter_map(Result::ok)
             .any(|entry| entry.file_name().to_string_lossy().starts_with('.'))
     };
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !staged() {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the write never staged"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    }
-    request.abort();
-    assert!(request.await.unwrap_err().is_cancelled());
+    eventually("the write never staged", staged).await;
     assert_eq!(
         service.flights.lock().unwrap().len(),
         1,
@@ -185,18 +220,64 @@ async fn a_request_cancelled_during_the_write_leaves_no_lock_behind() {
     );
     hold_tx.send(()).unwrap();
     holder.join().unwrap();
-    while !service.flights.lock().unwrap().is_empty() {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "a lock outlived its write"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    }
-    let kept = std::fs::read_dir(&samples)
-        .unwrap()
-        .filter_map(Result::ok)
-        .any(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some(SAMPLE_EXTENSION));
-    assert!(kept, "the cancelled request's sample was still kept");
+    eventually("a lock outlived its write", || {
+        service.flights.lock().unwrap().is_empty()
+    })
+    .await;
+    assert!(holds_a_sample(&samples), "the sample was kept");
+    let kept = service
+        .sample("edition\nheld", || async {
+            Err(SampleFailure::Unavailable(
+                "must come from the cache".into(),
+            ))
+        })
+        .await
+        .unwrap();
+    let SampleBody::Whole(bytes) = kept else {
+        panic!("a kept sample is whole");
+    };
+    assert_eq!(bytes.len(), 8192);
+}
+
+/// A cut that fails before its first bytes is answered with the failure;
+/// one that fails part way ends the answer with an error and keeps
+/// nothing; one with no bytes is refused.
+#[tokio::test]
+async fn a_failed_cut_is_answered_and_not_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let samples = dir.path().join("samples");
+    let service = SampleService::open(samples.clone()).unwrap();
+    let early = service
+        .sample("edition\nearly", || async {
+            let parts: Vec<Result<Vec<u8>, SampleFailure>> =
+                vec![Err(SampleFailure::Refused("not audio".into()))];
+            Ok(Box::pin(futures::stream::iter(parts)) as SampleChunks)
+        })
+        .await;
+    assert_eq!(
+        early.err(),
+        Some(SampleFailure::Refused("not audio".into()))
+    );
+    let late = service
+        .sample("edition\nlate", || async {
+            let parts: Vec<Result<Vec<u8>, SampleFailure>> = vec![
+                Ok(vec![1; 16]),
+                Err(SampleFailure::Refused("broken frame".into())),
+            ];
+            Ok(Box::pin(futures::stream::iter(parts)) as SampleChunks)
+        })
+        .await
+        .unwrap();
+    assert!(drain(late).await.is_err(), "the answer ends with an error");
+    let empty = service
+        .sample("edition\nempty", || async { Ok(chunks(Vec::new())) })
+        .await;
+    assert!(matches!(empty.err(), Some(SampleFailure::Refused(_))));
+    eventually("a lock outlived a failed cut", || {
+        service.flights.lock().unwrap().is_empty()
+    })
+    .await;
+    assert!(!holds_a_sample(&samples), "no failed cut was kept");
 }
 
 #[tokio::test]
@@ -240,15 +321,21 @@ async fn a_sample_is_made_once_and_kept() {
     let dir = tempfile::tempdir().unwrap();
     let service = SampleService::open(dir.path().join("samples")).unwrap();
     let made = AtomicUsize::new(0);
-    for _ in 0..3 {
-        let bytes = service
+    for round in 0..3 {
+        let body = service
             .sample("edition\nx", || async {
                 made.fetch_add(1, Ordering::SeqCst);
-                Ok(vec![1, 2, 3])
+                Ok(chunks(vec![vec![1, 2], vec![3]]))
             })
             .await
             .unwrap();
-        assert_eq!(bytes, vec![1, 2, 3]);
+        // The first answer streams as it is made; later ones are kept.
+        assert_eq!(matches!(body, SampleBody::Live(_)), round == 0);
+        assert_eq!(drain(body).await.unwrap(), vec![1, 2, 3]);
+        eventually("the sample was never kept", || {
+            service.flights.lock().unwrap().is_empty()
+        })
+        .await;
     }
     assert_eq!(made.load(Ordering::SeqCst), 1);
     // A failure is answered and not kept.
@@ -257,23 +344,27 @@ async fn a_sample_is_made_once_and_kept() {
             Err(SampleFailure::Refused("not audio".into()))
         })
         .await;
-    assert_eq!(failed, Err(SampleFailure::Refused("not audio".into())));
+    assert_eq!(
+        failed.err(),
+        Some(SampleFailure::Refused("not audio".into()))
+    );
     let again = service
-        .sample("edition\ny", || async { Ok(vec![9]) })
+        .sample("edition\ny", || async { Ok(chunks(vec![vec![9]])) })
         .await
         .unwrap();
-    assert_eq!(again, vec![9]);
+    assert_eq!(drain(again).await.unwrap(), vec![9]);
     // A service with no folder makes the sample every time.
     let detached = SampleService::detached();
     let made = AtomicUsize::new(0);
     for _ in 0..2 {
-        detached
+        let body = detached
             .sample("edition\nx", || async {
                 made.fetch_add(1, Ordering::SeqCst);
-                Ok(vec![1])
+                Ok(chunks(vec![vec![1]]))
             })
             .await
             .unwrap();
+        assert_eq!(drain(body).await.unwrap(), vec![1]);
     }
     assert_eq!(made.load(Ordering::SeqCst), 2);
 }

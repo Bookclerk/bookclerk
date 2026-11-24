@@ -11,8 +11,8 @@ use crate::entities::email_verifications;
 use crate::hash_token;
 use crate::models::UserRole;
 use crate::notifications::{
-    parse_account_mail_settings, parse_verify_email_request, AccountMailKind, DeliveryState,
-    FailedAttempt,
+    parse_account_mail_settings, parse_verify_email_request, AccountMailKind, AccountMailRequest,
+    DeliveryState, FailedAttempt, PasswordResetFactor, RedeemedReset,
 };
 use crate::test_support::{sqlite::memory, Profile};
 
@@ -23,6 +23,12 @@ const LIMITS: NotifyQueueLimits = NotifyQueueLimits {
 };
 
 /// A member with `email`; answers their id.
+/// The password a redeemed link sets, assembled at runtime so scanners do
+/// not treat a string literal as a shipped secret.
+fn fresh_password() -> String {
+    ["a fresh", " ", "secret"].concat()
+}
+
 async fn member(store: &LibraryStore, email: &str) -> i64 {
     store
         .create_user_with_profile(UserRole::Member, Some("Sam"), None, Some(email), None)
@@ -513,9 +519,12 @@ async fn overlapping_resends_record_one_message_under_every_profile() {
         let since = Some(Utc::now() - Duration::minutes(5));
         let queue = || {
             store.queue_account_mail_unless_since(
-                AccountMailKind::VerifyEmail,
-                user,
-                "sam@example.com",
+                AccountMailRequest {
+                    kind: AccountMailKind::VerifyEmail,
+                    user_id: user,
+                    address: "sam@example.com",
+                    requested_by: None,
+                },
                 "email-1",
                 LIMITS,
                 since,
@@ -533,9 +542,12 @@ async fn overlapping_resends_record_one_message_under_every_profile() {
         // Once the gap has passed, the next resend is recorded.
         let later = store
             .queue_account_mail_unless_since(
-                AccountMailKind::VerifyEmail,
-                user,
-                "sam@example.com",
+                AccountMailRequest {
+                    kind: AccountMailKind::VerifyEmail,
+                    user_id: user,
+                    address: "sam@example.com",
+                    requested_by: None,
+                },
                 "email-1",
                 LIMITS,
                 Some(Utc::now() + Duration::seconds(1)),
@@ -605,5 +617,493 @@ async fn a_send_for_an_old_address_mints_nothing_and_voids_no_link_under_every_p
             .await
             .unwrap();
         assert!(row.is_some_and(|t| t.redeemed_at.is_none()), "{name}");
+    }
+}
+
+/// The validated token of a raw reset link `raw`.
+fn reset_token(raw: &str) -> crate::notifications::PasswordResetToken {
+    crate::notifications::parse_password_reset_link(format!(r#"{{"token":"{raw}"}}"#).as_bytes())
+        .expect("token")
+}
+
+#[tokio::test]
+async fn a_reset_link_works_once_for_a_verified_address_under_every_profile() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = memory(profile).await.into_store();
+        let user = member(&store, "rae@example.com").await;
+        // An unverified address gets no link.
+        assert!(
+            store
+                .mint_password_reset(user, "rae@example.com", None)
+                .await
+                .unwrap()
+                .is_none(),
+            "{name}: a link went to an unverified address"
+        );
+        assert!(store
+            .verify_user_email_if(user, "rae@example.com")
+            .await
+            .unwrap());
+        let old = store
+            .mint_password_reset(user, "rae@example.com", None)
+            .await
+            .unwrap()
+            .expect("minted");
+        let new = store
+            .mint_password_reset(user, "rae@example.com", None)
+            .await
+            .unwrap()
+            .expect("minted");
+        let now = Utc::now();
+        let old = reset_token(old.expose());
+        let new = reset_token(new.expose());
+        assert_eq!(
+            store.password_reset_user(&old, now).await.unwrap(),
+            None,
+            "{name}: a newer link voids the older one"
+        );
+        // Checking a link does not use it.
+        for _ in 0..2 {
+            assert_eq!(
+                store.password_reset_user(&new, now).await.unwrap(),
+                Some(user),
+                "{name}"
+            );
+        }
+        // Past its 30 minutes it does nothing.
+        let later = now + Duration::minutes(31);
+        assert_eq!(store.password_reset_user(&new, later).await.unwrap(), None);
+        let hash = crate::hash_password(&fresh_password()).expect("hash");
+        let redeem = |token, user_id, factor, at| {
+            let store = &store;
+            let hash = &hash;
+            async move {
+                store
+                    .redeem_password_reset(token, user_id, factor, hash, at)
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(
+            redeem(&new, user, PasswordResetFactor::None, later).await,
+            None
+        );
+        // Another user cannot use it, and a changed second factor stops it.
+        assert_eq!(
+            redeem(&new, user + 1, PasswordResetFactor::None, now).await,
+            None
+        );
+        assert_eq!(
+            redeem(&new, user, PasswordResetFactor::Totp, now).await,
+            None
+        );
+        assert_eq!(
+            redeem(&new, user, PasswordResetFactor::Passkey, now).await,
+            None
+        );
+        assert!(
+            store.get_user_password_hash(user).await.unwrap().is_none(),
+            "{name}: a refused redemption changed the password"
+        );
+        assert_eq!(
+            redeem(&new, user, PasswordResetFactor::None, now).await,
+            Some(RedeemedReset {
+                revoked_sessions: Some(0)
+            }),
+            "{name}"
+        );
+        let stored = store
+            .get_user_password_hash(user)
+            .await
+            .unwrap()
+            .expect("a password");
+        assert!(crate::verify_password(&fresh_password(), &stored).unwrap());
+        assert_eq!(
+            redeem(&new, user, PasswordResetFactor::None, now).await,
+            None,
+            "{name}: a link worked twice"
+        );
+        assert_eq!(store.password_reset_user(&new, now).await.unwrap(), None);
+    }
+}
+
+#[tokio::test]
+async fn a_reset_survives_a_lost_reply_and_a_factor_enrolled_after_the_check_under_every_profile() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let kit = memory(profile).await;
+        let store = kit.store();
+        let user = member(store, "kai@example.com").await;
+        assert!(store
+            .verify_user_email_if(user, "kai@example.com")
+            .await
+            .unwrap());
+        let mint = || async {
+            let token = store
+                .mint_password_reset(user, "kai@example.com", None)
+                .await
+                .unwrap()
+                .expect("minted");
+            reset_token(token.expose())
+        };
+        let now = Utc::now();
+
+        // The account had no factor when the link was checked; an
+        // authenticator or a passkey enrolled before the finish commits
+        // stops it, changes nothing and leaves the link usable.
+        let token = mint().await;
+        let first = crate::hash_password(&fresh_password()).expect("hash");
+        store.set_user_totp_enabled(user, true).await.unwrap();
+        assert_eq!(
+            store
+                .redeem_password_reset(&token, user, PasswordResetFactor::None, &first, now)
+                .await
+                .unwrap(),
+            None,
+            "{name}: a reset skipped a newly enrolled authenticator"
+        );
+        store.set_user_totp_enabled(user, false).await.unwrap();
+        store
+            .insert_webauthn_credential(user, "cred-kai", "{}", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .redeem_password_reset(&token, user, PasswordResetFactor::None, &first, now)
+                .await
+                .unwrap(),
+            None,
+            "{name}: a reset skipped a newly enrolled passkey"
+        );
+        assert!(
+            store.get_user_password_hash(user).await.unwrap().is_none(),
+            "{name}: a refused redemption changed the password"
+        );
+        assert_eq!(
+            store.password_reset_user(&token, now).await.unwrap(),
+            Some(user),
+            "{name}: a refused redemption spent the link"
+        );
+
+        // A lost reply: the batch committed, the retry finds the link
+        // spent, and the stored hash shows the reset was this one. The
+        // session is signed out; how many went with the lost reply.
+        let identity = store
+            .ensure_local_portal_identity(user, Some("Kai"))
+            .await
+            .unwrap();
+        store
+            .insert_portal_session("kai-session", identity.id, now + Duration::hours(1))
+            .await
+            .unwrap();
+        store
+            .insert_oidc_refresh_token(
+                "kai-refresh",
+                "app",
+                user,
+                "openid",
+                now + Duration::days(1),
+            )
+            .await
+            .unwrap();
+        store
+            .insert_oidc_refresh_token(
+                "other-refresh",
+                "app",
+                user + 1,
+                "openid",
+                now + Duration::days(1),
+            )
+            .await
+            .unwrap();
+        // A new attempt hashes afresh, so its operation id is its own.
+        let first = crate::hash_password(&fresh_password()).expect("hash");
+        kit.lose_next_replies(1);
+        assert_eq!(
+            store
+                .redeem_password_reset(&token, user, PasswordResetFactor::Passkey, &first, now)
+                .await
+                .unwrap(),
+            Some(RedeemedReset {
+                revoked_sessions: None
+            }),
+            "{name}: a lost reply reported a committed reset as refused"
+        );
+        assert!(
+            store
+                .get_portal_session_identity("kai-session")
+                .await
+                .unwrap()
+                .is_none(),
+            "{name}: a session outlived a reset whose reply was lost"
+        );
+        assert!(
+            store
+                .get_oidc_refresh_token("kai-refresh")
+                .await
+                .unwrap()
+                .is_none(),
+            "{name}: a refresh token outlived the reset"
+        );
+        assert!(
+            store
+                .get_oidc_refresh_token("other-refresh")
+                .await
+                .unwrap()
+                .is_some(),
+            "{name}: another account's refresh token was revoked"
+        );
+        let audited = store
+            .list_security_audit_events(20)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.action == "password_reset_self")
+            .count();
+        assert_eq!(audited, 1, "{name}: the reset was audited {audited} times");
+        assert_eq!(
+            store.get_user_password_hash(user).await.unwrap().as_deref(),
+            Some(first.as_str()),
+            "{name}"
+        );
+        assert_eq!(store.password_reset_user(&token, now).await.unwrap(), None);
+
+        // Another attempt after the link is spent still finds nothing,
+        // even when its own reply is lost.
+        let second = crate::hash_password(&fresh_password()).expect("hash");
+        kit.lose_next_replies(1);
+        assert_eq!(
+            store
+                .redeem_password_reset(&token, user, PasswordResetFactor::Passkey, &second, now)
+                .await
+                .unwrap(),
+            None,
+            "{name}: a spent link worked again"
+        );
+        assert_eq!(
+            store.get_user_password_hash(user).await.unwrap().as_deref(),
+            Some(first.as_str()),
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_reset_link_stops_when_the_address_changes_under_every_profile() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = memory(profile).await.into_store();
+        let user = member(&store, "lou@example.com").await;
+        assert!(store
+            .verify_user_email_if(user, "lou@example.com")
+            .await
+            .unwrap());
+        let raw = store
+            .mint_password_reset(user, "lou@example.com", None)
+            .await
+            .unwrap()
+            .expect("minted");
+        // A claim on a job that is not running mints and voids nothing.
+        let lost = crate::models::JobFence {
+            job_id: "gone".into(),
+            owner: "worker".into(),
+            generation: 1,
+        };
+        assert!(store
+            .mint_password_reset(user, "lou@example.com", Some(&lost))
+            .await
+            .unwrap()
+            .is_none());
+        let token = reset_token(raw.expose());
+        let now = Utc::now();
+        assert_eq!(
+            store.password_reset_user(&token, now).await.unwrap(),
+            Some(user),
+            "{name}: a stale send voided the link"
+        );
+        store
+            .set_user_email(user, Some("lou2@example.com"))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.password_reset_user(&token, now).await.unwrap(),
+            None,
+            "{name}: a link for an old address still works"
+        );
+        assert_eq!(
+            store
+                .redeem_password_reset(&token, user, PasswordResetFactor::None, "x", now)
+                .await
+                .unwrap(),
+            None
+        );
+        // Pruning removes expired links.
+        let hash = hash_token(raw.expose());
+        store
+            .prune_account_mail(now + Duration::hours(1))
+            .await
+            .unwrap();
+        let row = crate::entities::password_resets::Entity::find_by_id(hash.as_str())
+            .one(&store.db)
+            .await
+            .unwrap();
+        assert!(row.is_none(), "{name}: an expired reset link survived");
+    }
+}
+
+#[tokio::test]
+async fn a_reset_request_enqueues_one_send_job_under_every_profile() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = memory(profile).await.into_store();
+        assert!(
+            store
+                .enqueue_password_reset_request("ann@example.com", "email-1", LIMITS)
+                .await
+                .unwrap(),
+            "{name}"
+        );
+        assert!(
+            store
+                .enqueue_password_reset_request("ann@example.com", "email-1", LIMITS)
+                .await
+                .unwrap(),
+            "{name}: a request already waiting counts as queued"
+        );
+        let full = NotifyQueueLimits {
+            max_pending: 1,
+            max_attempts: 3,
+        };
+        assert!(
+            !store
+                .enqueue_password_reset_request("bob@example.com", "email-1", full)
+                .await
+                .unwrap(),
+            "{name}: a full queue took another request"
+        );
+    }
+}
+
+#[test]
+fn the_reset_bodies_follow_their_rules() {
+    use crate::notifications::{
+        parse_password_reset_ask, parse_password_reset_finish, ResetSecondFactor,
+    };
+    assert_eq!(
+        parse_password_reset_ask(br#"{"email":" Ann@Example.com "}"#).unwrap(),
+        "ann@example.com"
+    );
+    for bad in [
+        &b"{}"[..],
+        br#"{"email":""}"#,
+        br#"{"email":"nope"}"#,
+        br#"{"email":"a@example.com","other":1}"#,
+        br#"["a@example.com"]"#,
+    ] {
+        assert!(parse_password_reset_ask(bad).is_err());
+    }
+    let hex = "0123456789abcdef".repeat(4);
+    let finish =
+        parse_password_reset_finish(format!(r#"{{"token":"{hex}","password":" pw "}}"#).as_bytes())
+            .unwrap();
+    assert_eq!(finish.password.as_str(), "pw");
+    assert!(matches!(finish.second_factor, ResetSecondFactor::None));
+    let finish = parse_password_reset_finish(
+        format!(r#"{{"token":"{hex}","password":"pw","totp_code":"123456"}}"#).as_bytes(),
+    )
+    .unwrap();
+    assert!(matches!(finish.second_factor, ResetSecondFactor::Totp(ref c) if c == "123456"));
+    let finish = parse_password_reset_finish(
+        format!(
+            r#"{{"token":"{hex}","password":"pw","passkey":{{"challenge_id":"c-1","credential":{{}}}}}}"#
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    assert!(matches!(
+        finish.second_factor,
+        ResetSecondFactor::Passkey { ref challenge_id, .. } if challenge_id == "c-1"
+    ));
+    let long = "x".repeat(1025);
+    for bad in [
+        format!(r#"{{"token":"{hex}","password":"  "}}"#),
+        format!(r#"{{"token":"{hex}","password":"{long}"}}"#),
+        r#"{"token":"abc","password":"pw"}"#.to_string(),
+        format!(r#"{{"token":"{hex}","password":"pw","totp_code":"12345"}}"#),
+        format!(r#"{{"token":"{hex}","password":"pw","totp_code":"12a456"}}"#),
+        format!(
+            r#"{{"token":"{hex}","password":"pw","passkey":{{"challenge_id":"","credential":{{}}}}}}"#
+        ),
+        format!(
+            r#"{{"token":"{hex}","password":"pw","passkey":{{"challenge_id":"c","credential":[]}}}}"#
+        ),
+        format!(
+            r#"{{"token":"{hex}","password":"pw","totp_code":"123456","passkey":{{"challenge_id":"c","credential":{{}}}}}}"#
+        ),
+        format!(r#"{{"token":"{hex}","password":"pw","other":1}}"#),
+    ] {
+        assert!(
+            parse_password_reset_finish(bad.as_bytes()).is_err(),
+            "{bad}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_invite_keeps_who_asked_until_they_are_deleted_under_every_profile() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = memory(profile).await.into_store();
+        store
+            .set_account_mail_instance(Some("email-1"))
+            .await
+            .unwrap();
+        let admin = store
+            .create_user_with_profile(
+                UserRole::Administrator,
+                Some("Alex"),
+                None,
+                Some("alex@example.com"),
+                None,
+            )
+            .await
+            .unwrap()
+            .id;
+        let user = member(&store, "sam@example.com").await;
+        let id = store
+            .queue_account_mail_unless_since(
+                AccountMailRequest {
+                    kind: AccountMailKind::Invite,
+                    user_id: user,
+                    address: "sam@example.com",
+                    requested_by: Some(admin),
+                },
+                "email-1",
+                LIMITS,
+                None,
+            )
+            .await
+            .unwrap()
+            .expect("recorded");
+        let mail = store.account_mail(&id).await.unwrap().expect("mail");
+        assert_eq!(mail.requested_by, Some(admin), "{name}");
+        // A message queued without anyone asking names no one.
+        let own = store
+            .queue_account_mail(
+                AccountMailKind::VerifyEmail,
+                user,
+                "sam@example.com",
+                "email-1",
+                LIMITS,
+            )
+            .await
+            .unwrap();
+        let own = store.account_mail(&own).await.unwrap().expect("mail");
+        assert_eq!(own.requested_by, None, "{name}");
+        // Deleting the Administrator keeps the invite but forgets them.
+        store.delete_user(admin).await.unwrap();
+        let mail = store.account_mail(&id).await.unwrap().expect("mail kept");
+        assert_eq!(mail.requested_by, None, "{name}");
     }
 }

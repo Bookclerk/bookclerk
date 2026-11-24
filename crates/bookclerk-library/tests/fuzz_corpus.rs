@@ -572,6 +572,32 @@ fn fuzz_corpus_account_mail_request_replays() {
     assert!(refused > 0, "every account_mail_request seed was accepted");
 }
 
+/// The `password_reset_request` oracle, shared with the fuzz target: the
+/// self-service reset bodies are accepted exactly when they have the
+/// documented shape.
+#[path = "../../../fuzz/oracles/password_reset_request.rs"]
+mod password_reset_request_oracle;
+
+#[test]
+// A missing or unreadable seed is the test failing.
+#[allow(clippy::expect_used)]
+fn fuzz_corpus_password_reset_request_replays() {
+    let (mut accepted, mut refused) = (0, 0);
+    for path in corpus_files("password_reset_request") {
+        if password_reset_request_oracle::check(&std::fs::read(&path).expect("read")) {
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    // The seeds reach both sides.
+    assert!(accepted > 0, "no password_reset_request seed was accepted");
+    assert!(
+        refused > 0,
+        "every password_reset_request seed was accepted"
+    );
+}
+
 /// The `connections_request` oracle, shared with the fuzz target: a
 /// branch's "Add my connections" and disconnect bodies are accepted exactly
 /// when they have the documented shape.

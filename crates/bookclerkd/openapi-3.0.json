@@ -13305,7 +13305,7 @@
             }
           },
           "409": {
-            "description": "This install holds data of its own for a shared branch join (`not_empty`), the library's database plugin is not installed here (`database_guest_missing`), the D1 token is not set here (`d1_token_missing`), or joining would make a loop (`join_cycle`, `ancestry_too_deep`).",
+            "description": "This install holds data of its own for a shared branch join (`not_empty`), the library's database plugin is not installed here (`database_guest_missing`), the library sent no D1 token and none is set here (`d1_token_missing`), or joining would make a loop (`join_cycle`, `ancestry_too_deep`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -13313,9 +13313,9 @@
                 },
                 "examples": {
                   "d1_token_missing": {
-                    "summary": "The library's database is D1 and this server has no token.",
+                    "summary": "The library's database is D1, it sent no token, and this server has none.",
                     "value": {
-                      "detail": "the library's database is Cloudflare D1: set BOOKCLERK_D1_API_TOKEN for this server and restart it (the token is never sent between servers), then try again within 10 minutes (the library holds this server as node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c)",
+                      "detail": "the library's database is Cloudflare D1 and it sent no API token: set BOOKCLERK_D1_API_TOKEN for this server and restart it, then try again within 10 minutes (the library holds this server as node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c)",
                       "error": "d1_token_missing"
                     }
                   },
@@ -32987,7 +32987,7 @@
           "Discover"
         ],
         "summary": "Serves one size of a cover the API linked to.",
-        "description": "The path comes from a `cover_path` field in a Discover or catalog\nresponse; append `/128`, `/360` or `/full`. The first request fetches the\nimage through the `covers` plugin and re-encodes it in the confined media\nworker; later ones are served from the node's cover cache. Responses are\nimmutable, since a path always names the same image, and carry an `ETag`\nso a client revalidating anyway gets `304 Not Modified`.",
+        "description": "The path comes from a `cover_path` field in a Discover or catalog\nresponse; append `/128`, `/360` or `/full`. The first request fetches the\nimage through the `media_download` plugin and re-encodes it in the confined media\nworker; later ones are served from the node's cover cache. Responses are\nimmutable, since a path always names the same image, and carry an `ETag`\nso a client revalidating anyway gets `304 Not Modified`.",
         "operationId": "get_cover",
         "parameters": [
           {
@@ -33344,7 +33344,7 @@
           "Users"
         ],
         "summary": "Serves a user's Gravatar as a 128 px JPEG through the cover service.",
-        "description": "The `gravatar_hash` of a user (from `/api/auth/me` or `/api/users`) names\nthe picture. Bookclerk downloads it through the `covers` plugin, so the\nbrowser never contacts Gravatar.",
+        "description": "The `gravatar_hash` of a user (from `/api/auth/me` or `/api/users`) names\nthe picture. Bookclerk downloads it through the `media_download` plugin, so the\nbrowser never contacts Gravatar.",
         "operationId": "get_gravatar",
         "parameters": [
           {
@@ -33706,7 +33706,7 @@
           {
             "name": "Range",
             "in": "header",
-            "description": "One byte range (`bytes=A-B`, `bytes=A-` or `bytes=-N`); anything else reads the whole sample.",
+            "description": "One byte range (`bytes=A-B`, `bytes=A-` or `bytes=-N`) of a sample already kept; anything else, or a sample still being cut, reads the whole sample.",
             "required": false,
             "schema": {
               "type": "string",
@@ -33716,7 +33716,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The sample: mono MP3, five minutes or the rest of the first file.",
+            "description": "The sample: mono MP3, five minutes or the rest of the first file. A sample not kept yet streams as the media worker encodes it, without `Content-Length`.",
             "content": {
               "audio/mpeg": {
                 "schema": {
@@ -33955,7 +33955,7 @@
           {
             "name": "Range",
             "in": "header",
-            "description": "One byte range (`bytes=A-B`, `bytes=A-` or `bytes=-N`); anything else reads the whole sample.",
+            "description": "One byte range (`bytes=A-B`, `bytes=A-` or `bytes=-N`) of a sample already kept; anything else, or a sample still being cut, reads the whole sample.",
             "required": false,
             "schema": {
               "type": "string",
@@ -33965,7 +33965,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The sample, re-encoded: mono MP3.",
+            "description": "The sample, re-encoded: mono MP3. A sample not kept yet streams as the media worker encodes it, without `Content-Length`.",
             "content": {
               "audio/mpeg": {
                 "schema": {
@@ -34075,7 +34075,7 @@
             }
           },
           "503": {
-            "description": "No `covers` plugin or confined media worker is available; retry (`unavailable`). When the sign-in could not be checked because the library did not answer in time, the answer is `session_check_unavailable` instead, with `Retry-After`; ask again rather than treating the caller as signed out.",
+            "description": "No `mediaDownload` plugin or confined media worker is available; retry (`unavailable`). When the sign-in could not be checked because the library did not answer in time, the answer is `session_check_unavailable` instead, with `Retry-After`; ask again rather than treating the caller as signed out.",
             "headers": {
               "Retry-After": {
                 "schema": {
@@ -45135,6 +45135,648 @@
           }
         ],
         "x-bookclerk-access": "The operator (token or session) only."
+      }
+    },
+    "/api/auth/password-reset": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Whether self-service password reset is on, for the sign-in page.",
+        "description": "Access: anyone.",
+        "operationId": "get_password_reset",
+        "responses": {
+          "200": {
+            "description": "Whether the sign-in page may offer a reset.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasswordResetAvailability"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library or the plugin catalog could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      },
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Asks for a password-reset link. When an enabled account has the\naddress verified, a link that works once for 30 minutes is mailed to\nit, at most one every five minutes. The answer and its timing are the\nsame whether or not an account has the address.",
+        "description": "Access: anyone; each request counts toward a per-client limit of its\nown, separate from the one link checks use.",
+        "operationId": "post_password_reset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordResetAskBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted; a link is mailed when an account has the address verified.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasswordResetAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not one object whose only key is a valid `email`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "bad_request",
+                  "message": "The request could not be understood.",
+                  "status": 400
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Self-service reset is not set up (`reset_unavailable`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "reset_unavailable",
+                  "message": "Password reset by email is not set up. Ask an administrator.",
+                  "status": 409
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not sent as `application/json`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "unsupported_media_type",
+                  "message": "Send JSON with Content-Type: application/json.",
+                  "status": 415
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this client; retry after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before retrying."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginThrottled"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many failed login attempts. Try again in 45 seconds.",
+                  "retry_after_secs": 45,
+                  "status": 429
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The notification queue is full, so nothing was queued (`busy`); ask again after `Retry-After` seconds. The answer is the same for every address.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "busy",
+                  "message": "The library is busy. Ask again in a minute.",
+                  "status": 503
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      }
+    },
+    "/api/auth/password-reset/check": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Checks a reset link without using it, and says which second factor\nfinishing it asks for.",
+        "description": "Access: anyone holding the link; a link that does not work counts\ntoward the client's sign-in throttle.",
+        "operationId": "post_password_reset_check",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordResetLinkBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The link works.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasswordResetLinkState"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request` when the body is not one object whose only key is `token`; `invalid_link` when the link is unknown, used, expired, for an address the account no longer has verified, or for a disabled account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "invalid_link",
+                  "message": "This reset link is invalid or has expired. Ask for a new one.",
+                  "status": 400
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not sent as `application/json`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "unsupported_media_type",
+                  "message": "Send JSON with Content-Type: application/json.",
+                  "status": 415
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many failed attempts from this client; retry after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before retrying."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginThrottled"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many failed login attempts. Try again in 45 seconds.",
+                  "retry_after_secs": 45,
+                  "status": 429
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      }
+    },
+    "/api/auth/password-reset/passkey": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Begins the passkey step of a reset, for an account whose link asks for\na passkey. The challenge works once, for five minutes.",
+        "description": "Access: anyone holding the link.",
+        "operationId": "post_password_reset_passkey",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordResetLinkBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "WebAuthn request options for the account's passkeys.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasskeyRequestOptions"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request` when the body is not one object whose only key is `token`; `invalid_link` when the link does not work; or the daemon's origin is not a valid WebAuthn relying party.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "invalid_link",
+                  "message": "This reset link is invalid or has expired. Ask for a new one.",
+                  "status": 400
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The link does not ask for a passkey (`passkey_not_needed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "conflict",
+                  "message": "Conflict",
+                  "status": 409
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not sent as `application/json`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "unsupported_media_type",
+                  "message": "Send JSON with Content-Type: application/json.",
+                  "status": 415
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many failed attempts from this client; retry after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before retrying."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginThrottled"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many failed login attempts. Try again in 45 seconds.",
+                  "retry_after_secs": 45,
+                  "status": 429
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read, or the challenge could not be stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      }
+    },
+    "/api/auth/password-reset/finish": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Finishes a reset: checks the account's second factor when it has one,\nuses the link up, sets the password, signs every device out and mails\na password-changed notice to the verified address.",
+        "description": "Access: anyone holding the link; a wrong second factor or a link that\ndoes not work counts toward the client's sign-in throttle.",
+        "operationId": "post_password_reset_finish",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordResetFinishBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The password is set and every session signed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasswordResetDone"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request` when the body is malformed, the password is blank or longer than 1024 bytes, or a second factor is sent for an account without one; `invalid_link` when the link is unknown, used, expired, for an address the account no longer has verified, or for a disabled account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "invalid_link",
+                  "message": "This reset link is invalid or has expired. Ask for a new one.",
+                  "status": 400
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The account's second factor is missing (`second_factor_required`) or wrong (`invalid_code`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "second_factor_required",
+                  "message": "Enter the code from your authenticator app.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not sent as `application/json`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "unsupported_media_type",
+                  "message": "Send JSON with Content-Type: application/json.",
+                  "status": 415
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many failed attempts from this client; retry after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before retrying."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginThrottled"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many failed login attempts. Try again in 45 seconds.",
+                  "retry_after_secs": 45,
+                  "status": 429
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The password could not be hashed, or the library could not be read or written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "example": {
+                  "error": "internal_error",
+                  "message": "Something went wrong on the Bookclerk daemon.",
+                  "status": 500
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
     "/player/status": {
@@ -57280,7 +57922,7 @@
       },
       "ChapterEditEntry": {
         "type": "object",
-        "description": "One chapter of an edit, as JSON carries it.",
+        "description": "One chapter of an edit, as JSON carries it: an object, never an array.",
         "required": [
           "title",
           "start_ms"
@@ -62321,6 +62963,7 @@
           "ingest_batch",
           "notify_send",
           "chapter_align",
+          "file_probe",
           "invalid"
         ]
       },
@@ -67579,6 +68222,193 @@
             "example": "correct horse battery staple"
           }
         }
+      },
+      "PasswordResetAccepted": {
+        "type": "object",
+        "description": "The answer to a reset request, the same whether or not an account has\nthe address.",
+        "required": [
+          "accepted"
+        ],
+        "properties": {
+          "accepted": {
+            "type": "boolean",
+            "description": "Always true.",
+            "example": true
+          }
+        }
+      },
+      "PasswordResetAskBody": {
+        "type": "object",
+        "description": "The body of `POST /api/auth/password-reset`.",
+        "required": [
+          "email"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "The address to send a link to.",
+            "example": "dana@example.com"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PasswordResetAvailability": {
+        "type": "object",
+        "description": "Whether self-service password reset is on.",
+        "required": [
+          "available"
+        ],
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "description": "True when the sign-in page may offer \"Forgot password\": account\nmail is set up and a test message through it was delivered.",
+            "example": true
+          }
+        }
+      },
+      "PasswordResetDone": {
+        "type": "object",
+        "description": "The answer to a finished reset.",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Always true.",
+            "example": true
+          },
+          "revoked_sessions": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Sessions of the account that were signed out. Every session is\nsigned out either way; the count is `null` in the rare case the\ndatabase's reply was lost and a retry found the reset already done.",
+            "example": 2,
+            "minimum": 0,
+            "nullable": true
+          }
+        }
+      },
+      "PasswordResetFinishBody": {
+        "type": "object",
+        "description": "The body of `POST /api/auth/password-reset/finish`.",
+        "required": [
+          "token",
+          "password"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "The token from the link: 64 lowercase hex characters.",
+            "example": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+          },
+          "password": {
+            "type": "string",
+            "description": "The new password: 1 to 1024 bytes after trimming.",
+            "example": "new horse battery staple"
+          },
+          "totp_code": {
+            "type": "string",
+            "description": "Six-digit authenticator code, when the link asks for `totp`.",
+            "example": "492817",
+            "nullable": true
+          },
+          "passkey": {
+            "description": "Passkey assertion, when the link asks for `passkey`.",
+            "type": "object",
+            "required": [
+              "challenge_id",
+              "credential"
+            ],
+            "properties": {
+              "challenge_id": {
+                "type": "string",
+                "description": "The challenge from `POST /api/auth/password-reset/passkey`.",
+                "example": "2c7e4f0a-9b1d-4e3c-a5f6-7d8e9f0a1b2c"
+              },
+              "credential": {
+                "description": "W3C PublicKeyCredential from `navigator.credentials.get()`, as the browser serializes it: an authentication assertion (`response.authenticatorData`, `clientDataJSON`, `signature`, `userHandle`), binary fields base64url-encoded.",
+                "example": {
+                  "extensions": {},
+                  "id": "pQECAyYgASFYIE",
+                  "rawId": "pQECAyYgASFYIE",
+                  "response": {
+                    "authenticatorData": "SZYN5YgOjGh0NBcPZHZgW4_krrmihjLHmVzzuoMdl2MFAAAAAQ",
+                    "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiazl1MlhvM2NaMVFwN21UNHZXOHlBMmJDNWRFNmZHN2hJOGpLOWxNMG5PMSIsIm9yaWdpbiI6Imh0dHBzOi8vYm9va3MuZXhhbXBsZS5jb20ifQ",
+                    "signature": "MEUCIQDx8n2Y3kP1qT7vW9zA4bC6dE8fG0hJ2kL4mN6oP8qR0wIgS2tU4vW6xY8zA0bC2dE4fG6hJ8kL0mN2oP4qR6sT8uY",
+                    "userHandle": "AAAAAAAAAAAAAAAAAAAABw"
+                  },
+                  "type": "public-key"
+                }
+              }
+            },
+            "additionalProperties": false,
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "PasswordResetLinkBody": {
+        "type": "object",
+        "description": "The body of `POST /api/auth/password-reset/check` and\n`POST /api/auth/password-reset/passkey`.",
+        "required": [
+          "token"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "The token from the link: 64 lowercase hex characters.",
+            "example": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PasswordResetLinkState": {
+        "type": "object",
+        "description": "What a working reset link needs to finish.",
+        "required": [
+          "second_factor"
+        ],
+        "properties": {
+          "second_factor": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ResetFactor"
+              }
+            ],
+            "description": "The second factor the finish step asks for."
+          }
+        }
+      },
+      "PasswordResetPasskeyBody": {
+        "type": "object",
+        "description": "A passkey assertion in the finish body.",
+        "required": [
+          "challenge_id",
+          "credential"
+        ],
+        "properties": {
+          "challenge_id": {
+            "type": "string",
+            "description": "The challenge from `POST /api/auth/password-reset/passkey`.",
+            "example": "2c7e4f0a-9b1d-4e3c-a5f6-7d8e9f0a1b2c"
+          },
+          "credential": {
+            "description": "W3C PublicKeyCredential from `navigator.credentials.get()`, as the browser serializes it: an authentication assertion (`response.authenticatorData`, `clientDataJSON`, `signature`, `userHandle`), binary fields base64url-encoded.",
+            "example": {
+              "extensions": {},
+              "id": "pQECAyYgASFYIE",
+              "rawId": "pQECAyYgASFYIE",
+              "response": {
+                "authenticatorData": "SZYN5YgOjGh0NBcPZHZgW4_krrmihjLHmVzzuoMdl2MFAAAAAQ",
+                "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiazl1MlhvM2NaMVFwN21UNHZXOHlBMmJDNWRFNmZHN2hJOGpLOWxNMG5PMSIsIm9yaWdpbiI6Imh0dHBzOi8vYm9va3MuZXhhbXBsZS5jb20ifQ",
+                "signature": "MEUCIQDx8n2Y3kP1qT7vW9zA4bC6dE8fG0hJ2kL4mN6oP8qR0wIgS2tU4vW6xY8zA0bC2dE4fG6hJ8kL0mN2oP4qR6sT8uY",
+                "userHandle": "AAAAAAAAAAAAAAAAAAAABw"
+              },
+              "type": "public-key"
+            }
+          }
+        },
+        "additionalProperties": false
       },
       "PasswordSet": {
         "type": "object",
@@ -74173,6 +75003,15 @@
           }
         }
       },
+      "ResetFactor": {
+        "type": "string",
+        "description": "The second factor a reset link asks for.",
+        "enum": [
+          "none",
+          "totp",
+          "passkey"
+        ]
+      },
       "ReviewItemJson": {
         "type": "object",
         "description": "One stored book to review.",
@@ -79344,7 +80183,8 @@
           "acquire_status",
           "edition_count",
           "holding_count",
-          "added_at"
+          "added_at",
+          "acquirable_editions"
         ],
         "properties": {
           "id": {
@@ -79442,6 +80282,13 @@
             "description": "RFC 3339 time of the newest purchase a store reported.",
             "example": "2024-03-02T18:04:11Z",
             "nullable": true
+          },
+          "acquirable_editions": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many held editions an acquire would still queue: neither\nacquired, queued nor downloading. The library offers Acquire while\nit is above 0, even when `acquire_status` is `acquired` (an acquired\naudio edition beside a held ebook, or a second narration).",
+            "example": 1,
+            "minimum": 0
           }
         }
       },

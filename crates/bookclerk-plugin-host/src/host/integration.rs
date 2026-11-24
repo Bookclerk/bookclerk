@@ -243,10 +243,13 @@ impl ExternalIntegration {
                 .await?;
             health_result(ok)?;
         }
-        if self.session.has_entrypoint(crate::Entrypoint::Covers) {
+        if self
+            .session
+            .has_entrypoint(crate::Entrypoint::MediaDownload)
+        {
             let ok = self
                 .session
-                .covers(|fetcher| async move { fetcher.health().await })
+                .media_download(|fetcher| async move { fetcher.health().await })
                 .await?;
             health_result(ok)?;
         }
@@ -677,10 +680,13 @@ impl Integration for ExternalIntegration {
                     .await?,
             );
         }
-        if self.session.has_entrypoint(crate::Entrypoint::Covers) {
+        if self
+            .session
+            .has_entrypoint(crate::Entrypoint::MediaDownload)
+        {
             reports.push(
                 self.session
-                    .covers(|fetcher| async move { fetcher.health().await })
+                    .media_download(|fetcher| async move { fetcher.health().await })
                     .await?,
             );
         }
@@ -792,8 +798,9 @@ impl Integration for ExternalIntegration {
         self.session.has_entrypoint(crate::Entrypoint::Metadata)
     }
 
-    fn supports_covers(&self) -> bool {
-        self.session.has_entrypoint(crate::Entrypoint::Covers)
+    fn supports_media_download(&self) -> bool {
+        self.session
+            .has_entrypoint(crate::Entrypoint::MediaDownload)
     }
 
     fn supports_ai(&self) -> bool {
@@ -835,15 +842,16 @@ impl Integration for ExternalIntegration {
             .map_err(abi_error)
     }
 
-    async fn fetch_covers(
+    async fn download_media(
         &self,
-        params: bookclerk_plugin_sdk::CoverFetchParams,
-    ) -> bookclerk_integrations::Result<Vec<bookclerk_integrations::FetchedCover>> {
+        params: bookclerk_plugin_sdk::MediaDownloadParams,
+    ) -> bookclerk_integrations::Result<Vec<bookclerk_integrations::FetchedMedia>> {
         Ok(self
             .session
-            .covers(move |fetcher| async move {
-                let sink = super::cover_sink::CoverSink::new(params.urls.len(), params.max_bytes);
-                let images = fetcher.fetch_covers(params, sink.destination()).await?;
+            .media_download(move |fetcher| async move {
+                let sink =
+                    super::download_sink::DownloadSink::new(params.urls.len(), params.max_bytes);
+                let images = fetcher.download_media(params, sink.destination()).await?;
                 Ok(sink.take_fetched(images))
             })
             .await?)

@@ -75,7 +75,7 @@ version = "0.1.0"               # required semver; pins the [[settings]] schema
 # logo = "https://example.com/icon.png"   # or "assets/logo.png" (host-served)
 runtime = "native"
 command = "./bookclerk-plugin-echo-native-rust"
-entrypoints = ["cli"]           # storefront | storage | remoteLibrary | databaseAdapter | cli | oidc | metadata | covers | metadataFiles | notifier | ingress | provisioning | ai
+entrypoints = ["cli"]           # storefront | storage | remoteLibrary | databaseAdapter | cli | oidc | metadata | mediaDownload | metadataFiles | notifier | ingress | provisioning | ai
 
 [capabilities.network]
 mode = "deny"
@@ -576,7 +576,11 @@ crons = ["*/30 * * * *", "0 3 * * MON-FRI"]    # scheduled(controller), UTC
   don't make the plugin an integration: the plugin stays in that
   entrypoint's handler family, and its jobs run on that session. The
   host's one job type today, `stream_copy`, runs this way on a storage
-  plugin's destination. A plugin without one of those entrypoints that
+  plugin's destination. Every SDK serves it the same way (Rust
+  `StreamCopyHandler`, TypeScript `streamCopy(job)`, Python
+  `stream_copy(job)`): stage under a commit token derived from the
+  idempotency key, step id and destination, commit, and abort the stage on
+  any failure or cancellation. A plugin without one of those entrypoints that
   declares `jobs` is an integration.
 
 ## Logo

@@ -46,7 +46,7 @@ extending its base:
 | `entrypoints = ["cli"]` | `Cli` | `CliEntrypoint` |
 | `entrypoints = ["oidc"]` | `Oidc` | `OidcEntrypoint` |
 | `entrypoints = ["metadata"]` | `Metadata` | `MetadataEntrypoint` |
-| `entrypoints = ["covers"]` | `Covers` | `CoverEntrypoint` |
+| `entrypoints = ["mediaDownload"]` | `MediaDownload` | `MediaDownloadEntrypoint` |
 | `entrypoints = ["metadataFiles"]` | `MetadataFiles` | `MetadataFilesEntrypoint` |
 | `entrypoints = ["notifier"]` | `Notifier` | `NotifierEntrypoint` |
 | `entrypoints = ["ingress"]` | `Ingress` | `IngressEntrypoint` |
@@ -135,6 +135,11 @@ resumably; see
 A storefront's `scan` can hand its paging to `scanPage(params, fetch)`,
 which slices the store's own pages into replies the host accepts; see
 [Paged scans](../../abi.md#paged-scans).
+A storage plugin can build its entrypoint from `ObjectStoreDestination`
+over a small backend, follow bucket notifications with `QueueFeed` and
+`webhookQueue(env.WEBHOOKS, name)`, and answer the `stream_copy` job with
+`streamCopy(job)`; see
+[Translating keys](../../abi.md#translating-keys).
 A relay [`[ingress]`](../../manifest.md#ingress-public-address) plugin also
 gets `ORIGIN` while it is the active ingress; `ORIGIN.fetch(request, {
 clientAddress })` hands one request to the library, and
@@ -282,6 +287,13 @@ worked plugin: a `notes` table it writes with `chunk()`, lists with
 `iterate()` or key-paged reads, sizes with `limits()`, and tests under
 every profile. See
 [Testing against the limits](../../database-limits.md#testing-against-the-limits).
+
+The testkit also has in-memory `KV` and `WEBHOOKS` bindings that apply the
+host's limits and error codes: `createTestKv({ maxValueBytes, maxKeys })`
+and `createTestWebhooks()`, whose `deliver(name, body)` stands in for an
+outside service and whose `acked`, `retried` and `markMissed` let a test
+check how a plugin settles its leases. `failNext(op, error)` makes one KV
+call fail.
 
 ## Author tools
 

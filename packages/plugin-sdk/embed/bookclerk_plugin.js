@@ -5087,7 +5087,7 @@ var MetadataChaptersReplyCodec = {
     }
   }
 };
-var CoverFetchParamsCodec = {
+var MediaDownloadParamsCodec = {
   dataWords: 1,
   pointerCount: 2,
   write(s, v, caps) {
@@ -5097,7 +5097,7 @@ var CoverFetchParamsCodec = {
       const list = v.conditions ?? [];
       const items = s.initStructList(1, list.length, 0, 2);
       for (let i = 0; i < items.length; i++) {
-        CoverConditionCodec.write(items[i], list[i], caps);
+        DownloadConditionCodec.write(items[i], list[i], caps);
       }
     }
     s.setUint16(2, ord(REMOTE_MEDIAS, v.media ?? REMOTE_MEDIAS[0], "RemoteMedia"));
@@ -5106,12 +5106,12 @@ var CoverFetchParamsCodec = {
     return {
       urls: s.getTextList(0),
       maxBytes: s.getUint32(0),
-      conditions: s.getStructList(1, 0, 2).map((item) => CoverConditionCodec.read(item, caps)),
+      conditions: s.getStructList(1, 0, 2).map((item) => DownloadConditionCodec.read(item, caps)),
       media: fromOrd(REMOTE_MEDIAS, s.getUint16(2), "RemoteMedia")
     };
   }
 };
-var CoverConditionCodec = {
+var DownloadConditionCodec = {
   dataWords: 0,
   pointerCount: 2,
   write(s, v, caps) {
@@ -5137,7 +5137,7 @@ var CoverConditionCodec = {
     return out;
   }
 };
-var CoverImageCodec = {
+var DownloadResultCodec = {
   dataWords: 1,
   pointerCount: 9,
   write(s, v, caps) {
@@ -5212,25 +5212,25 @@ var CoverImageCodec = {
     return out;
   }
 };
-var CoverImagesCodec = {
+var DownloadResultsCodec = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
     {
-      const list = v.images ?? [];
+      const list = v.downloads ?? [];
       const items = s.initStructList(0, list.length, 1, 9);
       for (let i = 0; i < items.length; i++) {
-        CoverImageCodec.write(items[i], list[i], caps);
+        DownloadResultCodec.write(items[i], list[i], caps);
       }
     }
   },
   read(s, caps) {
     return {
-      images: s.getStructList(0, 1, 9).map((item) => CoverImageCodec.read(item, caps))
+      downloads: s.getStructList(0, 1, 9).map((item) => DownloadResultCodec.read(item, caps))
     };
   }
 };
-var CoverImagesReplyCodec = {
+var DownloadResultsReplyCodec = {
   dataWords: 1,
   pointerCount: 1,
   write(s, v, caps) {
@@ -5238,7 +5238,7 @@ var CoverImagesReplyCodec = {
       case "ok":
         s.setUint16(0, 0);
         if (v.value != null) {
-          CoverImagesCodec.write(s.initStruct(0, 0, 1), v.value, caps);
+          DownloadResultsCodec.write(s.initStruct(0, 0, 1), v.value, caps);
         }
         break;
       case "err":
@@ -5248,18 +5248,18 @@ var CoverImagesReplyCodec = {
         }
         break;
       default:
-        throw unknownUnion("CoverImagesReply", v.kind);
+        throw unknownUnion("DownloadResultsReply", v.kind);
     }
   },
   read(s, caps) {
     const disc = s.getUint16(0);
     switch (disc) {
       case 0:
-        return { kind: "ok", value: CoverImagesCodec.read(s.getStruct(0, 0, 1), caps) };
+        return { kind: "ok", value: DownloadResultsCodec.read(s.getStruct(0, 0, 1), caps) };
       case 1:
         return { kind: "err", value: PluginErrorCodec.read(s.getStruct(0, 0, 3), caps) };
       default:
-        throw unknownUnion("CoverImagesReply", disc);
+        throw unknownUnion("DownloadResultsReply", disc);
     }
   }
 };
@@ -9222,7 +9222,7 @@ var MetadataProviderChaptersResultsCodec = {
     };
   }
 };
-var CoverFetcherHealthParamsCodec = {
+var MediaDownloaderHealthParamsCodec = {
   dataWords: 0,
   pointerCount: 0,
   write(s, v, caps) {
@@ -9236,7 +9236,7 @@ var CoverFetcherHealthParamsCodec = {
     return {};
   }
 };
-var CoverFetcherHealthResultsCodec = {
+var MediaDownloaderHealthResultsCodec = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
@@ -9250,12 +9250,12 @@ var CoverFetcherHealthResultsCodec = {
     };
   }
 };
-var CoverFetcherFetchCoversParamsCodec = {
+var MediaDownloaderDownloadMediaParamsCodec = {
   dataWords: 0,
   pointerCount: 2,
   write(s, v, caps) {
     if (v.params != null) {
-      CoverFetchParamsCodec.write(s.initStruct(0, 1, 2), v.params, caps);
+      MediaDownloadParamsCodec.write(s.initStruct(0, 1, 2), v.params, caps);
     }
     if (v.sink != null) {
       s.setCap(1, caps.exportCap(v.sink));
@@ -9263,7 +9263,7 @@ var CoverFetcherFetchCoversParamsCodec = {
   },
   read(s, caps) {
     const out = {
-      params: CoverFetchParamsCodec.read(s.getStruct(0, 1, 2), caps)
+      params: MediaDownloadParamsCodec.read(s.getStruct(0, 1, 2), caps)
     };
     const sinkValue = caps.importCap(s.getCapIndex(1));
     if (!(sinkValue == null)) {
@@ -9272,17 +9272,17 @@ var CoverFetcherFetchCoversParamsCodec = {
     return out;
   }
 };
-var CoverFetcherFetchCoversResultsCodec = {
+var MediaDownloaderDownloadMediaResultsCodec = {
   dataWords: 0,
   pointerCount: 1,
   write(s, v, caps) {
     if (v.result != null) {
-      CoverImagesReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
+      DownloadResultsReplyCodec.write(s.initStruct(0, 1, 1), v.result, caps);
     }
   },
   read(s, caps) {
     return {
-      result: CoverImagesReplyCodec.read(s.getStruct(0, 1, 1), caps)
+      result: DownloadResultsReplyCodec.read(s.getStruct(0, 1, 1), caps)
     };
   }
 };
@@ -11581,11 +11581,11 @@ var okRecords = (value) => {
   }
   return okValue({ records: value });
 };
-var okCoverImages = (value) => {
+var okDownloadResults = (value) => {
   if (!Array.isArray(value)) {
-    throw PluginError.fromWire("internal", "cover fetcher must return a CoverImage[]");
+    throw PluginError.fromWire("internal", "media downloader must return a DownloadResult[]");
   }
-  return okValue({ images: value });
+  return okValue({ downloads: value });
 };
 var okFileRecord = (value) => {
   if (value === null || typeof value !== "object" || !Array.isArray(value.present)) {
@@ -12070,19 +12070,19 @@ var METHODS = {
     search: withParams("metadata", "search", MetadataProviderSearchParamsCodec, MetadataProviderSearchResultsCodec, okRecords),
     chapters: withParams("metadata", "chapters", MetadataProviderChaptersParamsCodec, MetadataProviderChaptersResultsCodec, okPass)
   },
-  CoverFetcher: {
-    health: withoutParams("covers", "health", CoverFetcherHealthParamsCodec, CoverFetcherHealthResultsCodec, okHealth),
-    fetchCovers: spec({
-      params: CoverFetcherFetchCoversParamsCodec,
-      results: CoverFetcherFetchCoversResultsCodec,
-      stub: "covers",
+  MediaDownloader: {
+    health: withoutParams("mediaDownload", "health", MediaDownloaderHealthParamsCodec, MediaDownloaderHealthResultsCodec, okHealth),
+    downloadMedia: spec({
+      params: MediaDownloaderDownloadMediaParamsCodec,
+      results: MediaDownloaderDownloadMediaResultsCodec,
+      stub: "mediaDownload",
       call: (s, p, cx) => {
         if (!p.sink) {
-          throw PluginError.fromWire("invalid_params", "fetchCovers needs a sink");
+          throw PluginError.fromWire("invalid_params", "downloadMedia needs a sink");
         }
-        return named(s, cx.host.bindContext(cx.ctx), "fetchCovers", [p.params, p.sink]);
+        return named(s, cx.host.bindContext(cx.ctx), "downloadMedia", [p.params, p.sink]);
       },
-      ok: okCoverImages
+      ok: okDownloadResults
     })
   },
   AiModels: {
@@ -14639,8 +14639,8 @@ var MetadataEntrypoint = class extends NamedEntrypoint {
     return Promise.reject(unsupported("chapters"));
   }
 };
-var CoverEntrypoint = class extends NamedEntrypoint {
-  static bookclerkMethods = Object.freeze(["health", "fetchCovers"]);
+var MediaDownloadEntrypoint = class extends NamedEntrypoint {
+  static bookclerkMethods = Object.freeze(["health", "downloadMedia"]);
   /**
    * Reports whether the fetcher can answer.
    *
@@ -14656,8 +14656,8 @@ var CoverEntrypoint = class extends NamedEntrypoint {
    * @param _sink - Host destination; accepts `put` for keys `0..urls.length`.
    * @returns One entry per URL, in request order.
    */
-  fetchCovers(_params, _sink) {
-    return Promise.reject(unsupported("fetchCovers"));
+  downloadMedia(_params, _sink) {
+    return Promise.reject(unsupported("downloadMedia"));
   }
 };
 var MetadataFilesEntrypoint = class extends NamedEntrypoint {
@@ -14852,7 +14852,7 @@ var ENTRYPOINT_BINDINGS = Object.freeze({
   cli: "PLUGIN_CLI",
   oidc: "PLUGIN_OIDC",
   metadata: "PLUGIN_METADATA",
-  covers: "PLUGIN_COVERS",
+  mediaDownload: "PLUGIN_MEDIA_DOWNLOAD",
   metadataFiles: "PLUGIN_METADATA_FILES",
   notifier: "PLUGIN_NOTIFIER",
   ingress: "PLUGIN_INGRESS",
@@ -14867,7 +14867,7 @@ var ENTRYPOINT_CLASSES = Object.freeze({
   cli: "Cli",
   oidc: "Oidc",
   metadata: "Metadata",
-  covers: "Covers",
+  mediaDownload: "MediaDownload",
   metadataFiles: "MetadataFiles",
   notifier: "Notifier",
   ingress: "Ingress",
@@ -16576,12 +16576,1037 @@ async function scanPage(params, fetchStorePage) {
   }
   return reply;
 }
+
+// dist/stream-copy.js
+var STREAM_COPY_COMMAND = "stream_copy";
+var HEX_DIGITS = "0123456789abcdef";
+async function streamCopyCommitToken(idempotencyKey, stepId, destKey) {
+  const encoder = new TextEncoder();
+  const parts = [
+    encoder.encode(idempotencyKey),
+    encoder.encode(stepId || STREAM_COPY_COMMAND),
+    encoder.encode(destKey)
+  ];
+  const total = parts.reduce((sum, part) => sum + part.length, 0) + 2;
+  const input = new Uint8Array(total);
+  let at = 0;
+  parts.forEach((part, index) => {
+    if (index > 0)
+      at += 1;
+    input.set(part, at);
+    at += part.length;
+  });
+  const digest = new Uint8Array(await globalThis.crypto.subtle.digest("SHA-256", input));
+  let hex = "";
+  for (const byte of digest.subarray(0, 16)) {
+    hex += HEX_DIGITS.charAt(byte >> 4) + HEX_DIGITS.charAt(byte & 15);
+  }
+  return `sc-${hex}`;
+}
+function parseSpec(payloadJson) {
+  let value;
+  try {
+    value = JSON.parse(payloadJson);
+  } catch (err) {
+    throw PluginError.fromWire("invalid_params", `stream_copy spec: ${err.message}`);
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw PluginError.fromWire("invalid_params", "stream_copy spec: expected an object");
+  }
+  const { from, to } = value;
+  if (typeof from !== "string" || typeof to !== "string") {
+    throw PluginError.fromWire("invalid_params", "stream_copy spec: `from` and `to` are strings");
+  }
+  return { from, to };
+}
+async function streamCopy(controller) {
+  if (controller.signal.aborted) {
+    throw PluginError.fromWire("cancelled", "cancelled before stream_copy");
+  }
+  if (controller.type !== STREAM_COPY_COMMAND) {
+    throw PluginError.fromWire("unsupported", `unsupported job command \`${controller.type}\``);
+  }
+  const spec2 = parseSpec(controller.payloadJson);
+  const input = controller.input;
+  const output = controller.output;
+  if (input === null || output === null) {
+    throw PluginError.fromWire("unavailable", "stream_copy needs the job's input and output");
+  }
+  const token = await streamCopyCommitToken(controller.idempotencyKey, controller.stepId, spec2.to);
+  const abort = async () => {
+    try {
+      await output.abortStage(spec2.to, token);
+    } catch {
+    }
+  };
+  await controller.progress(0, "opening source");
+  const read = await input.open(spec2.from);
+  const options = { commitToken: token, stageOnly: true };
+  if (read.meta.contentType !== void 0)
+    options.contentType = read.meta.contentType;
+  if (read.meta.size > 0)
+    options.contentLength = read.meta.size;
+  if (read.meta.sha256 !== void 0 && read.meta.sha256.length > 0)
+    options.sha256 = read.meta.sha256;
+  await controller.progress(10, "staging");
+  let bytesWritten;
+  try {
+    bytesWritten = (await output.put(spec2.to, read.body, options)).bytesWritten;
+  } catch (err) {
+    await abort();
+    throw err;
+  }
+  if (controller.signal.aborted) {
+    await abort();
+    throw PluginError.fromWire("cancelled", "cancelled after stage");
+  }
+  try {
+    await controller.progress(90, "committing");
+    await output.commit(spec2.to, token);
+  } catch (err) {
+    await abort();
+    throw err;
+  }
+  await controller.progress(100, "done");
+  return { message: `copied ${spec2.from} -> ${spec2.to}`, bytesCopied: bytesWritten };
+}
+
+// dist/object-store.js
+var NO_FEED_CURSOR = "none";
+var STAGE_FOLDER = ".bookclerk-stage";
+var MAX_HOST_KEY_BYTES = 1024;
+var MAX_OBJECT_KEY_BYTES = 1024;
+var MAX_KEPT_EXTENSION_BYTES = 16;
+var ENCODER = new TextEncoder();
+function utf8Length(text) {
+  return ENCODER.encode(text).length;
+}
+function isControl(char) {
+  const code = char.codePointAt(0) ?? 0;
+  return code < 32 || code >= 127 && code <= 159;
+}
+function parseHostKey(key) {
+  if (key.length === 0)
+    throw PluginError.fromWire("invalid_params", "empty host key");
+  const bytes = utf8Length(key);
+  if (bytes > MAX_HOST_KEY_BYTES) {
+    throw PluginError.fromWire("invalid_params", `host key is ${bytes} bytes, more than ${MAX_HOST_KEY_BYTES}`);
+  }
+  for (const segment of key.split("/")) {
+    if (segment === "" || segment === "." || segment === "..") {
+      throw PluginError.fromWire("invalid_params", `host key segment ${JSON.stringify(segment)} is empty or a dot segment`);
+    }
+    for (const char of segment) {
+      if (char === "\\" || isControl(char)) {
+        throw PluginError.fromWire("invalid_params", `host key segment ${JSON.stringify(segment)} holds a backslash or a control character`);
+      }
+    }
+  }
+  return key;
+}
+var OBJECT_STORE_AVOIDED = /* @__PURE__ */ new Map([
+  ["{", "_"],
+  ["}", "_"],
+  ["^", "_"],
+  ["%", "_"],
+  ["`", "_"],
+  ['"', "'"],
+  ["<", "("],
+  [">", ")"],
+  ["[", "("],
+  ["]", ")"],
+  ["#", "_"],
+  ["|", "_"],
+  ["~", "_"]
+]);
+function keptExtension(segment) {
+  const dot = segment.lastIndexOf(".");
+  if (dot <= 0)
+    return null;
+  const ext = segment.slice(dot);
+  return utf8Length(ext) <= MAX_KEPT_EXTENSION_BYTES ? ext : null;
+}
+function cut(text, limit) {
+  let used = 0;
+  let out = "";
+  for (const char of text) {
+    used += utf8Length(char);
+    if (used > limit)
+      break;
+    out += char;
+  }
+  let end = out.length;
+  while (end > 0 && (out[end - 1] === "." || out[end - 1] === " "))
+    end -= 1;
+  const trimmed = out.slice(0, end);
+  if (trimmed.length > 0)
+    return trimmed;
+  for (const char of text)
+    return char;
+  return "";
+}
+function shortenKeepingExtension(segment, limit) {
+  if (utf8Length(segment) <= limit)
+    return segment;
+  const ext = keptExtension(segment);
+  if (ext !== null && utf8Length(ext) < limit) {
+    const stem = segment.slice(0, segment.length - ext.length);
+    return `${cut(stem, limit - utf8Length(ext))}${ext}`;
+  }
+  return cut(segment, limit);
+}
+function fitTotal(segments, budget) {
+  const total = () => segments.reduce((sum, segment) => sum + utf8Length(segment), 0) + Math.max(segments.length - 1, 0);
+  const lastAt = segments.length - 1;
+  let over = Math.max(total() - budget, 0);
+  if (over === 0)
+    return;
+  const last = segments[lastAt];
+  if (last !== void 0) {
+    const ext = keptExtension(last);
+    const floor = ext === null ? 1 : utf8Length(ext) + 1;
+    segments[lastAt] = shortenKeepingExtension(last, Math.max(utf8Length(last) - over, floor));
+  }
+  while (total() > budget) {
+    let index = -1;
+    let longest = 0;
+    for (let i = 0; i < lastAt; i++) {
+      const length = utf8Length(segments[i] ?? "");
+      if (length >= longest) {
+        longest = length;
+        index = i;
+      }
+    }
+    if (index < 0 || longest <= 1)
+      break;
+    over = total() - budget;
+    segments[index] = cut(segments[index] ?? "", Math.max(longest - over, 1));
+  }
+  over = Math.max(total() - budget, 0);
+  const final = segments[lastAt];
+  if (over > 0 && final !== void 0) {
+    segments[lastAt] = shortenKeepingExtension(final, Math.max(utf8Length(final) - over, 1));
+  }
+}
+function translateForObjectStore(key, prefixBytes) {
+  const segments = key.split("/").map((segment) => {
+    let out = "";
+    for (const char of segment)
+      out += OBJECT_STORE_AVOIDED.get(char) ?? char;
+    return out;
+  });
+  fitTotal(segments, Math.max(MAX_OBJECT_KEY_BYTES - prefixBytes, 0));
+  return segments.join("/");
+}
+function checkByteRange(range, size) {
+  if (range === void 0)
+    return void 0;
+  const { offset, length } = range;
+  if (!Number.isSafeInteger(offset) || offset < 0) {
+    throw PluginError.fromWire("invalid_params", "byte range offset is not a whole number");
+  }
+  if (length !== void 0) {
+    if (length === 0) {
+      throw PluginError.fromWire("invalid_params", "byte range length 0 is ambiguous; omit length to read through EOF");
+    }
+    if (!Number.isSafeInteger(length) || length < 0 || !Number.isSafeInteger(offset + length)) {
+      throw PluginError.fromWire("invalid_params", "byte range offset + length overflows");
+    }
+    if (size !== void 0 && offset + length > size) {
+      throw PluginError.fromWire("invalid_params", `byte range ${offset + length} extends past object size ${size}`);
+    }
+  }
+  if (size !== void 0 && offset > size) {
+    throw PluginError.fromWire("invalid_params", `byte range offset ${offset} is past object size ${size}`);
+  }
+  return range;
+}
+function clampPageLimit(limit) {
+  const requested = limit === void 0 || limit === 0 ? MAX_LIST_PAGE : limit;
+  return Math.min(Math.max(Math.trunc(requested), 1), MAX_LIST_PAGE);
+}
+function stageKey(token, key) {
+  const t = token ?? "";
+  if (t === "" || t.includes("/") || t.includes("\\") || t.includes("..") || t.includes("\0")) {
+    throw PluginError.fromWire("invalid_params", "commit_token must be a non-empty identifier without path separators");
+  }
+  if (key === "")
+    throw PluginError.fromWire("invalid_params", "object key required");
+  return `${STAGE_FOLDER}/${t}/${key}`;
+}
+function writeCondition(options) {
+  if (options.ifMatch !== void 0 && options.ifNoneMatch === true) {
+    throw PluginError.fromWire("invalid_params", "a write takes ifMatch or ifNoneMatch, not both");
+  }
+  const condition = options.ifMatch !== void 0 ? { kind: "ifMatch", etag: options.ifMatch } : options.ifNoneMatch === true ? { kind: "ifNoneMatch" } : null;
+  if (condition !== null && options.stageOnly === true) {
+    throw PluginError.fromWire("invalid_params", "a conditional write cannot be staged");
+  }
+  return condition;
+}
+function requireBatch(length, op) {
+  if (length > MAX_BATCH_KEYS) {
+    throw PluginError.fromWire("invalid_params", `${op} takes at most ${MAX_BATCH_KEYS} keys`);
+  }
+}
+function normalizedPrefix(prefix) {
+  const parts = prefix.split(/[/\\]/u).filter((part) => part !== "" && part !== ".");
+  let out = parts.join("/");
+  if ((prefix.endsWith("/") || prefix.endsWith("\\")) && out !== "")
+    out += "/";
+  return out;
+}
+function requireDisjointPrefixes(from, to) {
+  const a = normalizedPrefix(from);
+  const b = normalizedPrefix(to);
+  if (a === "")
+    throw PluginError.fromWire("invalid_params", "a prefix move needs a non-empty source prefix");
+  if (b.startsWith(a) || a.startsWith(b)) {
+    throw PluginError.fromWire("invalid_params", `target prefix ${to} overlaps source prefix ${from}`);
+  }
+}
+function outcomeError(err) {
+  if (err instanceof PluginError)
+    return { code: err.code, message: err.message };
+  return { code: "internal", message: err instanceof Error ? err.message : String(err) };
+}
+function sameObject(before, after) {
+  if (before.etag !== void 0 && after.etag !== void 0)
+    return before.etag === after.etag;
+  return before.size === after.size && before.modifiedAtMs !== void 0 && before.modifiedAtMs === after.modifiedAtMs;
+}
+function metadataOf(object) {
+  const { commitToken: _commitToken, ...metadata } = object;
+  return metadata;
+}
+var ObjectStoreDestination = class {
+  /** The backend. */
+  store;
+  /** The change feed, when the plugin has one. */
+  feed;
+  /**
+   * Wraps a backend.
+   *
+   * @param store - The backend.
+   * @param feed - The change feed, or `null` for none (the host lists).
+   */
+  constructor(store, feed = null) {
+    this.store = store;
+    this.feed = feed;
+  }
+  /**
+   * The `rpcFeatures` this destination supports natively, for `describe()`.
+   *
+   * @param store - The backend (only how it keeps write conditions is read).
+   * @param options - `changes: true` when the plugin serves a feed (even one
+   *   that may be off; a page from a feed that is off says so).
+   * @returns Feature names.
+   */
+  static features(store, options = {}) {
+    const out = ["storage.copy", "storage.translateKeys"];
+    if (store.conditionalWrites === "atomic")
+      out.push("storage.conditionalWrite");
+    if (store.conditionalWrites === "checked")
+      out.push("storage.checkedWrite");
+    if (options.changes === true)
+      out.push("storage.changes");
+    return out;
+  }
+  /**
+   * Metadata without a body.
+   *
+   * @param key - Object key.
+   * @returns The metadata, or `null` when missing.
+   */
+  async head(key) {
+    const found = await this.store.head(key);
+    return found === null ? null : metadataOf(found);
+  }
+  /**
+   * One page of keys.
+   *
+   * @param options - Prefix, cursor and limit.
+   * @returns The page (the listing hints are not applied).
+   */
+  async list(options) {
+    const page = await this.store.list(options.prefix ?? "", options.cursor, clampPageLimit(options.limit));
+    const out = {
+      objects: page.objects,
+      signaturesIncluded: false,
+      modifiedSinceApplied: false
+    };
+    if (page.nextCursor !== void 0)
+      out.nextCursor = page.nextCursor;
+    return out;
+  }
+  /**
+   * Streamed read.
+   *
+   * @param key - Object key.
+   * @param options - Optional byte range.
+   * @returns Metadata and body.
+   */
+  async get(key, options) {
+    const { object, body } = await this.store.get(key, checkByteRange(options?.range));
+    return { meta: metadataOf(object), body };
+  }
+  /**
+   * Streamed write: plain, conditional, or staged under a commit token.
+   *
+   * @param key - Object key.
+   * @param body - The bytes.
+   * @param options - Type, length, checksum, token, stage and condition.
+   * @returns What was written; the etag is the commit token when one is set.
+   */
+  async put(key, body, options = {}) {
+    let condition;
+    let target;
+    try {
+      condition = writeCondition(options);
+      target = options.stageOnly === true ? stageKey(options.commitToken, key) : key;
+      if (options.sha256 !== void 0 && options.sha256.length !== 0 && options.sha256.length !== 32) {
+        throw PluginError.fromWire("internal", `integrity: sha256 must be 32 bytes, got ${options.sha256.length}`);
+      }
+    } catch (err) {
+      await body.cancel().catch(() => void 0);
+      throw err;
+    }
+    const write = {};
+    if (options.contentType !== void 0)
+      write.contentType = options.contentType;
+    if (options.contentLength !== void 0)
+      write.contentLength = options.contentLength;
+    if (options.sha256 !== void 0 && options.sha256.length === 32)
+      write.sha256 = options.sha256;
+    if (options.commitToken !== void 0)
+      write.commitToken = options.commitToken;
+    const written = condition === null ? await this.store.put(target, body, write) : await this.putConditional(target, body, write, condition);
+    const out = { key, bytesWritten: written.bytesWritten };
+    const etag = options.commitToken ?? written.etag;
+    if (etag !== void 0)
+      out.etag = etag;
+    if (written.sha256 !== void 0)
+      out.sha256 = written.sha256;
+    return out;
+  }
+  /**
+   * A conditional write through the backend's own, or a probe first.
+   *
+   * @param key - Object key.
+   * @param body - The bytes.
+   * @param write - Type, length, checksum and token.
+   * @param condition - The precondition.
+   * @returns What was written.
+   */
+  async putConditional(key, body, write, condition) {
+    if (this.store.conditionalWrites !== void 0 && this.store.putConditional !== void 0) {
+      return this.store.putConditional(key, body, write, condition);
+    }
+    const current = await this.store.head(key);
+    if (condition.kind === "ifNoneMatch" && current !== null) {
+      await body.cancel();
+      throw PluginError.fromWire("conflict", `${key} already exists`);
+    }
+    if (condition.kind === "ifMatch" && current?.etag !== condition.etag) {
+      await body.cancel();
+      throw PluginError.fromWire("conflict", `${key} changed since it was read`);
+    }
+    return this.store.put(key, body, write);
+  }
+  /**
+   * Copy within the destination.
+   *
+   * @param from - Source key.
+   * @param to - Target key.
+   * @returns Bytes copied.
+   */
+  async copy(from, to) {
+    return { bytesCopied: await this.store.copy(from, to) };
+  }
+  /**
+   * Remove an object.
+   *
+   * @param key - Object key.
+   * @returns Resolves once it is gone.
+   */
+  async delete(key) {
+    await this.store.delete(key);
+  }
+  /**
+   * Publish a staged write. Committing again after the stage is gone
+   * succeeds when the object carries the same commit token.
+   *
+   * @param key - Object key.
+   * @param commitToken - The stage's token.
+   * @returns The published object.
+   */
+  async commit(key, commitToken) {
+    const staged = stageKey(commitToken, key);
+    const stage = await this.store.head(staged);
+    let published;
+    if (stage !== null) {
+      await this.store.copy(staged, key);
+      try {
+        await this.store.delete(staged);
+      } catch {
+      }
+      published = stage;
+    } else {
+      const current = await this.store.head(key);
+      if (current === null)
+        throw PluginError.fromWire("not_found", key);
+      if (current.commitToken !== commitToken) {
+        throw PluginError.fromWire("not_found", `staged object missing and \`${key}\` is not commit ${commitToken}`);
+      }
+      published = current;
+    }
+    const out = { key, bytesWritten: published.size, etag: commitToken };
+    if (published.sha256 !== void 0)
+      out.sha256 = published.sha256;
+    return out;
+  }
+  /**
+   * Discard a staged write; a missing stage is not an error.
+   *
+   * @param key - Object key.
+   * @param commitToken - The stage's token.
+   * @returns Resolves once it is gone.
+   */
+  async abortStage(key, commitToken) {
+    const staged = stageKey(commitToken, key);
+    try {
+      await this.store.delete(staged);
+    } catch (err) {
+      if (!(err instanceof PluginError && err.code === "not_found"))
+        throw err;
+    }
+  }
+  /**
+   * Copies `source` to `to` through the plugin.
+   *
+   * @param source - The source object.
+   * @param to - Target key.
+   * @param condition - A precondition on the target.
+   */
+  async copyStreamed(source, to, condition) {
+    const { object, body } = await this.store.get(source.key, void 0);
+    const write = { contentLength: object.size };
+    if (object.contentType !== void 0)
+      write.contentType = object.contentType;
+    if (object.sha256 !== void 0)
+      write.sha256 = object.sha256;
+    if (condition === null)
+      await this.store.put(to, body, write);
+    else
+      await this.putConditional(to, body, write, condition);
+  }
+  /**
+   * Moves one object: a copy, a check that it landed whole, then removing
+   * the source only while it is unchanged.
+   *
+   * @param from - Source key.
+   * @param to - Target key.
+   * @param options - Overwrite rule and source precondition.
+   * @returns How the move was done.
+   */
+  async move(from, to, options = {}) {
+    const source = await this.store.head(from);
+    if (source === null) {
+      if (from !== to && await this.store.head(to) !== null)
+        return { atomic: false, alreadyMoved: true };
+      throw PluginError.fromWire("not_found", from);
+    }
+    if (options.ifSourceMatch !== void 0 && source.etag !== options.ifSourceMatch) {
+      throw PluginError.fromWire("conflict", `${from} changed since it was read`);
+    }
+    if (from === to)
+      return { atomic: true, alreadyMoved: false };
+    if (options.noOverwrite === true && this.store.conditionalWrites !== void 0) {
+      await this.copyStreamed(source, to, { kind: "ifNoneMatch" });
+    } else {
+      if (options.noOverwrite === true && await this.store.head(to) !== null) {
+        throw PluginError.fromWire("conflict", `${to} already exists`);
+      }
+      if (this.store.serverCopy)
+        await this.store.copy(from, to);
+      else
+        await this.copyStreamed(source, to, null);
+    }
+    const copied = await this.store.head(to);
+    if (copied === null || copied.size !== source.size) {
+      throw PluginError.fromWire("internal", `integrity: ${to} does not match ${from} after the copy; the source was kept`);
+    }
+    const now = await this.store.head(from);
+    if (now !== null) {
+      if (!sameObject(source, now)) {
+        throw PluginError.fromWire("conflict", `${from} changed while it was copied to ${to}; the source was kept`);
+      }
+      await this.store.delete(from);
+    }
+    return { atomic: false, alreadyMoved: false };
+  }
+  /**
+   * Moves pairs, or one page of objects under a prefix.
+   *
+   * @param request - Pairs or prefix, cursor, limit and options.
+   * @returns Per-key outcomes and the continuation.
+   */
+  async moveMany(request) {
+    const options = {};
+    if (request.options?.noOverwrite !== void 0)
+      options.noOverwrite = request.options.noOverwrite;
+    const target = request.target;
+    if (target.kind === "pairs") {
+      if (target.value.length > MAX_BATCH_KEYS) {
+        throw PluginError.fromWire("invalid_params", `moveMany takes at most ${MAX_BATCH_KEYS} pairs`);
+      }
+      return this.movePairs(target.value, options);
+    }
+    const { from, to } = target.value;
+    requireDisjointPrefixes(from, to);
+    const limit = Math.min(Math.max(request.limit ?? 1, 1), MAX_BATCH_KEYS);
+    const page = await this.store.list(from, request.cursor, limit);
+    const pairs = page.objects.filter((object) => object.key.startsWith(from)).map((object) => ({ from: object.key, to: `${to}${object.key.slice(from.length)}` }));
+    const moved = await this.movePairs(pairs, options);
+    const out = {
+      results: moved.results,
+      atomic: false,
+      objectsMoved: moved.objectsMoved ?? 0
+    };
+    if (page.nextCursor !== void 0)
+      out.nextCursor = page.nextCursor;
+    return out;
+  }
+  /**
+   * Moves each pair in order, recording each outcome.
+   *
+   * @param pairs - Source and target keys.
+   * @param options - The overwrite rule.
+   * @returns The outcomes.
+   */
+  async movePairs(pairs, options) {
+    const page = { results: [], atomic: true, objectsMoved: 0 };
+    for (const pair of pairs) {
+      try {
+        const moved = await this.move(pair.from, pair.to, options);
+        page.atomic = page.atomic === true && moved.atomic;
+        page.objectsMoved = (page.objectsMoved ?? 0) + 1;
+        page.results.push({ key: pair.from });
+      } catch (err) {
+        page.results.push({ key: pair.from, error: outcomeError(err) });
+      }
+    }
+    return page;
+  }
+  /**
+   * Removes up to {@link MAX_BATCH_KEYS} objects.
+   *
+   * @param keys - Object keys.
+   * @returns One outcome per key.
+   */
+  async deleteMany(keys) {
+    requireBatch(keys.length, "deleteMany");
+    const out = [];
+    for (const key of keys) {
+      try {
+        await this.store.delete(key);
+        out.push({ key });
+      } catch (err) {
+        out.push({ key, error: outcomeError(err) });
+      }
+    }
+    return out;
+  }
+  /**
+   * Probes up to {@link MAX_BATCH_KEYS} objects.
+   *
+   * @param keys - Object keys.
+   * @returns One entry per key; `null` when missing.
+   */
+  async headMany(keys) {
+    requireBatch(keys.length, "headMany");
+    const out = [];
+    for (const key of keys)
+      out.push(await this.head(key));
+    return out;
+  }
+  /**
+   * Translates host keys into object-store keys.
+   *
+   * @param keys - Host keys.
+   * @returns One translated key per host key.
+   */
+  translateKeys(keys) {
+    try {
+      requireBatch(keys.length, "translateKeys");
+      return Promise.resolve(keys.map((key) => translateForObjectStore(parseHostKey(key), this.store.prefixBytes)));
+    } catch (err) {
+      return Promise.reject(err);
+    }
+  }
+  /**
+   * One page of the change feed, or the "no feed" page when there is none
+   * or it is off.
+   *
+   * @param request - Cursor and limit.
+   * @returns The page.
+   */
+  async changes(request) {
+    const cursor = request.cursor === NO_FEED_CURSOR ? void 0 : request.cursor;
+    const page = this.feed === null ? null : await this.feed.changes(cursor, request.limit ?? 0);
+    return page ?? { changes: [], cursor: NO_FEED_CURSOR, more: false, complete: false };
+  }
+};
+
+// dist/queue-feed.js
+var CURSOR_TAG = "q1";
+var RECEIVE_BATCH = 10;
+var MAX_PENDING_PAGES = 64;
+var MAX_PAGE = 256;
+var QUEUE_LEASE_MS = Math.min(12 * 60 * 60 * 1e3, MAX_WEBHOOK_VISIBILITY_MS);
+function webhookQueue(webhooks, name) {
+  const settle = async (acks, retries) => {
+    if (acks.length === 0 && retries.length === 0)
+      return;
+    await webhooks.ack(name, { acks, retries });
+  };
+  return {
+    async receive(max) {
+      const batchSize = Math.min(Math.max(max, 1), MAX_WEBHOOK_PULL_BATCH);
+      const page = await webhooks.pull(name, { batchSize, visibilityTimeoutMs: QUEUE_LEASE_MS });
+      return {
+        messages: page.messages.map((message) => ({
+          body: message.body,
+          receipt: message.leaseId
+        })),
+        missed: page.missed
+      };
+    },
+    delete: (receipts) => settle(receipts, []),
+    release: (receipts) => settle([], receipts)
+  };
+}
+function freshState() {
+  return {
+    feed: crypto.randomUUID().replaceAll("-", ""),
+    nextSeq: 1,
+    pending: [],
+    receiving: false,
+    gapAt: null
+  };
+}
+function readState(value) {
+  if (typeof value !== "object" || value === null)
+    return null;
+  const v = value;
+  const pending = v["pending"];
+  if (typeof v["feed"] !== "string" || v["feed"] === "" || !Number.isSafeInteger(v["nextSeq"]) || !Array.isArray(pending)) {
+    return null;
+  }
+  const pages = [];
+  for (const page of pending) {
+    if (typeof page !== "object" || page === null)
+      return null;
+    const p = page;
+    const receipts = p["receipts"];
+    if (!Number.isSafeInteger(p["seq"]) || !Array.isArray(receipts))
+      return null;
+    if (!receipts.every((receipt) => typeof receipt === "string"))
+      return null;
+    pages.push({ seq: p["seq"], receipts });
+  }
+  const gapAt = v["gapAt"];
+  return {
+    feed: v["feed"],
+    nextSeq: v["nextSeq"],
+    pending: pages,
+    receiving: v["receiving"] === true,
+    gapAt: Number.isSafeInteger(gapAt) ? gapAt : null
+  };
+}
+function parseQueueCursor(cursor) {
+  const invalid = () => PluginError.fromWire("invalid_cursor", "not a notification-queue cursor");
+  const first = cursor.indexOf(".");
+  const second = first < 0 ? -1 : cursor.indexOf(".", first + 1);
+  if (first < 0 || second < 0 || cursor.slice(0, first) !== CURSOR_TAG)
+    throw invalid();
+  const feed = cursor.slice(first + 1, second);
+  const digits = cursor.slice(second + 1);
+  if (feed === "" || !/^\+?[0-9]+$/u.test(digits))
+    throw invalid();
+  const seq = Number(digits);
+  if (!Number.isSafeInteger(seq))
+    throw invalid();
+  return { feed, seq };
+}
+function sequencerCompare(a, b) {
+  const width = Math.max(a.length, b.length);
+  const x = a.padStart(width, "0").toUpperCase();
+  const y = b.padStart(width, "0").toUpperCase();
+  return x < y ? -1 : x > y ? 1 : 0;
+}
+function orderChanges(events) {
+  events.sort((a, b) => {
+    if (a.time === b.time)
+      return 0;
+    if (a.time === null)
+      return -1;
+    if (b.time === null)
+      return 1;
+    return a.time < b.time ? -1 : 1;
+  });
+  const byKey = /* @__PURE__ */ new Map();
+  events.forEach((event, at) => {
+    if (event.sequencer === null)
+      return;
+    const slots = byKey.get(event.change.key) ?? [];
+    slots.push(at);
+    byKey.set(event.change.key, slots);
+  });
+  for (const slots of byKey.values()) {
+    if (slots.length < 2)
+      continue;
+    const group = slots.map((at) => events[at]);
+    group.sort((a, b) => sequencerCompare(a.sequencer ?? "", b.sequencer ?? ""));
+    slots.forEach((at, i) => {
+      events[at] = group[i];
+    });
+  }
+}
+var LOCKS = /* @__PURE__ */ new Map();
+async function locked(key, work) {
+  const before = LOCKS.get(key) ?? Promise.resolve();
+  const run = before.then(work, work);
+  const settled = run.then(() => void 0, () => void 0);
+  LOCKS.set(key, settled);
+  try {
+    return await run;
+  } finally {
+    if (LOCKS.get(key) === settled)
+      LOCKS.delete(key);
+  }
+}
+var QueueFeed = class {
+  /** The options. */
+  #options;
+  /**
+   * Creates the feed; nothing is read until the first page.
+   *
+   * @param options - Queue, parser and state storage.
+   */
+  constructor(options) {
+    this.#options = options;
+  }
+  /**
+   * Loads the saved state, or a fresh one.
+   *
+   * @returns The state.
+   */
+  async #load() {
+    const text = await this.#options.kv.get(this.#options.stateKey);
+    let stored = null;
+    if (text !== null) {
+      try {
+        stored = JSON.parse(text);
+      } catch {
+        stored = null;
+      }
+    }
+    return readState(stored) ?? freshState();
+  }
+  /**
+   * Saves the state.
+   *
+   * @param state - The state.
+   * @returns Resolves once stored.
+   */
+  async #persist(state) {
+    await this.#options.kv.put(this.#options.stateKey, JSON.stringify(state));
+  }
+  /**
+   * Releases `receipts`, a batch at a time.
+   *
+   * @param receipts - Leases to release.
+   * @returns Whether every release went through.
+   */
+  async #releaseAll(receipts) {
+    let released = true;
+    for (let at = 0; at < receipts.length; at += RECEIVE_BATCH) {
+      try {
+        await this.#options.queue.release(receipts.slice(at, at + RECEIVE_BATCH));
+      } catch {
+        released = false;
+      }
+    }
+    return released;
+  }
+  /**
+   * Acknowledges pending pages up to `seq` and releases the rest.
+   *
+   * @param state - The state, changed in place and saved.
+   * @param seq - The last page the host confirmed.
+   * @returns Whether every release went through.
+   */
+  async #settle(state, seq) {
+    if (state.pending.length === 0)
+      return true;
+    const read = state.pending.filter((page) => page.seq <= seq).flatMap((page) => page.receipts);
+    const later = state.pending.filter((page) => page.seq > seq).flatMap((page) => page.receipts);
+    for (let at = 0; at < read.length; at += RECEIVE_BATCH) {
+      await this.#options.queue.delete(read.slice(at, at + RECEIVE_BATCH));
+    }
+    const released = await this.#releaseAll(later);
+    state.pending = [];
+    state.receiving = state.receiving || !released;
+    await this.#persist(state);
+    return released;
+  }
+  /**
+   * Records a page and builds its cursor.
+   *
+   * @param state - The state, replaced on success.
+   * @param events - The page's changes.
+   * @param receipts - Leases of the messages it carried.
+   * @param more - Whether more changes are ready.
+   * @param complete - Whether the page may have missed nothing.
+   * @returns The page.
+   */
+  async #handOut(state, events, receipts, more, complete) {
+    const seq = state.nextSeq;
+    const next = {
+      ...state,
+      pending: [...state.pending],
+      nextSeq: seq + 1,
+      receiving: false,
+      gapAt: complete ? state.gapAt : seq
+    };
+    if (receipts.length > 0) {
+      next.pending.push({ seq, receipts });
+      while (next.pending.length > MAX_PENDING_PAGES)
+        next.pending.shift();
+    }
+    try {
+      await this.#persist(next);
+    } catch (err) {
+      await this.#releaseAll(receipts);
+      throw err;
+    }
+    Object.assign(state, next);
+    return {
+      changes: events.map((event) => event.change),
+      cursor: `${CURSOR_TAG}.${next.feed}.${seq}`,
+      more,
+      complete
+    };
+  }
+  /**
+   * One page of changes after `cursor`.
+   *
+   * Without a cursor of this feed the caller starts over: everything handed
+   * out before is released and the page is only the current position (the
+   * host lists). Otherwise pages up to the cursor are acknowledged and the
+   * page holds the next messages' changes.
+   *
+   * @param cursor - The previous page's cursor, or `undefined`.
+   * @param limit - Requested changes (0 for the most, 256).
+   * @returns The page.
+   * @throws {PluginError} `invalid_cursor` for a cursor that is not this
+   *   feed's or is ahead of it; the queue's or KV's own errors.
+   */
+  changes(cursor, limit) {
+    return locked(this.#options.stateKey, () => this.#changes(cursor, limit));
+  }
+  /**
+   * {@link QueueFeed.changes} under the lock.
+   *
+   * @param cursor - The previous page's cursor, or `undefined`.
+   * @param limitAsked - Requested changes.
+   * @returns The page.
+   */
+  async #changes(cursor, limitAsked) {
+    const limit = limitAsked === 0 ? MAX_PAGE : Math.min(Math.max(limitAsked, 1), MAX_PAGE);
+    const state = await this.#load();
+    let readUpTo = null;
+    if (cursor !== void 0) {
+      const { feed, seq } = parseQueueCursor(cursor);
+      if (feed === state.feed && seq >= state.nextSeq) {
+        throw PluginError.fromWire("invalid_cursor", "queue cursor is ahead of the feed");
+      }
+      if (feed === state.feed)
+        readUpTo = seq;
+    }
+    if (readUpTo === null) {
+      await this.#settle(state, 0);
+      return this.#handOut(state, [], [], false, false);
+    }
+    let complete = await this.#settle(state, readUpTo) && !state.receiving;
+    if (state.gapAt !== null) {
+      if (readUpTo < state.gapAt)
+        complete = false;
+      else
+        state.gapAt = null;
+    }
+    state.receiving = true;
+    await this.#persist(state);
+    const events = [];
+    const receipts = [];
+    let full = false;
+    let taken = 0;
+    while (events.length < limit) {
+      if (taken >= limit) {
+        full = true;
+        break;
+      }
+      const want = Math.min(limit - Math.max(events.length, taken), RECEIVE_BATCH);
+      let received;
+      try {
+        received = await this.#options.queue.receive(want);
+      } catch (err) {
+        await this.#releaseAll(receipts);
+        throw err;
+      }
+      complete = complete && !received.missed;
+      taken += received.messages.length;
+      const overflow = [];
+      for (const message of received.messages) {
+        let parsed;
+        try {
+          parsed = this.#options.parse(message.body);
+        } catch {
+          receipts.push(message.receipt);
+          complete = false;
+          continue;
+        }
+        if (events.length + parsed.length <= limit) {
+          events.push(...parsed);
+          receipts.push(message.receipt);
+        } else if (events.length === 0) {
+          events.push(...parsed.slice(0, limit));
+          receipts.push(message.receipt);
+          complete = false;
+        } else {
+          overflow.push(message.receipt);
+        }
+      }
+      if (overflow.length > 0) {
+        complete = await this.#releaseAll(overflow) && complete;
+        full = true;
+        break;
+      }
+      if (received.messages.length === 0)
+        break;
+      if (events.length >= limit)
+        full = true;
+    }
+    orderChanges(events);
+    return this.#handOut(state, events, receipts, full, complete);
+  }
+};
 export {
   AdapterDatabaseSession,
   AiEntrypoint,
   BookclerkEntrypoint,
   CliEntrypoint,
-  CoverEntrypoint,
   DatabaseAdapterEntrypoint,
   Destination,
   ENTRYPOINT_BINDINGS,
@@ -16613,25 +17638,34 @@ export {
   MAX_CHANGES_PAGE,
   MAX_CHECKPOINT_BYTES,
   MAX_EVENT_PAYLOAD_BYTES,
+  MAX_HOST_KEY_BYTES,
   MAX_LIST_PAGE,
+  MAX_OBJECT_KEY_BYTES,
   MAX_PLUGIN_MIGRATION_OPS,
   MAX_PLUGIN_MIGRATION_REGISTRATION_BYTES,
   MAX_PLUGIN_MIGRATION_TOTAL_OPS,
   MAX_SCALAR_BYTES,
   MAX_STREAM_WINDOW_BYTES,
   MAX_WRITE_KEY_BYTES,
+  MediaDownloadEntrypoint,
   MetadataEntrypoint,
   MetadataFilesEntrypoint,
+  NO_FEED_CURSOR,
   NamedEntrypoint,
   NotifierEntrypoint,
+  ObjectStoreDestination,
   OidcEntrypoint,
   PRODUCT_API_VERSION,
   PluginError,
   ProgressSink,
   ProvisioningEntrypoint,
+  QUEUE_LEASE_MS,
   QueueBatch,
+  QueueFeed,
   QueueMessage,
   RemoteLibraryEntrypoint,
+  STAGE_FOLDER,
+  STREAM_COPY_COMMAND,
   STREAM_FRAME_TARGET_BYTES,
   Source,
   StorageEntrypoint,
@@ -16640,7 +17674,9 @@ export {
   WriteChunksError,
   allowedEntrypointFamilies,
   canonicalExecuteRequestHash,
+  checkByteRange,
   chunkIndexes,
+  clampPageLimit,
   cliArgs,
   collectExecuteStream,
   createDatabaseBinding,
@@ -16667,21 +17703,31 @@ export {
   invocationOf,
   jobOutcomeFor,
   jsonPayload,
+  orderChanges,
   packEmbeddingVectors,
   parseDbValue,
+  parseHostKey,
+  parseQueueCursor,
   provisioned,
   queueBatchResults,
   rawStreamCeiling,
+  requireDisjointPrefixes,
   requirePluginMigrationRegistration,
   runAdapterBatch,
   scanPage,
   schemaMigrationOp,
   shouldSkipRemainingGuestWork,
+  stageKey,
   statementResultToD1Result,
+  streamCopy,
+  streamCopyCommitToken,
   streamsResults,
   toBridgeJson,
+  translateForObjectStore,
   unpackEmbeddingVectors,
+  webhookQueue,
   wrapPluginFromBinding,
   wrapPluginFromNative,
-  writeChunksOperationId
+  writeChunksOperationId,
+  writeCondition
 };

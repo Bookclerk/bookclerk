@@ -1491,6 +1491,12 @@ pub enum JobKind {
     /// reads the copy's audio from there; it runs only on a node that
     /// holds the library database.
     ChapterAlign,
+    /// Probe the audio files on one node's destinations that were never
+    /// probed (`file_probe`): files stored before probes were recorded, or
+    /// whose probe failed. Pinned by [`JobPayload::node_id`] to the node
+    /// whose destinations it reads; it runs only on a node that holds the
+    /// library database.
+    FileProbe,
     /// Terminal placeholder after an unreadable persisted command is rejected.
     Invalid,
 }
@@ -1498,7 +1504,7 @@ pub enum JobKind {
 impl JobKind {
     /// Every kind, in declaration order; the SQL plans derive their kind
     /// lists from it so a new kind cannot be left unclaimable.
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::Scan,
         Self::Acquire,
         Self::ListenSync,
@@ -1516,6 +1522,7 @@ impl JobKind {
         Self::IngestBatch,
         Self::NotifySend,
         Self::ChapterAlign,
+        Self::FileProbe,
         Self::Invalid,
     ];
 
@@ -1540,6 +1547,7 @@ impl JobKind {
             Self::IngestBatch => "ingest_batch",
             Self::NotifySend => "notify_send",
             Self::ChapterAlign => "chapter_align",
+            Self::FileProbe => "file_probe",
             Self::Invalid => "invalid",
         }
     }
@@ -1565,6 +1573,7 @@ impl JobKind {
             "ingest_batch" => Some(Self::IngestBatch),
             "notify_send" => Some(Self::NotifySend),
             "chapter_align" => Some(Self::ChapterAlign),
+            "file_probe" => Some(Self::FileProbe),
             "invalid" => Some(Self::Invalid),
             _ => None,
         }
@@ -1704,16 +1713,27 @@ impl JobKind {
                 payload.ingest_batch.as_deref().unwrap_or("-")
             ),
             // One queued or running send per delivery-log row or account
-            // mail.
-            Self::NotifySend => match payload.account_mail.as_deref() {
-                Some(mail_id) => account_mail_dedup_key(mail_id),
-                None => notify_send_dedup_key(payload.notify_delivery.as_deref().unwrap_or("-")),
+            // mail, and one reset-request answer per address.
+            Self::NotifySend => match (
+                payload.account_mail.as_deref(),
+                payload.password_reset_request.as_deref(),
+            ) {
+                (Some(mail_id), _) => account_mail_dedup_key(mail_id),
+                (None, Some(address)) => password_reset_request_dedup_key(address),
+                (None, None) => {
+                    notify_send_dedup_key(payload.notify_delivery.as_deref().unwrap_or("-"))
+                }
             },
             // One queued or running alignment per edition: asking again
             // while one waits folds into it.
             Self::ChapterAlign => format!(
                 "chapter_align:edition={}",
                 payload.title.as_deref().unwrap_or("-")
+            ),
+            // One queued or running probe walk per node.
+            Self::FileProbe => format!(
+                "file_probe:node={}",
+                payload.node_id.as_deref().unwrap_or("-")
             ),
             Self::Invalid => "invalid".into(),
         }
@@ -1992,6 +2012,12 @@ pub struct JobPayload {
     /// a delivery-log row. The job mints the message's link when it sends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_mail: Option<String>,
+    /// For [`JobKind::NotifySend`]: the address a self-service password
+    /// reset was asked for. The job looks the account up and queues the
+    /// reset mail, so neither the request's answer nor its timing says
+    /// whether an account has the address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_reset_request: Option<String>,
 }
 
 /// What a [`JobKind::BranchRequest`] asks its branch for: a work of this
@@ -2031,6 +2057,13 @@ pub fn notify_send_dedup_key(delivery_id: &str) -> String {
 #[must_use]
 pub fn account_mail_dedup_key(mail_id: &str) -> String {
     format!("notify_send:account_mail={mail_id}")
+}
+
+/// Dedup key of a [`JobKind::NotifySend`] that answers a password-reset
+/// request: one active job per address, so repeated requests collapse.
+#[must_use]
+pub fn password_reset_request_dedup_key(address: &str) -> String {
+    format!("notify_send:password_reset={address}")
 }
 
 /// Dedup key of a [`JobKind::PluginScheduled`] fire: one active fire per
@@ -2076,6 +2109,7 @@ impl Default for JobPayload {
             convert: None,
             notify_delivery: None,
             account_mail: None,
+            password_reset_request: None,
         }
     }
 }

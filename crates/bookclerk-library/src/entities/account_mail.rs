@@ -26,6 +26,9 @@ pub struct Model {
     pub reason: Option<String>,
     /// The `notify_send` job that sends it, once enqueued.
     pub job_id: Option<String>,
+    /// The Administrator who asked for an invite; `None` when the library
+    /// sent it on its own, for other kinds, or once that user is deleted.
+    pub requested_by: Option<i64>,
     /// RFC 3339 time it was queued.
     pub created_at: String,
     /// RFC 3339 time it last changed.
