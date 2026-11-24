@@ -173,6 +173,14 @@ impl LibraryStore {
         self
     }
 
+    /// Whether `other` is this store or a clone of it: the same opened
+    /// database, not merely an equal one. A cache built from one store
+    /// uses it to tell that the daemon now reads another.
+    #[must_use]
+    pub fn same_store(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.caps, &other.caps)
+    }
+
     /// Records the full negotiated [`bookclerk_plugin_abi::DbCapabilities`].
     #[must_use]
     pub fn with_db_capabilities(mut self, caps: bookclerk_plugin_abi::DbCapabilities) -> Self {

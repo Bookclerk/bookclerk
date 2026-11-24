@@ -1212,13 +1212,20 @@ pub(crate) async fn search_library(
         limit,
         ..base_query(&patron)
     };
-    let (rows, _) = crate::library_works::search_page(&state, &patron.library, &q, None, &filters)
-        .await
-        .map_err(|(status, _)| match status {
-            StatusCode::BAD_REQUEST => PlayerError::bad_request(),
-            StatusCode::SERVICE_UNAVAILABLE => PlayerError::unavailable(),
-            _ => PlayerError::new(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
-        })?;
+    let (rows, _) = crate::library_works::search_page(
+        &state,
+        &patron.library,
+        &q,
+        crate::library_works::SearchModeParam::Words,
+        None,
+        &filters,
+    )
+    .await
+    .map_err(|(status, _)| match status {
+        StatusCode::BAD_REQUEST => PlayerError::bad_request(),
+        StatusCode::SERVICE_UNAVAILABLE => PlayerError::unavailable(),
+        _ => PlayerError::new(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error"),
+    })?;
     let work_ids: Vec<String> = rows.into_iter().map(|r| r.work_id).collect();
     let editions = patron
         .library
