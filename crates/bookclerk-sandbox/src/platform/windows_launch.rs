@@ -1477,34 +1477,83 @@ mod tests {
             control.cpu_rate,
             crate::windows_job_cpu_rate(10, crate::node_logical_cpus())
         );
-        // Startup runs before the gate, so Job accounting does not include it.
-        // The burn itself is 2s of wall time after the process is in the Job.
-        let gate = std::env::temp_dir().join(format!(
-            "bookclerk-cpu-gate-{}-{}",
+        // PowerShell startup takes about a second of CPU. Under a 10% cap that
+        // stretches to many seconds of wall time, so the test keeps startup out
+        // of the measured window: the burner signals `ready`, is assigned to
+        // the Job only then, and starts burning when the test opens `gate`.
+        let stamp = format!(
+            "{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|elapsed| elapsed.as_nanos())
                 .unwrap_or(0)
-        ));
+        );
+        let ready = std::env::temp_dir().join(format!("bookclerk-cpu-ready-{stamp}"));
+        let gate = std::env::temp_dir().join(format!("bookclerk-cpu-gate-{stamp}"));
+        let quote = |path: &std::path::Path| path.display().to_string().replace('\'', "''");
+        // The burner prints its own burn time (its Stopwatch, started once
+        // the gate opens), so a pause in this process cannot widen the bound.
         let script = format!(
-            "$gate='{}'; while(-not (Test-Path -LiteralPath $gate)){{ Start-Sleep -Milliseconds 20 }}; $sw=[Diagnostics.Stopwatch]::StartNew(); while($sw.ElapsedMilliseconds -lt 2000){{}}",
-            gate.display().to_string().replace('\'', "''")
+            "$ready='{}'; $gate='{}'; [IO.File]::WriteAllText($ready, 'up'); while(-not (Test-Path -LiteralPath $gate)){{ Start-Sleep -Milliseconds 20 }}; $sw=[Diagnostics.Stopwatch]::StartNew(); while($sw.ElapsedMilliseconds -lt 2000){{}}; [Console]::Out.WriteLine($sw.ElapsedMilliseconds)",
+            quote(&ready),
+            quote(&gate)
         );
         let mut child = std::process::Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .stdout(std::process::Stdio::piped())
             .spawn()
             .expect("powershell");
-        job.assign(child.as_raw_handle()).expect("assign burner");
+        // Until it is in the Job nothing else ends the burner, so every
+        // failure before then kills and reaps it first.
+        let abandon = |child: &mut std::process::Child, why: String| -> ! {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_file(&ready);
+            panic!("{why}");
+        };
+        let started = std::time::Instant::now();
+        while !ready.exists() {
+            match child.try_wait() {
+                Ok(Some(status)) => abandon(
+                    &mut child,
+                    format!("burner exited before it was ready: {status}"),
+                ),
+                Ok(None) => {}
+                Err(err) => abandon(&mut child, format!("poll burner: {err}")),
+            }
+            if started.elapsed() >= std::time::Duration::from_secs(120) {
+                abandon(&mut child, "burner never signalled ready".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if let Err(err) = job.assign(child.as_raw_handle()) {
+            abandon(&mut child, format!("assign burner: {err}"));
+        }
+        // Whether or not Job accounting carries time charged before the
+        // assignment, the baseline removes it from the measurement.
+        let baseline = job.cpu_time().expect("baseline cpu time");
         std::fs::write(&gate, b"go").expect("open gate");
-        let _ = child.wait().expect("wait burner");
+        let output = child.wait_with_output().expect("wait burner");
         let _ = std::fs::remove_file(&gate);
-        let cpu = job.cpu_time().expect("cpu time");
-        // 10% of one core for 2s is ~200ms. The Job interval can burst; an
-        // uncapped burn is ~2s, so 1.2s still shows the hard cap engaged.
+        let _ = std::fs::remove_file(&ready);
+        let cpu = job.cpu_time().expect("cpu time").saturating_sub(baseline);
+        let burn = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse::<u64>()
+            .map(std::time::Duration::from_millis)
+            .unwrap_or_else(|err| panic!("burner did not report its burn time: {err}"));
         assert!(
-            cpu < std::time::Duration::from_millis(1200),
-            "10% of one core over ~2s wall exceeded tolerance: {cpu:?}"
+            burn >= std::time::Duration::from_millis(2000),
+            "burn ended early: {burn:?}"
+        );
+        // The cap allows 10% of one core over the burn; an uncapped
+        // single-threaded burn uses close to all of it. Half the burn time
+        // leaves room for interval bursts, the gate wait and process exit
+        // while still failing when the cap is not enforced.
+        assert!(
+            cpu < burn / 2,
+            "10% of one core over a {burn:?} burn exceeded half a core: {cpu:?}"
         );
         assert!(
             cpu > std::time::Duration::from_millis(15),
