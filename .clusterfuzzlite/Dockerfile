@@ -1,6 +1,6 @@
 # ClusterFuzzLite build image for the cargo-fuzz targets under fuzz/.
 # base-builder-rust provides nightly Rust, cargo-fuzz and the sanitizers.
-FROM gcr.io/oss-fuzz-base/base-builder-rust:v1@sha256:3428d0a90b1e7efbe2ba947bd1d0c9a70594986b4b6553804547f1fb24cfc92f
+FROM gcr.io/oss-fuzz-base/base-builder-rust:v1@sha256:d345218878c78feed410f0ad57268617a368912b224f844bbdb71c54c0b9955a
 # bookclerk-plugin-abi compiles plugin.capnp in its build script;
 # bookclerk-libav's build script downloads (curl) and unpacks (xz) the pinned
 # FFmpeg release and builds it with make.
