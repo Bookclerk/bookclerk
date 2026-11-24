@@ -55524,6 +55524,17 @@
               "$ref": "#/components/schemas/BranchAvailability"
             },
             "description": "Branches of this library that currently list this title, matched\nthrough a store listing the library already holds. Filled by the\ndaemon after the search."
+          },
+          "in_library": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LibraryCopy",
+                "description": "Whether the library already holds this edition or another edition\nof the book; absent when it holds neither. Filled by the daemon\nafter the search."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -61042,6 +61053,14 @@
             "description": "Every plugin request from those libraries, pending or answered."
           }
         }
+      },
+      "LibraryCopy": {
+        "type": "string",
+        "description": "How the library holds a catalog search hit.",
+        "enum": [
+          "this_edition",
+          "other_edition"
+        ]
       },
       "LibraryFile": {
         "type": "object",
