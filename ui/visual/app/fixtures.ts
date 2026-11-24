@@ -1711,8 +1711,28 @@ export const SCENARIOS = {
         cards: [],
         books: [
           {
+            // Also in this library: shown on its own row.
+            key: "work:w-pride",
+            work_id: "w-pride",
+            editions: [
+              {
+                library_id: "lib-ana",
+                owner_origin: "https://ana.example.net",
+                store: "libro",
+                marketplace: "us",
+                product_id: "p-pride",
+                formats: ["audio"],
+                title: "Pride and Prejudice",
+                authors: "Jane Austen",
+                narrators: "Iris Vale",
+                length_minutes: 707,
+                yours: true,
+              },
+            ],
+          },
+          {
             key: "ana/emma",
-            work_id: "w-ana-emma",
+            work_id: null,
             editions: [
               {
                 library_id: "lib-ana",
@@ -1731,7 +1751,7 @@ export const SCENARIOS = {
           },
           {
             key: "ana/kim",
-            work_id: "w-ana-kim",
+            work_id: null,
             editions: [
               {
                 library_id: "lib-ana",
