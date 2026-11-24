@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use sea_orm::sea_query::OnConflict;
-use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
+use sea_orm::{ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter};
 
 use super::LibraryStore;
 use crate::entities::{edition_copies, edition_files};
@@ -280,14 +280,18 @@ impl LibraryStore {
     ///
     /// Returns an error when the read or a write fails.
     pub async fn record_copies_from_files(&self, edition_id: &str) -> Result<usize> {
-        let files = edition_files::Entity::find()
-            .filter(edition_files::Column::OwnerKind.eq("edition"))
-            .filter(edition_files::Column::OwnerId.eq(edition_id))
-            .filter(edition_files::Column::Role.eq(FileRole::Audio.as_str()))
-            .order_by_asc(edition_files::Column::Destination)
-            .all(self.db())
-            .await
-            .map_err(LibraryError::Orm)?;
+        let files = super::keyset::read_keyset(
+            self,
+            edition_files::Entity::find()
+                .filter(edition_files::Column::OwnerKind.eq("edition"))
+                .filter(edition_files::Column::OwnerId.eq(edition_id))
+                .filter(edition_files::Column::Role.eq(FileRole::Audio.as_str())),
+            &[
+                edition_files::Column::Destination,
+                edition_files::Column::StorageKey,
+            ],
+        )
+        .await?;
         let now = stored_time(Utc::now());
         let mut recorded = 0;
         for file in files {
@@ -331,13 +335,16 @@ impl LibraryStore {
         // One page of acquire candidates at a time, so the bound list stays
         // well inside every adapter's bind limit.
         for chunk in edition_ids.chunks(COPIES_READ_CHUNK) {
-            let rows = edition_copies::Entity::find()
-                .filter(edition_copies::Column::EditionId.is_in(chunk.iter().cloned()))
-                .order_by_asc(edition_copies::Column::EditionId)
-                .order_by_asc(edition_copies::Column::Destination)
-                .all(self.db())
-                .await
-                .map_err(LibraryError::Orm)?;
+            let rows = super::keyset::read_keyset(
+                self,
+                edition_copies::Entity::find()
+                    .filter(edition_copies::Column::EditionId.is_in(chunk.iter().cloned())),
+                &[
+                    edition_copies::Column::EditionId,
+                    edition_copies::Column::Destination,
+                ],
+            )
+            .await?;
             copies.extend(rows.into_iter().filter_map(EditionCopy::from_row));
         }
         Ok(copies)
@@ -360,16 +367,22 @@ impl LibraryStore {
         if destinations.is_empty() {
             return Ok(Vec::new());
         }
-        let rows = edition_copies::Entity::find()
-            .filter(edition_copies::Column::State.eq(CopyState::Pending.as_str()))
-            .filter(edition_copies::Column::NextAttemptAt.lte(stored_time(now)))
-            .filter(edition_copies::Column::Destination.is_in(destinations.iter().cloned()))
-            .order_by_asc(edition_copies::Column::NextAttemptAt)
-            .order_by_asc(edition_copies::Column::EditionId)
-            .limit(limit)
-            .all(self.db())
-            .await
-            .map_err(LibraryError::Orm)?;
+        // `next_attempt_at` is set on every row the filter keeps.
+        let rows = super::keyset::read_keyset_limit(
+            self,
+            edition_copies::Entity::find()
+                .filter(edition_copies::Column::State.eq(CopyState::Pending.as_str()))
+                .filter(edition_copies::Column::NextAttemptAt.lte(stored_time(now)))
+                .filter(edition_copies::Column::Destination.is_in(destinations.iter().cloned())),
+            &[
+                edition_copies::Column::NextAttemptAt,
+                edition_copies::Column::EditionId,
+                edition_copies::Column::Destination,
+            ],
+            super::keyset::KeyOrder::Ascending,
+            limit,
+        )
+        .await?;
         let mut editions: Vec<String> = Vec::with_capacity(rows.len());
         for edition in rows.into_iter().map(|row| row.edition_id) {
             if !editions.contains(&edition) {
@@ -394,14 +407,16 @@ impl LibraryStore {
         destinations: &[String],
         now: DateTime<Utc>,
     ) -> Result<()> {
-        let due = edition_copies::Entity::find()
-            .filter(edition_copies::Column::EditionId.eq(edition_id))
-            .filter(edition_copies::Column::State.eq(CopyState::Pending.as_str()))
-            .filter(edition_copies::Column::NextAttemptAt.lte(stored_time(now)))
-            .filter(edition_copies::Column::Destination.is_in(destinations.iter().cloned()))
-            .all(self.db())
-            .await
-            .map_err(LibraryError::Orm)?;
+        let due = super::keyset::read_keyset(
+            self,
+            edition_copies::Entity::find()
+                .filter(edition_copies::Column::EditionId.eq(edition_id))
+                .filter(edition_copies::Column::State.eq(CopyState::Pending.as_str()))
+                .filter(edition_copies::Column::NextAttemptAt.lte(stored_time(now)))
+                .filter(edition_copies::Column::Destination.is_in(destinations.iter().cloned())),
+            &[edition_copies::Column::Destination],
+        )
+        .await?;
         for row in due {
             let attempts = u32::try_from(row.attempts).unwrap_or(u32::MAX);
             let delay = chrono::Duration::from_std(copy_retry_delay(attempts.saturating_add(1)))

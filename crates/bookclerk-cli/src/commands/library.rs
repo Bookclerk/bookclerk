@@ -118,8 +118,9 @@ pub enum LibraryCommand {
         no_wait: bool,
     },
     /// Download + decrypt + store titles: queues one acquire job per title
-    /// id (or one for every pending title) for a bookclerkd node to run, and
-    /// waits for them. `--dry-run` only prints planned keys, here.
+    /// id and account it is in (or one for every pending title) for a
+    /// bookclerkd node to run, and waits for them. `--dry-run` only prints
+    /// planned keys, here.
     Acquire {
         /// Acquire a single ASIN / product id / UUID.
         #[arg(long)]

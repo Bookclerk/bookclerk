@@ -40,7 +40,7 @@ request is answered by a frame with the same `id`. Both sides ping every
 
 | Host → owner | Owner answers |
 | --- | --- |
-| `heartbeat` | `ok` (capacity and use land in `node_status`) |
+| `heartbeat` | `ok` (capacity and use land in `node_status`; a branch's optional `budget_cpu_millicores` and `budget_memory_bytes` cap the library's budget for it) |
 | `claim {filter: {kinds, plugins, scope?}}` | `work` (job, lease, fence, sealed secrets, `for_node_owner` on the job when all its accounts are the node owner's, and for a scan `scan_tokens`: the owner's sync token per handed account whose last complete pass is under 7 days old) or `none {retry_after_secs}` |
 | `renew` | `renewed`, or `lost` when the fence is gone |
 | `complete`, `fail`, `release {reason}` | `ok`, or `lost`. A `release` gives the job back unrun without spending an attempt; whether its claim was a resume is the owner's record (`resumed_generation` on the job), not the branch's word |

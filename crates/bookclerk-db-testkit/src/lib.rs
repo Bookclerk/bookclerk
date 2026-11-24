@@ -37,7 +37,9 @@ pub mod fixtures;
 pub use adapter::{assert_adapter_conforms, run_adapter_suite, AdapterReport};
 pub use binding::BindingDatabase;
 
-pub use bookclerk_library::test_support::{paging, Profile, INTERACTIVE_TRANSACTIONS_REFUSED};
+pub use bookclerk_library::test_support::{
+    paging, uncapped, Profile, INTERACTIVE_TRANSACTIONS_REFUSED,
+};
 
 /// The environment variable `bookclerk-plugin test` sets to the profile of
 /// the current run.

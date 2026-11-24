@@ -540,7 +540,9 @@ async fn branch_listings_within_bytes(
     .map(|row| row.id)
     .collect();
     let mut rows = Vec::with_capacity(ids.len());
-    let mut width = in_chunk(store, PAGED_FIXED_BINDS);
+    // One row per id: a chunk no wider than one reply's rows fits it.
+    let mut width = in_chunk(store, PAGED_FIXED_BINDS)
+        .min(usize::try_from(crate::store::keyset::result_page(store)).unwrap_or(usize::MAX));
     let mut rest = ids.as_slice();
     while !rest.is_empty() {
         let (part, tail) = rest.split_at(width.min(rest.len()));

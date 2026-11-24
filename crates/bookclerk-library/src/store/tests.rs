@@ -7903,6 +7903,24 @@ async fn works_page_by_id_and_vectors_read_in_bulk_under_every_profile() {
             1,
             "{name}"
         );
+        // The whole space, in work id order, and nothing of another.
+        let all = store.work_vectors_in(&m).await.unwrap();
+        let mut ids = expected[..2].to_vec();
+        ids.sort();
+        assert_eq!(
+            all.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+            ids,
+            "{name}"
+        );
+        assert!(all.iter().all(|(_, vector)| vector.len() == 4), "{name}");
+        assert!(
+            store
+                .work_vectors_in(&space("nobody", "r1"))
+                .await
+                .unwrap()
+                .is_empty(),
+            "{name}"
+        );
         assert_eq!(
             store.prune_orphan_work_vectors().await.unwrap(),
             0,
@@ -9227,10 +9245,11 @@ async fn a_scanned_page_writes_store_text_only_when_it_changes_under_every_profi
                 .collect()
         };
         let listings = || async {
-            let mut rows = crate::entities::store_listings::Entity::find()
-                .all(store.db())
-                .await
-                .unwrap();
+            let mut rows = crate::test_support::uncapped(
+                crate::entities::store_listings::Entity::find().all(store.db()),
+            )
+            .await
+            .unwrap();
             rows.sort_by(|a, b| a.product_id.cmp(&b.product_id));
             rows
         };

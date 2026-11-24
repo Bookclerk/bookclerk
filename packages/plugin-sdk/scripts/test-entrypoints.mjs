@@ -500,6 +500,12 @@ function wireQueueMessage(overrides = {}) {
   });
   assert.equal(opened.protocol, "x-tunnel");
   assert.deepEqual(connects[0].trustAnchors, ["MAMCAQA=", "MAMCAQA="]);
+  assert.equal(connects[0].serverName, "");
+  await tlsBinding.connect("tls://region1.v2.argotunnel.com:7844", {
+    protocols: ["h2"],
+    serverName: "h2.cftunnel.com",
+  });
+  assert.equal(connects[1].serverName, "h2.cftunnel.com");
   await assert.rejects(
     () => tlsBinding.connect("tls://connect.example.com:443", { trustAnchors: ["no pem"] }),
     (err) => err instanceof PluginError && err.wireCode === "invalid_params",

@@ -91,6 +91,12 @@ When all of that holds:
   pull request run keeps its SARIF as `codeql-sarif-<language>` for that.
 - ClusterFuzzLite, the Docker image, the image publishing dry run and the
   model packs skip their jobs.
+
+  Their `carry` job is skipped on every other event, so each job after it
+  starts its condition with `!cancelled()` or `always()` and checks its
+  needs' results itself. Without that, GitHub skips the job whenever an
+  ancestor was skipped, and main stops publishing images and model packs.
+  `test_ci_contract.py` checks this.
 - The Codecov upload finds the parent run again from the GitHub API, the
   same way, and sends its reports for the new commit.
 

@@ -91,6 +91,11 @@ pub struct RouteConnect {
     /// `tls://` only: DER root certificates, each base64.
     #[serde(default)]
     pub trust_anchors: Vec<String>,
+    /// `tls://` only: the DNS name to send as SNI and verify the certificate
+    /// against, when it differs from the URL's host. It must be on a `tcp`
+    /// grant for the URL's port too.
+    #[serde(default)]
+    pub server_name: String,
 }
 
 /// `POST /sockets/send` body.
@@ -236,6 +241,7 @@ pub fn parse_socket_call(op: &str, body: &[u8]) -> Result<SocketCall, PluginErro
                     .map_err(|_| {
                         PluginError::invalid_params("a trust anchor is not valid base64")
                     })?,
+                server_name: route.server_name,
             };
             validate_socket_connect(&request)?;
             Ok(SocketCall::Connect(request))

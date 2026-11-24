@@ -777,6 +777,7 @@ async fn branch_context(state: &Arc<AppState>, node_id: &str) -> super::super::w
                 class: cfg.jobs.concurrency.network.max(1),
                 plugin_instance: cfg.jobs.concurrency.plugin_instance.max(1),
             },
+            node_bound: None,
         },
         shared_node_id: "shared-node".into(),
         state: Arc::clone(state),
