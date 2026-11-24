@@ -701,17 +701,25 @@ fn chirp_purchase_title_matches(query: &str, hit_title: &str) -> bool {
 /// # Errors
 ///
 /// Returns an error when the audiobook object is not a catalog record (no
-/// string `id`, or a field of the wrong type).
+/// string `id`, a blank one, or a field of the wrong type).
 pub fn audiobook_detail_record(
     answer: &serde_json::Value,
 ) -> bookclerk_storefront::Result<Option<CatalogHit>> {
     match answer.pointer("/data/audiobook") {
         None | Some(serde_json::Value::Null) => Ok(None),
-        Some(book) => serde_json::from_value::<CatalogAudiobook>(book.clone())
-            .map(|book| Some(catalog_hit(&book, String::from("details"))))
-            .map_err(|err| {
+        Some(book) => {
+            let book = serde_json::from_value::<CatalogAudiobook>(book.clone()).map_err(|err| {
                 bookclerk_storefront::SourceError::api(format!("chirp detail parse: {err}"))
-            }),
+            })?;
+            // The id is the record's product id and the title's last
+            // resort, so an audiobook without one names nothing usable.
+            if book.id.trim().is_empty() {
+                return Err(bookclerk_storefront::SourceError::api(
+                    "chirp detail names an audiobook without an id",
+                ));
+            }
+            Ok(Some(catalog_hit(&book, String::from("details"))))
+        }
     }
 }
 
