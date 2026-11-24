@@ -2329,18 +2329,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bookclerk-plugin-destination-b2"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bookclerk-plugin-sdk",
- "bookclerk-storage",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "bookclerk-plugin-destination-local"
 version = "0.1.0"
 dependencies = [
@@ -2757,7 +2745,6 @@ dependencies = [
  "bytes",
  "chrono",
  "fs4 1.1.0",
- "futures",
  "hex",
  "http-body-util",
  "libc",
@@ -2765,12 +2752,10 @@ dependencies = [
  "same-file",
  "serde",
  "serde_json",
- "sha1 0.11.0",
  "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
- "tokio-util",
  "tracing",
  "uuid",
  "windows-sys 0.61.2",

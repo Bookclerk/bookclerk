@@ -2,11 +2,10 @@
 //!
 //! [`QueueFeed`] turns a queue of bucket notifications into `changes`
 //! pages. The `s3` destination's queue is Amazon SQS (directly, through
-//! SNS, or through EventBridge; see [`crate::s3_events`]), the `r2`
-//! destination's a Cloudflare Queue (`crate::r2_queue`), and the `b2`
-//! destination's the host's store of its webhook requests
-//! (`crate::b2_feed`). Each `changes` call receives a page of messages and
-//! turns them into changes.
+//! SNS, or through EventBridge; see [`crate::s3_events`]), and the `r2`
+//! destination's a Cloudflare Queue (`crate::r2_queue`). Each `changes`
+//! call receives a page of messages and turns them into changes. (The
+//! TypeScript SDK's `QueueFeed` is the same cycle for workerd guests.)
 //!
 //! A message is deleted from the queue only once the host has the page: the
 //! next call's cursor names the pages the host has read, and their messages

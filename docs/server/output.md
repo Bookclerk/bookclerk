@@ -420,6 +420,7 @@ The queue works like an SQS queue for the `s3` plugin (see
 ## Backblaze B2
 
 The `b2` plugin writes to a Backblaze B2 bucket through B2's native API.
+It runs as a workerd isolate (TypeScript), like the metadata plugins.
 
 | Setting | Default | Notes |
 | --- | --- | --- |
@@ -431,24 +432,23 @@ The `b2` plugin writes to a Backblaze B2 bucket through B2's native API.
 
 It works like the other object stores, with these differences:
 
-- **Large files.** A file over 8 MiB goes up in parts, with at most
-  three parts' worth of memory held by the B2 code (two read ahead and
-  the part being sent). When the plugin's requests go through the host's
-  network proxy, the proxy step holds one more copy of the part in
-  flight, so plan for up to four parts. An upload that fails part way is cancelled. If the
-  cancel fails too, the unfinished file stays in the bucket (and is
-  billed) until a later delete of that name or a lifecycle rule removes
-  it.
+- **Large files.** A file over 8 MiB goes up in parts, with at most two
+  parts' worth of memory held by the plugin (it reads two ahead, and a
+  retry resends the part it holds). One plugin call may make at most
+  1,000 requests, so the parts of one file share an upload URL, and a
+  write whose length is known picks parts large enough to stay within
+  900 of them (20 MiB parts for an 18 GB file). A write of unknown length
+  uses 8 MiB parts, which caps it near 7 GB. An upload that fails part
+  way is cancelled. If the cancel fails too, the unfinished file stays in
+  the bucket (and is billed) until a later delete of that name or a
+  lifecycle rule removes it.
 - **Deletes remove every version.** B2 keeps old versions of a file.
   When Bookclerk deletes a file it deletes all of its versions, oldest
   first, so none stay billed behind a hide marker and a delete that stops
   part way never brings back an older version. A name with more than
   10,000 versions is refused instead of half deleted.
-- **Metadata fits the strictest bucket.** B2 limits a file's name and
-  stored metadata together (2,048 bytes on a bucket with encryption or
-  Object Lock). The checksum and commit token are always stored; the
-  ASIN, file times and title follow only while they fit, so a very long
-  title is left out of the metadata rather than failing the upload.
+- **Metadata.** Each file stores its SHA-256 and, for a staged write,
+  its commit token as B2 file info. A copy keeps both.
 - **Checked writes.** B2 cannot write a file only if it is new or
   unchanged. For such a write the plugin writes first, then reads the
   name's versions, and withdraws its own version when another program's
@@ -476,9 +476,15 @@ It works like the other object stores, with these differences:
    bookclerk plugins config set b2 application_key --secret
    ```
 
-4. Approve the plugin's network access when you enable it. It reaches
-   `*.backblazeb2.com` for the API and downloads and `*.backblaze.com` for
-   uploads, both on port 443.
+4. Approve the plugin's network access when you enable it. It fetches
+   from `*.backblazeb2.com` for the API and downloads and `*.backblaze.com`
+   for uploads. It also keeps its change feed's state in the library
+   database (`[[kv_namespaces]]`).
+
+   > [!NOTE]
+   > Version 0.2.0 moved the plugin from a native guest to a workerd
+   > isolate. Its grant changed from TCP ports to fetch domains plus a KV
+   > namespace, so an upgraded install asks you to approve it again.
 5. Deploy the plugin:
 
    ```sh

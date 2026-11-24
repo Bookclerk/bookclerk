@@ -54,9 +54,7 @@ bookclerk-player-api = { path = "../crates/bookclerk-player-api" }
 bookclerk-plugin-database-sqlite = { path = "../crates/bookclerk-plugins/platform/database-sqlite", features = ["host-helpers"] }
 bookclerk-storefront = { path = "../crates/bookclerk-storefront" }
 # s3_event and r2_event read bucket notification messages and queue
-# replies, b2_reply B2 API replies and b2_event B2 webhook bodies and
-# notification rules (no `s3` or `b2` feature: the
-# parsers have no network client).
+# replies (no `s3` feature: the parsers have no network client).
 bookclerk-storage = { path = "../crates/bookclerk-storage" }
 # window_policy drives the desktop window's custom-scheme policy.
 bookclerk-window-policy = { path = "../crates/bookclerk-window-policy" }
@@ -684,20 +682,6 @@ bench = false
 [[bin]]
 name = "r2_event"
 path = "fuzz_targets/r2_event.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "b2_reply"
-path = "fuzz_targets/b2_reply.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "b2_event"
-path = "fuzz_targets/b2_event.rs"
 test = false
 doc = false
 bench = false

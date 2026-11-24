@@ -1,11 +1,55 @@
 api_version = 3
 id = "b2"
 name = "Backblaze B2"
-version = "0.1.0"
+version = "0.2.0"
 logo = "https://www.google.com/s2/favicons?domain=backblaze.com&sz=128"
-runtime = "native"
-command = "./bookclerk-plugin-destination-b2"
+runtime = "workerd"
 entrypoints = ["storage"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[workerd.limits]
+cpu_ms = 120000
+subrequests = 1000
+
+[[modules]]
+name = "index.js"
+path = "index.js"
+type = "js"
+
+[[modules]]
+name = "destination.js"
+path = "destination.js"
+type = "js"
+
+[[modules]]
+name = "backend.js"
+path = "backend.js"
+type = "js"
+
+[[modules]]
+name = "feed.js"
+path = "feed.js"
+type = "js"
+
+[[modules]]
+name = "b2-api.js"
+path = "b2-api.js"
+type = "js"
+
+[[modules]]
+name = "b2-events.js"
+path = "b2-events.js"
+type = "js"
+
+[[modules]]
+name = "hash.js"
+path = "hash.js"
+type = "js"
 
 [triggers]
 jobs = ["stream_copy"]
@@ -75,7 +119,8 @@ description = "Turns on the change feed: 32 letters or digits B2 signs its event
 
 [secrets]
 
-[work_fs]
+[[kv_namespaces]]
+max_value_bytes = 1048576
 
 [[webhooks]]
 name = "changes"
@@ -91,11 +136,7 @@ secret_setting = "webhook_signing_secret"
 
 [capabilities.network]
 mode = "outbound"
-
-[[capabilities.network.tcp]]
-host = "*.backblazeb2.com"
-ports = [443]
-
-[[capabilities.network.tcp]]
-host = "*.backblaze.com"
-ports = [443]
+domains = [
+    "*.backblazeb2.com",
+    "*.backblaze.com",
+]

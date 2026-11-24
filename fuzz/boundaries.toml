@@ -238,20 +238,6 @@ input_from = "storage"
 side = "guest"
 artifacts = ["bookclerk"]
 
-[targets.b2_event]
-crate = "bookclerk-storage"
-boundary = "Backblaze B2 event notification webhook bodies and notification-rule replies, read by the b2 guest into change-feed entries and its own rules"
-input_from = "storage"
-side = "guest"
-artifacts = ["bookclerk"]
-
-[targets.b2_reply]
-crate = "bookclerk-storage"
-boundary = "Backblaze B2 native API replies (authorization, upload URLs, file versions, listings, parts, errors) and download headers, read by the b2 guest"
-input_from = "storage"
-side = "guest"
-artifacts = ["bookclerk"]
-
 [targets.socket_request]
 crate = "bookclerk-plugin-abi"
 boundary = "A guest's host-brokered socket request: the Sockets.connect URL, headers, subprotocols, heartbeat pairs and attachment, and the SocketMessage the host delivers to a SocketHandler"

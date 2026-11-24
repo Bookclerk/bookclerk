@@ -240,6 +240,7 @@ export type {
   PluginDescribe,
   PutResult,
   ReadOptions,
+  ByteRange,
   ReadResult,
   RetryOptions,
   ScalarLimits,

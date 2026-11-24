@@ -123,6 +123,7 @@ updates:
   # shipped modules/ import nothing from npm.
   - package-ecosystem: npm
     directories:
+      - "/crates/bookclerk-plugins/optional/destination-b2"
       - "/crates/bookclerk-plugins/optional/media-download"
       - "/crates/bookclerk-plugins/optional/ingress-cloudflare"
       - "/crates/bookclerk-plugins/optional/ingress-cloudflare-dns"

@@ -1,20 +1,68 @@
 api_version = 3
 id = "b2"
 name = "Backblaze B2"
-version = "0.1.0"
+version = "0.2.0"
 logo = "https://www.google.com/s2/favicons?domain=backblaze.com&sz=128"
-runtime = "native"
-command = "./bookclerk-plugin-destination-b2"
+runtime = "workerd"
 entrypoints = ["storage"]
+
+[workerd]
+compatibility_date = "2026-08-01"
+compatibility_flags = []
+main_module = "index.js"
+modules_dir = "modules"
+entrypoint = "default"
+
+[workerd.limits]
+cpu_ms = 120000
+# A large upload makes one request per part (the store keeps its parts
+# within 900) plus a few calls around them.
+subrequests = 1000
+
+# Emitted from `src/` by `npm run build`; CI fails when they drift.
+[[modules]]
+name = "index.js"
+path = "index.js"
+type = "js"
+
+[[modules]]
+name = "destination.js"
+path = "destination.js"
+type = "js"
+
+[[modules]]
+name = "backend.js"
+path = "backend.js"
+type = "js"
+
+[[modules]]
+name = "feed.js"
+path = "feed.js"
+type = "js"
+
+[[modules]]
+name = "b2-api.js"
+path = "b2-api.js"
+type = "js"
+
+[[modules]]
+name = "b2-events.js"
+path = "b2-events.js"
+type = "js"
+
+[[modules]]
+name = "hash.js"
+path = "hash.js"
+type = "js"
 
 [capabilities.network]
 mode = "outbound"
-tcp = [
+domains = [
     # Sign-in (api.backblazeb2.com), then the account's API and download
     # hosts (api<NNN>.backblazeb2.com, f<NNN>.backblazeb2.com).
-    { host = "*.backblazeb2.com", ports = [443] },
+    "*.backblazeb2.com",
     # Upload URLs (pod-<NNN>-<NNNN>-<NN>.backblaze.com).
-    { host = "*.backblaze.com", ports = [443] },
+    "*.backblaze.com",
 ]
 
 [vars]
@@ -88,7 +136,9 @@ secret_setting = "webhook_signing_secret"
 
 [secrets]
 
-[work_fs]
+[[kv_namespaces]]
+# The change feed's queue state and what it last did to the bucket's rules.
+max_value_bytes = 1048576
 
 [triggers]
 jobs = ["stream_copy"]

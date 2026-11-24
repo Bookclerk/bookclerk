@@ -294,17 +294,13 @@ paths = [
 
 [[test_input]]
 package = "bookclerk-storage"
-# The S3, R2 and B2 notification oracles and the B2 reply oracle are shared
-# with the replay test through `#[path]`.
+# The S3 and R2 notification oracles and the Cloudflare API oracle are
+# shared with the replay test through `#[path]`.
 paths = [
     "fuzz/corpus/s3_event/**",
     "fuzz/oracles/s3_event.rs",
     "fuzz/corpus/r2_event/**",
     "fuzz/oracles/r2_event.rs",
-    "fuzz/corpus/b2_reply/**",
-    "fuzz/oracles/b2_reply.rs",
-    "fuzz/corpus/b2_event/**",
-    "fuzz/oracles/b2_event.rs",
     "fuzz/corpus/cloudflare_api/**",
     "fuzz/oracles/cloudflare_api.rs",
 ]

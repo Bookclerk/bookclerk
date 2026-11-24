@@ -2335,7 +2335,9 @@ It is an ordinary storage guest: its settings and secrets reach it in
 `CONFIG` and `SECRETS`, and its network access is its declared
 `[capabilities.network]` grant.
 
-The optional `b2` destination talks to Backblaze B2's native API. It
+The optional `b2` destination is a TypeScript workerd guest on Backblaze
+B2's native API, built on the SDK's storage helpers (`ObjectStoreDestination`
+over its own `ObjectStore`, and `QueueFeed` over its webhook row). It
 declares `storage.translateKeys` (with the `s3` key rules),
 `storage.checkedWrite` and `storage.changes` besides copies: B2 has no
 conditional writes, so the guest writes, reads the name's versions and
@@ -2345,9 +2347,11 @@ event notifications from its `[[webhooks]]` row `changes` once the
 operator sets `webhook_signing_secret`, keeping the bucket's rules for
 its prefix itself (see
 [Following changes in a B2 bucket](../server/output.md#following-changes-in-a-b2-bucket));
-without it, every page is incomplete and the host lists. Its replies are
-read by `bookclerk-storage::b2_api`, and the webhook bodies and rule
-replies by `bookclerk-storage::b2_events`, both fuzzed boundaries.
+without it, every page is incomplete and the host lists. The feed keeps
+its state in a `[[kv_namespaces]]` binding. Its replies are read by
+`src/b2-api.ts`, and the webhook bodies and rule replies by
+`src/b2-events.ts`, both fuzzed boundaries
+([Storage guests](../contributing/fuzzing.md#storage-guests)).
 
 First-party S3 ships as `bookclerk-plugin-destination-s3`
 (`api_version = 3`). Its bucket, region, endpoint, prefix, naming
