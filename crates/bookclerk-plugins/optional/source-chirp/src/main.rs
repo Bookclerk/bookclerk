@@ -5,12 +5,12 @@
 use async_trait::async_trait;
 use bookclerk_plugin_sdk::{manifest_capabilities, manifest_media};
 use bookclerk_plugin_sdk::{
-    serve, Bindings, Brand, CatalogCapabilities, CatalogHit, ContentSource as ContentSourceRole,
-    DatabaseBinding, Entrypoints, ExpandCandidatesParams, FetchTitleParams, HealthOk, Invocation,
-    ListDealsParams, LoginParams, LoginResult, PlainFetch, PluginDescribe, PluginError,
-    PluginMigration, PluginWorker, PortalAuthMode, PurchaseHint, PurchaseHintParams,
-    PurchaseHintResult, PurchaseHintsParams, ScalarLimits, ScanPage, ScanParams,
-    SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
+    serve, Bindings, Brand, CatalogCapabilities, CatalogDetailParams, CatalogHit,
+    ContentSource as ContentSourceRole, DatabaseBinding, Entrypoints, ExpandCandidatesParams,
+    FetchTitleParams, HealthOk, Invocation, ListDealsParams, LoginParams, LoginResult, PlainFetch,
+    PluginDescribe, PluginError, PluginMigration, PluginWorker, PortalAuthMode, PurchaseHint,
+    PurchaseHintParams, PurchaseHintResult, PurchaseHintsParams, ScalarLimits, ScanPage,
+    ScanParams, SearchCatalogParams, FEATURE_SCALAR_LIMITS, PRODUCT_API_VERSION,
 };
 use bookclerk_scan_delta::SCAN_STATE_BINDING;
 use bookclerk_storefront::abi::{expand_seed_from_params, DEFAULT_LIST_DEALS_LIMIT};
@@ -43,13 +43,14 @@ impl PluginWorker for ChirpRoot {
                     "https://www.google.com/s2/favicons?domain=chirpbooks.com&sz=128".into(),
                 ),
             }),
-            // Chirp has no catalog detail lookup, and its search knows no ISBN
-            // or ASIN, so prices come from title searches with records.
+            // Chirp looks a title up by its own id (with its audio sample),
+            // but knows no ISBN or ASIN, so prices come from title searches
+            // with records.
             catalog: CatalogCapabilities {
                 detail_by_isbn: false,
                 price_by_isbn: false,
                 price_by_asin: false,
-                detail_by_product_id: false,
+                detail_by_product_id: true,
                 quality_offers: false,
             },
             ..PluginDescribe::default()
@@ -145,6 +146,18 @@ impl ContentSourceRole for ChirpContentSource {
             .search_catalog(&CatalogSearchOpts::from(params))
             .await
             .map(hits)
+            .map_err(internal)
+    }
+
+    /// The catalog record for a Chirp id, with its audio sample.
+    async fn catalog_detail(
+        &self,
+        params: CatalogDetailParams,
+    ) -> Result<Option<CatalogHit>, PluginError> {
+        self.catalog()
+            .catalog_detail(&params.product_id)
+            .await
+            .map(|hit| hit.map(Into::into))
             .map_err(internal)
     }
 

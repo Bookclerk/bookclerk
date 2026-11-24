@@ -12,6 +12,7 @@ export interface Env extends BookclerkEnv {
   CONFIG: {
     account_id: string;
     worker_name: string;
+    api_token_id: string | undefined;
     [key: string]: unknown;
   };
   /** `[secrets]` values sealed by the operator (present only when granted). */

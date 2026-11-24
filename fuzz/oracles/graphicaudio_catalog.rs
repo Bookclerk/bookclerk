@@ -23,7 +23,8 @@
 //!   count only comes with a score;
 //! - a price is 0 to 10,000,000 cents with a three-letter upper-case
 //!   currency, and its label is the dollar form of those cents (USD only);
-//! - the product URL and the cover are absolute `https` links;
+//! - the product URL, the cover and the audio sample are absolute `https`
+//!   links, the sample with no whitespace or control characters;
 //! - the synopsis is non-blank with trimmed lines and no runs of blank lines.
 
 use bookclerk_plugin_source_graphicaudio::parse_product_detail;
@@ -122,7 +123,16 @@ pub fn check(data: &[u8]) {
         }
         other => panic!("a price without a currency, or the reverse: {other:?}"),
     }
-    for link in [&hit.url, &hit.cover_url].into_iter().flatten() {
+    if let Some(sample) = &hit.sample_url {
+        assert!(
+            !sample.chars().any(|c| c.is_whitespace() || c.is_control()),
+            "sample {sample:?}"
+        );
+    }
+    for link in [&hit.url, &hit.cover_url, &hit.sample_url]
+        .into_iter()
+        .flatten()
+    {
         assert!(
             link.starts_with("https://") && link.len() > "https://".len(),
             "link {link:?}"

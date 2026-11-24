@@ -23,6 +23,7 @@ paths = [
     "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/_wire.py",
     "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/plugin_migration.py",
     "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/scan_page.py",
+    "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/object_store.py",
 ]
 # Injected into every workerd isolate: check the workerd-runtime guests,
 # not the whole installation.
@@ -48,6 +49,12 @@ paths = ["crates/bookclerk-integrations/src/portal/**"]
 [[test_input]]
 package = "bookclerk-cli"
 paths = ["docs/server/cli-reference.md"]
+
+[[test_input]]
+package = "bookclerk-storage"
+# key_syntax's shared-vector test reads the object-store key vectors that
+# the TypeScript and Python SDK tests also check.
+paths = ["packages/plugin-sdk/scripts/fixtures/object-store-keys.json"]
 
 [[test_input]]
 package = "bookclerk-plugin-manifest"
@@ -124,13 +131,15 @@ paths = [
     "fuzz/oracles/origin_request.rs",
 ]
 
-# The SMTP session oracle is shared by the fuzz target and the email
-# notifier's replay test through `#[path]`.
+# The SMTP session and checker answer oracles are shared by their fuzz
+# targets and the email notifier's replay tests through `#[path]`.
 [[test_input]]
 package = "bookclerk-plugin-notifier-email"
 paths = [
     "fuzz/corpus/smtp_session/**",
     "fuzz/oracles/smtp_session.rs",
+    "fuzz/corpus/checker_answers/**",
+    "fuzz/oracles/checker_answers.rs",
 ]
 
 # The guest SQL authorizer oracle is shared by the fuzz target and the
@@ -421,6 +430,11 @@ package = "bookclerk-plugin-source-graphicaudio"
 paths = ["fuzz/corpus/graphicaudio_catalog/**", "fuzz/oracles/graphicaudio_catalog.rs"]
 
 [[test_input]]
+package = "bookclerk-plugin-source-chirp"
+# The title detail oracle is shared with the replay test through `#[path]`.
+paths = ["fuzz/corpus/chirp_catalog_detail/**", "fuzz/oracles/chirp_catalog_detail.rs"]
+
+[[test_input]]
 package = "bookclerk-node-proto"
 # The frame oracle is shared with the replay test through `#[path]`.
 paths = ["fuzz/corpus/node_frame/**", "fuzz/oracles/node_frame.rs"]
@@ -503,6 +517,14 @@ package = "bookclerk-node-proto"
 paths = [
   "fuzz/corpus/node_account_bundle/**",
   "fuzz/oracles/node_account_bundle.rs",
+]
+
+[[test_input]]
+package = "bookclerk-node-proto"
+# The shared branch bootstrap oracle is shared with the replay test through `#[path]`.
+paths = [
+  "fuzz/corpus/shared_branch_bootstrap/**",
+  "fuzz/oracles/shared_branch_bootstrap.rs",
 ]
 
 [[test_input]]

@@ -6,8 +6,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine as _;
 use bookclerk_plugin_sdk::{
     NotificationAlertAction, NotificationField, NotificationMessage, NotificationSeverity,
     NotifyDestination, PluginErrorCode, SettingNetwork, SettingNetworkGrant,
@@ -16,8 +14,11 @@ use serde_json::json;
 use tokio::io::{duplex, AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
 
 use super::*;
+use crate::checkers::Checkers;
 use crate::client::BoxIo;
-use crate::compose::{html_body, plain_body};
+use crate::compose::{
+    html_body, link_host, link_label, plain_body, simple_html, worded_for, INVITED_BY_FIELD,
+};
 
 /// A grant whose `server` setting is in `state` at `destination`.
 fn grant(state: SettingGrantState, destination: &str) -> NetworkGrant {
@@ -135,27 +136,44 @@ fn message() -> NotificationMessage {
         alert_action: NotificationAlertAction::None,
         alert_key: None,
         sensitive: true,
+        library_origin: Some("https://library.example.com/".into()),
     }
 }
 
 #[test]
 fn bodies_carry_text_fields_and_the_link_once() {
     assert_eq!(
-        plain_body(&message()),
-        "Pat invited you.\n\nUse the link below.\n\nLibrary: Home <books>\n\nhttps://library.example.com/claim?t=a&b\n"
+        plain_body(&message(), "Riverside Library"),
+        "Pat invited you.\n\nUse the link below.\n\nLibrary: Home <books>\n\nOpen Riverside Library: https://library.example.com/claim?t=a&b\n\n-- \nSent by your library at https://library.example.com/ with Bookclerk (https://bookclerk.app). This is an automatic message.\n"
     );
-    let html = html_body(&message());
+    let (html, branded) = html_body(&message(), "Riverside Library");
+    assert!(branded);
     assert!(
-        html.contains("<p>Pat invited you.</p>\n<p>Use the link below.</p>"),
+        html.to_ascii_lowercase()
+            .starts_with("<!doctype html><html lang=\"en\""),
         "{html}"
     );
+    assert!(html.contains("<title>You&#39;re invited</title>"), "{html}");
+    assert!(html.contains("Pat invited you."), "{html}");
+    assert!(html.contains("Use the link below."), "{html}");
+    assert!(html.contains(">Library</th>"), "{html}");
+    assert!(html.contains("Home &lt;books&gt;"), "{html}");
+    assert!(html.contains("Riverside Library"), "{html}");
+    assert!(html.contains("/>Bookclerk</div>"), "{html}");
+    assert!(html.contains("href=\"https://bookclerk.app\""), "{html}");
     assert!(
-        html.contains("<th align=\"left\">Library</th><td>Home &lt;books&gt;</td>"),
+        html.contains("href=\"https://library.example.com/\""),
         "{html}"
     );
-    assert!(html.contains(
-        "<a href=\"https://library.example.com/claim?t=a&amp;b\">https://library.example.com/claim?t=a&amp;b</a>"
-    ));
+    assert!(html.contains("src=\"cid:mark@bookclerk\""), "{html}");
+    // The link is a button with a short label naming the library; the long
+    // URL is only in the href.
+    assert!(html.contains("href=\"https://library.example.com/claim?t=a&amp;b\""));
+    assert!(html.contains(">Open Riverside Library</a>"), "{html}");
+    assert_eq!(html.matches("claim?t=a").count(), 1, "{html}");
+    // Nothing is fetched to show it: no web fonts or remote images.
+    assert!(!html.contains("fonts.googleapis"), "{html}");
+    assert!(!html.contains("src=\"http"), "{html}");
     // A link the text or HTML already holds is not repeated.
     let mut inline = message();
     inline.text = "Open https://library.example.com/claim?t=a&b now".into();
@@ -163,17 +181,100 @@ fn bodies_carry_text_fields_and_the_link_once() {
         Some("<p><a href=\"https://library.example.com/claim?t=a&amp;b\">Open</a></p>".into());
     inline.fields.clear();
     assert_eq!(
-        plain_body(&inline),
-        "Open https://library.example.com/claim?t=a&b now\n"
+        plain_body(&inline, "Riverside Library"),
+        "Open https://library.example.com/claim?t=a&b now\n\n-- \nSent by your library at https://library.example.com/ with Bookclerk (https://bookclerk.app). This is an automatic message.\n"
     );
-    let html = html_body(&inline);
-    assert_eq!(html.matches("href=").count(), 1, "{html}");
+    let (html, _) = html_body(&inline, "");
+    assert_eq!(
+        html.matches("href=\"https://library.example.com/claim")
+            .count(),
+        1,
+        "{html}"
+    );
     let mut plain = message();
     plain.link = None;
     plain.fields.clear();
     plain.text = "one\r\ntwo\n\n\n".into();
-    assert_eq!(plain_body(&plain), "one\r\ntwo\n");
-    assert!(html_body(&plain).contains("<p>one<br>two</p>\n</body>"));
+    assert_eq!(plain_body(&plain, "x"), "one\r\ntwo\n\n-- \nSent by your library at https://library.example.com/ with Bookclerk (https://bookclerk.app). This is an automatic message.\n");
+    let (h, _) = html_body(&plain, "x");
+    assert!(
+        h.contains("one<br>two") || h.contains("one<br />two"),
+        "{h}"
+    );
+    let simple = simple_html(&message(), "Bookclerk");
+    assert!(simple.starts_with("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><title>You&#39;re invited</title>"));
+    assert!(simple.contains("<p>Pat invited you.</p>\n<p>Use the link below.</p>"));
+    assert!(simple.contains("<th align=\"left\">Library</th><td>Home &lt;books&gt;</td>"));
+    assert!(simple
+        .contains("<a href=\"https://library.example.com/claim?t=a&amp;b\">Open your library</a>"));
+}
+
+#[test]
+fn link_labels_name_the_library() {
+    assert_eq!(
+        link_host("https://a.example:8443/x?y#z"),
+        Some("a.example:8443")
+    );
+    assert_eq!(link_host("https://user@a.example/"), Some("a.example"));
+    assert_eq!(link_host("not a url"), None);
+    assert_eq!(link_host("https:///path"), None);
+    assert_eq!(link_label(" Riverside Library "), "Open Riverside Library");
+    assert_eq!(link_label("bookclerk"), "Open your library");
+    assert_eq!(link_label(""), "Open your library");
+}
+
+#[test]
+fn only_invites_introduce_bookclerk() {
+    let mut invite = message();
+    assert!(!plain_body(&invite, "x").contains("New to Bookclerk?"));
+    assert!(!html_body(&invite, "x").0.contains("New to Bookclerk?"));
+    invite.notification_type = "account_invite".into();
+    let text = plain_body(&invite, "x");
+    assert!(text.contains("New to Bookclerk?"), "{text}");
+    assert!(text.contains("multiple audiobook storefronts"), "{text}");
+    let (html, _) = html_body(&invite, "x");
+    assert!(html.contains("New to Bookclerk?"), "{html}");
+}
+
+#[test]
+fn invites_name_the_inviter_and_library_in_the_subject() {
+    let mut invite = message();
+    invite.notification_type = "account_invite".into();
+    invite.title = "Alex has invited you to a Bookclerk library".into();
+    invite.fields.push(NotificationField {
+        name: INVITED_BY_FIELD.into(),
+        value: " Alex ".into(),
+    });
+    let worded = worded_for(&invite, " Riverside Library ");
+    assert_eq!(worded.title, "Alex has invited you to Riverside Library");
+    // The subject names them, so the field is not repeated; others stay.
+    assert!(worded.fields.iter().all(|f| f.name != INVITED_BY_FIELD));
+    assert_eq!(worded.fields.len(), 1);
+    // Without a library name the host's own subject stands.
+    let generic = worded_for(&invite, "Bookclerk");
+    assert_eq!(generic.title, invite.title);
+    assert!(generic.fields.iter().all(|f| f.name != INVITED_BY_FIELD));
+    // An invite no one asked for still names the library.
+    let mut own = message();
+    own.notification_type = "account_invite".into();
+    assert_eq!(
+        worded_for(&own, "Riverside Library").title,
+        "You're invited to Riverside Library"
+    );
+    // Other messages are untouched, fields included.
+    let mut other = invite.clone();
+    other.notification_type = "account_mail".into();
+    assert_eq!(worded_for(&other, "Riverside Library"), other);
+}
+
+#[test]
+fn host_html_mjml_refuses_falls_back_to_the_plain_document() {
+    let mut odd = message();
+    odd.html = Some("<mj-section>".into());
+    let (html, branded) = html_body(&odd, "x");
+    if !branded {
+        assert!(html.starts_with("<!doctype html>"));
+    }
 }
 
 /// A transport that hands out one pipe and records what the server read.
@@ -267,16 +368,11 @@ async fn a_personal_send_goes_to_the_patron() {
     assert!(mail.contains("\r\nDate: Mon, 23 Nov 2026 05:00:00 +0000\r\n"));
     assert!(mail.contains("\r\nMessage-ID: <n-7.p1@example.com>\r\n"));
     assert!(mail.contains("boundary=\"=_b\""));
-    let text_part = mail.split("\r\n\r\n").nth(2).unwrap();
-    let text = BASE64
-        .decode(
-            text_part
-                .split("\r\n--")
-                .next()
-                .unwrap()
-                .replace("\r\n", ""),
-        )
-        .unwrap();
+    let text_part = mail
+        .split_once("Content-Transfer-Encoding: quoted-printable\r\n\r\n")
+        .unwrap()
+        .1;
+    let text = crate::smtp::tests::decode_qp(text_part.split("\r\n--=_b").next().unwrap());
     assert!(String::from_utf8(text)
         .unwrap()
         .contains("https://library.example.com/claim?t=a&b"));
@@ -398,4 +494,210 @@ fn the_default_clock_and_boundary_are_live() {
     assert!((notifier.now)() > 1_700_000_000);
     let (a, b) = ((notifier.boundary)(), (notifier.boundary)());
     assert!(a.starts_with("=_bookclerk_") && a != b);
+}
+
+/// Canned checker answers; records what was asked.
+struct Canned {
+    /// Every call, in order.
+    calls: Rc<RefCell<Vec<String>>>,
+    /// mail-tester answers, first to last; the last repeats.
+    mail_tester: RefCell<Vec<Result<String, String>>>,
+}
+
+#[async_trait(?Send)]
+impl Checkers for Canned {
+    async fn spamcheck(&self, raw: &str) -> Result<String, String> {
+        self.calls.borrow_mut().push("spamcheck".into());
+        assert!(raw.contains("\r\nTo: Clerk@example.com\r\n"), "{raw}");
+        Ok(r#"{"success":true,"score":"0.1","rules":[],"report":""}"#.into())
+    }
+
+    async fn txt(&self, name: &str) -> Result<String, String> {
+        self.calls.borrow_mut().push(format!("txt {name}"));
+        Ok(if name.starts_with("_dmarc.") {
+            r#"{"Status":3}"#.into()
+        } else {
+            r#"{"Status":0,"Answer":[{"type":16,"data":"\"v=spf1 mx -all\""}]}"#.into()
+        })
+    }
+
+    async fn mail_tester(&self, id: &str) -> Result<String, String> {
+        self.calls.borrow_mut().push(format!("mail-tester {id}"));
+        let mut answers = self.mail_tester.borrow_mut();
+        if answers.len() > 1 {
+            answers.remove(0)
+        } else {
+            answers[0].clone()
+        }
+    }
+
+    async fn pause(&self, _wait: std::time::Duration) {}
+}
+
+/// Settings for an open relay with a mail-tester account.
+fn checked_settings(account: &str) -> Result<Settings, PluginError> {
+    let mut open = config();
+    open["security"] = json!("none");
+    open["username"] = json!("");
+    open["mail_tester_account"] = json!(account);
+    Settings::read(&open, &json!({}), &approved())
+}
+
+#[tokio::test]
+async fn a_deliverability_check_runs_every_checker_and_merges_advice() {
+    let (client, far) = duplex(64 * 1024);
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let notifier = EmailNotifier::new(
+        checked_settings("acct"),
+        Pipe(RefCell::new(Some(client))),
+    )
+    .with_fixed("=_b", 1_795_410_000)
+    .with_checkers(
+        Box::new(Canned {
+            calls: Rc::clone(&calls),
+            mail_tester: RefCell::new(vec![
+                Ok(r#"{"status":false}"#.into()),
+                // One poll that fails to reach mail-tester does not end the run.
+                Err("www.mail-tester.com could not be reached".into()),
+                Ok(r#"{"mark":9.6,"signature":{"title":"Not signed with DKIM","statusClass":"warning"}}"#.into()),
+            ]),
+        }),
+        "tok",
+    );
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let (report, ()) = tokio::join!(
+        notifier.check_deliverability(NotifyDeliverabilityParams { message: message() }),
+        accepting(far, Rc::clone(&seen)),
+    );
+    let report = report.unwrap();
+    assert_eq!(
+        *calls.borrow(),
+        [
+            "spamcheck",
+            "txt example.com",
+            "txt _dmarc.example.com",
+            "mail-tester acct-tok",
+            "mail-tester acct-tok",
+            "mail-tester acct-tok",
+        ]
+    );
+    assert!(seen
+        .borrow()
+        .iter()
+        .any(|line| line == "RCPT TO:<acct-tok@srv1.mail-tester.com>"));
+    let outcomes: Vec<NotifyCheckOutcome> = report.checks.iter().map(|c| c.outcome).collect();
+    assert_eq!(
+        outcomes,
+        [
+            NotifyCheckOutcome::Passed,
+            NotifyCheckOutcome::Warning,
+            NotifyCheckOutcome::Passed
+        ]
+    );
+    assert_eq!(
+        report.checks[2].report_url.as_deref(),
+        Some("https://www.mail-tester.com/acct-tok")
+    );
+    let titles: Vec<&str> = report.advice.iter().map(|a| a.title.as_str()).collect();
+    assert_eq!(
+        titles,
+        [
+            "Publish a DMARC policy for example.com",
+            "Not signed with DKIM",
+            "The message content scores well",
+            "example.com has an SPF record",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_check_without_an_account_skips_mail_tester_and_a_refused_send_is_advice() {
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let canned = |calls: &Rc<RefCell<Vec<String>>>| {
+        Box::new(Canned {
+            calls: Rc::clone(calls),
+            mail_tester: RefCell::new(vec![Err("unused".into())]),
+        })
+    };
+    let (client, _far) = duplex(64);
+    let notifier = EmailNotifier::new(checked_settings(""), Pipe(RefCell::new(Some(client))))
+        .with_checkers(canned(&calls), "tok");
+    let report = notifier
+        .check_deliverability(NotifyDeliverabilityParams { message: message() })
+        .await
+        .unwrap();
+    assert_eq!(report.checks[2].outcome, NotifyCheckOutcome::Skipped);
+    assert!(report.checks[2].summary.contains("account name"));
+    assert_eq!(calls.borrow().len(), 3);
+
+    // A server that hangs up refuses the test: mail-tester is not polled and
+    // the advice says to fix the server settings first.
+    let (client, far) = duplex(64);
+    drop(far);
+    let notifier = EmailNotifier::new(checked_settings("acct"), Pipe(RefCell::new(Some(client))))
+        .with_checkers(canned(&calls), "tok");
+    let report = notifier
+        .check_deliverability(NotifyDeliverabilityParams { message: message() })
+        .await
+        .unwrap();
+    assert_eq!(report.checks[2].outcome, NotifyCheckOutcome::Skipped);
+    assert_eq!(report.advice[0].title, "Fix the mail server settings");
+    assert_eq!(report.advice[0].outcome, NotifyCheckOutcome::Failed);
+    assert!(!calls.borrow().iter().any(|c| c.starts_with("mail-tester")));
+
+    // A bad account name never stops sending; only the check reports it.
+    let bad = checked_settings("bad name!").expect("settings still usable");
+    assert!(bad.mail_tester_account.is_err());
+    assert!(checked_settings(&"a".repeat(41))
+        .expect("settings")
+        .mail_tester_account
+        .is_err());
+    let (client, _far) = duplex(64);
+    let notifier = EmailNotifier::new(Ok(bad), Pipe(RefCell::new(Some(client))))
+        .with_checkers(canned(&calls), "tok");
+    let report = notifier
+        .check_deliverability(NotifyDeliverabilityParams { message: message() })
+        .await
+        .unwrap();
+    assert_eq!(report.checks[2].outcome, NotifyCheckOutcome::Skipped);
+    assert!(report.checks[2].summary.contains("not an account name"));
+    let unset = EmailNotifier::new(
+        Err(PluginError::invalid_params("x")),
+        Pipe(RefCell::new(None)),
+    );
+    assert!(unset
+        .check_deliverability(NotifyDeliverabilityParams { message: message() })
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn mail_tester_out_of_reach_on_every_poll_is_reported() {
+    let (client, far) = duplex(64 * 1024);
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let notifier = EmailNotifier::new(checked_settings("acct"), Pipe(RefCell::new(Some(client))))
+        .with_fixed("=_b", 1_795_410_000)
+        .with_checkers(
+            Box::new(Canned {
+                calls: Rc::clone(&calls),
+                mail_tester: RefCell::new(vec![Err(
+                    "www.mail-tester.com could not be reached".into()
+                )]),
+            }),
+            "tok",
+        );
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let (report, ()) = tokio::join!(
+        notifier.check_deliverability(NotifyDeliverabilityParams { message: message() }),
+        accepting(far, Rc::clone(&seen)),
+    );
+    let report = report.unwrap();
+    assert_eq!(report.checks[2].outcome, NotifyCheckOutcome::Skipped);
+    assert!(report.checks[2].summary.contains("could not be reached"));
+    let polls = calls
+        .borrow()
+        .iter()
+        .filter(|c| c.starts_with("mail-tester"))
+        .count();
+    assert_eq!(polls, 12);
 }

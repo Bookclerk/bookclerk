@@ -1044,6 +1044,18 @@ pub trait Notifier {
             label: None,
         })
     }
+
+    /// Runs the operator's deliverability check on `params.message`: sends
+    /// it the way real messages go, asks checker services how it scores and
+    /// merges their findings into advice. Only plugins that declare
+    /// `[notifier].deliverability_check` implement it; the default is
+    /// `unsupported`.
+    async fn check_deliverability(
+        &self,
+        _params: crate::NotifyDeliverabilityParams,
+    ) -> Result<crate::NotifyDeliverabilityReport> {
+        Err(PluginError::unsupported("checkDeliverability"))
+    }
 }
 
 /// `ai` entrypoint: serves models to the host and, through the `AI`

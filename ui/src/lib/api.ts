@@ -188,6 +188,11 @@ export interface WorkSummary {
   length_minutes?: number | null;
   /** When the newest purchase a store reported happened (ISO-8601). */
   purchased_at?: string | null;
+  /**
+   * Held editions an acquire would still queue (neither acquired, queued
+   * nor downloading); the row offers Acquire while it is above zero.
+   */
+  acquirable_editions?: number;
 }
 
 /** A page of works and the cursor of the next one. */
@@ -2347,6 +2352,8 @@ export interface PluginSettingsGroup {
   storage_sync?: StorageSyncView;
   /** The models a model plugin offers, as this node has them; absent for other plugins. */
   models?: PluginModelsView;
+  /** True when the plugin is a notifier that can check its own deliverability. */
+  deliverability_check?: boolean;
 }
 
 /**
@@ -3012,6 +3019,67 @@ export async function provisionPluginInstance(
         grant: { kind: "api_token", token: body.token },
         inputs: body.inputs,
       }),
+    },
+  );
+  return parseJson(res);
+}
+
+/**
+ * How one deliverability check or piece of advice came out: `failed` needs a
+ * fix, `warning` could be better, `skipped` did not run.
+ */
+export type DeliverabilityOutcome = "passed" | "warning" | "failed" | "skipped";
+
+/** One checker's result in a deliverability report. */
+export interface DeliverabilityCheck {
+  /** The checker's name. */
+  service: string;
+  /** How it came out. */
+  outcome: DeliverabilityOutcome;
+  /** One line on the result. */
+  summary: string;
+  /** The checker's full report, when it has one. */
+  report_url?: string;
+}
+
+/** One thing to do, merged from every check. */
+export interface DeliverabilityAdvice {
+  /** `failed` is a fix, `warning` an improvement, `passed` already right. */
+  outcome: DeliverabilityOutcome;
+  /** Short heading. */
+  title: string;
+  /** What to change and where. */
+  detail: string;
+  /** The checks that raised it. */
+  sources: string[];
+}
+
+/** What a notifier's deliverability check found. */
+export interface DeliverabilityReport {
+  /** One entry per checker. */
+  checks: DeliverabilityCheck[];
+  /** What to do, most urgent first. */
+  advice: DeliverabilityAdvice[];
+}
+
+/**
+ * Asks a notifier to check how well its messages would be delivered: it
+ * sends a sample through each checker it supports and merges the results.
+ * Takes up to two minutes.
+ *
+ * @param instanceId - The notifier's plugin instance id.
+ * @returns The checks and the merged advice.
+ */
+export async function checkNotifierDeliverability(
+  instanceId: string,
+): Promise<DeliverabilityReport> {
+  const res = await fetch(
+    `/api/notifications/notifiers/${encodeURIComponent(instanceId)}/deliverability`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
     },
   );
   return parseJson(res);
@@ -5395,22 +5463,40 @@ export async function fetchTitleReviews(body: TitleReviewsQuery): Promise<TitleR
   return (await parseJson(res)) as TitleReviewsPage;
 }
 
-/** The answer of `POST /api/discover/title-sample`. */
+/** The body of `POST /api/discover/title-sample`. */
+export type TitleSampleQuery = TitleMetaQuery & {
+  /**
+   * The library edition the details show, when the library holds one; the
+   * stores are asked only when this node cannot cut a sample from it.
+   */
+  edition_id?: string | null;
+};
+
+/**
+ * The answer of `POST /api/discover/title-sample`: at most one path; none
+ * means no sample can be played here.
+ */
 export type TitleSample = {
   /**
+   * Same-origin path of a sample cut from the held edition, when the
+   * caller may hear it and this node reaches its audio.
+   */
+  edition_sample_path?: string | null;
+  /**
    * Same-origin path of a storefront's public sample, served through this
-   * daemon; absent when no store offers one.
+   * daemon; absent when an edition sample is offered or no store offers one.
    */
   sample_path?: string | null;
 };
 
 /**
- * Asks the storefronts that listed a title for their public audio sample.
+ * Asks the daemon which sample a title's details can play: one cut from
+ * the held edition, else a storefront's public sample, else none.
  *
- * @param body - The title, as sent to title-meta.
- * @returns The sample's same-origin path, or `null` when no store offers one.
+ * @param body - The title, as sent to title-meta, and the held edition.
+ * @returns The daemon's answer.
  */
-export async function fetchTitleSample(body: TitleMetaQuery): Promise<string | null> {
+export async function fetchTitleSample(body: TitleSampleQuery): Promise<TitleSample> {
   const res = await fetchWithTimeout(
     "/api/discover/title-sample",
     {
@@ -5422,8 +5508,7 @@ export async function fetchTitleSample(body: TitleMetaQuery): Promise<string | n
     20_000,
     "Title sample",
   );
-  const answer = (await parseJson(res)) as TitleSample;
-  return answer.sample_path?.trim() || null;
+  return (await parseJson(res)) as TitleSample;
 }
 
 /**
@@ -5492,6 +5577,12 @@ export async function searchCatalog(
     /** When true, do not hard-filter by language. */
     allLanguages?: boolean;
     filters?: CatalogSearchFilters;
+    /**
+     * `"store"` keeps the stores' order without asking the embedding
+     * model, for suggestions shown while the person types. Default: the
+     * server orders a relevance page with its meaning when it can.
+     */
+    rank?: "meaning" | "store";
   },
 ): Promise<CatalogSearchPage> {
   const trimmed = q.trim();
@@ -5516,6 +5607,7 @@ export async function searchCatalog(
   if (opts?.field) sp.set("field", opts.field);
   sp.set("lang", opts?.lang?.trim() || browserCatalogLanguage());
   if (opts?.allLanguages) sp.set("all_languages", "true");
+  if (opts?.rank) sp.set("rank", opts.rank);
   const f = opts?.filters;
   if (f?.authors?.length) sp.set("author", f.authors.join(","));
   if (f?.narrators?.length) sp.set("narrator", f.narrators.join(","));

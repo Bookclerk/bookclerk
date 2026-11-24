@@ -7,8 +7,8 @@
  * inside a proxied stream, from any client on the internet. Each seed in
  * `fuzz/h2/` (hex HTTP/2 bytes from the preface on), `fuzz/hpack/` (hex
  * header blocks), `fuzz/capnp/` (hex framed RPC messages), `fuzz/head/`
- * (a JSON field list) and `fuzz/wsframe/` (hex WebSocket frames a client
- * sends) is replayed, then seeded mutations are checked against oracles
+ * (a JSON field list), `fuzz/wsframe/` (hex WebSocket frames a client
+ * sends) and `fuzz/api/` (API answers) is replayed, then seeded mutations are checked against oracles
  * written from the protocols' rules rather than from the parsers:
  *
  * - HTTP/2 frames: RFC 9113's framing rules restated over the whole input,
@@ -20,7 +20,10 @@
  *   straight from the bytes;
  * - request fields: RFC 9113 section 8.3's rules restated;
  * - WebSocket frames: an independent RFC 6455 decoder over the whole
- *   input, and the same answer whatever the chunk boundaries.
+ *   input, and the same answer whatever the chunk boundaries;
+ * - Cloudflare API answers to the guided setup (`fuzz/api/`, JSON text):
+ *   the envelope, account, tunnel, zone, record and tunnel token rules
+ *   restated over `JSON.parse`'s value.
  *
  * `FUZZ_SEED` and `FUZZ_ITERATIONS` pick another run; a failure prints the
  * seed, iteration and input that reproduce it.
@@ -28,6 +31,17 @@
 
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
+
+import {
+  SetupError,
+  parseAccounts,
+  parseEnvelope,
+  parseRecords,
+  parseTunnel,
+  parseTunnelToken,
+  parseTunnels,
+  parseZone,
+} from "../src/cfapi.ts";
 import { test } from "node:test";
 
 import { requestHead } from "../src/agent.ts";
@@ -915,4 +929,139 @@ test("fuzz: WebSocket frames match an independent decoder, whatever the chunking
       if (actual.error === null) assert.deepEqual(actual.messages, expected.messages);
     }
   });
+});
+
+// ---------------------------------------------------------- API answers
+
+/**
+ * Whether a value is one of Cloudflare's ids, by character.
+ *
+ * @param id - Candidate.
+ * @returns The answer.
+ */
+function hexId(id: unknown): id is string {
+  return (
+    typeof id === "string" &&
+    id.length === 32 &&
+    [...id].every((c) => "0123456789abcdef".includes(c))
+  );
+}
+
+/**
+ * Whether a value is a lowercase UUID, by character.
+ *
+ * @param id - Candidate.
+ * @returns The answer.
+ */
+function uuid(id: unknown): id is string {
+  if (typeof id !== "string" || id.length !== 36) return false;
+  return [...id].every((c, i) =>
+    [8, 13, 18, 23].includes(i) ? c === "-" : "0123456789abcdef".includes(c),
+  );
+}
+
+/**
+ * Whether a value is a JSON object (not null or an array).
+ *
+ * @param value - Candidate.
+ * @returns The answer.
+ */
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The tunnel rule restated: a live tunnel with a UUID id and a string name.
+ *
+ * @param value - Candidate.
+ * @returns The tunnel, or `null`.
+ */
+function tunnelOracle(value: unknown): { id: string; name: string } | null {
+  if (!isObject(value) || !uuid(value.id) || typeof value.name !== "string") return null;
+  if (value.deleted_at !== undefined && value.deleted_at !== null) return null;
+  return { id: value.id, name: value.name };
+}
+
+test("fuzz: API answers match the envelope, account, tunnel, zone, record and token rules", () => {
+  fuzz(
+    "api",
+    fromText,
+    (input) => {
+      const text = new TextDecoder().decode(input);
+      let value: unknown;
+      let json = true;
+      try {
+        value = JSON.parse(text);
+      } catch {
+        json = false;
+      }
+      for (const status of [200, 404]) {
+        if (!json || !isObject(value)) {
+          assert.throws(() => parseEnvelope(status, text), SetupError);
+          continue;
+        }
+        const envelope = parseEnvelope(status, text);
+        if (status === 200 && value.success === true) {
+          assert.deepEqual(envelope, { ok: true, result: value.result });
+        } else {
+          const first: unknown = Array.isArray(value.errors) ? value.errors[0] : undefined;
+          const message = isObject(first) && typeof first.message === "string" ? first.message : "";
+          assert.deepEqual(envelope, { ok: false, message: message.slice(0, 200) });
+        }
+      }
+      if (!json || !isObject(value)) return;
+      const result = value.result;
+      assert.deepEqual(parseTunnel(result), tunnelOracle(result));
+      const usable =
+        typeof result === "string" &&
+        result.length >= 1 &&
+        result.length <= 1024 &&
+        [...result].every((c) => c >= "!" && c <= "~");
+      if (usable) assert.equal(parseTunnelToken(result), result);
+      else assert.throws(() => parseTunnelToken(result), SetupError);
+      const name = "books.example.com";
+      if (!Array.isArray(result)) {
+        assert.throws(() => parseAccounts(result), SetupError);
+        assert.throws(() => parseTunnels(result, name), SetupError);
+        assert.throws(() => parseZone(result, name), SetupError);
+        assert.throws(() => parseRecords(result, name), SetupError);
+        return;
+      }
+      assert.deepEqual(
+        parseAccounts(result),
+        result
+          .filter((a: unknown) => isObject(a) && hexId(a.id))
+          .map((a) => (a as { id: string }).id),
+      );
+      const tunnel = result
+        .map(tunnelOracle)
+        .find((t) => t !== null && t.name === `bookclerk-${name}`);
+      assert.deepEqual(parseTunnels(result, `bookclerk-${name}`), tunnel ?? null);
+      for (const zoneName of ["example.com", name]) {
+        const zone = result.find(
+          (z: unknown) =>
+            isObject(z) && hexId(z.id) && z.name === zoneName && z.status === "active",
+        ) as Record<string, unknown> | undefined;
+        assert.equal(parseZone(result, zoneName), zone === undefined ? null : zone.id);
+      }
+      const records = result
+        .filter(
+          (r: unknown): r is Record<string, unknown> =>
+            isObject(r) &&
+            hexId(r.id) &&
+            typeof r.type === "string" &&
+            r.name === name &&
+            typeof r.content === "string",
+        )
+        .map((r) => ({
+          id: r.id,
+          type: r.type,
+          content: r.content,
+          proxied: r.proxied === true,
+          comment: typeof r.comment === "string" ? r.comment : "",
+        }));
+      assert.deepEqual(parseRecords(result, name), records);
+    },
+    true,
+  );
 });

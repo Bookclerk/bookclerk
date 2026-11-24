@@ -264,8 +264,27 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         subjects TEXT,
         categories TEXT,
         cover_url TEXT,
+        text_version TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
+    )",
+    ),
+    // A work's description, subjects or categories too wide for one cell,
+    // or for the work's row to fit one reply, on the database plugin, cut
+    // into pieces joined again in `seq` order. Every piece carries its
+    // text's piece count (`parts`). The pieces go in first under a new
+    // `version`; the work's row then names that version (`text_version`,
+    // the text's own column empty), and the batch that renames it drops
+    // the pieces it no longer names.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS work_text_parts (
+        work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+        version TEXT NOT NULL,
+        field TEXT NOT NULL CHECK (field IN ('description', 'subjects', 'categories')),
+        seq INTEGER NOT NULL,
+        parts INTEGER NOT NULL,
+        body TEXT NOT NULL,
+        PRIMARY KEY (work_id, version, field, seq)
     )",
     ),
     MigrationOp::Schema(r"CREATE INDEX IF NOT EXISTS idx_works_match ON works(match_key)"),
@@ -984,6 +1003,12 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     MigrationOp::Schema(
         r"CREATE INDEX IF NOT EXISTS idx_domain_events_wake_pending ON domain_events(created_at, id) WHERE wake_pending = 1",
     ),
+    // Prefix reads of one event type's dedup keys across accounts and
+    // sources: whether an edition's acquire state changed through any of
+    // its holdings since its last `book_acquired`.
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_domain_events_type_key ON domain_events(queue_name, event_type, dedup_key)",
+    ),
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS event_deliveries (
         id TEXT PRIMARY KEY NOT NULL,
@@ -1198,10 +1223,28 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         schema_version INTEGER NOT NULL,
         revision INTEGER NOT NULL,
         document_json TEXT NOT NULL,
+        document_parts INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL,
         updated_by TEXT NOT NULL,
         write_operation_id TEXT NOT NULL,
         PRIMARY KEY (scope_type, scope_id, namespace)
+    )",
+    ),
+    // A configuration document too wide for one cell or statement of the
+    // database plugin, cut into pieces joined again in `seq` order. The
+    // pieces go in under the write's operation id, in the batch that
+    // replaces the document or before it; the document row then names that
+    // operation and its piece count (its `document_json` empty), and the
+    // same batch drops every piece the row does not name.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS configuration_document_parts (
+        scope_type TEXT NOT NULL,
+        scope_id TEXT NOT NULL,
+        namespace TEXT NOT NULL,
+        parts_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        body TEXT NOT NULL,
+        PRIMARY KEY (scope_type, scope_id, namespace, parts_id, seq)
     )",
     ),
     MigrationOp::Schema(
@@ -1518,7 +1561,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         primary_key TEXT NOT NULL,
         manifest_json TEXT NOT NULL,
         received_json TEXT NOT NULL DEFAULT '[]',
-        state TEXT NOT NULL CHECK (state IN ('open', 'committed', 'aborted')),
+        state TEXT NOT NULL CHECK (state IN ('open', 'committed', 'aborted', 'discarding')),
         created_at TEXT NOT NULL,
         expires_at TEXT NOT NULL,
         committed_at TEXT
@@ -1775,7 +1818,10 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // `sort_series`, `length_minutes` and `purchased_at` are sort keys:
     // series then position (works with no series last), the longest held
     // edition's runtime (0 when unknown) and the newest purchase time
-    // (empty when no store reported one). `facets_ready` is 1 once every
+    // (empty when no store reported one). `acquirable_editions` counts the
+    // held editions an acquire would still queue (not acquired, queued or
+    // downloading), so the list offers Acquire beside an acquired one.
+    // `facets_ready` is 1 once every
     // `library_work_facets` row of this refresh is written: a patron scope
     // admits only such rows, so a half-written refresh hides the work
     // rather than slipping it past an exclude rule.
@@ -1799,7 +1845,8 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         length_minutes INTEGER NOT NULL,
         purchased_at TEXT NOT NULL,
         refreshed_at TEXT NOT NULL,
-        facets_ready INTEGER NOT NULL DEFAULT 0
+        facets_ready INTEGER NOT NULL DEFAULT 0,
+        acquirable_editions INTEGER NOT NULL DEFAULT 0
     )",
     ),
     MigrationOp::Schema(
@@ -2011,6 +2058,30 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         UNIQUE (library_id, plugin_key, account_id, marketplace, product_id),
         FOREIGN KEY (plugin_key, account_id) REFERENCES accounts(plugin_key, account_id) ON DELETE CASCADE
     )",
+    ),
+    // On a branch: the files a host job copied to this install's own
+    // destinations for a library it joined (`control_plane::link_copies`),
+    // one row per destination and key. A copy refuses a key another title
+    // holds instead of overwriting it, and a copy whose attempt never
+    // finished (`copying`, the daemon stopped mid-title) is removed on the
+    // next start. `title_ref` is the title's call number on that library
+    // (its edition), else its holding id there; `replaced` is 1 when the
+    // attempt took over a kept copy of the same title.
+    MigrationOp::Schema(
+        r"CREATE TABLE IF NOT EXISTS link_copy_files (
+        destination TEXT NOT NULL,
+        storage_key TEXT NOT NULL,
+        library_id TEXT NOT NULL,
+        title_ref TEXT NOT NULL,
+        writer TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('copying', 'kept')),
+        replaced INTEGER NOT NULL DEFAULT 0,
+        written_at TEXT NOT NULL,
+        PRIMARY KEY (destination, storage_key)
+    )",
+    ),
+    MigrationOp::Schema(
+        r"CREATE INDEX IF NOT EXISTS idx_link_copy_files_writer ON link_copy_files(writer)",
     ),
     // On a branch: books a library it joined asked for through an
     // interlibrary request (`control_plane::branch_requests`), one row per
@@ -2356,7 +2427,9 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
     // One row per account-mail message and its delivery. The link's token
     // is minted by the send job when it sends and only its hash is kept
     // (in `claim_tickets` or `email_verifications`), so no link is stored
-    // here or anywhere else.
+    // here or anywhere else. `requested_by` is the Administrator who asked
+    // for an invite, named in its subject; empty when the library sent it
+    // on its own or that account is gone.
     MigrationOp::Schema(
         r"CREATE TABLE IF NOT EXISTS account_mail (
         id TEXT PRIMARY KEY NOT NULL,
@@ -2368,6 +2441,7 @@ pub(super) const UNRELEASED_OPS: &[MigrationOp] = &[
         attempts INTEGER NOT NULL DEFAULT 0,
         reason TEXT,
         job_id TEXT,
+        requested_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
     )",

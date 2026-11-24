@@ -3694,11 +3694,17 @@ pub async fn post_user_invite_email(
     if matches!(user.status, UserStatus::Disabled) {
         return Err(StatusCode::FORBIDDEN.into());
     }
-    let queued =
-        match crate::account_mail::queue_invite(&state, user_id, user.email.as_deref()).await {
-            Ok(queued) => queued,
-            Err(answer) => return Ok(Result::<Response, _>::Err(answer).into_response()),
-        };
+    let queued = match crate::account_mail::queue_invite(
+        &state,
+        user_id,
+        user.email.as_deref(),
+        actor.user_id(),
+    )
+    .await
+    {
+        Ok(queued) => queued,
+        Err(answer) => return Ok(Result::<Response, _>::Err(answer).into_response()),
+    };
     let _ = library
         .insert_security_audit_event(
             &actor.audit_actor(),
@@ -4101,7 +4107,8 @@ pub async fn create_user(
     // its ticket is minted when it is sent, so no link is handed back.
     let invite_emailed = match (body.mint_invite, user.email.as_deref()) {
         (true, Some(address)) => {
-            crate::account_mail::queue_invite_if_ready(&state, user.id, address).await
+            crate::account_mail::queue_invite_if_ready(&state, user.id, address, actor.user_id())
+                .await
         }
         _ => false,
     };

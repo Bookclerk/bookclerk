@@ -20,6 +20,7 @@ use uuid::Uuid;
 use super::listing_reads::{
     edition_identifier_key, work_identifier_key, ListingPool, SnapshotReader,
 };
+use super::work_texts::WorkTexts;
 use super::{now_str, parse_dt, LibraryStore, NewBook};
 use crate::atomic_ops::{atomic_status, DbAtomicParams};
 use crate::entities::{
@@ -240,8 +241,13 @@ const LINK_ATTEMPTS: usize = 3;
 /// with room for the receipt statements.
 const CREDIT_BATCH_STATEMENTS: usize = 30;
 
+/// Most row inserts in one credit batch: one statement of every batch is
+/// kept for the `edition_updated` event the last batch carries
+/// ([`announce_credits`]), so the event commits with the rows it announces.
+const CREDIT_ROW_STATEMENTS: usize = CREDIT_BATCH_STATEMENTS - 1;
+
 // One listing's series (a series row and an entry each) fit in one batch.
-const _: () = assert!(2 * resolve::listing::MAX_SERIES <= CREDIT_BATCH_STATEMENTS);
+const _: () = assert!(2 * resolve::listing::MAX_SERIES <= CREDIT_ROW_STATEMENTS);
 
 /// Fresh UUIDs for new rows; an edition's is derived from the listing that
 /// first named it ([`edition_id_for_listing`]) unless `random_editions`.
@@ -655,7 +661,7 @@ fn link_params(
 }
 
 /// The credit and series batches for `plan`, each within
-/// [`CREDIT_BATCH_STATEMENTS`]; every batch carries the contributors and
+/// [`CREDIT_ROW_STATEMENTS`]; every batch carries the contributors and
 /// series its rows reference.
 fn credit_batches(plan: &resolve::Plan) -> Vec<CreditBatchParams> {
     let mut batches = Vec::new();
@@ -665,7 +671,7 @@ fn credit_batches(plan: &resolve::Plan) -> Vec<CreditBatchParams> {
     let mut writes: Vec<&resolve::CreditWrite> = plan.credits.iter().collect();
     writes.sort_by_key(|w| std::cmp::Reverse(w.position));
     for write in writes {
-        if batch.statement_count() + 2 > CREDIT_BATCH_STATEMENTS {
+        if batch.statement_count() + 2 > CREDIT_ROW_STATEMENTS {
             batches.push(std::mem::take(&mut batch));
         }
         let name_key = write.credit.name_key();
@@ -689,7 +695,7 @@ fn credit_batches(plan: &resolve::Plan) -> Vec<CreditBatchParams> {
     // A work's series go in one batch: the snapshot treats any stored entry
     // as the whole set, so they must never be part-written.
     if batch.statement_count() > 0
-        && batch.statement_count() + 2 * plan.series.len() > CREDIT_BATCH_STATEMENTS
+        && batch.statement_count() + 2 * plan.series.len() > CREDIT_ROW_STATEMENTS
     {
         batches.push(std::mem::take(&mut batch));
     }
@@ -712,6 +718,46 @@ fn credit_batches(plan: &resolve::Plan) -> Vec<CreditBatchParams> {
     }
     if batch.statement_count() > 0 {
         batches.push(batch);
+    }
+    batches
+}
+
+/// `batches` with one `edition_updated` for the listing's edition in the
+/// last of them (which always has room for it), committed with the rows
+/// it announces, so consumers that derive from credits and series see
+/// them once they are written: the link that refreshed the edition's work
+/// ran before them, in its own batch (#986). No credit batch, no event.
+/// The event is written only while some listing of any edition of the
+/// edition's work is held (checked in the batch itself), so a catalog
+/// listing filling credits or series on a held work announces them, even
+/// through a sibling edition nobody holds, while one for a work nobody
+/// holds (a Discover or lookup answer) publishes nothing.
+fn announce_credits(
+    mut batches: Vec<CreditBatchParams>,
+    listing: &resolve::Listing,
+    plan: &resolve::Plan,
+) -> Vec<CreditBatchParams> {
+    if batches.is_empty() || plan.listing.edition_id.is_empty() {
+        return batches;
+    }
+    let edition_id = plan.listing.edition_id.clone();
+    let id = Uuid::new_v4().to_string();
+    let event = LinkEvent {
+        event_type: resolve::Event::EditionUpdated {
+            edition_id: edition_id.clone(),
+        }
+        .event_type()
+        .to_string(),
+        account_id: String::new(),
+        source: listing.key.plugin_key.clone(),
+        dedup_key: format!("edition_updated:{edition_id}:{id}"),
+        payload: serde_json::json!({ "editionId": edition_id }).to_string(),
+        ordering_key: edition_id,
+        id,
+    };
+    // The last batch always has room: rows stop at CREDIT_ROW_STATEMENTS.
+    if let Some(last) = batches.last_mut() {
+        last.events.push(event);
     }
     batches
 }
@@ -1425,7 +1471,7 @@ impl LibraryStore {
                     continue;
                 }
             }
-            for batch in credit_batches(&plan) {
+            for batch in announce_credits(credit_batches(&plan), listing, &plan) {
                 self.run_write_credits(batch).await?;
             }
             return Ok(Some(plan));
@@ -1882,14 +1928,11 @@ impl LibraryStore {
         &self,
         ids: &[String],
     ) -> Result<std::collections::BTreeMap<String, WorkRecord>> {
-        let mut found: Vec<WorkRecord> = find_chunked(self, ids, |part| {
+        let rows = find_chunked(self, ids, |part| {
             works::Entity::find().filter(works::Column::Id.is_in(part.iter().cloned()))
         })
-        .await?
-        .into_iter()
-        .map(map_work)
-        .collect();
-        self.fill_work_names(&mut found).await?;
+        .await?;
+        let found = self.work_records(rows).await?;
         Ok(found.into_iter().map(|w| (w.id.clone(), w)).collect())
     }
 
@@ -1906,9 +1949,7 @@ impl LibraryStore {
         else {
             return Ok(None);
         };
-        let mut works = vec![map_work(work)];
-        self.fill_work_names(&mut works).await?;
-        Ok(works.pop())
+        Ok(self.work_records(vec![work]).await?.pop())
     }
 
     /// Lists up to `limit` works with ids after `after_id`, in id order, with
@@ -1936,19 +1977,15 @@ impl LibraryStore {
         if let Some(after) = after_id {
             query = query.filter(works::Column::Id.gt(after));
         }
-        let mut works: Vec<WorkRecord> = super::keyset::read_keyset_limit(
+        let rows = super::keyset::read_keyset_limit(
             self,
             query,
             &[works::Column::Id],
             super::keyset::KeyOrder::Ascending,
             limit.clamp(1, 500),
         )
-        .await?
-        .into_iter()
-        .map(map_work)
-        .collect();
-        self.fill_work_names(&mut works).await?;
-        Ok(works)
+        .await?;
+        self.work_records(rows).await
     }
 
     /// Lists every work by title, with its work-level credits and series.
@@ -1957,15 +1994,24 @@ impl LibraryStore {
     ///
     /// Returns [`LibraryError::Orm`] when a read fails.
     pub async fn list_works(&self) -> Result<Vec<WorkRecord>> {
-        let mut works: Vec<WorkRecord> = crate::store::keyset::read_keyset(
+        let rows = crate::store::keyset::read_keyset(
             self,
             works::Entity::find(),
             &[works::Column::Title, works::Column::Id],
         )
-        .await?
-        .into_iter()
-        .map(map_work)
-        .collect();
+        .await?;
+        self.work_records(rows).await
+    }
+
+    /// `rows` as work records: their texts completed, then their credited
+    /// names, narrators and series filled.
+    ///
+    /// # Errors
+    ///
+    /// Returns the database error.
+    async fn work_records(&self, mut rows: Vec<works::Model>) -> Result<Vec<WorkRecord>> {
+        self.complete_work_texts(&mut rows).await?;
+        let mut works: Vec<WorkRecord> = rows.into_iter().map(map_work).collect();
         self.fill_work_names(&mut works).await?;
         Ok(works)
     }
@@ -2203,22 +2249,33 @@ impl LibraryStore {
         work_id: &str,
         enrichment: &WorkEnrichment,
     ) -> Result<()> {
-        use sea_orm::{ActiveModelTrait, ActiveValue::Set};
-        let Some(existing) = works::Entity::find_by_id(work_id.to_string())
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-        else {
-            return Err(LibraryError::not_found(EntityKind::Work, work_id));
-        };
-        let mut am: works::ActiveModel = existing.clone().into();
-        am.description = Set(enrichment.description.clone().or(existing.description));
-        am.subjects = Set(enrichment.subjects.clone().or(existing.subjects));
-        am.cover_url = Set(enrichment.cover_url.clone().or(existing.cover_url));
-        am.categories = Set(enrichment.categories.clone().or(existing.categories));
-        am.updated_at = Set(now_str());
-        am.update(&self.db).await.map_err(LibraryError::Orm)?;
-        Ok(())
+        let found = self
+            .update_work_texts(work_id, |existing| {
+                Some(WorkTexts {
+                    description: enrichment
+                        .description
+                        .clone()
+                        .or_else(|| existing.description.clone()),
+                    subjects: enrichment
+                        .subjects
+                        .clone()
+                        .or_else(|| existing.subjects.clone()),
+                    categories: enrichment
+                        .categories
+                        .clone()
+                        .or_else(|| existing.categories.clone()),
+                    cover_url: enrichment
+                        .cover_url
+                        .clone()
+                        .or_else(|| existing.cover_url.clone()),
+                })
+            })
+            .await?;
+        if found {
+            Ok(())
+        } else {
+            Err(LibraryError::not_found(EntityKind::Work, work_id))
+        }
     }
 
     /// Fills the work an edition belongs to from a library title's
@@ -2238,7 +2295,6 @@ impl LibraryStore {
         edition_id: &str,
         fill: &WorkEnrichment,
     ) -> Result<()> {
-        use sea_orm::{ActiveModelTrait, ActiveValue::Set};
         if fill.is_empty() {
             return Ok(());
         }
@@ -2249,23 +2305,18 @@ impl LibraryStore {
         else {
             return Ok(());
         };
-        let Some(work) = works::Entity::find_by_id(work_id)
-            .one(&self.db)
-            .await
-            .map_err(LibraryError::Orm)?
-        else {
-            return Ok(());
-        };
-        if !fill.fills(&work) {
-            return Ok(());
-        }
-        let mut am: works::ActiveModel = work.clone().into();
-        am.description = Set(work.description.or_else(|| fill.description.clone()));
-        am.subjects = Set(work.subjects.or_else(|| fill.subjects.clone()));
-        am.categories = Set(work.categories.or_else(|| fill.categories.clone()));
-        am.cover_url = Set(work.cover_url.or_else(|| fill.cover_url.clone()));
-        am.updated_at = Set(now_str());
-        am.update(&self.db).await.map_err(LibraryError::Orm)?;
+        self.update_work_texts(&work_id, |work| {
+            fill.fills(work).then(|| WorkTexts {
+                description: work
+                    .description
+                    .clone()
+                    .or_else(|| fill.description.clone()),
+                subjects: work.subjects.clone().or_else(|| fill.subjects.clone()),
+                categories: work.categories.clone().or_else(|| fill.categories.clone()),
+                cover_url: work.cover_url.clone().or_else(|| fill.cover_url.clone()),
+            })
+        })
+        .await?;
         Ok(())
     }
 
@@ -4137,9 +4188,19 @@ mod store_tests {
         assert!(batches.len() > 1);
         assert!(batches
             .iter()
-            .all(|b| b.statement_count() <= CREDIT_BATCH_STATEMENTS));
+            .all(|b| b.statement_count() <= CREDIT_ROW_STATEMENTS));
         let credits: usize = batches.iter().map(|b| b.credits.len()).sum();
         assert_eq!(credits, 40);
+
+        // The announcing event rides in the last batch, never one of its
+        // own, and every batch stays inside the cap.
+        let count = batches.len();
+        let announced = announce_credits(batches, &listing, &plan);
+        assert_eq!(announced.len(), count);
+        assert_eq!(announced.last().map(|b| b.events.len()), Some(1));
+        assert!(announced
+            .iter()
+            .all(|b| b.statement_count() <= CREDIT_BATCH_STATEMENTS));
     }
 
     #[test]

@@ -54,7 +54,7 @@ use super::enrollment::load_node_credential;
 use super::trust::accounts_owned_by;
 use super::uploads::{
     claims_another_titles_key, granted_key_count, open_upload_session, upload_holds_its_keys,
-    UploadDestination, UploadGrant, UploadGrantRequest, UploadSession,
+    GrantedDestination, OpenAs, UploadDestination, UploadGrant, UploadGrantRequest, UploadSession,
 };
 use crate::entities::{
     accounts, edition_acquisitions, edition_files, editions, holdings, node_upload_sessions, nodes,
@@ -1048,7 +1048,10 @@ pub(super) async fn edition_has_other_audio(
                     .from(node_upload_sessions::Entity)
                     .cond_where(
                         Condition::any()
-                            .add(node_upload_sessions::Column::State.eq("aborted"))
+                            .add(
+                                node_upload_sessions::Column::State
+                                    .is_in(["aborted", "discarding"]),
+                            )
                             .add(
                                 Condition::all()
                                     .add(node_upload_sessions::Column::State.eq("open"))
@@ -1519,7 +1522,7 @@ pub async fn grant_catalog_upload(
     receiving_node_id: &str,
     reference: &CatalogRef,
     files: &[UploadFile],
-    destinations: &[String],
+    destinations: &[GrantedDestination],
 ) -> Result<UploadGrant> {
     if live_catalog(store, node_id, fence).await?.is_none() {
         return Ok(UploadGrant::Lost);
@@ -1580,10 +1583,11 @@ pub async fn grant_catalog_upload(
     }
     let scoped: Vec<UploadDestination> = destinations
         .iter()
-        .map(|id| UploadDestination {
-            id: id.clone(),
+        .map(|destination| UploadDestination {
+            id: destination.id.clone(),
             title_folders: title_folders.clone(),
             title_names: None,
+            config_revision: destination.config_revision,
         })
         .collect();
     let digest = row.share_digest.clone().unwrap_or_default();
@@ -1601,7 +1605,7 @@ pub async fn grant_catalog_upload(
         fence,
         receiving_node_id,
         &request,
-        Some(&digest),
+        OpenAs::Catalog { digest: &digest },
     )
     .await
 }

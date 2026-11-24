@@ -975,6 +975,7 @@ function workSummary(b: Book): Record<string, unknown> {
     acquire_status: b.status,
     edition_count: 1,
     holding_count: b.status === "acquired" ? 1 : 0,
+    acquirable_editions: b.status === "not_acquired" || b.status === "error" ? 1 : 0,
     added_at: ago(b.boughtDaysAgo * DAY),
     length_minutes: b.minutes,
     purchased_at: ago(b.boughtDaysAgo * DAY),
@@ -1396,6 +1397,16 @@ function signedIn(viewer: "owner" | "operator"): Routes {
     "POST /api/discover/title-meta/batch": (body) => {
       const titles = queries(body);
       return { json: { results: titles.map(metaFor), incomplete: titles.map(() => false) } };
+    },
+    // Every title has a sample: a held book's own, else a store's, so the
+    // details show the sample control.
+    "POST /api/discover/title-sample": (body) => {
+      const edition = (body as { edition_id?: string | null } | null)?.edition_id;
+      return {
+        json: edition
+          ? { edition_sample_path: `/api/library/editions/${edition}/sample` }
+          : { sample_path: "/api/samples/c2FtcGxl.dmlzdWFs" },
+      };
     },
     "GET /api/diagnostics/reports": () => ({ json: { reports: [] } }),
     "POST /api/playback/sessions": (body) => {

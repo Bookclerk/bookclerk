@@ -429,6 +429,13 @@ pub enum Body {
         /// options, so the host names each destination's files as a local
         /// acquire would.
         destinations: Vec<PlanDestination>,
+        /// Present when the owner stopped before it looked at every title
+        /// of the job (each plan looks at a bounded number, and titles
+        /// that need no fetch add no target): ask again with this holding
+        /// id as `after`, even when `targets` is empty. Absent, a plan
+        /// with no new target means no title is left to try.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next: Option<String>,
     },
     /// Host → owner: ask to upload one title's files. Answered with
     /// [`Body::UploadGranted`], [`Body::Lost`], or `error`.
@@ -2106,6 +2113,7 @@ mod tests {
                         id: "local".into(),
                         options: serde_json::json!({}),
                     }],
+                    next: Some("b".into()),
                 },
                 "acquire.targets",
             ),

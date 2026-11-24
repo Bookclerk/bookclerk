@@ -219,6 +219,9 @@ chacha20poly1305 = "0.11"
 rand = "0.8"
 zeroize = { version = "1", features = ["derive"] }
 base64 = "0.23"
+# MJML compiled in Rust: the email notifier's templates (no JS runtime, no
+# remote loaders).
+mrml = { version = "6.0.1", default-features = false, features = ["parse", "render"] }
 reqwest = { version = "0.13", default-features = true, features = ["json", "form"] }
 url = "2"
 webauthn-rs = { version = "0.6.2", features = ["danger-allow-state-serialisation"] }
@@ -250,7 +253,6 @@ uuid = { version = "1", features = ["v4", "v5", "serde"] }
 email_address = "0.2"
 tantivy = "0.27"
 csv = "1"
-filetime = "0.2"
 rust_xlsxwriter = "0.102"
 tar = "0.4"
 flate2 = "1"

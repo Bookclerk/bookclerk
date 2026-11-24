@@ -1294,7 +1294,7 @@ bookclerk config master-key status [OPTIONS]
 
 Wrap a BCK1 key with a passphrase (no-op unlock if already BCK2), in `master.key` or in its OS keychain item.
 
-Password from `BOOKCLERK_AUTH_PASSWORD` or `[auth].password` — never argv.
+Password from `BOOKCLERK_AUTH_PASSWORD`, the file `BOOKCLERK_AUTH_PASSWORD_FILE` names, the `bookclerk-auth-password` systemd credential, or `[auth].password` — never argv.
 
 ```text
 bookclerk config master-key wrap [OPTIONS]
@@ -1450,6 +1450,7 @@ Options:
 - `--account-id <ACCOUNT_ID>`: Cloudflare account id; found from the token when it sees only one
 - `--database-name <DATABASE_NAME>`: D1 database name (default `bookclerk`); created when missing
 - `--jurisdiction <JURISDICTION>`: Where a new database keeps its data: `default`, `eu` or `fedramp`
+- `--rotate-token`: Mint a new D1 token and delete the one an earlier setup created (a re-run keeps it by default). Shared branches hold a copy of the earlier token, so each needs to join again
 
 ## `bookclerk export`
 

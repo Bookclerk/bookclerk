@@ -206,7 +206,7 @@ stateDiagram-v2
 | `integration_scan` | `integration_scan:id={id}:force={0\|1}` | `network` | `run_integration_scan` |
 | `plugin_copy` | `plugin_copy:plugin={id}:from={key}:to={key}` | `network` | ABI `JobRunner` stream-copy (`run_plugin_copy`) |
 | `plugin_scheduled` | `plugin_scheduled:instance={id}:cron={schedule}` | `network` | `scheduled(controller)` on the instance (`run_plugin_scheduled`) |
-| `discover_candidates` | `discover_candidates:subject={key}` | `network` | `run_discover_candidates`, then admits the subject's `discover_feed` |
+| `discover_candidates` | `discover_candidates:subject={key}` (pinned: `…:instance={id}`) | `network` | `run_discover_candidates`: asks this node's stores, admits one pinned job per storefront instance deployed only elsewhere, then admits the subject's `discover_feed` |
 | `discover_feed` | `discover_feed:subject={key}` | `network` | `run_discover_feed` (no network; ranks stored candidates) |
 | `discover_embed` | `discover_embed:node={id}` | `network` | `run_discover_embed` on the node whose plugin serves the text embedding model (pinned by `payload.node_id`); embeds works whose vector is missing or stale, then admits every stored feed's `discover_feed` (see [Embedding the library](discovery.md#embedding-the-library)) |
 | `discover_request_queue` | `discover_request_queue` | `network` | `run_discover_request_queue` (no network; ranks the shared request queue) |
@@ -216,6 +216,7 @@ stateDiagram-v2
 | `branch_request` | `branch_request:node={id}:work={id}` | `network` | none: the branch it is pinned to takes it over the node socket (`requests.claim` / `requests.finish`) |
 | `notify_send` | `notify_send:delivery={id}`, `notify_send:account_mail={id}`, or `notify_send:password_reset={address}` for the job that answers a reset request | `network` | `run_notify_send` on a node running the notifier instance (requires it); parks itself between retries with `defer_job`; a reset request only looks the address up and queues the reset mail |
 | `ingest_batch` | `ingest_batch:batch={id}` | `network` | `run_ingest_batch` on the node that holds the upload's bytes (pinned by `payload.node_id`; never handed to a branch) |
+| `file_probe` | `file_probe:node={id}` | `network` | `run_file_probe` on the node it is pinned to (no network; probes the audio files on its destinations that have no probe, see [What a stored file's row says](../server/media.md#what-a-stored-files-row-says)) |
 | `chapter_align` | `chapter_align:edition={id}` | `network` | `run_chapter_align` on a node that holds the library database; the edition is `payload.title` (see [Aligning chapters to a copy](../server/playback.md#aligning-chapters-to-a-copy)) |
 
 `plugin_scheduled` jobs aren't enqueued through the API. Each daemon's cron
@@ -289,6 +290,11 @@ A `search_index_rebuild` job is pinned to one node the same way. See
 A `library_index_rebuild` job is not pinned: any node claims it. See
 [Library index](#library-index).
 
+A `file_probe` job is pinned to one node too. The heartbeat queues one,
+at most once a day, when a destination deployed on the node has an audio
+file with no probe. It walks those files in pages and skips one it
+cannot read, so the next day's job tries it again.
+
 Reserved classes (no worker in this release): `media`, `transcription`,
 `indexing`.
 
@@ -311,7 +317,10 @@ and store identifiers). It is kept current two ways:
   and adds it back while the work is held, so a work nobody holds any
   more leaves the index. A holding event whose listing is already gone
   removes the marker below, since its work can no longer be found, so the
-  node rebuilds.
+  node rebuilds. The consumer handles the delivery it was given together
+  with up to 63 more of its own that are ready, refreshing each work they
+  touch once, so a podcast scan's event per episode does not read the
+  whole show once per episode.
 - **Rebuild job.** A finished rebuild leaves a marker for the current
   document layout in the index folder. When it is missing (a new node, a
   deleted folder, or an index of an older layout, which is discarded), the
@@ -366,9 +375,13 @@ library database, so the whole library shares one index:
   event refreshes its edition's work, a holding event the work of its
   listing, and `book_acquired` the work of its edition (or of its title,
   when the payload names no edition). A refresh reads the work as it is
-  now and writes its whole row, so a row's authors and series are as
-  current as the last of these events: a credit or series change alone
-  does not refresh it. A work whose last holding is gone keeps its row
+  now and writes its whole row. A link writes a title's credits and
+  series in batches after the link itself, so the last of those batches
+  publishes an `edition_updated` for the listing's edition while some
+  listing of it is held; a refresh that ran between them is followed by
+  one that sees them. Like the search consumer, this one folds the
+  deliveries that are ready (up to 64) into one refresh of the works they
+  touch; a delivery whose work lookup fails is retried on its own. A work whose last holding is gone keeps its row
   with a holding count of 0, which pages skip, and the row is deleted
   only when the work itself is. A failed refresh is retried up to ten
   times, then dead-lettered.
@@ -403,8 +416,17 @@ cover is known, because store text and a title's enrichment are written
 after the link whose event refreshed the row. The route reads the cover
 when it serves the page: the edition's own (the first store cover a
 listing of it reported), else the first store cover among its listings, else its work's (or, for an episode, its show's), so
-a cover stored later shows without another refresh. The work detail route
-gives each edition its cover the same way.
+a cover stored later shows without another refresh. A store cover that
+may make another edition the better choice (store text, or a catalog
+answer such as a Discover expansion naming a held edition) refreshes the
+rows of the held works it covers; unheld works in the answer are left
+alone. The work detail route gives each edition its cover the same way.
+
+Each row also counts its held editions an acquire would still queue
+(`acquirable_editions`: neither acquired, queued nor downloading). The
+row's `acquire_status` is the furthest state any edition reached, so a
+work with an acquired audio edition beside a held ebook reads `acquired`;
+the library page offers Acquire while the count is above 0.
 
 Each row carries the sort keys of every order the page offers: title,
 first author, newest holding, series then position (works in no series
@@ -575,8 +597,9 @@ libraries scan` ([Libraries and branch nodes](../server/branches.md)).
   flight, not only the work between titles. The job's cancel flag reaches
   the guest's `fetchTitle` call, which the host drops on the plugin's own
   thread, as it drops a call over the scratch quota; the job then fails or
-  is cancelled as usual. A branch running a library's acquire passes the
-  job's cancel flag the same way.
+  is cancelled as usual. The host then removes what that fetch added to
+  the guest's scratch, leaving files an earlier fetch left there. A branch
+  running a library's acquire passes the job's cancel flag the same way.
 
 Scan, listen-sync, and integration-scan retries are idempotent (upserts /
 remote rescan). Acquire retries skip titles already `acquired`, except when
@@ -701,6 +724,20 @@ node that runs it needs. At admission the daemon records
   `jobs::node_bound_output_keys`), not from the plugins installed on the
   admitting node, so admission runs no plugin discovery and every node
   admits the same requirements, whatever it has installed.
+- An acquire also prefers the metadata providers (plugins whose manifest
+  exports the `metadata` entrypoint, such as `audnexus`), because its
+  plain-audio overlay asks only the providers on the node that runs it
+  (`control_plane::prefer_metadata_providers`). Each deployed provider
+  instance is added when some node runs it, with the guest up, together
+  with everything already required. One that fits on no such node (it is
+  down, or deployed only where the outputs are not) is left out, and the
+  acquire runs without its overlay rather than waiting. Which plugins are
+  providers comes from the admitting node's installed plugins, since the
+  instance list does not record entrypoints, reused for 30 s so a bulk
+  acquire discovers once; with a failed discovery no provider is preferred. The requirements sweep resolves node-bound outputs
+  only, so it treats a preferred provider as a dropped requirement and
+  removes it once the grace period ends, while claims accept the extra
+  instances.
 - Everything else (unpinned scans, listen sync, integration scans,
   `plugin_copy`) has no requirements and is claimable on any node.
 

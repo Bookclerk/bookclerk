@@ -11,8 +11,8 @@ use crate::entities::email_verifications;
 use crate::hash_token;
 use crate::models::UserRole;
 use crate::notifications::{
-    parse_account_mail_settings, parse_verify_email_request, AccountMailKind, DeliveryState,
-    FailedAttempt, PasswordResetFactor, RedeemedReset,
+    parse_account_mail_settings, parse_verify_email_request, AccountMailKind, AccountMailRequest,
+    DeliveryState, FailedAttempt, PasswordResetFactor, RedeemedReset,
 };
 use crate::test_support::{sqlite::memory, Profile};
 
@@ -519,9 +519,12 @@ async fn overlapping_resends_record_one_message_under_every_profile() {
         let since = Some(Utc::now() - Duration::minutes(5));
         let queue = || {
             store.queue_account_mail_unless_since(
-                AccountMailKind::VerifyEmail,
-                user,
-                "sam@example.com",
+                AccountMailRequest {
+                    kind: AccountMailKind::VerifyEmail,
+                    user_id: user,
+                    address: "sam@example.com",
+                    requested_by: None,
+                },
                 "email-1",
                 LIMITS,
                 since,
@@ -539,9 +542,12 @@ async fn overlapping_resends_record_one_message_under_every_profile() {
         // Once the gap has passed, the next resend is recorded.
         let later = store
             .queue_account_mail_unless_since(
-                AccountMailKind::VerifyEmail,
-                user,
-                "sam@example.com",
+                AccountMailRequest {
+                    kind: AccountMailKind::VerifyEmail,
+                    user_id: user,
+                    address: "sam@example.com",
+                    requested_by: None,
+                },
                 "email-1",
                 LIMITS,
                 Some(Utc::now() + Duration::seconds(1)),
@@ -997,5 +1003,63 @@ fn the_reset_bodies_follow_their_rules() {
             parse_password_reset_finish(bad.as_bytes()).is_err(),
             "{bad}"
         );
+    }
+}
+
+#[tokio::test]
+async fn an_invite_keeps_who_asked_until_they_are_deleted_under_every_profile() {
+    for profile in Profile::ALL {
+        let name = profile.name();
+        let store = memory(profile).await.into_store();
+        store
+            .set_account_mail_instance(Some("email-1"))
+            .await
+            .unwrap();
+        let admin = store
+            .create_user_with_profile(
+                UserRole::Administrator,
+                Some("Alex"),
+                None,
+                Some("alex@example.com"),
+                None,
+            )
+            .await
+            .unwrap()
+            .id;
+        let user = member(&store, "sam@example.com").await;
+        let id = store
+            .queue_account_mail_unless_since(
+                AccountMailRequest {
+                    kind: AccountMailKind::Invite,
+                    user_id: user,
+                    address: "sam@example.com",
+                    requested_by: Some(admin),
+                },
+                "email-1",
+                LIMITS,
+                None,
+            )
+            .await
+            .unwrap()
+            .expect("recorded");
+        let mail = store.account_mail(&id).await.unwrap().expect("mail");
+        assert_eq!(mail.requested_by, Some(admin), "{name}");
+        // A message queued without anyone asking names no one.
+        let own = store
+            .queue_account_mail(
+                AccountMailKind::VerifyEmail,
+                user,
+                "sam@example.com",
+                "email-1",
+                LIMITS,
+            )
+            .await
+            .unwrap();
+        let own = store.account_mail(&own).await.unwrap().expect("mail");
+        assert_eq!(own.requested_by, None, "{name}");
+        // Deleting the Administrator keeps the invite but forgets them.
+        store.delete_user(admin).await.unwrap();
+        let mail = store.account_mail(&id).await.unwrap().expect("mail kept");
+        assert_eq!(mail.requested_by, None, "{name}");
     }
 }

@@ -1006,7 +1006,6 @@ dependencies = [
  "bookclerk-config",
  "bookclerk-plugin-sdk",
  "bytes",
- "filetime",
  "fs4",
  "hex",
  "libc",

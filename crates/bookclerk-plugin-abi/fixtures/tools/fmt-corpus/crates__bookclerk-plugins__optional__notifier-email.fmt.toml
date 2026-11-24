@@ -65,6 +65,12 @@ label = "Channel recipients"
 type = "string"
 description = "Where channel notifications go: up to 10 addresses separated by commas. Leave it empty when only patrons' own addresses are used."
 
+[[settings]]
+key = "mail_tester_account"
+label = "mail-tester.com account"
+type = "string"
+description = "Optional. Your mail-tester.com account name (the part before the dash in your test addresses). With it, the deliverability check also sends a real message through your server to mail-tester and reads its score, which covers DKIM, reverse DNS and blocklists. Tests may use your mail-tester credits."
+
 [secrets]
 
 [notifier]
@@ -73,6 +79,7 @@ destinations = [
     "personal",
 ]
 account_mail = true
+deliverability_check = true
 formats = [
     "text",
     "html",
@@ -86,3 +93,15 @@ secret = false
 
 [capabilities.network]
 mode = "outbound"
+
+[[capabilities.network.tcp]]
+host = "spamcheck.postmarkapp.com"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "cloudflare-dns.com"
+ports = [443]
+
+[[capabilities.network.tcp]]
+host = "www.mail-tester.com"
+ports = [443]

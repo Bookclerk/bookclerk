@@ -1491,6 +1491,12 @@ pub enum JobKind {
     /// reads the copy's audio from there; it runs only on a node that
     /// holds the library database.
     ChapterAlign,
+    /// Probe the audio files on one node's destinations that were never
+    /// probed (`file_probe`): files stored before probes were recorded, or
+    /// whose probe failed. Pinned by [`JobPayload::node_id`] to the node
+    /// whose destinations it reads; it runs only on a node that holds the
+    /// library database.
+    FileProbe,
     /// Terminal placeholder after an unreadable persisted command is rejected.
     Invalid,
 }
@@ -1498,7 +1504,7 @@ pub enum JobKind {
 impl JobKind {
     /// Every kind, in declaration order; the SQL plans derive their kind
     /// lists from it so a new kind cannot be left unclaimable.
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::Scan,
         Self::Acquire,
         Self::ListenSync,
@@ -1516,6 +1522,7 @@ impl JobKind {
         Self::IngestBatch,
         Self::NotifySend,
         Self::ChapterAlign,
+        Self::FileProbe,
         Self::Invalid,
     ];
 
@@ -1540,6 +1547,7 @@ impl JobKind {
             Self::IngestBatch => "ingest_batch",
             Self::NotifySend => "notify_send",
             Self::ChapterAlign => "chapter_align",
+            Self::FileProbe => "file_probe",
             Self::Invalid => "invalid",
         }
     }
@@ -1565,6 +1573,7 @@ impl JobKind {
             "ingest_batch" => Some(Self::IngestBatch),
             "notify_send" => Some(Self::NotifySend),
             "chapter_align" => Some(Self::ChapterAlign),
+            "file_probe" => Some(Self::FileProbe),
             "invalid" => Some(Self::Invalid),
             _ => None,
         }
@@ -1647,11 +1656,22 @@ impl JobKind {
                 payload.cron.as_deref().unwrap_or("-"),
             ),
             // One active fetch or ranking per subject: a burst of events
-            // folds into the job already queued.
-            Self::DiscoverCandidates => format!(
-                "discover_candidates:subject={}",
-                payload.subject.as_deref().unwrap_or("-")
-            ),
+            // folds into the job already queued. A fetch pinned to one
+            // storefront instance (deployed on another node than the one
+            // that ran the subject's fetch) is its own work.
+            Self::DiscoverCandidates => {
+                let subject = payload.subject.as_deref().unwrap_or("-");
+                match payload
+                    .plugin_instance_id
+                    .as_deref()
+                    .filter(|id| !id.is_empty())
+                {
+                    Some(instance) => {
+                        format!("discover_candidates:subject={subject}:instance={instance}")
+                    }
+                    None => format!("discover_candidates:subject={subject}"),
+                }
+            }
             Self::DiscoverFeed => format!(
                 "discover_feed:subject={}",
                 payload.subject.as_deref().unwrap_or("-")
@@ -1709,6 +1729,11 @@ impl JobKind {
             Self::ChapterAlign => format!(
                 "chapter_align:edition={}",
                 payload.title.as_deref().unwrap_or("-")
+            ),
+            // One queued or running probe walk per node.
+            Self::FileProbe => format!(
+                "file_probe:node={}",
+                payload.node_id.as_deref().unwrap_or("-")
             ),
             Self::Invalid => "invalid".into(),
         }
@@ -3075,6 +3100,37 @@ mod wake_grant_tests {
             2,
             r#"{"source":"audible"}"#
         ));
+    }
+}
+
+#[cfg(test)]
+mod discover_dedup_tests {
+    use super::*;
+
+    #[test]
+    fn a_pinned_discover_fetch_dedups_per_instance() {
+        let payload = |instance: Option<&str>| JobPayload {
+            subject: Some(String::from("user:3")),
+            plugin_instance_id: instance.map(str::to_string),
+            ..JobPayload::default()
+        };
+        assert_eq!(
+            JobKind::DiscoverCandidates.dedup_key(&payload(None)),
+            "discover_candidates:subject=user:3"
+        );
+        // An empty pin is the subject's own fetch.
+        assert_eq!(
+            JobKind::DiscoverCandidates.dedup_key(&payload(Some(""))),
+            "discover_candidates:subject=user:3"
+        );
+        assert_eq!(
+            JobKind::DiscoverCandidates.dedup_key(&payload(Some("i1"))),
+            "discover_candidates:subject=user:3:instance=i1"
+        );
+        assert_ne!(
+            JobKind::DiscoverCandidates.dedup_key(&payload(Some("i1"))),
+            JobKind::DiscoverCandidates.dedup_key(&payload(Some("i2")))
+        );
     }
 }
 

@@ -303,6 +303,7 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["DELETE", "/api/notifications/channels/{id}", "deny"],
   ["POST", "/api/notifications/channels/{id}/resume", "deny"],
   ["POST", "/api/notifications/channels/{id}/test", "deny"],
+  ["POST", "/api/notifications/notifiers/{id}/deliverability", "deny"],
   // Account mail goes to real addresses, so the demo may only read it.
   ["GET", "/api/notifications/account-mail", "allow"],
   ["PUT", "/api/notifications/account-mail", "deny"],

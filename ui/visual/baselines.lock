@@ -14,7 +14,7 @@ desktop/app--add-branch--light.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
 
 desktop/app--book-details--dark.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
 
-desktop/app--book-details--light.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
+desktop/app--book-details--light.png 504e2e168720c004f8d3e59d2892356ee9367435
 
 desktop/app--change-picture--dark.png 04774c479aab654d9a0276d38d21e25dc5b36771
 
@@ -52,9 +52,9 @@ desktop/app--join-callback--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 desktop/app--join-callback--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
-desktop/app--library--dark.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
+desktop/app--library--dark.png 504e2e168720c004f8d3e59d2892356ee9367435
 
-desktop/app--library--light.png a3d2818b5ffb41f600ff6a76bc113c9abf4c8f27
+desktop/app--library--light.png 504e2e168720c004f8d3e59d2892356ee9367435
 
 desktop/app--library-other-libraries--dark.png 2e978c4b280ee9ba1314f2b6a2910d5c8caca725
 
@@ -403,6 +403,18 @@ desktop/primitives-input--filled--light.png 8d05420908dfd07e138cb0fc8cc825be243b
 desktop/primitives-input--invalid--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 desktop/primitives-input--invalid--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+desktop/settings-deliverabilitypanel--ready--dark.png 1969675861f9d38e9c653ba5d00bafb588f0f0ef
+
+desktop/settings-deliverabilitypanel--ready--light.png 1969675861f9d38e9c653ba5d00bafb588f0f0ef
+
+desktop/settings-deliverabilityreport--all-passed--dark.png 1969675861f9d38e9c653ba5d00bafb588f0f0ef
+
+desktop/settings-deliverabilityreport--all-passed--light.png 1969675861f9d38e9c653ba5d00bafb588f0f0ef
+
+desktop/settings-deliverabilityreport--needs-work--dark.png 1969675861f9d38e9c653ba5d00bafb588f0f0ef
+
+desktop/settings-deliverabilityreport--needs-work--light.png 1969675861f9d38e9c653ba5d00bafb588f0f0ef
 
 desktop/settings-modelpicker--does-not-fit--dark.png 5684cc82b1014a654f90dab8e48896eb065314c3
 
@@ -923,6 +935,18 @@ phone/primitives-input--filled--light.png 8d05420908dfd07e138cb0fc8cc825be243b00
 phone/primitives-input--invalid--dark.png 8d05420908dfd07e138cb0fc8cc825be243b0080
 
 phone/primitives-input--invalid--light.png 8d05420908dfd07e138cb0fc8cc825be243b0080
+
+phone/settings-deliverabilitypanel--ready--dark.png 1969675861f9d38e9c653ba5d00bafb588f0f0ef
+
+phone/settings-deliverabilitypanel--ready--light.png 1969675861f9d38e9c653ba5d00bafb588f0f0ef
+
+phone/settings-deliverabilityreport--all-passed--dark.png 1969675861f9d38e9c653ba5d00bafb588f0f0ef
+
+phone/settings-deliverabilityreport--all-passed--light.png 1969675861f9d38e9c653ba5d00bafb588f0f0ef
+
+phone/settings-deliverabilityreport--needs-work--dark.png 1969675861f9d38e9c653ba5d00bafb588f0f0ef
+
+phone/settings-deliverabilityreport--needs-work--light.png 1969675861f9d38e9c653ba5d00bafb588f0f0ef
 
 phone/settings-modelpicker--does-not-fit--dark.png 5684cc82b1014a654f90dab8e48896eb065314c3
 

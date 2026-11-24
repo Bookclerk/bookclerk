@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use sea_orm::{ActiveModelTrait, ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter};
 use sea_orm::{QueryOrder, QuerySelect};
 
+use super::work_texts::WorkTexts;
 use super::{now_str, parse_dt, LibraryStore};
 use crate::entities::{
     edition_enrich_attempts, edition_identifiers, editions, expressions, holdings, store_listings,
@@ -238,14 +239,13 @@ impl LibraryStore {
             .map(|x| (x.id.clone(), x))
             .collect();
         let work_ids: Vec<String> = expressions.values().map(|x| x.work_id.clone()).collect();
+        let mut work_rows = find_chunked::<works::Entity, _>(self, &work_ids, |part| {
+            works::Entity::find().filter(works::Column::Id.is_in(part.to_vec()))
+        })
+        .await?;
+        self.complete_work_texts(&mut work_rows).await?;
         let works: HashMap<String, works::Model> =
-            find_chunked::<works::Entity, _>(self, &work_ids, |part| {
-                works::Entity::find().filter(works::Column::Id.is_in(part.to_vec()))
-            })
-            .await?
-            .into_iter()
-            .map(|w| (w.id.clone(), w))
-            .collect();
+            work_rows.into_iter().map(|w| (w.id.clone(), w)).collect();
         let held_ids: Vec<String> = held_editions.iter().map(|e| e.id.clone()).collect();
         // The smallest ISBN and ASIN of each edition, keyed by scheme.
         let mut smallest: HashMap<(String, String), String> = HashMap::new();
@@ -357,21 +357,23 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?;
         if let Some(expression) = &expression {
-            if let Some(work) = works::Entity::find_by_id(expression.work_id.clone())
-                .one(self.db())
-                .await
-                .map_err(LibraryError::Orm)?
-            {
+            // What the work lacks is decided again on every write attempt,
+            // so a value another writer stored meanwhile is kept.
+            self.update_work_texts(&expression.work_id, |work| {
                 let work_fill = WorkEnrichment {
                     description: lacking(work.description.as_deref(), fill.description.as_ref()),
                     subjects: lacking(work.subjects.as_deref(), fill.subjects.as_ref()),
                     categories: lacking(work.categories.as_deref(), fill.categories.as_ref()),
                     cover_url: lacking(work.cover_url.as_deref(), fill.cover_url.as_ref()),
                 };
-                if !work_fill.is_empty() {
-                    self.set_work_enrichment(&work.id, &work_fill).await?;
-                }
-            }
+                (!work_fill.is_empty()).then(|| WorkTexts {
+                    description: work_fill.description.or_else(|| work.description.clone()),
+                    subjects: work_fill.subjects.or_else(|| work.subjects.clone()),
+                    categories: work_fill.categories.or_else(|| work.categories.clone()),
+                    cover_url: work_fill.cover_url.or_else(|| work.cover_url.clone()),
+                })
+            })
+            .await?;
             if let Some(language) = lacking(expression.language.as_deref(), fill.language.as_ref())
             {
                 let mut am: expressions::ActiveModel = expression.clone().into();

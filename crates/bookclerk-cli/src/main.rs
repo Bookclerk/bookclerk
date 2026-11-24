@@ -393,7 +393,8 @@ fn print_cli_setup_warnings(config: &Config) {
     if config.auth_password().is_none() {
         eprintln!(
             "warning: no auth password set — master.key may be BCK1 (unwrapped DEK). \
-             Set BOOKCLERK_AUTH_PASSWORD or [auth].password, then \
+             Set BOOKCLERK_AUTH_PASSWORD, BOOKCLERK_AUTH_PASSWORD_FILE or \
+             [auth].password, then \
              `bookclerk config master-key wrap`."
         );
     }

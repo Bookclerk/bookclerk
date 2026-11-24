@@ -483,17 +483,16 @@ The second choice is shown but disabled, with the reason, when:
 The Join wizard shows **Offer to join as a shared branch** only on an empty
 install. That means no users, store accounts, books or joined libraries of
 its own, and no `BOOKCLERK_DATABASE_*` or `BOOKCLERK_D1_*` environment
-override of the database settings. (`BOOKCLERK_D1_API_TOKEN` isn't one: it
-stays this server's own.)
+override of the database settings. (`BOOKCLERK_D1_API_TOKEN` isn't one:
+when set, it overrides the token the library sends.)
 
 Ticking it asks you to confirm that the server's own database settings and
 keys are replaced. The daemon checks again when the sign-in starts and
 when it comes back.
 
 > [!NOTE]
-> For a D1 library, set this server's own `BOOKCLERK_D1_API_TOKEN` (the
-> token is never sent between servers). For any branch on the library's
-> database, install the library's database plugin (`postgres` or `d1`) first.
+> For any branch on the library's database, install the library's database
+> plugin (`postgres` or `d1`) first.
 
 ### Approving
 
@@ -505,22 +504,29 @@ with both ends on one machine), as for a branch.
 
 ### What is handed over
 
-In its redeem answer the library sends the `[database]` connection and the
-data-encryption key, sealed to the joining daemon's own X25519 node key.
+In its redeem answer the library sends the `[database]` connection, the
+database plugin's own credential (the PostgreSQL URL, or the D1 API token
+the library uses) and the data-encryption key,
+sealed to the joining daemon's own X25519 node key.
 It never sends the passphrase-wrapped `master.key` file. The browser never
 sees either, and neither is logged.
 
 The joining daemon writes them as its own bootstrap:
 
-- `config.toml` `[database]`. A PostgreSQL URL goes into
-  `database-postgres.url`, mode `0600`, named by `url_file`, and never
-  into the TOML.
+- `config.toml` `[database]`, without the credential. For PostgreSQL it
+  sets `stored_credential = true` in place of `url` or `url_file`.
 - `node-identity.json`, with the node id the library recorded.
 - `master.key`, wrapped with this server's own `BOOKCLERK_AUTH_PASSWORD`
   (or `[auth].password`) when set, and unwrapped otherwise. When this
   server keeps its key in the OS keychain or `systemd-creds`
   (`[auth].key_store`, or the desktop window's default), the key goes
   into a new item there and `master.key` only names it.
+- The database plugin's credential (the PostgreSQL URL, or the D1 token),
+  sealed with the key and kept in the same store: in `database.credential`,
+  or in an item in the OS keychain or `systemd-creds` that it names. It is
+  tagged with its plugin, so no other database plugin is ever handed it.
+  Nothing needs setting by hand, and nothing holds the credential in the
+  clear. Undoing a failed join deletes it again.
 
 Then `bookclerkd` restarts itself cleanly. It stops its listeners as on
 SIGTERM and re-executes the same binary with the same arguments and
@@ -716,7 +722,11 @@ when it commits the upload.
    It also carries the store listing the acquire needs (store, product id,
    marketplace, title, people, series and dates), read from the owner's
    holdings and editions, and a podcast episode carries its show's
-   listing the same way.
+   listing the same way. One answer carries at most 100 titles and looks
+   at most 500 of the job's titles. When the owner stopped before it
+   looked at them all, the answer's `next` says where to ask again from,
+   even if it lists no title (the titles it looked at were already in
+   the library).
 3. The host acquires each title into a per-title outbox, with one
    sub-directory per owner destination. So each destination's file names
    come out exactly as a local acquire on the owner would name them.
@@ -834,14 +844,29 @@ title, and the host fails it without fetching anything.
    says](media.md#what-a-stored-files-row-says)). The owner answers
    `upload.granted` with an upload id and a bearer token **sealed to the
    host's box key**. Only its hash is stored, and it lives one hour.
+
+   The grant pins each destination's configuration revision as well as
+   its id. A title another account's holding of the same edition has
+   already acquired is answered `edition_acquired`: the library holds
+   it, so the host counts it as acquired and sends nothing. The
+   exception is a **better copy**: when the host's probe of the primary
+   audio is better than the probe the library recorded for that key
+   (lossless over lossy, then the higher bitrate), the upload replaces
+   the edition's files.
 2. **Send.** The host sends
    `PUT /api/node/v1/uploads/{upload_id}/files/{n}` per file, with
    `Authorization: Bookclerk-Upload <token>`. The owner tees the body,
    chunk by chunk, into each of those destinations under that
    destination's key. If the title's destinations change before the
-   commit (one is deployed or undeployed, or a filter is edited), the
-   upload is refused with `destinations_changed` and the title fails on
-   the host.
+   commit (one is deployed or undeployed, a filter is edited, or a
+   destination's configuration changes, such as a moved root or bucket),
+   the upload is refused with `destinations_changed` and the title fails
+   on the host.
+
+   A better copy is written under a temporary name beside each key
+   (ending `.bookclerk-staged-<upload id>`), and moved onto the key only
+   at the commit. Until then the library's copy, and what its rows say about
+   it, stay as they were.
    It checks the size and SHA-256 as it streams, and re-checks the job's
    fence about once a second.
 
@@ -864,7 +889,10 @@ title, and the host fails it without fetching anything.
    again from byte 0. A file small enough to send whole starts again
    too.
 3. **Commit.** The host sends `POST /api/node/v1/uploads/{upload_id}/commit`.
-   One canonical batch, gated on the live fence, marks the title
+   A better copy's files move onto their keys first. The commit is
+   refused with `edition_changed` when the title's listing now sells
+   another edition than the one the upload's keys belong to. One
+   canonical batch, gated on the live fence, marks the title
    acquired, records a stored copy of the edition on each destination
    the primary audio was written to (`edition_copies`), publishes
    `book_acquired`, and (for the job's last title) completes the job.
@@ -876,12 +904,21 @@ while a file is sent whole. A part whose connection breaks keeps the
 bytes that arrived: the file stays open at that offset until its last
 part, an abort, or 10 minutes without a part.
 
+An aborted upload's files are deleted by the shared node that received
+them. Each shared node sweeps its uploads every 5 minutes. It aborts an
+open upload whose host is gone (its job's lease ran out), and deletes
+the files of one aborted on another node. An upload stays `discarding`
+until every file is deleted, so a delete that fails is tried again on
+the next sweep. If the receiving node is removed from the library first,
+retention drops the upload.
+
 | Refusal | Meaning |
 | --- | --- |
 | `401 unauthorized` | Unknown upload, or a wrong or expired token |
 | `421 misdirected` | Another shared node granted it |
 | `409 lost` | The fence is gone |
-| `422 refused`, `422 destinations_changed` | The shared node's destinations aren't the ones the manifest was written for. The upload is aborted and the title fails on the host, to be retried |
+| `422 refused`, `422 destinations_changed` | The shared node's destinations, or their configuration, aren't the ones the manifest was written for. The upload is aborted and the title fails on the host, to be retried |
+| `422 refused`, reason `edition_changed` | At the commit, the title's listing sells another edition than the one the upload's keys belong to. The title fails on the host, to be retried |
 | `422 invalid_range` | A part's `Content-Range` isn't exactly a part of the declared file |
 | `503 unavailable`, reason `resume` | A part didn't start where the open file stands; send from `offset` |
 

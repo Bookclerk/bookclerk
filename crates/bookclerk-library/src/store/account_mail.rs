@@ -27,9 +27,10 @@ use crate::models::{
     EnqueueJobSpec, EnqueueOutcome, JobFence, JobKind, JobPayload, JobState, JobTrigger,
 };
 use crate::notifications::{
-    AccountMail, AccountMailKind, AccountMailSettings, DeliveryState, FailedAttempt, MintedToken,
-    PasswordResetFactor, PasswordResetToken, RedeemedReset, VerifyEmailToken,
-    ACCOUNT_MAIL_RETENTION_DAYS, EMAIL_VERIFICATION_HOURS, INVITE_DAYS, PASSWORD_RESET_MINUTES,
+    AccountMail, AccountMailKind, AccountMailRequest, AccountMailSettings, DeliveryState,
+    FailedAttempt, MintedToken, PasswordResetFactor, PasswordResetToken, RedeemedReset,
+    VerifyEmailToken, ACCOUNT_MAIL_RETENTION_DAYS, EMAIL_VERIFICATION_HOURS, INVITE_DAYS,
+    PASSWORD_RESET_MINUTES,
 };
 use crate::token_hash::hash_token;
 use crate::NotifyQueueLimits;
@@ -58,6 +59,7 @@ fn mail(row: account_mail::Model) -> Result<AccountMail> {
         address: row.address,
         plugin_instance_id: row.plugin_instance_id,
         attempts: row.attempts,
+        requested_by: row.requested_by,
     })
 }
 
@@ -185,9 +187,12 @@ impl LibraryStore {
         limits: NotifyQueueLimits,
     ) -> Result<String> {
         self.queue_account_mail_unless_since(
-            kind,
-            user_id,
-            address,
+            AccountMailRequest {
+                kind,
+                user_id,
+                address,
+                requested_by: None,
+            },
             plugin_instance_id,
             limits,
             None,
@@ -203,7 +208,8 @@ impl LibraryStore {
     /// write lock for that kind (`account_mail_slot`), so on every
     /// database profile (`READ COMMITTED` PostgreSQL included) the guard
     /// reads what an overlapping request committed, and two overlapping
-    /// requests cannot both pass it.
+    /// requests cannot both pass it. The request's `requested_by` is
+    /// recorded so an invite can name who asked for it.
     ///
     /// # Returns
     ///
@@ -214,13 +220,17 @@ impl LibraryStore {
     /// An error when the write fails.
     pub async fn queue_account_mail_unless_since(
         &self,
-        kind: AccountMailKind,
-        user_id: i64,
-        address: &str,
+        request: AccountMailRequest<'_>,
         plugin_instance_id: &str,
         limits: NotifyQueueLimits,
         since: Option<DateTime<Utc>>,
     ) -> Result<Option<String>> {
+        let AccountMailRequest {
+            kind,
+            user_id,
+            address,
+            requested_by,
+        } = request;
         let id = uuid::Uuid::new_v4().hyphenated().to_string();
         let now = super::now_str();
         let mut parameters = vec![
@@ -229,6 +239,7 @@ impl LibraryStore {
             batch::int(user_id),
             batch::text(address),
             batch::text(plugin_instance_id),
+            batch::int_opt(requested_by),
             batch::text(&now),
             batch::text(&now),
         ];
@@ -259,8 +270,8 @@ impl LibraryStore {
         statements.push(batch::exec(
             &format!(
                 "INSERT INTO account_mail (id, kind, user_id, address, \
-                 plugin_instance_id, created_at, updated_at) \
-                 SELECT ?, ?, ?, ?, ?, ?, ? WHERE {guard}"
+                 plugin_instance_id, requested_by, created_at, updated_at) \
+                 SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE {guard}"
             ),
             parameters,
         ));

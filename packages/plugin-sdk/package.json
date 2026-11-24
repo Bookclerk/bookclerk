@@ -52,6 +52,8 @@
     "test:db-value": "node scripts/test-db-value.mjs",
     "test:db-stream": "node scripts/test-db-stream.mjs",
     "test:scan-page": "node scripts/test-scan-page.mjs",
+    "test:stream-copy": "node scripts/test-stream-copy.mjs",
+    "test:object-store": "node scripts/test-object-store.mjs",
     "test:webhooks": "node scripts/test-webhooks.mjs",
     "test:db-adapter": "node scripts/test-db-adapter.mjs",
     "test:plugin-migrations": "node scripts/test-plugin-migrations.mjs",
@@ -61,6 +63,7 @@
     "test:egress-user-agent": "node scripts/test-egress-user-agent.mjs",
     "test:egress-bridge": "node scripts/test-egress-bridge.mjs",
     "test:testkit": "node scripts/test-testkit.mjs",
+    "test:testkit-bindings": "node scripts/test-testkit-bindings.mjs",
     "build:embed": "node scripts/build-embed.mjs"
   },
   "engines": {

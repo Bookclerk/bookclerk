@@ -310,6 +310,7 @@ entrypoints = ["notifier"]
 destinations = ["channel", "personal"]
 account_mail = true
 formats = ["text", "html"]
+deliverability_check = true
 
 [[notifier.address_fields]]
 key = "email"
@@ -325,6 +326,9 @@ required = true
   `email` address field. Defaults to false.
 - `formats`: the bodies the service shows, from `text`, `markdown` and
   `html`. Must include `text`. Defaults to `["text"]`.
+- `deliverability_check`: whether the plugin answers
+  `checkDeliverability`, which puts a **Check deliverability** button on
+  the instance's settings page. Defaults to false.
 - `[[notifier.address_fields]]`: the fields of a personal address, at most
   16, required exactly when `destinations` names `personal`. `key` is
   `[a-z][a-z0-9_]{0,63}` and unique; `label` is shown to the patron;
@@ -572,7 +576,11 @@ crons = ["*/30 * * * *", "0 3 * * MON-FRI"]    # scheduled(controller), UTC
   don't make the plugin an integration: the plugin stays in that
   entrypoint's handler family, and its jobs run on that session. The
   host's one job type today, `stream_copy`, runs this way on a storage
-  plugin's destination. A plugin without one of those entrypoints that
+  plugin's destination. Every SDK serves it the same way (Rust
+  `StreamCopyHandler`, TypeScript `streamCopy(job)`, Python
+  `stream_copy(job)`): stage under a commit token derived from the
+  idempotency key, step id and destination, commit, and abort the stage on
+  any failure or cancellation. A plugin without one of those entrypoints that
   declares `jobs` is an integration.
 
 ## Logo

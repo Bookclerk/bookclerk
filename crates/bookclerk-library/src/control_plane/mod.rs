@@ -40,6 +40,7 @@ mod intake_items;
 mod job_routing;
 mod keeper;
 mod leases;
+mod link_copies;
 mod link_imports;
 mod live;
 mod member_controls;
@@ -233,8 +234,9 @@ pub use job_routing::{
     account_semaphore, claim_routed_job, class_semaphore, common_deployment_nodes,
     instance_running_on_database_node, instance_semaphore, job_permit_holder_prefix,
     job_plugin_keys, job_semaphores, job_source_plugin_key, node_can_run_job,
-    resolve_job_requirements, JobClaimFilter, JobClaimLimits, JobClaimRequest, NodeBoundKey,
-    RoutedJobClaim, ACCOUNT_SEMAPHORE_LIMIT, ROUTED_CLAIM_CANDIDATES,
+    prefer_metadata_providers, resolve_job_requirements, JobClaimFilter, JobClaimLimits,
+    JobClaimRequest, NodeBoundKey, RoutedJobClaim, ACCOUNT_SEMAPHORE_LIMIT,
+    ROUTED_CLAIM_CANDIDATES,
 };
 pub use keeper::{
     adopt_library_sign_in, apply_keeper_update, confirmed_keeping_branch, keeper_reconcile,
@@ -256,6 +258,11 @@ pub use library_links::{
     set_library_link_state, set_library_link_work, CapacityBody, JobCapRequest, LibraryLink,
     LibraryLinkKeys, LibraryLinkSettings, LinkJobCap, NewLibraryLink, SharingBody, SharingRequest,
     LIBRARY_LINK_ACTIVE, LIBRARY_LINK_KEYS_NAME, LIBRARY_LINK_LEFT, LIBRARY_LINK_REVOKED,
+};
+pub use link_copies::{
+    claim_link_copy, keep_link_copies, link_copy_title_ref, link_copy_writer, release_link_copies,
+    settle_stale_link_copy, stale_link_copies, CopyTarget, LinkCopyAttempt, LinkCopyClaim,
+    StaleLinkCopy, STALE_LINK_COPY_AGE_SECS,
 };
 pub use link_imports::{
     books_imported_from_link, import_link_title, record_copy_taken_from_link, HeldBookKey,
@@ -366,9 +373,10 @@ pub use trust::{
 };
 pub use uploads::{
     abort_job_uploads, abort_upload, authorize_upload, commit_upload, extend_job_uploads,
-    grant_upload, job_titles, load_upload, record_upload_file, upload_fence_live, upload_owns_key,
-    TitleNames, UploadCommit, UploadDestination, UploadFinish, UploadGrant, UploadGrantRequest,
-    UploadSession, UPLOAD_NAME_WILDCARD, UPLOAD_NUMBER_WILDCARD, UPLOAD_TOKEN_TTL_SECS,
+    grant_upload, job_titles, load_upload, mark_discarded, record_upload_file, upload_fence_live,
+    upload_owns_key, uploads_to_sweep, GrantedDestination, TitleNames, UploadCommit,
+    UploadDestination, UploadFinish, UploadGrant, UploadGrantRequest, UploadSession,
+    UPLOAD_NAME_WILDCARD, UPLOAD_NUMBER_WILDCARD, UPLOAD_SWEEP_BATCH, UPLOAD_TOKEN_TTL_SECS,
 };
 pub use versions::{
     activate_version, add_plugin_version, approve_version_grant, clear_install, list_installs,

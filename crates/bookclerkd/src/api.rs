@@ -687,6 +687,12 @@ struct PluginSettingsGroup {
     /// here.
     #[serde(skip_serializing_if = "Option::is_none")]
     models: Option<PluginModelsView>,
+    /// True when the plugin is a notifier with a deliverability check
+    /// (`[notifier].deliverability_check`), so the instance's settings offer
+    /// `POST /api/notifications/notifiers/{id}/deliverability`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[schema(example = true)]
+    deliverability_check: bool,
     /// Nodes whose deployment of the instance is `present`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[schema(example = json!(["6d1f2e3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"]))]
@@ -1541,6 +1547,9 @@ fn user_scoped_routes() -> OpenApiRouter<Arc<AppState>> {
         ))
         .routes(routes!(crate::notifications_api::post_channel_resume))
         .routes(routes!(crate::notifications_api::post_channel_test))
+        .routes(routes!(
+            crate::notifications_api::post_notifier_deliverability
+        ))
         .routes(routes!(crate::notifications_api::get_routes))
         .routes(routes!(crate::notifications_api::put_routes))
         .routes(routes!(crate::notifications_api::get_offers))
@@ -2300,6 +2309,11 @@ fn api_timeout_for_path(path: &str) -> Duration {
         // Cutting a sample the first time waits on a download and the
         // media worker (`crate::samples::ROUTE_BUDGET`).
         sample if crate::samples::is_sample_path(sample) => crate::samples::ROUTE_BUDGET,
+        // A notifier's deliverability check waits for checkers that read a
+        // delivered message (`deliverabilityCheckDeadlineMs`).
+        check if crate::notifications_api::is_deliverability_path(check) => {
+            crate::notifications_api::DELIVERABILITY_ROUTE_BUDGET
+        }
         _ => Duration::from_secs(8),
     }
 }
@@ -2448,7 +2462,7 @@ pub async fn start_integration_watchers(state: &AppState) {
 /// Fingerprint of host-owned database connect settings (occupancy + URLs).
 fn database_connect_fingerprint(cfg: &Config) -> String {
     format!(
-        "{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}",
         cfg.database.plugin,
         cfg.database.postgres.url.as_deref().unwrap_or(""),
         cfg.database
@@ -2457,6 +2471,7 @@ fn database_connect_fingerprint(cfg: &Config) -> String {
             .as_ref()
             .map(|path| path.display().to_string())
             .unwrap_or_default(),
+        cfg.database.postgres.stored_credential,
         cfg.database.d1.api_base,
         cfg.database.d1.account_id,
         cfg.database.d1.database_id
@@ -3429,6 +3444,7 @@ fn build_database_settings_group(
         placement: None,
         storage_sync: None,
         models: None,
+        deliverability_check: false,
         present_on: Vec::new(),
     }
 }
@@ -3639,6 +3655,13 @@ fn instance_settings_group(
         placement: view.placement.clone(),
         storage_sync: view.storage_sync.clone(),
         models: None,
+        deliverability_check: plugin.is_some_and(|plugin| {
+            plugin
+                .manifest
+                .notifier
+                .as_ref()
+                .is_some_and(|notifier| notifier.deliverability_check)
+        }),
         present_on: view
             .deployments
             .iter()
@@ -6477,6 +6500,24 @@ struct CatalogSearchQuery {
     min_length_minutes: Option<i64>,
     /// Maximum runtime in minutes; values ≤ 0 are ignored.
     max_length_minutes: Option<i64>,
+    /// How a page sorted by relevance is ordered: `meaning` (default) or
+    /// `store`.
+    #[param(inline)]
+    rank: Option<CatalogRank>,
+}
+
+/// How a page of store results sorted by relevance is ordered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+enum CatalogRank {
+    /// The stores' order blended with how close each result is to the
+    /// query in meaning, when this node has the library's embedding model
+    /// and it answers in time; else the stores' order.
+    #[default]
+    Meaning,
+    /// The stores' order, without asking the model. For lists a person
+    /// is still typing into, where a fast answer matters more.
+    Store,
 }
 
 /// Returns the caller's stored Discover shelves; never builds them on the request.
@@ -7041,6 +7082,7 @@ async fn discover_catalog_search(
             sort_dir: String::from("desc"),
         }));
     }
+    let started = Instant::now();
     let region = q.region.unwrap_or_else(|| String::from("us"));
     let page_size = q.page_size.or(q.limit).unwrap_or(24).clamp(1, 48);
     let sort = q
@@ -7139,6 +7181,22 @@ async fn discover_catalog_search(
     })
     .await
     .map_err(internal_err)?;
+    // A page in the stores' own relevance order is ordered with its
+    // meaning before it is returned, inside what is left of the budget. A
+    // scoped search asks for a name, and every other sort is the caller's
+    // choice of order: both stay as they are.
+    if sort == bookclerk_discover::CatalogSearchSort::Relevance
+        && field.is_none()
+        && q.rank.unwrap_or_default() == CatalogRank::Meaning
+    {
+        crate::search_rerank::by_meaning(
+            &state,
+            &query,
+            &mut page.items,
+            CATALOG_SEARCH_TIMEOUT.saturating_sub(started.elapsed()),
+        )
+        .await;
+    }
     for hit in &mut page.items {
         state
             .covers

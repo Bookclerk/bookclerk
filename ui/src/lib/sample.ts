@@ -8,7 +8,13 @@
  * @module
  */
 
-import { editionSampleUrl, fetchTitleSample, type TitleMetaQuery } from "@/lib/api";
+import {
+  editionSampleUrl,
+  fetchTitleSample,
+  type TitleMetaQuery,
+  type TitleSample,
+  type TitleSampleQuery,
+} from "@/lib/api";
 import type { Player } from "@/lib/player";
 
 /** Path prefix of the store samples this daemon serves for storefronts. */
@@ -32,9 +38,9 @@ export function isStoreSamplePath(path: string): boolean {
 }
 
 /**
- * What the sample sources of a title depend on: the held edition and the
- * identifiers the store lookup uses. When enrichment changes it, an
- * earlier "no sample" answer no longer holds.
+ * What the sample of a title depends on: the held edition and the
+ * identifiers the store lookup uses. When enrichment changes it, the
+ * sample is looked up again.
  *
  * @param editionId - The library edition, when the title is held.
  * @param query - The title, as sent to title-meta.
@@ -50,29 +56,74 @@ export function sampleSourceKey(
   return JSON.stringify([editionId ?? "", query.asin ?? "", query.isbn ?? "", editions]);
 }
 
+/** A sample the details can play, and where it was cut from. */
+export type FoundSample = {
+  /** Same-origin URL of the audio. */
+  url: string;
+  /** Cut from the held edition, or a storefront's public sample. */
+  kind: "edition" | "store";
+};
+
+/** Asks the daemon which sample a title can play (its title-sample route). */
+export type SampleLookup = (query: TitleSampleQuery) => Promise<TitleSample>;
+
 /**
- * The sample sources to try for a title, best first: one cut from the
- * edition this library holds, then the public sample a storefront that
- * listed the title offers. The store is asked only when the first source
- * failed to play, so a held book never calls out to a store.
+ * Reads a title-sample answer: the held edition's sample when one was
+ * offered for that edition, else a same-origin store sample, else none.
+ * Paths are rebuilt or checked here, never loaded as given.
+ *
+ * @param answer - The daemon's answer.
+ * @param editionId - The edition that was asked about, when any.
+ * @returns The sample to offer, or `null`.
+ */
+export function readSample(answer: TitleSample, editionId?: string | null): FoundSample | null {
+  if (editionId && answer.edition_sample_path?.trim()) {
+    return { url: editionSampleUrl(editionId), kind: "edition" };
+  }
+  const path = answer.sample_path?.trim();
+  if (path && isStoreSamplePath(path)) return { url: path, kind: "store" };
+  return null;
+}
+
+/**
+ * Finds the sample a title's details can offer, before any control is
+ * shown: one cut from the edition this library holds when this node can,
+ * else the public sample a storefront that listed the title offers. The
+ * stores are asked only when the held edition gives none, so a held book
+ * never calls out to a store.
  *
  * @param editionId - The library edition, when the title is held.
  * @param query - The title, as sent to title-meta.
- * @param lookup - Asks the stores (the daemon's title-sample route).
- * @yields Same-origin URLs, one at a time.
- * @throws When the store lookup itself fails (offline, a timeout, a
- *   server error), so the control can offer to try again; a lookup that
- *   answers "no sample" ends the sources instead.
+ * @param lookup - Asks the daemon (the title-sample route).
+ * @returns The sample, or `null` when none can be played here, so the
+ *   details show no sample control.
+ * @throws When the lookup itself fails (offline, a timeout, a server error).
  */
-export async function* sampleSources(
+export async function findSample(
   editionId: string | null | undefined,
   query: TitleMetaQuery,
-  lookup: (query: TitleMetaQuery) => Promise<string | null> = fetchTitleSample,
-): AsyncGenerator<string, void, undefined> {
-  if (editionId) yield editionSampleUrl(editionId);
-  if (!query.title.trim()) return;
-  const path = await lookup(query);
-  if (path && isStoreSamplePath(path)) yield path;
+  lookup: SampleLookup = fetchTitleSample,
+): Promise<FoundSample | null> {
+  if (!query.title.trim() && !query.asin?.trim() && !query.isbn?.trim()) return null;
+  return readSample(await lookup({ ...query, edition_id: editionId || null }), editionId);
+}
+
+/**
+ * The storefront sample to fall back on when the held edition's sample
+ * could not be played (its audio failed to load or decode).
+ *
+ * @param query - The title, as sent to title-meta.
+ * @param lookup - Asks the daemon (the title-sample route).
+ * @returns A store sample, or `null` when no store offers one.
+ * @throws When the lookup itself fails.
+ */
+export async function storeSampleFallback(
+  query: TitleMetaQuery,
+  lookup: SampleLookup = fetchTitleSample,
+): Promise<FoundSample | null> {
+  if (!query.title.trim() && !query.asin?.trim() && !query.isbn?.trim()) return null;
+  const found = readSample(await lookup({ ...query, edition_id: null }), null);
+  return found?.kind === "store" ? found : null;
 }
 
 /**

@@ -19,7 +19,7 @@ use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter};
 use super::LibraryStore;
 use crate::entities::{
     claim_tickets, configuration_audit, configuration_changes, copy_grants, edition_files,
-    node_enrollment_links, node_upload_sessions, oidc_auth_codes, oidc_refresh_tokens,
+    node_enrollment_links, node_upload_sessions, nodes, oidc_auth_codes, oidc_refresh_tokens,
     portal_sessions, security_audit_events, user_invites,
 };
 use crate::error::{LibraryError, Result};
@@ -66,7 +66,9 @@ pub enum RecordPruneStep {
     /// Node enrollment links expired more than [`TOKEN_HISTORY_DAYS`] ago.
     EnrollmentLinks,
     /// Committed or aborted uploads expired more than
-    /// [`UPLOAD_HISTORY_DAYS`] ago.
+    /// [`UPLOAD_HISTORY_DAYS`] ago, and uploads still waiting for their
+    /// receiving node to delete their files (`discarding`) when that node
+    /// was removed from the library: no one else would settle them.
     UploadSessions,
     /// Copy grants past their expiry; no download accepts one after it.
     CopyGrants,
@@ -187,8 +189,27 @@ impl LibraryStore {
                     .from(edition_files::Entity)
                     .and_where(edition_files::Column::Writer.is_not_null())
                     .to_owned();
+                // A `discarding` upload waits for its receiving node's
+                // sweep; once that node is gone from the library, its files
+                // went with it (or are beyond reach), so it is history too.
+                let removed_receiver = Condition::all()
+                    .add(node_upload_sessions::Column::State.eq("discarding"))
+                    .add(
+                        node_upload_sessions::Column::ReceivingNodeId.not_in_subquery(
+                            sea_orm::sea_query::Query::select()
+                                .column(nodes::Column::NodeId)
+                                .from(nodes::Entity)
+                                .to_owned(),
+                        ),
+                    );
                 node_upload_sessions::Entity::delete_many()
-                    .filter(node_upload_sessions::Column::State.is_in(["committed", "aborted"]))
+                    .filter(
+                        Condition::any()
+                            .add(
+                                node_upload_sessions::Column::State.is_in(["committed", "aborted"]),
+                            )
+                            .add(removed_receiver),
+                    )
                     .filter(
                         Condition::any()
                             .add(
@@ -346,7 +367,8 @@ mod tests {
                 at(-29)
             ),
             // Uploads: finished and expired a day ago go; an open one and a
-            // recently expired one stay.
+            // recently expired one stay. One still discarding stays while
+            // its receiving node is in the library, and goes once it is not.
             format!(
                 "INSERT INTO node_upload_sessions (upload_id, token_hash, node_id, job_id, \
                  lease_generation, receiving_node_id, holding_id, primary_key, manifest_json, \
@@ -356,7 +378,9 @@ mod tests {
                  ('u-open', 'uh3', 'n1', 'j', 1, 'n0', 'b', 'k', '{{}}', 'open', '{t}', '{old}'), \
                  ('u-recent', 'uh4', 'n1', 'j', 1, 'n0', 'b', 'k', '{{}}', 'committed', '{t}', '{recent}'), \
                  ('u-catalog', 'uh5', 'n1', 'catalog', 1, 'n0', 'h', 'k', '{{}}', 'committed', '{t}', '{old}'), \
-                 ('u-catalog-gone', 'uh6', 'n1', 'catalog', 1, 'n0', 'h', 'k', '{{}}', 'committed', '{t}', '{old}')",
+                 ('u-catalog-gone', 'uh6', 'n1', 'catalog', 1, 'n0', 'h', 'k', '{{}}', 'committed', '{t}', '{old}'), \
+                 ('u-discarding-here', 'uh7', 'n1', 'j', 1, 'n1', 'b', 'k', '{{}}', 'discarding', '{t}', '{old}'), \
+                 ('u-discarding-gone', 'uh8', 'n1', 'j', 1, 'n9', 'b', 'k', '{{}}', 'discarding', '{t}', '{old}')",
                 old = at(-2),
                 recent = (now() - Duration::hours(12)).to_rfc3339()
             ),
@@ -451,7 +475,7 @@ mod tests {
             }
             assert_eq!(
                 removed,
-                [1, 2, 1, 1, 1, 1, 3, 1, 1, 1, 1, 1, 1, 1],
+                [1, 2, 1, 1, 1, 1, 4, 1, 1, 1, 1, 1, 1, 1],
                 "{name}"
             );
             let grants: Vec<String> = crate::test_support::uncapped(
@@ -541,7 +565,11 @@ mod tests {
                     .collect();
             uploads.sort();
             // A catalog upload a file record still names stays.
-            assert_eq!(uploads, ["u-catalog", "u-open", "u-recent"], "{name}");
+            assert_eq!(
+                uploads,
+                ["u-catalog", "u-discarding-here", "u-open", "u-recent"],
+                "{name}"
+            );
             let scans: Vec<String> =
                 crate::test_support::uncapped(storage_scan_generations::Entity::find().all(db))
                     .await

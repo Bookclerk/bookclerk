@@ -711,10 +711,10 @@ async fn an_empty_install_joins_as_a_shared_branch_and_takes_the_librarys_bootst
         before,
         "master.key untouched"
     );
-    assert!(!host_files
-        .path()
-        .join(bookclerk_node_client::SHARED_BRANCH_POSTGRES_URL_FILE)
-        .exists());
+    assert!(
+        !bookclerk_library::database_credential::database_credential_path(host_files.path())
+            .exists()
+    );
 
     // Approved as a shared branch with a fresh code: the bootstrap is applied.
     let (_, _, started) = call(&host, "POST", "/api/config/join/start", Some(start)).await;
@@ -770,21 +770,23 @@ async fn an_empty_install_joins_as_a_shared_branch_and_takes_the_librarys_bootst
     let written = bookclerk_config::Config::from_toml_file(&config_file).unwrap();
     assert_eq!(written.database.plugin, "postgres");
     assert_eq!(written.database.postgres.url, None);
-    let url_file = written.database.postgres.url_file.clone().unwrap();
-    assert!(url_file.is_absolute());
+    assert_eq!(written.database.postgres.url_file, None);
+    assert!(written.database.postgres.stored_credential);
+    // The URL is sealed with the library's DEK beside master.key.
+    let stored = bookclerk_library::database_credential::load_database_credential_for(
+        host_files.path(),
+        &dek,
+        bookclerk_config::DatabasePluginKind::Postgres,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(
-        std::fs::read_to_string(&url_file).unwrap(),
+        stored.secret(),
         "postgres://lib:pg-secret@db.example/library"
     );
     assert!(!std::fs::read_to_string(&config_file)
         .unwrap()
         .contains("pg-secret"));
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&url_file).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
-    }
     let actions: Vec<String> = owner_store
         .list_security_audit_events(50)
         .await

@@ -13220,7 +13220,7 @@
             }
           },
           "409": {
-            "description": "This install holds data of its own for a shared branch join (`not_empty`), the library's database plugin is not installed here (`database_guest_missing`), the D1 token is not set here (`d1_token_missing`), or joining would make a loop (`join_cycle`, `ancestry_too_deep`).",
+            "description": "This install holds data of its own for a shared branch join (`not_empty`), the library's database plugin is not installed here (`database_guest_missing`), the library sent no D1 token and none is set here (`d1_token_missing`), or joining would make a loop (`join_cycle`, `ancestry_too_deep`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -13228,9 +13228,9 @@
                 },
                 "examples": {
                   "d1_token_missing": {
-                    "summary": "The library's database is D1 and this server has no token.",
+                    "summary": "The library's database is D1, it sent no token, and this server has none.",
                     "value": {
-                      "detail": "the library's database is Cloudflare D1: set BOOKCLERK_D1_API_TOKEN for this server and restart it (the token is never sent between servers), then try again within 10 minutes (the library holds this server as node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c)",
+                      "detail": "the library's database is Cloudflare D1 and it sent no API token: set BOOKCLERK_D1_API_TOKEN for this server and restart it, then try again within 10 minutes (the library holds this server as node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c)",
                       "error": "d1_token_missing"
                     }
                   },
@@ -17406,6 +17406,190 @@
                 },
                 "example": {
                   "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/notifications/notifiers/{id}/deliverability": {
+      "post": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Runs a notifier instance's deliverability check.",
+        "description": "The notifier sends the host's test message the way real messages go\nand asks the checker services the operator approved how it scores,\nthen merges their findings into advice. It can take up to two minutes;\nsends on that notifier wait behind it.\n\nAccess: the operator, an Owner or an Administrator.",
+        "operationId": "post_notifier_deliverability",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin instance id of the notifier.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The checks and the merged advice.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeliverabilityReportJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The instance is not a notifier with a deliverability check, or its settings are incomplete.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the notifier refused the check: the server setting is not set"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can manage notifications"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The notifier is not running on this server.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the notifier is not running on this server"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The notifier could not be reached, did not answer in time, or its report was refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the notifier could not run the check"
                 }
               }
             }
@@ -33816,13 +34000,13 @@
         "tags": [
           "Discover"
         ],
-        "summary": "Finds a storefront's sample of a title.",
+        "summary": "Finds the sample a title's details can play: one cut from the held\nedition when this node can, else a storefront's.",
         "operationId": "post_title_sample",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/TitleMetaQuery"
+                "$ref": "#/components/schemas/TitleSampleQuery"
               }
             }
           },
@@ -33830,7 +34014,7 @@
         },
         "responses": {
           "200": {
-            "description": "The sample's same-origin path, or none when no listing store offers one.",
+            "description": "The path of the sample to play: the held edition's, else a store's; neither when no sample can be played here (no confined media worker, or no source offers one).",
             "content": {
               "application/json": {
                 "schema": {
@@ -33936,7 +34120,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "example": "Failed to deserialize the JSON body into the target type: title: invalid type: integer `1`, expected a string at line 1 column 10"
+                "example": "Failed to deserialize the JSON body into the target type: invalid type: null, expected a map at line 1 column 4"
               }
             }
           },
@@ -35013,6 +35197,20 @@
             "schema": {
               "type": "integer",
               "format": "int64"
+            }
+          },
+          {
+            "name": "rank",
+            "in": "query",
+            "description": "How a page sorted by relevance is ordered: `meaning` (default) or\n`store`.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "How a page of store results sorted by relevance is ordered.",
+              "enum": [
+                "meaning",
+                "store"
+              ]
             }
           }
         ],
@@ -52288,7 +52486,7 @@
             }
           },
           "422": {
-            "description": "The file was refused (`refused`): not in the upload (`unknown_file`), a `Content-Range` that is not exactly a part of the declared file (`invalid_range`), a size or content mismatch (`size_mismatch`, `content_mismatch`), the destinations changed (`destinations_changed`), or a granted storage key now belongs to another title or writer (`key_taken`).",
+            "description": "The file was refused (`refused`): not in the upload (`unknown_file`), a `Content-Range` that is not exactly a part of the declared file (`invalid_range`), a size or content mismatch (`size_mismatch`, `content_mismatch`), the destinations or their configuration changed (`destinations_changed`), or a granted storage key now belongs to another title or writer (`key_taken`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -52497,7 +52695,7 @@
             }
           },
           "422": {
-            "description": "The commit was refused (`refused`), with the cause in `reason`: the body does not parse (`invalid_body`); the upload is unknown, aborted, or its job was cancelled (`unknown_upload`, `upload_aborted`, `job_cancelled`); not every granted file arrived (`files_missing`); the destinations changed since the grant (`destinations_changed`); a storage key now belongs to another title or writer, or the title's holding is gone (`key_taken`, `unknown_title`); or the closing upload is mismatched: an ordinary upload claims to finish the job (`not_a_closing_upload`), the closing upload does not (`closing_upload_must_finish`), or it arrives while titles are still pending (`titles_remaining`).",
+            "description": "The commit was refused (`refused`), with the cause in `reason`: the body does not parse (`invalid_body`); the upload is unknown, aborted, or its job was cancelled (`unknown_upload`, `upload_aborted`, `job_cancelled`); not every granted file arrived (`files_missing`); the destinations or their configuration changed since the grant (`destinations_changed`); a storage key now belongs to another title or writer, or the title's holding is gone (`key_taken`, `unknown_title`); the title now resolves to another edition than the one its keys were granted under (`edition_changed`); or the closing upload is mismatched: an ordinary upload claims to finish the job (`not_a_closing_upload`), the closing upload does not (`closing_upload_must_finish`), or it arrives while titles are still pending (`titles_remaining`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -57501,6 +57699,16 @@
           }
         }
       },
+      "CheckOutcomeJson": {
+        "type": "string",
+        "description": "How a deliverability check or piece of advice came out.",
+        "enum": [
+          "passed",
+          "warning",
+          "failed",
+          "skipped"
+        ]
+      },
       "ChoiceBody": {
         "type": "object",
         "description": "Body of `PUT /api/me/notifications/choices/{type}`.",
@@ -59002,6 +59210,99 @@
           }
         },
         "additionalProperties": false
+      },
+      "DeliverabilityAdviceJson": {
+        "type": "object",
+        "description": "One thing to do, merged from every check.",
+        "required": [
+          "outcome",
+          "title",
+          "detail",
+          "sources"
+        ],
+        "properties": {
+          "outcome": {
+            "$ref": "#/components/schemas/CheckOutcomeJson",
+            "description": "`failed` is a fix, `warning` an improvement, `passed` what is\nalready right."
+          },
+          "title": {
+            "type": "string",
+            "description": "Short heading.",
+            "example": "Publish a DMARC record"
+          },
+          "detail": {
+            "type": "string",
+            "description": "What to change and where.",
+            "example": "Add a TXT record at _dmarc.example.com, for example v=DMARC1; p=none."
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The checks that raised it.",
+            "example": [
+              "DNS records"
+            ]
+          }
+        }
+      },
+      "DeliverabilityCheckJson": {
+        "type": "object",
+        "description": "One checker's result.",
+        "required": [
+          "service",
+          "outcome",
+          "summary"
+        ],
+        "properties": {
+          "service": {
+            "type": "string",
+            "description": "The checker.",
+            "example": "Postmark spam check"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/CheckOutcomeJson",
+            "description": "How it came out."
+          },
+          "summary": {
+            "type": "string",
+            "description": "One line on the result.",
+            "example": "SpamAssassin score 0.8; under 5 passes"
+          },
+          "report_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The checker's full report, an `https` link, when it has one.",
+            "example": "https://www.mail-tester.com/example-1a2b3c"
+          }
+        }
+      },
+      "DeliverabilityReportJson": {
+        "type": "object",
+        "description": "The answer to a deliverability check.",
+        "required": [
+          "checks",
+          "advice"
+        ],
+        "properties": {
+          "checks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeliverabilityCheckJson"
+            },
+            "description": "One entry per checker."
+          },
+          "advice": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeliverabilityAdviceJson"
+            },
+            "description": "What to do, most urgent first."
+          }
+        }
       },
       "DeliveryBacklog": {
         "type": "object",
@@ -62179,6 +62480,7 @@
           "ingest_batch",
           "notify_send",
           "chapter_align",
+          "file_probe",
           "invalid"
         ]
       },
@@ -70278,6 +70580,11 @@
               }
             ]
           },
+          "deliverability_check": {
+            "type": "boolean",
+            "description": "True when the plugin is a notifier with a deliverability check\n(`[notifier].deliverability_check`), so the instance's settings offer\n`POST /api/notifications/notifiers/{id}/deliverability`.",
+            "example": true
+          },
           "present_on": {
             "type": "array",
             "items": {
@@ -76189,17 +76496,47 @@
       },
       "TitleSampleJson": {
         "type": "object",
-        "description": "`POST /api/discover/title-sample` answer.",
+        "description": "`POST /api/discover/title-sample` answer. At most one path is given;\nnone means no sample can be played here, so the app shows no sample\ncontrol.",
         "properties": {
+          "edition_sample_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Same-origin path of a sample cut from the held edition\n(`GET /api/library/editions/{id}/sample`); present when the caller\nmay hear that edition and this node reaches its audio.",
+            "example": "/api/library/editions/5d2c8e1a-7b3f-4a6e-9c0d-1e2f3a4b5c6d/sample"
+          },
           "sample_path": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Same-origin path of a storefront's sample of the title, to play\nwith `GET`; absent when no store that lists it offers one.",
+            "description": "Same-origin path of a storefront's sample of the title, to play\nwith `GET`; absent when an edition sample is offered instead, or no\nstore that lists the title offers one.",
             "example": "/api/samples/aHR0cHM6Ly9zYW1wbGVzLmV4YW1wbGUvYS5tcDM.q2fW1n4bJm0Rg9xV3kTzPA"
           }
         }
+      },
+      "TitleSampleQuery": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TitleMetaQuery",
+            "description": "The title, its identifiers and the stores that list it."
+          },
+          {
+            "type": "object",
+            "properties": {
+              "edition_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The library edition the caller would hear a sample of (an `id` in a\nwork's `editions`); the stores are asked only when this node cannot\ncut a sample from it.",
+                "example": "5d2c8e1a-7b3f-4a6e-9c0d-1e2f3a4b5c6d"
+              }
+            }
+          }
+        ],
+        "description": "`POST /api/discover/title-sample` request: the title as title-meta\nsees it, and the edition this library holds of it, when it holds one."
       },
       "TokenError": {
         "type": "object",
@@ -78113,7 +78450,8 @@
           "acquire_status",
           "edition_count",
           "holding_count",
-          "added_at"
+          "added_at",
+          "acquirable_editions"
         ],
         "properties": {
           "id": {
@@ -78217,6 +78555,13 @@
             ],
             "description": "RFC 3339 time of the newest purchase a store reported.",
             "example": "2024-03-02T18:04:11Z"
+          },
+          "acquirable_editions": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many held editions an acquire would still queue: neither\nacquired, queued nor downloading. The library offers Acquire while\nit is above 0, even when `acquire_status` is `acquired` (an acquired\naudio edition beside a held ebook, or a second narration).",
+            "example": 1,
+            "minimum": 0
           }
         }
       },

@@ -47,7 +47,8 @@ plugin = "sqlite"   # sqlite | d1 | postgres
 # Env: BOOKCLERK_DATABASE_POSTGRES_URL / BOOKCLERK_DATABASE_POSTGRES_URL_FILE
 
 [auth]
-# Prefer BOOKCLERK_AUTH_PASSWORD (env). Optional TOML fallback:
+# Prefer one of BOOKCLERK_AUTH_PASSWORD or BOOKCLERK_AUTH_PASSWORD_FILE (a mounted
+# secret file), or a bookclerk-auth-password systemd credential. Optional TOML fallback:
 # password = "your-strong-passphrase"
 # Wrap an existing BCK1 master.key later with:
 #   bookclerk config master-key wrap

@@ -201,14 +201,19 @@ without leaving runners idle, heavy pull request jobs wait in shared
   active pull request CI run, through the jobs API (the plan job reads it
   with `actions: read`). A base lane wins a tie, so lent lanes fill only
   when every base lane is busy.
-- **Base lanes** 0 to 29 are always open to pull requests. With CodeQL's
-  four slots (`codeql-pr-slot-<rust|other>-<even|odd>`) and
-  ClusterFuzzLite's two (`cflite-pr-slot-<even|odd>`), which work the same
-  way, pull requests may always hold 36 runners, so the merge queue keeps
-  at least 24: enough for two groups' fan-outs at build concurrency 2.
-  Actions expressions have no modulo, so a run picks its CodeQL and
-  ClusterFuzzLite slot from whether its run id ends in an even digit.
-- **Lent lanes** 30 to 53 are open only while no `merge_group` CI run has
+- **Base lanes** 0 to 25 are always open to pull requests. CodeQL and
+  ClusterFuzzLite have slots of their own, which work the same way: five
+  for the Rust analysis (`codeql-pr-slot-rust-<0-4>`, about 30 minutes
+  each), two for CodeQL's other languages
+  (`codeql-pr-slot-other-<even|odd>`, a minute or two each) and three for
+  ClusterFuzzLite (`cflite-pr-slot-<0-2>`, about 36 minutes). With them,
+  pull requests may always hold 36 runners, so the merge queue keeps at
+  least 24: enough for two groups' fan-outs at build concurrency 2.
+  Actions expressions have no modulo, so a run picks its slot from its run
+  id's last digit (Rust: 0 or 5, 1 or 6, and so on; ClusterFuzzLite: 0, 3,
+  6 or 9, then 1, 4 or 7, then 2, 5 or 8; the other languages: even or
+  odd).
+- **Lent lanes** 26 to 49 are open only while no `merge_group` CI run has
   a gating job running or waiting (a run whose jobs are listed as "report
   only" no longer counts once only those are left; the script reads each
   active merge group's jobs to tell), and only when nothing runs or waits
@@ -243,6 +248,13 @@ The organization moved from GitHub Free (20 runners: 9 base lanes, 8 lent,
 2 CodeQL slots, 1 ClusterFuzzLite slot, so the queue kept 8) to GitHub Team
 (60 runners) on 20 November 2026. macOS stays capped at 5 runners at once
 on both plans.
+
+The Rust analysis and ClusterFuzzLite had two slots each until
+24 November 2026, when four base lanes moved to them. That night ready pull
+requests queued faster than two 30-minute slots could clear them: Rust
+analyses started back to back, seconds after the one before finished, and
+waited up to an hour while runners were free, holding the required
+`CodeQL` check neutral.
 
 Lanes replaced one fixed slot per job (`ci-pr-slot-<job>`) in
 November 2026. Measured from 13:00 to 23:40 UTC on 11 November, only

@@ -44,13 +44,39 @@ FAIL_FAST_JOB = "merge-queue-fail-fast"
 PRIVATE_HEAD_ACTION = "./.github/actions/osv-remediation-head"
 # The gate of a step that compiles another job's check on a build-only push.
 HOSTED_BUILD_IF = "env.CI_BUILD_ONLY == 'true' && runner.os == 'Windows' && needs.plan.outputs.check_%s == 'true'"
-# Picks a pull request run's CodeQL or ClusterFuzzLite slot by its run id's
-# parity (Actions expressions have no modulo).
+# Picks a pull request run's slot for CodeQL's short languages by its run
+# id's parity (Actions expressions have no modulo).
 RUN_ID_PARITY = (
     "(endsWith(format('{0}', github.run_id), '0') || endsWith(format('{0}', github.run_id), '2')"
     " || endsWith(format('{0}', github.run_id), '4') || endsWith(format('{0}', github.run_id), '6')"
     " || endsWith(format('{0}', github.run_id), '8')) && 'even' || 'odd'"
 )
+
+
+def run_id_digit_slot(groups: list[str]) -> str:
+    """Builds the expression that picks slot `i` when the run id ends in a digit of `groups[i]`.
+
+    # Arguments
+
+    * `groups`: the last digits of each slot, every digit exactly once.
+
+    # Returns
+
+    The parenthesized Actions expression, whose value is the slot number
+    as a string (`'0'` is truthy there, so the `&&`/`||` chain works).
+    """
+
+    def ends(digit: str) -> str:
+        return f"endsWith(format('{{0}}', github.run_id), '{digit}')"
+
+    picks = [f"({' || '.join(ends(d) for d in g)}) && '{i}'" for i, g in enumerate(groups[:-1])]
+    return "(" + " || ".join([*picks, f"'{len(groups) - 1}'"]) + ")"
+
+
+# Rust CodeQL (about 30 minutes) in five slots and ClusterFuzzLite (about 36)
+# in three, by the run id's last digit.
+RUST_CODEQL_SLOT_DIGITS = ["05", "16", "27", "38", "49"]
+CFLITE_SLOT_DIGITS = ["0369", "147", "258"]
 # Caches only report-only jobs save, each keyed by the build plan digest of
 # the cache whose checks it compiles (`test-os` builds `rust_test`, a `debug`
 # check, on Windows and macOS).
@@ -1056,6 +1082,14 @@ class DraftDeferredWorkflowTests(unittest.TestCase):
         self.assertIn("scripts/ci_lanes.py", step["run"])
         self.assertEqual(step["if"], "github.event_name == 'pull_request' && !inputs.private-head")
 
+    def test_run_id_digit_slots_cover_every_digit_once(self) -> None:
+        """Every run id lands in exactly one slot, and the slots stay near even."""
+        for groups in (RUST_CODEQL_SLOT_DIGITS, CFLITE_SLOT_DIGITS):
+            with self.subTest(groups=groups):
+                self.assertEqual(sorted("".join(groups)), list("0123456789"))
+                sizes = [len(g) for g in groups]
+                self.assertLessEqual(max(sizes) - min(sizes), 1)
+
     def test_other_pull_request_jobs_take_turns_in_slots(self) -> None:
         """CodeQL and ClusterFuzzLite wait in fixed slots; with the base lanes they fit the budget."""
         lanes = self._lanes()
@@ -1075,14 +1109,20 @@ class DraftDeferredWorkflowTests(unittest.TestCase):
                     self.assertTrue(group.startswith("${{ github.event_name == 'pull_request' && "), group)
                     self.assertIn("github.run_id", group)
                     self.assertIn("github.run_attempt", group)
-                    # Each run takes the slot of its run id's parity.
-                    self.assertIn(RUN_ID_PARITY, group)
-                    found = [f"cflite-pr-slot-{p}" for p in ("even", "odd") if "'cflite-pr-slot-{0}'" in group]
-                    found += [
-                        f"codeql-pr-slot-{lang}-{p}"
-                        for lang in re.findall(r"'(rust|other)'", group)
-                        for p in ("even", "odd")
-                    ]
+                    # Each run takes the slot its run id picks.
+                    found: list[str] = []
+                    if name == "cflite-pr.yml":
+                        self.assertIn(f"format('cflite-pr-slot-{{0}}', {run_id_digit_slot(CFLITE_SLOT_DIGITS)})", group)
+                        found += [f"cflite-pr-slot-{i}" for i in range(len(CFLITE_SLOT_DIGITS))]
+                    else:
+                        rust = run_id_digit_slot(RUST_CODEQL_SLOT_DIGITS)
+                        self.assertIn(
+                            f"(matrix.language == 'rust' && format('codeql-pr-slot-rust-{{0}}', {rust})"
+                            f" || format('codeql-pr-slot-other-{{0}}', {RUN_ID_PARITY}))",
+                            group,
+                        )
+                        found += [f"codeql-pr-slot-rust-{i}" for i in range(len(RUST_CODEQL_SLOT_DIGITS))]
+                        found += [f"codeql-pr-slot-other-{p}" for p in ("even", "odd")]
                     self.assertTrue(found, group)
                     slots.update(found)
         # Base lanes plus these slots are what pull requests may always hold;

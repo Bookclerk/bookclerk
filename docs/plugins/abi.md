@@ -1050,7 +1050,12 @@ piling up work.
 (the account holding as `titleId`, the edition, storage key, product ids;
 never media bytes). The holding is also the event's correlation and
 ordering key. It sets the envelope `source` to the book's storefront
-plugin id.
+plugin id. A write that only repeats an acquire already announced (no
+`edition_acquire_changed` for the edition since, through any of its
+holdings) is dropped as a duplicate, while a title acquired again after
+it was reset or failed publishes a new `book_acquired`. Two writes that
+both read the outbox before either commits can each publish one, so a
+consumer can receive more than one `book_acquired` for the same acquire.
 
 **`edition_acquire_changed`.** Any other acquire state change of a title
 (queued, downloading, failed, or reset to not acquired) writes
@@ -1079,7 +1084,12 @@ batch as its rows:
   too, with `edition_updated` for the edition the listing left; each pin
   publishes again, even back to an edition the listing sold before);
 - `edition_updated` (`editionId`) when the listing filled a missing
-  subtitle, publication date or duration on its edition;
+  subtitle, publication date or duration on its edition, and once a
+  listing's credits and series (written in batches after the link) are
+  stored for a work, expression or edition that had none, while some
+  listing of any edition of that edition's work is held (a catalog answer
+  that fills credits on a held work announces them too, even through an
+  edition nobody holds);
 - `edition_updated` (`editionId`, `fields: ["chapters"]`) when the
   chapters an edition plays change: a new chapter claim from an acquire,
   or an Administrator's edit or pin (see
@@ -1413,9 +1423,9 @@ and enrichment by declaring it:
   search, expand and deals hits carry to a full record. The host then asks
   your store to fill the lean rows it listed (as above, but by your product
   id only), and a title dialog asks it for the editions it listed before
-  any ISBN store, for details and for a `sampleUrl` when someone presses
-  **Sample**. A store that leaves it off is never woken for a detail
-  lookup.
+  any ISBN store, for details and for a `sampleUrl` (asked when the
+  dialog opens, so it knows whether to offer **Sample**). A store that
+  leaves it off is never woken for a detail lookup.
 
 - **Price lookup by identifier.** Set `catalog.priceByIsbn` and
   `catalog.priceByAsin` in `describe()` when `purchaseHint` prices an exact
@@ -1746,6 +1756,7 @@ The typed methods on `Notifier` and `NotifierEntrypoint` are:
 | `health` | Liveness and readiness: can the service be reached with the current settings |
 | `send` | `({ message, destination })` → `{ providerId? }`. Deliver one message; `providerId` is the service's id for it, when it gives one |
 | `validateDestination` | `({ addressJson })` → `{ addressJson, label? }`. Check and normalise a personal address a patron entered; `label` is a short hint that is never a secret (`a***@example.com`). The default accepts the address as given |
+| `checkDeliverability` | `({ message })` → `{ checks, advice }`. Run the plugin's own deliverability checks on a sample (the host's `test` notification) and merge what they find. Only called when the manifest sets `deliverability_check`; the default answers `unsupported`. The host waits up to `DELIVERABILITY_CHECK_DEADLINE_MS` (two minutes) |
 
 A `NotificationMessage` carries `notificationId` (the same on every
 destination's copy; where the service takes an idempotency key, build it
@@ -1756,7 +1767,9 @@ optional `markdown` and `html` bodies, an optional `link` into the
 library, labelled `fields`, an optional `groupKey` for threading, and an
 alert action and key for services that open and close incidents. When
 `sensitive` is set the body carries a secret, such as an account-mail
-link: never log it. The destination is `channel` (its target lives in
+link: never log it. `libraryOrigin` is the library's home page, built from
+its public origin like `link`, for footers; it is absent when no public
+origin is set. The destination is `channel` (its target lives in
 the instance's settings, and `addressJson` is empty) or `personal` (its
 `addressJson` is a JSON object of the declared address fields, which may
 hold secrets and is never logged).
@@ -1786,6 +1799,15 @@ The host checks both directions:
   whole text is at most `MAX_NOTIFIER_ADDRESS_BYTES` (4 KiB). A
   `validateDestination` answer that breaks these rules, or an empty
   address, is refused as `internal`.
+- A deliverability report has at most `MAX_DELIVERABILITY_CHECKS` (8)
+  checks, each with a `service`, an `outcome` (`passed`, `warning`,
+  `failed` or `skipped`), a one-line `summary` and an optional
+  `reportUrl`, and at most `MAX_DELIVERABILITY_ADVICE` (32) pieces of
+  advice, each with an `outcome`, a `title`, a `detail` and the `sources`
+  that raised it. A longer list refuses the report. Every text is cut to
+  one line at its cap (256 bytes for names and titles, 1 KiB otherwise), a
+  report link is dropped unless it is a credential-free `https` URL,
+  `skipped` advice is shown as `warning`, and at most 8 sources are kept.
 - A provider id that is empty, longer than 1 KiB or not one line is
   dropped; the message still counts as delivered. An error's text is cut
   to one line of 512 bytes for the delivery log.
@@ -2286,6 +2308,19 @@ earlier. The SDKs' `translateKeys` default returns the keys unchanged. The
 `local` destination applies the host platform's file-name rules, and `s3`
 the object-store rules and 1024-byte limit including its prefix (see
 [Keys each destination stores](../server/output.md#keys-each-destination-stores)).
+
+The TypeScript and Python SDKs carry the same object-store rules:
+`translateForObjectStore` / `translate_for_object_store` give the same key
+as the Rust storage helpers for every host key, checked against shared
+vectors. Their `ObjectStoreDestination` serves the whole `storage`
+entrypoint over a small object-store backend (head, list, ranged get, put,
+copy, delete, and optional conditional writes): staged writes under a
+commit token and idempotent commits, the move fallback that copies, checks
+and then removes an unchanged source, batch moves, deletes and probes, key
+translation, and the `changes` page. `QueueFeed` turns a plugin's
+`[[webhooks]]` row (or any leased queue) into a `changes` feed whose cursor
+acknowledges a page's messages only once the host confirms it, keeping its
+state in a `[[kv_namespaces]]` binding.
 
 The optional `r2` destination declares the same set as `s3` and shares its
 implementation. Its `changes` feed pulls the bucket's event notifications

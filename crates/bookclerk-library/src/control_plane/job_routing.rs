@@ -381,6 +381,78 @@ pub(super) async fn desired_requirements(
     Ok(requires.into_iter().collect())
 }
 
+/// Adds the metadata providers an acquire prefers to `requires`.
+///
+/// An acquire's plain-audio overlay (a provider's chapters, cover and tags)
+/// asks only the providers on the node that runs it, so each library
+/// instance of a key in `provider_keys` is added when some node runs it,
+/// with its guest up, together with everything already required. A
+/// provider that fits on no such node (it is down, or deployed only where
+/// the required outputs are not) is left out rather than holding the
+/// acquire back; the acquire then runs without its overlay, as it would on
+/// a node without providers.
+///
+/// The preference holds while the job waits: the requirements sweep
+/// resolves node-bound outputs only, so it treats a provider as a dropped
+/// requirement and removes it once the grace period ends, and claims accept
+/// the extra instances (a stored set that covers the current one).
+///
+/// # Arguments
+///
+/// * `store` - The library store.
+/// * `requires` - What [`resolve_job_requirements`] recorded for the
+///   acquire.
+/// * `provider_keys` - Plugin keys of the metadata providers.
+///
+/// # Returns
+///
+/// `requires` with the fitting providers added, sorted.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+pub async fn prefer_metadata_providers(
+    store: &LibraryStore,
+    requires: Vec<String>,
+    provider_keys: &BTreeSet<String>,
+) -> Result<Vec<String>> {
+    let mut requires: BTreeSet<String> = requires.into_iter().collect();
+    if provider_keys.is_empty() {
+        return Ok(requires.into_iter().collect());
+    }
+    for instance in list_all_plugin_instances(store).await? {
+        if instance.owner_node_id.is_some()
+            || !provider_keys.contains(&instance.plugin_key)
+            || requires.contains(instance.id.as_str())
+            || !deployed_somewhere(store, &instance.id).await?
+        {
+            continue;
+        }
+        let mut with: Vec<String> = requires.iter().cloned().collect();
+        with.push(instance.id.as_str().to_string());
+        with.sort();
+        if runs_together_somewhere(store, &with).await? {
+            requires.insert(instance.id.as_str().to_string());
+        }
+    }
+    Ok(requires.into_iter().collect())
+}
+
+/// True when some node is deployed to run every instance in `requires` and
+/// its last observations say every one of those guests is up.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+async fn runs_together_somewhere(store: &LibraryStore, requires: &[String]) -> Result<bool> {
+    for node in common_deployment_nodes(store, requires).await? {
+        if node_can_run_job(store, &node, requires).await? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// True when some node is deployed to run every instance in `requires`
 /// (always true for zero or one instance: [`desired_requirements`] keeps
 /// only deployed instances).

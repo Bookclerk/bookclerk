@@ -7,6 +7,7 @@ import {
   audioEditions,
   playableEdition,
   readShelf,
+  rowOffersAcquire,
   rowOffersPlay,
   targetFor,
 } from "./playTarget";
@@ -67,6 +68,24 @@ describe("rowOffersPlay", () => {
     expect(rowOffersPlay(row({}))).toBe(true);
     expect(rowOffersPlay(row({ acquire_status: "queued" }))).toBe(false);
     expect(rowOffersPlay(row({ media_kinds: ["ebook"] }))).toBe(false);
+  });
+});
+
+describe("rowOffersAcquire", () => {
+  const row = (over: Partial<WorkSummary>) =>
+    ({ acquire_status: "acquired", media_kinds: ["audio"], ...over }) as WorkSummary;
+
+  it("offers acquire while a held edition is left, whatever the summed state", () => {
+    expect(rowOffersAcquire(row({ acquirable_editions: 1 }))).toBe(true);
+    expect(rowOffersAcquire(row({ acquirable_editions: 0 }))).toBe(false);
+    expect(rowOffersAcquire(row({ acquire_status: "not_acquired", acquirable_editions: 0 }))).toBe(
+      false,
+    );
+  });
+
+  it("falls back to the summed state without the count", () => {
+    expect(rowOffersAcquire(row({}))).toBe(false);
+    expect(rowOffersAcquire(row({ acquire_status: "error" }))).toBe(true);
   });
 });
 

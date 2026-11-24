@@ -233,7 +233,7 @@ reach the launcher through the granted `GET /open` / `PUT /put` routes.
 | `MetadataProvider` | `health`, `lookup`, `search`, `chapters` | `Metadata extends MetadataEntrypoint` |
 | `CoverFetcher` | `health`, `fetchCovers` — the `sink` is a `destination` grant token | `Covers extends CoverEntrypoint` |
 | `MetadataFiles` | `health`, `parse`, `render` | `MetadataFiles extends MetadataFilesEntrypoint` |
-| `Notifier` | `health`, `send`, `validateDestination` | `Notifier extends NotifierEntrypoint` |
+| `Notifier` | `health`, `send`, `validateDestination`, `checkDeliverability` | `Notifier extends NotifierEntrypoint` |
 | `AiModels` | `health`, `models`, `run` | `Ai extends AiEntrypoint` |
 | `Database` | `openSession` | `DatabaseAdapter extends DatabaseAdapterEntrypoint` |
 | `AdapterDatabaseSession` | all 10 (`X-Bookclerk-Target`) | the `AdapterDatabaseSession` object `openSession` returned |

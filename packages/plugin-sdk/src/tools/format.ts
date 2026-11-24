@@ -591,6 +591,7 @@ export function canonicalManifest(manifest: Manifest, options: FormatOptions = {
         ? table([
             ["destinations", strings(notifier, "destinations")],
             ["account_mail", bool(notifier, "account_mail")],
+            ["deliverability_check", trueOnly(notifier, "deliverability_check")],
             ["formats", notifier.formats === undefined ? ["text"] : strings(notifier, "formats")],
             [
               "address_fields",

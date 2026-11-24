@@ -55,7 +55,9 @@ use crate::models::AcquireStatus;
 /// - 2: every work with an edition names a cover edition, whose cover may
 ///   come from a store listing or the work, so libraries indexed under 1
 ///   (no cover edition unless the edition row had a cover) are rebuilt.
-pub const LIBRARY_INDEX_LAYOUT: i64 = 2;
+/// - 3: rows count the held editions an acquire would still queue
+///   (`acquirable_editions`).
+pub const LIBRARY_INDEX_LAYOUT: i64 = 3;
 
 /// RFC 3339 now, with microseconds so stamps order as text.
 fn stamp(at: chrono::DateTime<Utc>) -> String {
@@ -449,6 +451,10 @@ pub struct LibraryWorkRow {
     pub length_minutes: Option<u64>,
     /// RFC 3339 time of the newest purchase a store reported.
     pub purchased_at: Option<String>,
+    /// How many held editions an acquire would still queue (neither
+    /// acquired, queued nor downloading); the list offers Acquire while it
+    /// is above 0.
+    pub acquirable_editions: u64,
 }
 
 /// One page of library works.
@@ -522,6 +528,7 @@ impl LibraryWorkRow {
             added_at: model.added_at,
             length_minutes: (model.length_minutes > 0).then(|| count(model.length_minutes)),
             purchased_at: (!model.purchased_at.is_empty()).then_some(model.purchased_at),
+            acquirable_editions: count(model.acquirable_editions),
         })
     }
 }
@@ -683,6 +690,20 @@ pub(crate) fn build_work_row(
         .filter_map(|h| h.purchased_at.as_deref())
         .max()
         .unwrap_or_default();
+    // Held editions an acquire by edition would still queue: never tried,
+    // failed or reset, as opposed to acquired or on the way.
+    let acquirable_editions = held_editions
+        .iter()
+        .filter(|id| {
+            matches!(
+                statuses
+                    .get(**id)
+                    .copied()
+                    .unwrap_or(AcquireStatus::NotAcquired),
+                AcquireStatus::NotAcquired | AcquireStatus::Error
+            )
+        })
+        .count();
     Some(library_work_rows::Model {
         work_id: work.id.clone(),
         kind: work.kind.clone(),
@@ -703,6 +724,7 @@ pub(crate) fn build_work_row(
         purchased_at: purchased_at.to_string(),
         refreshed_at: refreshed_at.to_string(),
         facets_ready: 0,
+        acquirable_editions: i64::try_from(acquirable_editions).unwrap_or(i64::MAX),
     })
 }
 
@@ -1090,6 +1112,7 @@ impl LibraryStore {
                     batch::text(&row.sort_series),
                     batch::int(row.length_minutes),
                     batch::text(&row.purchased_at),
+                    batch::int(row.acquirable_editions),
                     batch::text(&row.refreshed_at),
                 ]
             };
@@ -1107,8 +1130,8 @@ impl LibraryStore {
                             work_id, kind, title, sort_title, authors, sort_author, series, \
                             series_position, cover_edition_id, media_kinds, acquire_status, \
                             edition_count, holding_count, added_at, sort_series, length_minutes, \
-                            purchased_at, refreshed_at, facets_ready\
-                         ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0 \
+                            purchased_at, acquirable_editions, refreshed_at, facets_ready\
+                         ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0 \
                          WHERE EXISTS (SELECT 1 FROM works WHERE id = ?)",
                         insert,
                     ),
@@ -1117,8 +1140,8 @@ impl LibraryStore {
                             authors = ?, sort_author = ?, series = ?, series_position = ?, \
                             cover_edition_id = ?, media_kinds = ?, acquire_status = ?, \
                             edition_count = ?, holding_count = ?, added_at = ?, sort_series = ?, \
-                            length_minutes = ?, purchased_at = ?, refreshed_at = ?, \
-                            facets_ready = 0 \
+                            length_minutes = ?, purchased_at = ?, acquirable_editions = ?, \
+                            refreshed_at = ?, facets_ready = 0 \
                          WHERE work_id = ? AND refreshed_at <= ?",
                         update,
                     ),
@@ -1306,6 +1329,68 @@ impl LibraryStore {
             .await
             .map_err(LibraryError::Orm)?
             .map(|x| x.work_id))
+    }
+
+    /// The top-level works of `edition_ids` that are held (their page index
+    /// row counts a holding), in id order: the works whose rows a change to
+    /// those editions' covers or text can show on the library page.
+    ///
+    /// A few chunked lookups for the whole set, so a large catalog answer
+    /// that mostly holds unheld works costs no per-edition reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when a read fails.
+    pub async fn held_works_of_editions(&self, edition_ids: &[String]) -> Result<Vec<String>> {
+        let ids: Vec<String> = edition_ids
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let editions =
+            super::library_model::find_chunked::<editions::Entity, _>(self, &ids, |part| {
+                editions::Entity::find().filter(editions::Column::Id.is_in(part.iter().cloned()))
+            })
+            .await?;
+        let expression_ids: Vec<String> = editions
+            .into_iter()
+            .map(|e| e.expression_id)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let work_ids: Vec<String> = super::library_model::find_chunked::<expressions::Entity, _>(
+            self,
+            &expression_ids,
+            |part| {
+                expressions::Entity::find()
+                    .filter(expressions::Column::Id.is_in(part.iter().cloned()))
+            },
+        )
+        .await?
+        .into_iter()
+        .map(|x| x.work_id)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+        let tops = self.top_level_works(&work_ids).await?;
+        let mut held: Vec<String> = super::library_model::find_chunked::<
+            library_work_rows::Entity,
+            _,
+        >(self, &tops, |part| {
+            library_work_rows::Entity::find()
+                .filter(library_work_rows::Column::WorkId.is_in(part.iter().cloned()))
+                .filter(library_work_rows::Column::HoldingCount.gt(0))
+        })
+        .await?
+        .into_iter()
+        .map(|row| row.work_id)
+        .collect();
+        held.sort();
+        Ok(held)
     }
 
     /// The work a listing's edition belongs to.
@@ -2108,6 +2193,7 @@ mod tests {
             subjects: None,
             categories: None,
             cover_url: None,
+            text_version: None,
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
         }
@@ -2237,6 +2323,11 @@ mod tests {
         assert_eq!(row.series.as_deref(), Some("Hainish Cycle"));
         assert_eq!(row.series_position.as_deref(), Some("6"));
         assert_eq!(row.refreshed_at, "now");
+        assert_eq!(
+            row.acquirable_editions, 1,
+            "the failed held edition can be acquired again; the queued one is on its way \
+             and the unheld one is not the patron's"
+        );
     }
 
     #[test]
@@ -2258,6 +2349,10 @@ mod tests {
         let row = build_work_row(&inputs, "now").unwrap();
         assert_eq!(row.cover_edition_id.as_deref(), Some("e1"));
         assert_eq!(row.acquire_status, "acquired");
+        assert_eq!(
+            row.acquirable_editions, 1,
+            "the held audio edition beside the acquired ebook is still to acquire"
+        );
         assert_eq!(row.authors, None);
         assert_eq!(row.sort_author, "");
     }
@@ -2374,8 +2469,10 @@ mod tests {
             purchased_at: String::new(),
             refreshed_at: "r".into(),
             facets_ready: 1,
+            acquirable_editions: -1,
         };
         let row = LibraryWorkRow::from_model(model.clone()).unwrap();
+        assert_eq!(row.acquirable_editions, 0, "a negative count reads as none");
         assert_eq!(row.kind, WorkKind::Podcast);
         assert_eq!(row.media_kinds, vec![MediaKind::Audio]);
         assert_eq!(row.acquire_status, AcquireStatus::Downloading);

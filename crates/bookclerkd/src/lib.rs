@@ -38,6 +38,7 @@ mod discover_jobs;
 mod download_requests;
 mod embedding;
 mod event_worker;
+mod file_probes;
 mod heartbeat;
 mod http_error;
 mod ingress;
@@ -83,6 +84,7 @@ mod restart;
 mod samples;
 mod scheduler;
 mod search_index;
+mod search_rerank;
 #[cfg(test)]
 mod startup_tests;
 mod totp;
@@ -704,6 +706,7 @@ async fn assemble_host(
     maintenance::spawn_maintenance(state.clone());
     notify_jobs::spawn_notify_sweep(state.clone());
     uploads::spawn_prune(state.clone());
+    node_api::uploads::spawn_upload_sweep(state.clone());
     cron_worker::spawn_cron_worker(state.clone());
     requirements_sweep::spawn_requirements_sweep(state.clone());
     intake::spawn_intake_runner(state.clone());

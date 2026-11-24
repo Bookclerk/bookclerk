@@ -719,6 +719,13 @@ input_from = "store"
 side = "guest"
 artifacts = ["bookclerk"]
 
+[targets.chirp_catalog_detail]
+crate = "bookclerk-plugin-source-chirp"
+boundary = "Chirp title detail answers from its public GraphQL catalog"
+input_from = "store"
+side = "guest"
+artifacts = ["bookclerk"]
+
 [targets.node_frame]
 crate = "bookclerk-node-proto"
 boundary = "Node-to-node frames on the library socket"
@@ -766,6 +773,21 @@ artifacts = ["bookclerk"]
 crate = "bookclerk-plugin-notifier-email"
 boundary = "A mail server's SMTP replies to the email notifier, and a patron's email address document"
 input_from = "the operator's mail server; any signed-in patron (address)"
+# Only the email guest reads them.
+side = "guest"
+artifacts = ["bookclerk"]
+
+[targets.shared_branch_bootstrap]
+crate = "bookclerk-node-proto"
+boundary = "The opened shared-branch bootstrap a joining node reads from its library: the [database] section, the database credential and its id, and the data key"
+input_from = "peer"
+side = "host"
+artifacts = ["bookclerk"]
+
+[targets.checker_answers]
+crate = "bookclerk-plugin-notifier-email"
+boundary = "What the email notifier's deliverability check reads from Postmark's spam check, Cloudflare's DNS-over-HTTPS resolver and mail-tester.com"
+input_from = "outside services the operator approved (Postmark, Cloudflare, mail-tester.com)"
 # Only the email guest reads them.
 side = "guest"
 artifacts = ["bookclerk"]

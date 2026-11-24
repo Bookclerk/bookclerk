@@ -188,9 +188,10 @@ pub struct CatalogProduct {
     /// Audible's adult flag (`is_adult_product`, in `product_attrs`):
     /// `Some(true)` for explicit content, `None` when the reply omits it.
     pub is_explicit: Option<bool>,
-    /// Public `https` URL of the title's audio sample (`sample_url`, in the
-    /// `media` response group); `None` when the reply has none or it is not
-    /// an absolute `https` URL.
+    /// Public `https` URL of the title's audio sample (`sample_url`, sent
+    /// only with the `sample` response group, which by-ASIN lookups ask
+    /// for); `None` when the reply has none or it is not an absolute
+    /// `https` URL.
     pub sample_url: Option<String>,
 }
 
@@ -260,6 +261,12 @@ pub async fn search_catalog_keywords(
 /// Discover fetches prices on their own.
 const CATALOG_RESPONSE_GROUPS: &str =
     "product_attrs,product_desc,contributors,series,product_extended_attrs,media,category_ladders";
+
+/// Groups for by-ASIN lookups: the lean groups plus `sample`, the only
+/// group that carries a title's `sample_url` (`media` does not), for the
+/// sample control of a title's details.
+const DETAIL_RESPONSE_GROUPS: &str = "product_attrs,product_desc,contributors,series,\
+product_extended_attrs,media,category_ladders,sample";
 
 /// Richer groups for user-facing catalog search (includes list price).
 const CATALOG_RESPONSE_GROUPS_RICH: &str = "product_attrs,product_desc,contributors,series,\
@@ -1102,7 +1109,8 @@ pub fn catalog_origin(region: &str) -> String {
     )
 }
 
-/// Looks titles up by ASIN in the public catalog, with their genre ladders.
+/// Looks titles up by ASIN in the public catalog, with their genre ladders
+/// and audio sample.
 ///
 /// # Arguments
 ///
@@ -1134,7 +1142,7 @@ pub async fn fetch_products_by_asins(
     let joined = asins.join(",");
     let req = http.get(format!("{origin}/1.0/catalog/products")).query(&[
         ("asins", joined.as_str()),
-        ("response_groups", CATALOG_RESPONSE_GROUPS),
+        ("response_groups", DETAIL_RESPONSE_GROUPS),
     ]);
     catalog_products_from_response(req).await
 }
@@ -1293,11 +1301,7 @@ fn parse_catalog_product(p: &Value) -> Option<CatalogProduct> {
 /// `https` URL with a host and no spaces or control characters. The host
 /// parses it again before it fetches anything.
 fn product_sample_url(p: &Value) -> Option<String> {
-    let raw = p.get("sample_url")?.as_str()?.trim();
-    let rest = raw.strip_prefix("https://")?;
-    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let clean = !raw.chars().any(|c| c.is_whitespace() || c.is_control());
-    (clean && !host.is_empty()).then(|| raw.to_owned())
+    bookclerk_storefront::records::sample_url(p.get("sample_url")?.as_str()?)
 }
 
 /// The catalog's `isbn` attribute as compact ISBN text: hyphens and spaces

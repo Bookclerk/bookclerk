@@ -1570,6 +1570,36 @@ impl LibraryStore {
         Ok(newest.is_some_and(|m| parse_dt(&m.created_at) >= since))
     }
 
+    /// True when a job with `dedup_key` was admitted at or after `since`,
+    /// whatever became of it (waiting, running, succeeded, failed or
+    /// cancelled).
+    ///
+    /// A periodic job uses this to admit at most one run per interval, so
+    /// a run that failed or was cancelled does not let another start
+    /// before the interval is up.
+    ///
+    /// # Arguments
+    ///
+    /// * `dedup_key` - The [`JobKind::dedup_key`] of the job.
+    /// * `since` - The moment the job must have been admitted after.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LibraryError::Orm`] when the read fails.
+    pub async fn job_admitted_in_any_state_since(
+        &self,
+        dedup_key: &str,
+        since: chrono::DateTime<Utc>,
+    ) -> Result<bool> {
+        let newest = jobs::Entity::find()
+            .filter(jobs::Column::DedupKey.eq(dedup_key))
+            .order_by_desc(jobs::Column::CreatedAt)
+            .one(&self.db)
+            .await
+            .map_err(LibraryError::Orm)?;
+        Ok(newest.is_some_and(|m| parse_dt(&m.created_at) >= since))
+    }
+
     /// True when a job with `dedup_key` is waiting or running.
     ///
     /// A Discover page read uses this to say its shelves are being rebuilt
