@@ -74,6 +74,19 @@ fn inside_cache_dir(path: &str) -> bool {
         .is_some_and(|rest| rest.split('/').any(|seg| !seg.is_empty()))
 }
 
+/// The confinement verdict the oracle expects for `fetch`.
+///
+/// On Unix [`CACHE_DIR`] is absolute, so each path must lie inside it by
+/// [`inside_cache_dir`]. On Windows `/c` has no drive and is not absolute,
+/// so it confines nothing: only a reply that names no file passes.
+fn expected_confined(fetch: &PlainFetch) -> bool {
+    if cfg!(windows) {
+        fetch.files.is_empty()
+    } else {
+        fetch.files.iter().all(|f| inside_cache_dir(&f.path))
+    }
+}
+
 /// Runs every invariant on one input; panics on a violation.
 pub fn check(data: &[u8]) {
     if data.len() > MAX_INPUT_BYTES {
@@ -92,7 +105,7 @@ pub fn check(data: &[u8]) {
     let confined = validate_fetched_paths(&fetch, &[std::path::Path::new(CACHE_DIR)]);
     assert_eq!(
         confined.is_ok(),
-        fetch.files.iter().all(|f| inside_cache_dir(&f.path)),
+        expected_confined(&fetch),
         "path confinement disagrees with the oracle: {confined:?}"
     );
     if verdict.is_ok() {
