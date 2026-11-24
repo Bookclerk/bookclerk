@@ -14,7 +14,7 @@ accounts at Audible, Libro.fm, Chirp and GraphicAudio, ten well-known
 audiobooks bought from them, four wishlist items, and a branch,
 `sams-nas`, that shared four more titles and has been offline for three
 days. The seed first approves and deploys the four storefronts and the
-covers plugin, with exactly the grants their manifests request, then looks
+media_download plugin, with exactly the grants their manifests request, then looks
 each title up in its store's public catalog through the storefront plugins
 (the search Discover uses, at most 15 seconds) and writes the record the
 store returns, so product ids, cover art and descriptions match the store.
@@ -46,7 +46,7 @@ each held work's cover (as the Library page shows it), then the covers of
 the store listings Discover ranks from (its cached store calls and stored
 candidates), at most 400. `bookclerkd` runs again while
 `bookclerk-demo-seed --bake-covers` requests each one from it, which
-downloads it through the `covers` plugin and stores the processed JPEGs
+downloads it through the `media_download` plugin and stores the processed JPEGs
 in `cache/covers/`. A cover that fails is left for a container to fetch.
 The cache is keyed by image URL, not by the URL-signing key the next step
 deletes, so the entries stay valid under each container's new key.
@@ -97,7 +97,7 @@ every content signal to `no` (`use=immediate`).
    container with a fresh operator token and `master.key` password, and the
    demo's own origin as bookclerkd's `public_origin` (so bookclerkd's own
    cross-site checks and store sign-in callbacks use it), waits for
-   `/health`, and approves and deploys the four storefronts and covers as
+   `/health`, and approves and deploys the four storefronts and media_download as
    the operator (as an operator would in Settings; visitors cannot). It
    reads the plugin instance list first and leaves any plugin already
    deployed on the node alone, so on a baked image that one read is all
@@ -195,8 +195,8 @@ That build never exports the builder, and it links the demo's binaries with
 thin LTO instead of the fat LTO shipped images use, which takes minutes
 rather than most of the build. The image adds the Audible, Libro.fm, Chirp,
 GraphicAudio and
-`covers` plugins, and removes the `local` output plugin, so the host has
-nowhere to acquire to even if a request got through. `covers` downloads
+`media_download` plugins, and removes the `local` output plugin, so the host has
+nowhere to acquire to even if a request got through. `media_download` downloads
 covers, store icons and avatars, and `bookclerk-media-worker` re-encodes
 them, so the web app loads every image from the demo's own origin.
 

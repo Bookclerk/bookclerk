@@ -15,8 +15,8 @@ An **integration** is an outbound plugin. It can:
 
 There is no plugin `kind = "integration"`. An integration plugin exports
 `remoteLibrary`, declares `[[events.consumers]]`, or both, and may
-declare `oidc` and `cli`. A metadata provider (`metadata`), a cover
-fetcher (`covers`), a metadata file reader (`metadataFiles`), a
+declare `oidc` and `cli`. A metadata provider (`metadata`), a media
+downloader (`mediaDownload`), a metadata file reader (`metadataFiles`), a
 notifier (`notifier`) and a model plugin (`ai`) also show in the
 integration family. See [Plugins](../plugins/README.md).
 
@@ -285,16 +285,16 @@ To turn one on:
 Each call makes at most one request to Open Library, or one per ASIN (up
 to five) to Audnexus. Their health checks make no request at all.
 
-## Cover images
+## Cover images and samples
 
-The optional `covers` plugin downloads cover art for Bookclerk. Bookclerk
-never fetches a cover URL from a store or catalog itself; it asks a
-deployed cover fetcher, which streams each image back to the host.
-Bookclerk treats every image as untrusted: it checks the real file type,
-decodes it with size limits and re-encodes it before storing or showing
-it.
+The optional `media_download` plugin downloads cover art and storefronts'
+audio samples for Bookclerk. Bookclerk never fetches a cover or sample URL
+from a store or catalog itself; it asks a deployed media downloader, which
+streams each body back to the host. Bookclerk treats every body as
+untrusted: it checks the real file type, decodes it with size limits and
+re-encodes it before storing or playing it.
 
-Cover art lives on each store's and catalog's own servers, so this plugin
+Cover art and samples live on each store's and catalog's own servers, so this plugin
 asks for **any public website** (`*`) rather than a list of hosts. That
 grant never reaches IP addresses, `localhost`, or private, loopback or
 cloud-metadata addresses, even through a public name that resolves to
@@ -306,17 +306,18 @@ To turn it on, install it as
 1. Approve its network access:
 
    ```sh
-   bookclerk plugins approve covers --yes
+   bookclerk plugins approve media_download --yes
    ```
 
 2. Deploy it:
 
    ```sh
-   bookclerk plugins deploy covers
+   bookclerk plugins deploy media_download
    ```
 
-Each call fetches at most 32 images, four at a time, each capped in size
-and time. Its health check makes no request.
+Each call fetches at most 32 URLs, four at a time, each capped in size
+and time: 10 MiB and 15 seconds for an image, 32 MiB and 60 seconds for
+an audio sample. Its health check makes no request.
 
 ### How covers are served
 
@@ -331,7 +332,7 @@ The first request for a cover:
 1. checks the token. It carries the remote URL and a signature only this
    node can make, so the route never fetches a URL the API didn't hand
    out;
-2. downloads the image through the first deployed cover fetcher;
+2. downloads the image through the first deployed media downloader;
 3. re-encodes it in the confined media worker (see
    [Cover images](media.md#cover-images));
 4. stores the three JPEGs under `cache/covers/` in the files directory,
@@ -379,7 +380,7 @@ entries on disk; every image other than a cover is then downloaded again
 the next time it is shown.
 
 The acquire overlay gets its cover the same way, so Bookclerk itself
-never requests a cover URL. Without a deployed cover fetcher, covers
+never requests a cover URL. Without a deployed media downloader, covers
 answer `503` and the overlay keeps the store's own cover.
 
 The web app loads covers only through `cover_path`, so a browser never
@@ -426,7 +427,7 @@ when the host says nothing. Once that time is up:
 
 So a changed picture shows up within about a week at most, and usually
 much sooner. An image the host sends with `no-store` is served but never
-kept. Without a deployed cover fetcher they answer
+kept. Without a deployed media downloader they answer
 `503` and the web app shows a monogram. Gravatars are downloaded at most
 four at a time, since anyone signed in can name a new hash; a request
 over that limit also answers `503`.

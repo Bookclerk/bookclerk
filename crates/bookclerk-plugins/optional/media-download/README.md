@@ -1,11 +1,13 @@
-# Cover images
+# Media downloads
 
-A `covers` plugin (id `covers`) that downloads cover art for the host. It
-runs in `workerd` and may reach any public website, because cover art lives
-on every store's and catalog's own CDN.
+A `mediaDownload` plugin (id `media_download`) that downloads public media
+for the host: cover art, and storefronts' audio samples. It runs in
+`workerd` and may reach any public website, because cover art and samples
+live on every store's and catalog's own CDN.
 
-- `fetchCovers` takes up to 32 `https` URLs and a per-image byte cap. It
-  fetches four at a time, with a 15 second limit each, follows up to five
+- `downloadMedia` takes up to 32 `https` URLs and a per-body byte cap (at
+  most 10 MiB for images, 32 MiB for audio). It fetches four at a time,
+  with a limit of 15 seconds per image and 60 seconds per audio sample, follows up to five
   redirects only to URLs that pass the same `https` check, and streams each
   body into the sink the host passes, under the URL's index. It answers
   one entry per URL: stored, or why not (HTTP status, not an image, over
@@ -37,7 +39,7 @@ regenerates `modules/`, and CI fails when the committed copy differs.
 
 ```sh
 cd packages/plugin-sdk && npm ci && npm run build
-cd ../../crates/bookclerk-plugins/optional/covers
+cd ../../crates/bookclerk-plugins/optional/media-download
 npm ci
 npm run typecheck
 npm run build

@@ -30,7 +30,7 @@ export class DatabaseAdapter extends DatabaseAdapterEntrypoint<Env> { /* openSes
 export class Cli extends CliEntrypoint<Env> { /* describe, invoke */ }
 export class Oidc extends OidcEntrypoint<Env> { /* clients, authenticateUser */ }
 export class Metadata extends MetadataEntrypoint<Env> { /* health, lookup, search, chapters */ }
-export class Covers extends CoverEntrypoint<Env> { /* health, fetchCovers */ }
+export class MediaDownload extends MediaDownloadEntrypoint<Env> { /* health, downloadMedia */ }
 
 export default class MyPlugin extends BookclerkEntrypoint<Env> { /* … */ }
 ```
@@ -1493,7 +1493,7 @@ records. Both describe a title in structured fields, following the
 | `parentProductId` | The show's product id, on a podcast episode. Only podcasts keep it |
 | `language`, `abridgement` | Content language, and `unknown` (the default), `unabridged` or `abridged` |
 | `explicitness` | Whether the store marks the edition as explicit (adult) content: `unknown` (the default), `clean` or `explicit`. The host keeps it on the store listing, so a patron scope can hide explicit books |
-| `sampleUrl` | `CatalogHit` only: the absolute `https` URL of the store's public audio sample of this edition, when it publishes one. The host downloads it through a cover fetcher (`media = audio`) and cuts it into a book sample; a client never sees the URL (see [Book samples](../adr/book-samples.md)) |
+| `sampleUrl` | `CatalogHit` only: the absolute `https` URL of the store's public audio sample of this edition, when it publishes one. The host downloads it through a media downloader (`media = audio`) and cuts it into a book sample; a client never sees the URL (see [Book samples](../adr/book-samples.md)) |
 
 Every record names all three kinds. Each kind enum starts with
 `unspecified`, which is what a record that forgets the field sends, and
@@ -1582,22 +1582,24 @@ from every provider; `chapters` stops at the first layout with `found`
 set. A provider that fails is logged and skipped
 ([integrations](../server/integrations.md#open-library-and-audnexus)).
 
-### Cover fetchers
+### Media downloaders
 
-Export `covers` to download cover images for the host. The host never
-fetches a cover URL itself: it hands the URLs to a cover fetcher, then
-checks each body's real type, decodes it with limits and re-encodes it
-before it stores or serves anything.
+Export `mediaDownload` to download public media for the host: cover
+images, and storefronts' audio samples. The host never fetches such a URL
+itself: it hands the URLs to a media downloader, then checks each body's
+real type, decodes it with limits and re-encodes it before it stores or
+serves anything.
 
-The typed methods on `CoverFetcher` and `CoverEntrypoint` are:
+The typed methods on `MediaDownloader` and `MediaDownloadEntrypoint` are:
 
 | Method | Notes |
 | --- | --- |
 | `health` | Liveness and readiness |
-| `fetchCovers` | `({ urls, maxBytes, conditions, media }, sink)` → `CoverImage[]`. Fetch each URL and put its body into `sink` under the key `String(i)`, where `i` is the URL's index. Answer one `CoverImage` per URL, in request order: `{ url, stored, notModified, contentType?, error?, etag?, lastModified?, cacheControl?, expires?, date?, age? }` |
+| `downloadMedia` | `({ urls, maxBytes, conditions, media }, sink)` → `DownloadResult[]`. Fetch each URL and put its body into `sink` under the key `String(i)`, where `i` is the URL's index. Answer one `DownloadResult` per URL, in request order: `{ url, stored, notModified, contentType?, error?, etag?, lastModified?, cacheControl?, expires?, date?, age? }` |
 
-- `urls` holds 1 to `MAX_COVER_URLS` (32) absolute `https` URLs, and
-  `maxBytes` is at most `MAX_COVER_BYTES` (10 MiB).
+- `urls` holds 1 to `MAX_DOWNLOAD_URLS` (32) absolute `https` URLs, and
+  `maxBytes` is at most `MAX_IMAGE_BYTES` (10 MiB) for images and
+  `MAX_AUDIO_BYTES` (32 MiB) for audio.
 - `media` is `image` (covers, the default) or `audio` (a storefront's
   public sample, for [book samples](../adr/book-samples.md)). Send
   `Accept: image/*` or `audio/*` to match, and answer a body whose
@@ -1607,13 +1609,13 @@ The typed methods on `CoverFetcher` and `CoverEntrypoint` are:
   may be shorter than `urls`. Send `conditions[i].ifNoneMatch` as
   `If-None-Match` and `conditions[i].ifModifiedSince` as
   `If-Modified-Since` when they are set. Each value is at most
-  `MAX_COVER_HEADER_BYTES` (1024) bytes.
+  `MAX_DOWNLOAD_HEADER_BYTES` (1024) bytes.
 - When the server answers `304 Not Modified`, put nothing into the sink
   and answer `stored: false, notModified: true`: the host's copy is still
   current.
 - Copy the server's `ETag`, `Last-Modified`, `Cache-Control`, `Expires`,
   `Date` and `Age` into the answer verbatim, for a `200` or a `304`. Leave
-  out a value longer than `MAX_COVER_HEADER_BYTES`; the host refuses an
+  out a value longer than `MAX_DOWNLOAD_HEADER_BYTES`; the host refuses an
   answer that carries one, or one that is both `stored` and
   `notModified`. The values are advisory: the host parses them again with
   its own limits.
@@ -1632,9 +1634,9 @@ capped well below one image (see the
 [workerd bridge](../internals/workerd-bridge.md#post-invoke)).
 
 ```ts
-export class Covers extends CoverEntrypoint<Env> {
-  async fetchCovers(params: CoverFetchParams, sink: Destination): Promise<CoverImage[]> {
-    const out: CoverImage[] = [];
+export class MediaDownload extends MediaDownloadEntrypoint<Env> {
+  async downloadMedia(params: MediaDownloadParams, sink: Destination): Promise<DownloadResult[]> {
+    const out: DownloadResult[] = [];
     for (const [i, url] of params.urls.entries()) {
       const res = await fetch(url);
       if (!res.ok || res.body === null) {
@@ -1649,10 +1651,11 @@ export class Covers extends CoverEntrypoint<Env> {
 }
 ```
 
-The first-party `covers` plugin (`crates/bookclerk-plugins/optional/covers`)
-is the complete fetcher. It holds the `*`
+The first-party `media_download` plugin
+(`crates/bookclerk-plugins/optional/media-download`) is the complete
+downloader. It holds the `*`
 [any public website](capabilities.md#network-rules) grant, because cover
-art lives on every catalog's own CDN.
+art and samples live on every store's and catalog's own CDN.
 
 ### Metadata file dialects
 

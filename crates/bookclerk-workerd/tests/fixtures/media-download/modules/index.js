@@ -1,5 +1,5 @@
 /**
- * Contract fixture: `CoverFetcher.fetchCovers` puts a made-up body for each
+ * Contract fixture: `MediaDownloader.downloadMedia` puts a made-up body for each
  * URL into the host sink, all at once, without touching the network.
  *
  * - a URL ending in `/missing` is answered `stored: false`;
@@ -8,7 +8,7 @@
  * - any other URL puts `body:<index>` under its index.
  */
 
-import { BookclerkEntrypoint, CoverEntrypoint } from "@bookclerk/plugin-sdk/workerd";
+import { BookclerkEntrypoint, MediaDownloadEntrypoint } from "@bookclerk/plugin-sdk/workerd";
 
 function bytesStream(text) {
   const bytes = typeof text === "string" ? new TextEncoder().encode(text) : text;
@@ -20,8 +20,8 @@ function bytesStream(text) {
   });
 }
 
-export class Covers extends CoverEntrypoint {
-  async fetchCovers(params, sink) {
+export class MediaDownload extends MediaDownloadEntrypoint {
+  async downloadMedia(params, sink) {
     return Promise.all(
       params.urls.map(async (url, i) => {
         if (url.endsWith("/missing")) return { url, stored: false, error: "HTTP 404" };

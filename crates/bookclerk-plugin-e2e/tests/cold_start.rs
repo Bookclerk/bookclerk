@@ -154,10 +154,10 @@ async fn first_call(id: &str, session: &PluginSession) -> Option<Duration> {
         )
         .await;
         settle_first_call(id, started, outcome)
-    } else if session.has_entrypoint(Entrypoint::Covers) {
+    } else if session.has_entrypoint(Entrypoint::MediaDownload) {
         let outcome = tokio::time::timeout(
             RPC_TIMEOUT,
-            session.covers(|stub| async move { stub.health().await }),
+            session.media_download(|stub| async move { stub.health().await }),
         )
         .await;
         settle_first_call(id, started, outcome)

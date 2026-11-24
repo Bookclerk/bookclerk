@@ -56,7 +56,7 @@ Authors write a Workers-shaped module:
 - Every named entrypoint in `entrypoints = [...]` is an exported class
   with the matching name, extending its base: `Storefront`, `Storage`,
   `RemoteLibrary`, `DatabaseAdapter`, `Cli`, `Oidc`, `Metadata`,
-  `Covers`, `MetadataFiles`, `Notifier` or `Ai`.
+  `MediaDownload`, `MetadataFiles`, `Notifier` or `Ai`.
 - Native guests implement the Rust `PluginWorker`
   (`describe` / `open(invocation, bindings) -> Entrypoints`) and call
   `serve`. On native guests, `serve` is the stdin/stdout Cap'n Proto
@@ -362,13 +362,13 @@ Audible, Libro.fm, Chirp, GraphicAudio and Audiobookshelf ship as
   (fail closed).
 
 The Audiobookshelf integration, the Open Library and Audnexus metadata
-providers, the `covers` fetcher, the `metadata_files` reader, the
+providers, the `media_download` downloader, the `metadata_files` reader, the
 `cloudflare_relay`, `ngrok`, `cloudflare_tunnel` and `cloudflare_dns`
 ingresses and the
 `webhook` notifier are
 first-party **workerd TypeScript** guests in the same tree
 (`crates/bookclerk-plugins/optional/integration-audiobookshelf`,
-`metadata-openlibrary`, `metadata-audnexus`, `covers`, `metadata-files`,
+`metadata-openlibrary`, `metadata-audnexus`, `media-download`, `metadata-files`,
 `ingress-cloudflare`, `ingress-ngrok`, `ingress-cloudflare-tunnel`,
 `ingress-cloudflare-dns` and
 `notifier-webhook`). The

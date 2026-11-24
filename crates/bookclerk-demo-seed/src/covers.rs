@@ -2,7 +2,7 @@
 //!
 //! A visitor's first pages (the Discover shelves they land on and the
 //! Library) request a cover for every title they show. Without a baked
-//! cache, each one is downloaded through the `covers` plugin and decoded
+//! cache, each one is downloaded through the `media_download` plugin and decoded
 //! by the media worker while the visitor waits, on a container with a
 //! quarter of a CPU. The bake warms those covers instead, in two steps
 //! (`packaging/demo/bake-seed.sh`):

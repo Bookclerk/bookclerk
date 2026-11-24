@@ -32987,7 +32987,7 @@
           "Discover"
         ],
         "summary": "Serves one size of a cover the API linked to.",
-        "description": "The path comes from a `cover_path` field in a Discover or catalog\nresponse; append `/128`, `/360` or `/full`. The first request fetches the\nimage through the `covers` plugin and re-encodes it in the confined media\nworker; later ones are served from the node's cover cache. Responses are\nimmutable, since a path always names the same image, and carry an `ETag`\nso a client revalidating anyway gets `304 Not Modified`.",
+        "description": "The path comes from a `cover_path` field in a Discover or catalog\nresponse; append `/128`, `/360` or `/full`. The first request fetches the\nimage through the `media_download` plugin and re-encodes it in the confined media\nworker; later ones are served from the node's cover cache. Responses are\nimmutable, since a path always names the same image, and carry an `ETag`\nso a client revalidating anyway gets `304 Not Modified`.",
         "operationId": "get_cover",
         "parameters": [
           {
@@ -33344,7 +33344,7 @@
           "Users"
         ],
         "summary": "Serves a user's Gravatar as a 128 px JPEG through the cover service.",
-        "description": "The `gravatar_hash` of a user (from `/api/auth/me` or `/api/users`) names\nthe picture. Bookclerk downloads it through the `covers` plugin, so the\nbrowser never contacts Gravatar.",
+        "description": "The `gravatar_hash` of a user (from `/api/auth/me` or `/api/users`) names\nthe picture. Bookclerk downloads it through the `media_download` plugin, so the\nbrowser never contacts Gravatar.",
         "operationId": "get_gravatar",
         "parameters": [
           {
@@ -33706,7 +33706,7 @@
           {
             "name": "Range",
             "in": "header",
-            "description": "One byte range (`bytes=A-B`, `bytes=A-` or `bytes=-N`); anything else reads the whole sample.",
+            "description": "One byte range (`bytes=A-B`, `bytes=A-` or `bytes=-N`) of a sample already kept; anything else, or a sample still being cut, reads the whole sample.",
             "required": false,
             "schema": {
               "type": "string",
@@ -33716,7 +33716,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The sample: mono MP3, five minutes or the rest of the first file.",
+            "description": "The sample: mono MP3, five minutes or the rest of the first file. A sample not kept yet streams as the media worker encodes it, without `Content-Length`.",
             "content": {
               "audio/mpeg": {
                 "schema": {
@@ -33955,7 +33955,7 @@
           {
             "name": "Range",
             "in": "header",
-            "description": "One byte range (`bytes=A-B`, `bytes=A-` or `bytes=-N`); anything else reads the whole sample.",
+            "description": "One byte range (`bytes=A-B`, `bytes=A-` or `bytes=-N`) of a sample already kept; anything else, or a sample still being cut, reads the whole sample.",
             "required": false,
             "schema": {
               "type": "string",
@@ -33965,7 +33965,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The sample, re-encoded: mono MP3.",
+            "description": "The sample, re-encoded: mono MP3. A sample not kept yet streams as the media worker encodes it, without `Content-Length`.",
             "content": {
               "audio/mpeg": {
                 "schema": {
@@ -34075,7 +34075,7 @@
             }
           },
           "503": {
-            "description": "No `covers` plugin or confined media worker is available; retry (`unavailable`). When the sign-in could not be checked because the library did not answer in time, the answer is `session_check_unavailable` instead, with `Retry-After`; ask again rather than treating the caller as signed out.",
+            "description": "No `mediaDownload` plugin or confined media worker is available; retry (`unavailable`). When the sign-in could not be checked because the library did not answer in time, the answer is `session_check_unavailable` instead, with `Retry-After`; ask again rather than treating the caller as signed out.",
             "headers": {
               "Retry-After": {
                 "schema": {

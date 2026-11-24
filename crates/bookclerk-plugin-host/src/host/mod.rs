@@ -1,10 +1,10 @@
 //! In-process adapters that speak Cap'n Proto `api_version = 3` to external plugin processes.
 
-mod cover_sink;
 mod database;
 mod declared_media;
 mod destination;
 mod destination_local;
+mod download_sink;
 pub(crate) mod integration;
 mod plugin_backups;
 mod plugin_migration_apply;

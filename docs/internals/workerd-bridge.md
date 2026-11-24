@@ -158,7 +158,7 @@ Request headers:
 | --- | --- |
 | `Authorization` | `Bearer <BRIDGE_TOKEN>` |
 | `Content-Type` | `application/x-capnp` |
-| `X-Bookclerk-Interface` | Cap'n interface name: `ContentSource`, `Destination`, `RemoteLibrary`, `EventConsumer`, `JobRunner`, `PluginCli`, `Oidc`, `MetadataProvider`, `CoverFetcher`, `MetadataFiles`, `Notifier`, `AiModels`, `Database`, `AdapterDatabaseSession`, `PluginWorker` |
+| `X-Bookclerk-Interface` | Cap'n interface name: `ContentSource`, `Destination`, `RemoteLibrary`, `EventConsumer`, `JobRunner`, `PluginCli`, `Oidc`, `MetadataProvider`, `MediaDownloader`, `MetadataFiles`, `Notifier`, `AiModels`, `Database`, `AdapterDatabaseSession`, `PluginWorker` |
 | `X-Bookclerk-Method` | Method name as declared in `plugin.capnp` (`login`, `event`, `job`, `openSession`, `databaseMigrations`, …) |
 | `X-Bookclerk-Context` | Bridge JSON `BridgeContext` (`invocation`, `config`, `secrets`, `eventsToken`, `notifyToken`, `aiToken`, `databases` = `{ <BINDING>: <grant token> }`; `jobId` on `JobRunner.job`) — present for every entrypoint call, absent for `PluginWorker.*`. The adapter isolate exchanges the tokens for the author's `EVENTS` / `NOTIFY` / `AI` / `env.<BINDING>` bindings; authors never see them |
 | `X-Bookclerk-Caps` | JSON array of capability descriptors for the request message's capability table (only when the `$Params` struct carries interface-typed fields) |
@@ -215,7 +215,7 @@ isolate object; later `AdapterDatabaseSession.*` calls name it in
 
 Streams are never capabilities on this transport: `Destination.get`,
 `Destination.put`, and `Source.open` use the dedicated body routes, and
-`JobController.input` / `output` and the `CoverFetcher.fetchCovers` `sink`
+`JobController.input` / `output` and the `MediaDownloader.downloadMedia` `sink`
 reach the launcher through the granted `GET /open` / `PUT /put` routes.
 
 ### Method table
@@ -231,7 +231,7 @@ reach the launcher through the granted `GET /open` / `PUT /put` routes.
 | `PluginCli` | `describe`, `invoke` | `Cli extends CliEntrypoint` |
 | `Oidc` | `clients`, `authenticateUser` | `Oidc extends OidcEntrypoint` |
 | `MetadataProvider` | `health`, `lookup`, `search`, `chapters` | `Metadata extends MetadataEntrypoint` |
-| `CoverFetcher` | `health`, `fetchCovers` — the `sink` is a `destination` grant token | `Covers extends CoverEntrypoint` |
+| `MediaDownloader` | `health`, `downloadMedia` — the `sink` is a `destination` grant token | `MediaDownload extends MediaDownloadEntrypoint` |
 | `MetadataFiles` | `health`, `parse`, `render` | `MetadataFiles extends MetadataFilesEntrypoint` |
 | `Notifier` | `health`, `send`, `validateDestination`, `checkDeliverability` | `Notifier extends NotifierEntrypoint` |
 | `AiModels` | `health`, `models`, `run` | `Ai extends AiEntrypoint` |
@@ -253,7 +253,7 @@ unknown, expired, or revoked tokens.
 | Route | Grant flag | Purpose |
 | --- | --- | --- |
 | `GET /open?key=` | `allow_open` | `JobController.input.open` (streamed body) |
-| `PUT /put?key=` | `allow_put` | `JobController.output.put` and the `fetchCovers` sink (streamed body; several puts on one grant may stream at once) |
+| `PUT /put?key=` | `allow_put` | `JobController.output.put` and the `downloadMedia` sink (streamed body; several puts on one grant may stream at once) |
 | `POST /progress` | `allow_progress` | `JobController.progress.report` |
 | `GET /cancel` | `cancel` present | Long poll: `200 {"cancelled":true}` once the host cancellation fires, `204` after the poll window so the isolate re-arms; the adapter turns it into `job.signal` |
 | `POST /db/execute` | `allow_database` | Typed SQL on the granted `GuestDatabase` (Cap'n bytes). The launcher checks the guest grammar and the grant's SQL policy, desugars the statements as the host session does and stamps the canonical `requestHash` over that form, so the session's own check reproduces it (a retry token may carry that hash or the hash of the request as the guest sent it). A request past the grant's `maxRequestBytes` is `413` whose body is the canonical `limit_exceeded` message (`limit exceeded: maxRequestBytes is <cap>; used <n>`), which the SDKs parse back into `err.limit` |

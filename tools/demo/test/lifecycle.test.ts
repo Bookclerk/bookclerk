@@ -320,21 +320,25 @@ describe("enableDemoPlugins", () => {
     return r;
   };
 
-  it("enables the storefronts and then covers", async () => {
-    assert.deepEqual(OPTIONAL_PLUGINS, ["covers"]);
+  it("enables the storefronts and then media downloads", async () => {
+    assert.deepEqual(OPTIONAL_PLUGINS, ["media_download"]);
     const warnings: string[] = [];
     const { call, seen } = scripted(routes(all));
     await enableDemoPlugins(call, "op", (m) => warnings.push(m));
     const keys = seen.map((s) => s.key);
     assert.ok(keys.includes("POST /api/plugins/audible/consent"));
-    assert.ok(keys.includes("PUT /api/config/plugin-instances/i-covers/deployments/node-1"));
+    assert.ok(
+      keys.includes("PUT /api/config/plugin-instances/i-media_download/deployments/node-1"),
+    );
     assert.deepEqual(warnings, []);
   });
 
-  it("keeps the session when covers can't be enabled", async () => {
+  it("keeps the session when media downloads can't be enabled", async () => {
     const warnings: string[] = [];
     await enableDemoPlugins(scripted(routes(STOREFRONTS)).call, "op", (m) => warnings.push(m));
-    assert.deepEqual(warnings, ["demo: covers not enabled: consent for covers answered 404"]);
+    assert.deepEqual(warnings, [
+      "demo: media_download not enabled: consent for media_download answered 404",
+    ]);
   });
 
   it("only reads the list when a baked image has every plugin deployed", async () => {

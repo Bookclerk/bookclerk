@@ -9,7 +9,7 @@ The default export is a module-level ``Default`` class extending
 :class:`BookclerkEntrypoint` with optional ``event(batch)`` / ``job(job)``
 triggers. Named entrypoints from ``plugin.toml`` ``entrypoints`` are module-level
 classes named after the wire name (``Storefront``, ``Storage``, ``RemoteLibrary``,
-``DatabaseAdapter``, ``Cli``, ``Oidc``, ``Metadata``, ``Covers``, ``MetadataFiles``, ``Notifier``, ``Ai``) extending the matching ``*Entrypoint``
+``DatabaseAdapter``, ``Cli``, ``Oidc``, ``Metadata``, ``MediaDownload``, ``MetadataFiles``, ``Notifier``, ``Ai``) extending the matching ``*Entrypoint``
 base. The launcher's adapter isolate reaches them only through the
 ``bookclerk*`` dispatch methods; authors neither call nor override those.
 
@@ -151,7 +151,7 @@ __all__ = [
     "HostWebSocket",
     "JobController",
     "KvNamespace",
-    "CoverEntrypoint",
+    "MediaDownloadEntrypoint",
     "MetadataFilesEntrypoint",
     "IngressEntrypoint",
     "ProvisioningEntrypoint",
@@ -3201,23 +3201,25 @@ class MetadataEntrypoint(NamedEntrypoint):
         raise _unsupported("chapters")
 
 
-class CoverEntrypoint(NamedEntrypoint):
+class MediaDownloadEntrypoint(NamedEntrypoint):
     """``covers`` entrypoint: downloads cover images for the host.
 
     The host passes a ``sink`` destination; put the body for ``urls[i]`` under
-    the key ``str(i)`` and return one ``CoverImage`` per URL, in request
+    the key ``str(i)`` and return one ``DownloadResult`` per URL, in request
     order. The host sniffs, decodes and re-encodes every body.
     """
 
-    bookclerk_methods = ("health", "fetchCovers")
+    bookclerk_methods = ("health", "downloadMedia")
 
     async def health(self) -> abi.HealthOk:
         """Liveness / readiness probe (``HealthOk``)."""
         return {"ok": True, "detail": ""}
 
-    async def fetchCovers(self, _params: abi.CoverFetchParams, _sink: Any) -> list[abi.CoverImage]:
-        """Fetch each URL into ``_sink`` under its index (list of ``CoverImage``)."""
-        raise _unsupported("fetchCovers")
+    async def downloadMedia(
+        self, _params: abi.MediaDownloadParams, _sink: Any
+    ) -> list[abi.DownloadResult]:
+        """Fetch each URL into ``_sink`` under its index (list of ``DownloadResult``)."""
+        raise _unsupported("downloadMedia")
 
 
 class MetadataFilesEntrypoint(NamedEntrypoint):
