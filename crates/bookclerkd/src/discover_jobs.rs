@@ -161,9 +161,19 @@ async fn deployed_storefronts(
         })
         .map(|plugin| plugin.plugin_key().to_string())
         .collect();
-    let instances = bookclerk_library::control_plane::list_all_plugin_instances(library)
-        .await
-        .ok()?;
+    deployed_instances_of(library, &keys).await.ok()
+}
+
+/// The library's instances of `keys` that some node is deployed to run.
+///
+/// # Errors
+///
+/// Returns an error when a read fails.
+async fn deployed_instances_of(
+    library: &bookclerk_library::LibraryStore,
+    keys: &std::collections::BTreeSet<String>,
+) -> anyhow::Result<Vec<DeployedStorefront>> {
+    let instances = bookclerk_library::control_plane::list_all_plugin_instances(library).await?;
     let mut out = Vec::new();
     for instance in instances {
         if !keys.contains(&instance.plugin_key) {
@@ -174,8 +184,7 @@ async fn deployed_storefronts(
             library,
             std::slice::from_ref(&id),
         )
-        .await
-        .ok()?;
+        .await?;
         if !deployed.is_empty() {
             out.push(DeployedStorefront {
                 instance_id: id,
@@ -183,7 +192,7 @@ async fn deployed_storefronts(
             });
         }
     }
-    Some(out)
+    Ok(out)
 }
 
 /// Admits a candidate fetch of one storefront instance for `subject`,
@@ -285,7 +294,7 @@ pub async fn run_discover_candidates(
     if forget_if_removed(&library, &subject).await? {
         return Ok(format!("subject={} removed", subject.key()));
     }
-    let mut opts = discover_options(&cfg, None);
+    let opts = discover_options(&cfg, None);
     if let Some(instance) = payload
         .plugin_instance_id
         .as_deref()
@@ -293,12 +302,37 @@ pub async fn run_discover_candidates(
     {
         return run_pinned_candidates(state, &library, &subject, instance, payload, opts).await;
     }
-    let local = state.sources.read().await.clone();
     let deployed = if opts.fetch_storefront_candidates {
         deployed_storefronts(state, &library).await
     } else {
         None
     };
+    run_subject_candidates(state, &library, &subject, payload, opts, deployed).await
+}
+
+/// The subject's own `discover_candidates` fetch: asks this node's stores,
+/// queues a pinned fetch for each storefront in `deployed` that no local
+/// source serves, drops the rows of stores no node deploys, then queues the
+/// ranking.
+///
+/// # Arguments
+///
+/// * `deployed` - The storefront instances deployed on any node, or `None`
+///   when they could not be listed (only local stores are asked and nothing
+///   is dropped).
+///
+/// # Errors
+///
+/// Fails on a library error.
+async fn run_subject_candidates(
+    state: &AppState,
+    library: &bookclerk_library::LibraryStore,
+    subject: &DiscoverSubject,
+    payload: &JobPayload,
+    mut opts: bookclerk_discover::RecommendOptions,
+    deployed: Option<Vec<DeployedStorefront>>,
+) -> anyhow::Result<String> {
+    let local = state.sources.read().await.clone();
     // Storefront instances no local source serves get fetches of their own.
     let local_instances: std::collections::BTreeSet<String> = local
         .all()
@@ -319,20 +353,20 @@ pub async fn run_discover_candidates(
         local_stores + remote.len(),
     );
     let report = if opts.fetch_storefront_candidates {
-        bookclerk_discover::fetch_subject_candidates(&library, &local, &subject, &opts).await?
+        bookclerk_discover::fetch_subject_candidates(library, &local, subject, &opts).await?
     } else {
         // Nothing to fetch, but the fetch counts as done for the day, and
         // the event that queued it still refreshes the stored taste.
-        bookclerk_discover::refresh_subject_taste(&library, &subject, &opts).await?;
-        library.mark_discover_fetch(&subject, Utc::now()).await?;
+        bookclerk_discover::refresh_subject_taste(library, subject, &opts).await?;
+        library.mark_discover_fetch(subject, Utc::now()).await?;
         bookclerk_discover::FetchReport::default()
     };
-    if forget_if_removed(&library, &subject).await? {
+    if forget_if_removed(library, subject).await? {
         return Ok(format!("subject={} removed", subject.key()));
     }
     for store in &remote {
         if let Err(err) =
-            enqueue_pinned_candidates(state, &subject, &store.instance_id, payload.trigger).await
+            enqueue_pinned_candidates(state, subject, &store.instance_id, payload.trigger).await
         {
             tracing::warn!(
                 subject = %subject.key(),
@@ -343,13 +377,12 @@ pub async fn run_discover_candidates(
         }
     }
     let dropped = match &deployed {
-        Some(deployed) => drop_undeployed_stores(&library, &subject, &local, deployed).await?,
+        Some(deployed) => drop_undeployed_stores(library, subject, &local, deployed).await?,
         None => 0,
     };
     // The ranking reads what was just stored; a failure to admit it leaves
     // the next read to queue it.
-    if let Err(err) = enqueue_discover_feed(state, &subject, payload.trigger, Duration::ZERO).await
-    {
+    if let Err(err) = enqueue_discover_feed(state, subject, payload.trigger, Duration::ZERO).await {
         tracing::warn!(subject = %subject.key(), error = %err, "could not queue the discover ranking");
     }
     let pruned = library
@@ -369,7 +402,7 @@ pub async fn run_discover_candidates(
         0
     };
     // Ask the branches what they can supply of what people here look at.
-    crate::catalog_lookup::ask_branches_if_due(&library).await;
+    crate::catalog_lookup::ask_branches_if_due(library).await;
     Ok(format!(
         "subject={} seeds={} stores={} candidates={} failed={} remote_stores={} \
          dropped_stores={dropped} pruned_calls={pruned} pruned_listings={pruned_listings}",
@@ -1043,6 +1076,90 @@ mod tests {
             .collect();
         jobs.sort_by_key(|(kind, subject)| (kind.as_str().to_string(), subject.clone()));
         jobs
+    }
+
+    /// A subject's fetch queues a pinned fetch for a storefront deployed only
+    /// on another node, drops the rows of a store no node deploys, and the
+    /// pinned fetch skips a store this node does not serve.
+    #[tokio::test]
+    async fn a_subject_fetch_fans_out_to_stores_on_other_nodes() {
+        use bookclerk_library::control_plane as cp;
+        const STORE_KEY: &str = "path:file:///tmp/far-store#farstore";
+        let files = tempfile::tempdir().unwrap();
+        let (state, library) = crate::node_api::tests::test_state_with(
+            &files,
+            "[discovery]\nembeddings_enabled = false\n",
+        )
+        .await;
+        let instance =
+            cp::create_plugin_instance(&library, &cp::ConfigActor::Bootstrap, STORE_KEY, "")
+                .await
+                .unwrap();
+        cp::ensure_plugin_deployment(
+            &library,
+            &cp::ConfigActor::Bootstrap,
+            &instance.id,
+            "node-b",
+            cp::DesiredState::Present,
+        )
+        .await
+        .unwrap();
+        let subject = DiscoverSubject::Operator;
+        store_candidate(&library, &subject, "retired", "gone").await;
+
+        let keys: std::collections::BTreeSet<String> = [STORE_KEY.to_string()].into();
+        let deployed = deployed_instances_of(&library, &keys).await.unwrap();
+        assert_eq!(
+            deployed,
+            vec![DeployedStorefront {
+                instance_id: instance.id.to_string(),
+                plugin_key: STORE_KEY.to_string(),
+            }]
+        );
+        let mut opts = discover_options(&state.config.read().await.clone(), None);
+        opts.fetch_storefront_candidates = true;
+        let payload = JobPayload {
+            subject: Some(subject.key()),
+            ..JobPayload::default()
+        };
+        let summary =
+            run_subject_candidates(&state, &library, &subject, &payload, opts, Some(deployed))
+                .await
+                .unwrap();
+        assert!(summary.contains("remote_stores=1"), "{summary}");
+        assert!(summary.contains("dropped_stores=1"), "{summary}");
+        assert!(library
+            .list_discover_candidates(&subject)
+            .await
+            .unwrap()
+            .is_empty());
+        let pinned: Vec<Option<String>> = library
+            .list_jobs(100)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|job| job.kind == JobKind::DiscoverCandidates)
+            .map(|job| job.payload.plugin_instance_id)
+            .collect();
+        assert_eq!(pinned, vec![Some(instance.id.to_string())]);
+        assert!(queued(&library)
+            .await
+            .contains(&(JobKind::DiscoverFeed, subject.key())));
+
+        // The pinned fetch, run on a node without that store, asks nothing.
+        let pinned_payload = JobPayload {
+            subject: Some(subject.key()),
+            plugin_instance_id: Some(instance.id.to_string()),
+            ..JobPayload::default()
+        };
+        let summary = run_discover_candidates(&state, &pinned_payload, None)
+            .await
+            .unwrap();
+        assert!(
+            summary.ends_with("not served on this node")
+                || summary.ends_with("storefront candidates off"),
+            "{summary}"
+        );
     }
 
     /// With no model on the node, a ranking makes the stand-in's work

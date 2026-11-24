@@ -2289,6 +2289,16 @@ mod tests {
         assert_eq!(order, ["c", "e", "f", "b", "d", "a"]);
     }
 
+    /// With no installed plugin exporting `metadata`, an acquire prefers no
+    /// provider.
+    #[tokio::test]
+    async fn no_installed_provider_is_preferred() {
+        let files = tempfile::tempdir().unwrap();
+        let (state, _library) = crate::node_api::tests::test_state(&files).await;
+        assert!(metadata_provider_keys(&state).await.is_empty());
+        assert!(metadata_provider_keys_from(&[]).is_empty());
+    }
+
     async fn test_store() -> LibraryStore {
         LibraryStore::from_connection(
             bookclerk_plugin_database_sqlite::open_memory()
