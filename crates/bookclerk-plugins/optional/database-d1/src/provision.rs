@@ -5,13 +5,14 @@
 //! The operator's token needs "D1 Edit" (to find and create the database)
 //! and "Account API Tokens Edit" (to mint and delete the library's token).
 //! It is used for this run only. The minted token is returned as the
-//! `api_token` secret; `bookclerk database setup d1` seals it with the
+//! `api_token` secret; `bookclerk config database setup d1` seals it with the
 //! library's key and keeps it in the same store as the master key.
 //!
-//! A second run mints a fresh token and deletes the one the first run
-//! minted (its id comes back as the `api_token_id` setting), so a re-run
-//! rotates the token rather than piling them up. The setup never deletes a
-//! database: it holds the library. The replies are read by
+//! A second run keeps the token the first run minted (its id comes back as
+//! the `api_token_id` setting): shared branches of the library hold a copy,
+//! and a new token would cut them off. With `rotate_token` it mints a fresh
+//! token and deletes the earlier one, so tokens never pile up. The setup
+//! never deletes a database: it holds the library. The replies are read by
 //! [`bookclerk_storage::cloudflare_api`].
 
 use bookclerk_plugin_sdk::http::Client;
@@ -111,6 +112,10 @@ struct SetupConfig {
     /// The id of the token an earlier run minted.
     #[serde(default)]
     api_token_id: Option<String>,
+    /// Mint a new token (and delete the earlier one) even when an earlier
+    /// run minted one.
+    #[serde(default)]
+    rotate_token: bool,
 }
 
 /// The `provisioning` entrypoint of the D1 guest.
@@ -320,6 +325,26 @@ impl Provisioning for D1Provisioning {
         } else {
             format!("Using your existing D1 database {name}")
         });
+
+        if let Some(previous) = self
+            .previous_token_id
+            .as_deref()
+            .filter(|_| !self.config.rotate_token)
+        {
+            summary.push("Kept the API token an earlier setup created".into());
+            return Ok(Provisioned {
+                settings_json: serde_json::json!({
+                    "account_id": account.as_str(),
+                    "database_id": database_id,
+                    "database_name": name,
+                    "jurisdiction": self.config.jurisdiction.as_str(),
+                    "api_token_id": previous,
+                })
+                .to_string(),
+                secrets: Vec::new(),
+                summary,
+            });
+        }
 
         let group = self.d1_group(&api, &base).await?;
         let (status, reply) = api
@@ -576,6 +601,7 @@ mod tests {
                         "account_id": ACCOUNT,
                         "database_name": "library",
                         "api_token_id": OLD_TOKEN,
+                        "rotate_token": true,
                     }),
                 )
                 .unwrap();
@@ -594,6 +620,37 @@ mod tests {
                     .iter()
                     .any(|l| l
                         .starts_with(&format!("DELETE /accounts/{ACCOUNT}/tokens/{OLD_TOKEN} "))));
+            })
+            .await;
+    }
+
+    /// Without `rotate_token`, a re-run keeps the earlier token: no token
+    /// is minted or deleted, so shared branches keep working.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_rerun_keeps_the_earlier_token_unless_asked_to_rotate() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (base, seen) = serve(existing_database).await;
+                let setup = D1Provisioning::new(
+                    &base,
+                    serde_json::json!({
+                        "account_id": ACCOUNT,
+                        "database_name": "library",
+                        "api_token_id": OLD_TOKEN,
+                    }),
+                )
+                .unwrap();
+                let done = setup.provision(request()).await.expect("provisioned");
+                assert!(done.secrets.is_empty(), "no new token");
+                assert_eq!(
+                    done.summary.last().map(String::as_str),
+                    Some("Kept the API token an earlier setup created")
+                );
+                let settings: serde_json::Value =
+                    serde_json::from_str(&done.settings_json).unwrap();
+                assert_eq!(settings["api_token_id"], OLD_TOKEN);
+                let seen = seen.lock().unwrap().clone();
+                assert!(!seen.iter().any(|l| l.contains("/tokens")), "{seen:?}");
             })
             .await;
     }

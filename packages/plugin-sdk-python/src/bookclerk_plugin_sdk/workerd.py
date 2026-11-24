@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import inspect
 import json
 import re
@@ -194,6 +195,9 @@ __all__ = [
     "transport_queue",
     "transport_sockets",
     "transport_webhooks",
+    "STREAM_COPY_COMMAND",
+    "stream_copy",
+    "stream_copy_commit_token",
 ]
 
 
@@ -2154,6 +2158,137 @@ class JobController:
     def cancel(self) -> None:
         """Host-side cancellation observed (adapter-internal)."""
         self.cancelled = True
+
+
+STREAM_COPY_COMMAND = "stream_copy"
+"""The job command type :func:`stream_copy` runs."""
+
+
+def stream_copy_commit_token(idempotency_key: str, step_id: str, dest_key: str) -> str:
+    """The retry-stable commit token for one stream-copy step.
+
+    ``sc-`` and 32 hex digits of SHA-256 over the idempotency key, a zero
+    byte, the step id (``stream_copy`` when empty), a zero byte and the
+    destination key, as the Rust and TypeScript SDKs write it. It leaves out
+    the invocation id and attempt: publishing is at-least-once, so a
+    reclaimed attempt stages and commits the same token.
+
+    Args:
+        idempotency_key: The job's durable idempotency key.
+        step_id: The step id; empty for a single-step job.
+        dest_key: The destination object key.
+
+    Returns:
+        The token (letters, digits and ``-`` only).
+    """
+    digest = hashlib.sha256(
+        idempotency_key.encode()
+        + b"\0"
+        + (step_id or STREAM_COPY_COMMAND).encode()
+        + b"\0"
+        + dest_key.encode()
+    ).hexdigest()
+    return f"sc-{digest[:32]}"
+
+
+def _stream_copy_spec(payload_json: str) -> tuple[str, str]:
+    """Read a ``stream_copy`` payload as its ``(from, to)`` keys.
+
+    Args:
+        payload_json: The job payload text.
+
+    Returns:
+        The source and destination keys.
+
+    Raises:
+        PluginError: ``invalid_params`` when it is not an object with string
+            ``from`` and ``to``.
+    """
+    try:
+        value = json.loads(payload_json)
+    except ValueError as err:
+        raise PluginError.from_wire("invalid_params", f"stream_copy spec: {err}") from err
+    if not isinstance(value, dict):
+        raise PluginError.from_wire("invalid_params", "stream_copy spec: expected an object")
+    source, dest = value.get("from"), value.get("to")
+    if not isinstance(source, str) or not isinstance(dest, str):
+        raise PluginError.from_wire(
+            "invalid_params", "stream_copy spec: `from` and `to` are strings"
+        )
+    return source, dest
+
+
+async def stream_copy(job: JobController) -> dict[str, Any]:
+    """Run one ``stream_copy`` job, as the Rust and TypeScript SDKs do.
+
+    Opens ``from`` on the job's input, stages it on the output under
+    :func:`stream_copy_commit_token`, checks for cancellation, then commits.
+    Cancellation, or a failed put, progress report or commit, aborts the
+    stage (best effort) before the error goes back. Call it from the default
+    entrypoint's ``job``::
+
+        async def job(self, job: JobController) -> dict:
+            return await stream_copy(job)
+
+    Args:
+        job: The job invocation.
+
+    Returns:
+        The completion, carrying the bytes written.
+
+    Raises:
+        PluginError: ``unsupported`` for another command type,
+            ``invalid_params`` for a bad payload, ``unavailable`` when the host
+            granted no input or output, ``cancelled`` when the host cancelled
+            the job, or the input's or output's own error.
+    """
+    if job.cancelled:
+        raise PluginError.from_wire("cancelled", "cancelled before stream_copy")
+    if job.type != STREAM_COPY_COMMAND:
+        raise PluginError.from_wire("unsupported", f"unsupported job command `{job.type}`")
+    source, dest = _stream_copy_spec(job.payload_json)
+    if job.input is None or job.output is None:
+        raise PluginError.from_wire("unavailable", "stream_copy needs the job's input and output")
+    output = job.output
+    token = stream_copy_commit_token(job.idempotency_key, job.step_id, dest)
+
+    async def abort() -> None:
+        try:
+            await _await_maybe(output.abortStage(dest, token))
+        except Exception:  # noqa: BLE001  (best effort: the caller sees the first error)
+            pass
+
+    await job.progress(0, "opening source")
+    read = await _await_maybe(job.input.open(source))
+    meta = py(_get(read, "meta")) or {}
+    options: dict[str, Any] = {"commitToken": token, "stageOnly": True}
+    if isinstance(meta, dict):
+        if isinstance(meta.get("contentType"), str):
+            options["contentType"] = meta["contentType"]
+        size = meta.get("size")
+        if isinstance(size, int) and size > 0:
+            options["contentLength"] = size
+        sha = meta.get("sha256")
+        if isinstance(sha, bytes) and sha:
+            options["sha256"] = sha
+    await job.progress(10, "staging")
+    try:
+        put = await _await_maybe(output.put(dest, _get(read, "body"), js(options)))
+    except BaseException:
+        await abort()
+        raise
+    written = int(_get(py(put), "bytesWritten", 0) or 0)
+    if job.cancelled:
+        await abort()
+        raise PluginError.from_wire("cancelled", "cancelled after stage")
+    try:
+        await job.progress(90, "committing")
+        await _await_maybe(output.commit(dest, token))
+    except BaseException:
+        await abort()
+        raise
+    await job.progress(100, "done")
+    return {"message": f"copied {source} -> {dest}", "bytesCopied": written}
 
 
 def job_outcome_for(

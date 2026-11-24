@@ -2299,6 +2299,19 @@ earlier. The SDKs' `translateKeys` default returns the keys unchanged. The
 the object-store rules and 1024-byte limit including its prefix (see
 [Keys each destination stores](../server/output.md#keys-each-destination-stores)).
 
+The TypeScript and Python SDKs carry the same object-store rules:
+`translateForObjectStore` / `translate_for_object_store` give the same key
+as the Rust storage helpers for every host key, checked against shared
+vectors. Their `ObjectStoreDestination` serves the whole `storage`
+entrypoint over a small object-store backend (head, list, ranged get, put,
+copy, delete, and optional conditional writes): staged writes under a
+commit token and idempotent commits, the move fallback that copies, checks
+and then removes an unchanged source, batch moves, deletes and probes, key
+translation, and the `changes` page. `QueueFeed` turns a plugin's
+`[[webhooks]]` row (or any leased queue) into a `changes` feed whose cursor
+acknowledges a page's messages only once the host confirms it, keeping its
+state in a `[[kv_namespaces]]` binding.
+
 The optional `r2` destination declares the same set as `s3` and shares its
 implementation. Its `changes` feed pulls the bucket's event notifications
 from a Cloudflare Queue's HTTP pull consumer when the instance's

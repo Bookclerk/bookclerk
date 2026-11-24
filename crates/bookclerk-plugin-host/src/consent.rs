@@ -36,7 +36,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::process::Command;
 
-use bookclerk_config::{resolve_postgres_url, Config, DatabasePluginKind};
+use bookclerk_config::{Config, DatabasePluginKind};
+use bookclerk_library::database_credential::resolve_postgres_url;
 use bookclerk_plugin_abi::{PluginCapabilities, PortalAuthMode};
 use bookclerk_plugin_manifest::{
     is_public_internet, is_restricted_hostname, EgressPolicy, NetworkMode, SettingDestination,
@@ -3047,6 +3048,9 @@ pub fn host_overlay_config_digest(config: &Config) -> String {
     hasher.update(b"\n");
     if let Some(path) = &config.database.postgres.url_file {
         hasher.update(path.to_string_lossy().as_bytes());
+    }
+    if config.database.postgres.stored_credential {
+        hasher.update(b"\nstored_credential");
     }
     hasher.update(b"\nd1\n");
     hasher.update(config.database.d1.api_base.as_bytes());

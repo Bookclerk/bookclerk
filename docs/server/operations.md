@@ -399,8 +399,10 @@ What the sample unit sets:
 - `Environment=BOOKCLERK_FILES_DIR=/var/lib/bookclerk`
 - `ProtectSystem=strict` with `ReadWritePaths=/var/lib/bookclerk`
 
-Give `master.key` a password with `BOOKCLERK_AUTH_PASSWORD` (or
-`[auth].password`), kept outside the files directory. To wrap an
+Give `master.key` a password with `BOOKCLERK_AUTH_PASSWORD`,
+`BOOKCLERK_AUTH_PASSWORD_FILE` or a systemd credential (see
+[Keeping the auth password off disk](#keeping-the-auth-password-off-disk)),
+or `[auth].password`, kept outside the files directory. To wrap an
 existing BCK1 key later, run `bookclerk config master-key wrap`, or
 reload `bookclerkd` after setting the password (SIGHUP or
 `POST /api/config/reload`).
@@ -486,26 +488,17 @@ a TPM can seal to the machine:
 systemd-creds encrypt --name=bookclerk-auth-password - /etc/credstore.encrypted/bookclerk-auth-password
 ```
 
-Then load it in the unit, and start `bookclerkd` through a small script
-that reads it into `BOOKCLERK_AUTH_PASSWORD`:
+Then load it in the unit:
 
 ```ini
 LoadCredentialEncrypted=bookclerk-auth-password
-ExecStart=/usr/local/bin/bookclerkd-with-credential
 ```
 
-```sh
-#!/bin/sh
-set -eu
-BOOKCLERK_AUTH_PASSWORD="$(cat "$CREDENTIALS_DIRECTORY/bookclerk-auth-password")"
-# An empty password would leave a fresh key unwrapped: refuse to start.
-if [ -z "$(printf '%s' "$BOOKCLERK_AUTH_PASSWORD" | tr -d '[:space:]')" ]; then
-  echo "bookclerk-auth-password is empty" >&2
-  exit 1
-fi
-export BOOKCLERK_AUTH_PASSWORD
-exec /usr/local/bin/bookclerkd
-```
+`bookclerkd` and the CLI read `$CREDENTIALS_DIRECTORY/bookclerk-auth-password`
+themselves when `BOOKCLERK_AUTH_PASSWORD` and
+`BOOKCLERK_AUTH_PASSWORD_FILE` are unset. A credential that is present
+but empty or unreadable stops them from starting, so a fresh key is never
+minted unwrapped by mistake.
 
 If your books live outside the files directory, set an absolute root and
 add it to `ReadWritePaths`:
@@ -551,23 +544,117 @@ gh attestation verify oci://ghcr.io/bookclerk/bookclerk:edge --owner bookclerk
 
 ### Run it
 
-```sh
-export BOOKCLERK_AUTH_PASSWORD
-docker run --rm \
-  -v bookclerk-config:/config \
-  -v bookclerk-data:/data \
-  -e BOOKCLERK_AUTH_PASSWORD \
-  bookclerkd
+Hand the auth password to the container as a file, not an environment
+variable. Anyone who can run `docker inspect`, or read
+`/proc/<pid>/environ` inside the container, sees a variable's value; a
+file mounted under `/run/secrets/` shows up only as its path.
+
+1. Write the password to a file in a directory only you can read. The
+   file must be readable by the container's `bookclerk` user:
+
+   ```sh
+   install -d -m 0700 ~/.config/bookclerk-secrets
+   (umask 0022; read -rsp 'Bookclerk auth password: ' pw && printf '%s\n' "$pw" > ~/.config/bookclerk-secrets/auth-password)
+   ```
+
+2. Mount it read-only and point `BOOKCLERK_AUTH_PASSWORD_FILE` at it:
+
+   ```sh
+   docker run --rm \
+     -v bookclerk-config:/config \
+     -v bookclerk-data:/data \
+     -v ~/.config/bookclerk-secrets/auth-password:/run/secrets/bookclerk-auth-password:ro \
+     -e BOOKCLERK_AUTH_PASSWORD_FILE=/run/secrets/bookclerk-auth-password \
+     bookclerkd
+   ```
+
+A container has no OS keychain, so the key stays in `master.key` on the
+`/config` volume, wrapped with this password. Keep the password file off
+that volume: a copy of `/config` alone then can't open the key.
+
+> [!WARNING]
+> `-e BOOKCLERK_AUTH_PASSWORD` still works, but the value is then part of
+> the container's configuration. If you use it, set it in your shell or
+> an env file, never on the command line.
+
+`BOOKCLERK_AUTH_PASSWORD_FILE` and `BOOKCLERK_AUTH_PASSWORD` can't both be
+set. A named file that is missing, empty, larger than 4 KiB or not UTF-8
+stops `bookclerkd` from starting. Surrounding whitespace, such as a
+trailing newline, is ignored.
+
+#### Compose, Podman and Kubernetes secrets
+
+Each of these mounts a secret as a file under `/run/secrets/`, which is
+what `BOOKCLERK_AUTH_PASSWORD_FILE` reads.
+
+Docker Compose:
+
+```yaml
+services:
+  bookclerk:
+    image: ghcr.io/bookclerk/bookclerk:edge
+    volumes:
+      - bookclerk-config:/config
+      - bookclerk-data:/data
+    environment:
+      BOOKCLERK_AUTH_PASSWORD_FILE: /run/secrets/bookclerk-auth-password
+    secrets:
+      - bookclerk-auth-password
+secrets:
+  bookclerk-auth-password:
+    file: ./secrets/auth-password
+volumes:
+  bookclerk-config:
+  bookclerk-data:
 ```
 
-Set `BOOKCLERK_AUTH_PASSWORD` in your shell or an env file, never on the
-command line.
+Podman, from the command line or a Quadlet `.container` unit:
+
+```sh
+podman secret create bookclerk-auth-password ~/.config/bookclerk-secrets/auth-password
+podman run --rm --secret bookclerk-auth-password \
+  -e BOOKCLERK_AUTH_PASSWORD_FILE=/run/secrets/bookclerk-auth-password \
+  -v bookclerk-config:/config -v bookclerk-data:/data bookclerkd
+```
+
+```ini
+[Container]
+Secret=bookclerk-auth-password
+Environment=BOOKCLERK_AUTH_PASSWORD_FILE=/run/secrets/bookclerk-auth-password
+```
+
+Don't use Podman's `type=env` secrets: they put the value back in the
+environment.
+
+Kubernetes: mount a `Secret` as a volume (not `env.valueFrom`) and point
+the variable at the mounted key:
+
+```yaml
+containers:
+  - name: bookclerk
+    env:
+      - name: BOOKCLERK_AUTH_PASSWORD_FILE
+        value: /run/secrets/bookclerk/auth-password
+    volumeMounts:
+      - name: auth-password
+        mountPath: /run/secrets/bookclerk
+        readOnly: true
+volumes:
+  - name: auth-password
+    secret:
+      secretName: bookclerk-auth-password
+```
+
+Bookclerk running straight under systemd (not in a container) reads a
+`bookclerk-auth-password` credential instead; see
+[Keeping the auth password off disk](#keeping-the-auth-password-off-disk).
 
 | Path or variable | Role |
 | --- | --- |
 | `/config` | `BOOKCLERK_FILES_DIR`: `config.toml`, `library.db` (with `encrypted_secrets`), `master.key`, installed `plugins/` |
 | `/data` | The books root (`bookclerk plugins config set local root /data/Audiobooks`) |
 | `/opt/bookclerk` | The read-only bundle: hosts, helpers, pinned `workerd`, web app, platform plugins |
+| `BOOKCLERK_AUTH_PASSWORD_FILE` | Path of a mounted secret holding the password that wraps `master.key` |
 | `BOOKCLERK_DAEMON_LISTEN` | Loopback inside the container by default |
 
 A starting config is in the image at
@@ -581,7 +668,8 @@ Keep operator auth on, and terminate TLS at a proxy:
 docker run -d --name bookclerk \
   -v bookclerk-config:/config \
   -v bookclerk-data:/data \
-  -e BOOKCLERK_AUTH_PASSWORD \
+  -v ~/.config/bookclerk-secrets/auth-password:/run/secrets/bookclerk-auth-password:ro \
+  -e BOOKCLERK_AUTH_PASSWORD_FILE=/run/secrets/bookclerk-auth-password \
   -e BOOKCLERK_DAEMON_LISTEN=0.0.0.0:8787 \
   -p 8787:8787 \
   bookclerkd

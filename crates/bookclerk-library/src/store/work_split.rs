@@ -369,14 +369,32 @@ fn split_statements(p: &SplitWrite<'_>) -> Vec<TypedDbStatement> {
             &format!(
                 "INSERT INTO works \
                  (id, kind, title, match_key, parent_work_id, description, subjects, categories, \
-                  cover_url, created_at, updated_at) \
+                  cover_url, text_version, created_at, updated_at) \
                  SELECT ?, kind, title, match_key, parent_work_id, description, subjects, \
-                  categories, cover_url, ?, ? FROM works \
+                  categories, cover_url, text_version, ?, ? FROM works \
                  WHERE id = ? \
                    AND (SELECT COUNT(*) FROM expressions WHERE work_id = ? AND id IN ({list})) = ? \
                    AND EXISTS (SELECT 1 FROM expressions WHERE work_id = ? AND id NOT IN ({list}))"
             ),
             insert_binds,
+        ),
+        // The texts the original keeps in pieces go to the new work too,
+        // under the version its copied row names.
+        batch::exec(
+            &format!(
+                "INSERT OR IGNORE INTO work_text_parts \
+                 (work_id, version, field, seq, parts, body) \
+                 SELECT ?, version, field, seq, parts, body FROM work_text_parts \
+                 WHERE work_id = ? \
+                   AND version IN (SELECT text_version FROM works WHERE id = ?) \
+                   AND {created}"
+            ),
+            vec![
+                batch::text(p.new_id),
+                batch::text(p.work_id),
+                batch::text(p.work_id),
+                batch::text(p.new_id),
+            ],
         ),
         copy(
             "INSERT OR IGNORE INTO credits \

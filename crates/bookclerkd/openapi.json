@@ -13220,7 +13220,7 @@
             }
           },
           "409": {
-            "description": "This install holds data of its own for a shared branch join (`not_empty`), the library's database plugin is not installed here (`database_guest_missing`), the D1 token is not set here (`d1_token_missing`), or joining would make a loop (`join_cycle`, `ancestry_too_deep`).",
+            "description": "This install holds data of its own for a shared branch join (`not_empty`), the library's database plugin is not installed here (`database_guest_missing`), the library sent no D1 token and none is set here (`d1_token_missing`), or joining would make a loop (`join_cycle`, `ancestry_too_deep`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -13228,9 +13228,9 @@
                 },
                 "examples": {
                   "d1_token_missing": {
-                    "summary": "The library's database is D1 and this server has no token.",
+                    "summary": "The library's database is D1, it sent no token, and this server has none.",
                     "value": {
-                      "detail": "the library's database is Cloudflare D1: set BOOKCLERK_D1_API_TOKEN for this server and restart it (the token is never sent between servers), then try again within 10 minutes (the library holds this server as node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c)",
+                      "detail": "the library's database is Cloudflare D1 and it sent no API token: set BOOKCLERK_D1_API_TOKEN for this server and restart it, then try again within 10 minutes (the library holds this server as node 7d2b9e4c-1f3a-4b8d-9c6e-2a5f8b1d4e7c)",
                       "error": "d1_token_missing"
                     }
                   },

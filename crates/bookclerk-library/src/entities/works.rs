@@ -25,6 +25,10 @@ pub struct Model {
     pub categories: Option<String>,
     /// HTTPS URL of cover art when known.
     pub cover_url: Option<String>,
+    /// The `work_text_parts` version holding the description, subjects or
+    /// categories too wide for this row on the database plugin; each such
+    /// column then holds an empty string. `None` when every text is inline.
+    pub text_version: Option<String>,
     /// RFC 3339 timestamp when the row was inserted.
     pub created_at: String,
     /// RFC 3339 timestamp when the row was last modified.

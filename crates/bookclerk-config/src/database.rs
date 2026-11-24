@@ -177,9 +177,9 @@ impl DatabaseConfig {
                     .unwrap_or("")
                     .is_empty();
                 let url_file_empty = self.postgres.url_file.is_none();
-                if url_empty && url_file_empty {
+                if url_empty && url_file_empty && !self.postgres.stored_credential {
                     return Err(ConfigError::Invalid(
-                        "[database.postgres].url or url_file is required when plugin = \"postgres\" \
+                        "[database.postgres].url, url_file or stored_credential is required when plugin = \"postgres\" \
                          (or set BOOKCLERK_DATABASE_POSTGRES_URL / BOOKCLERK_DATABASE_POSTGRES_URL_FILE)"
                             .into(),
                     ));
@@ -260,6 +260,12 @@ pub struct DatabasePostgresConfig {
     /// Path to a file containing the connection URL (one line, trimmed).
     /// Relative paths are resolved under `$BOOKCLERK_FILES_DIR`.
     pub url_file: Option<PathBuf>,
+    /// True when the URL is kept sealed in `database.credential` beside
+    /// `master.key` (in the master key's store) rather than in `url` or
+    /// `url_file`: how a joined shared branch keeps its library's URL.
+    /// `url` and `url_file` still win when set.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stored_credential: bool,
 }
 
 impl Default for DatabasePostgresConfig {
@@ -268,6 +274,7 @@ impl Default for DatabasePostgresConfig {
             enabled: true,
             url: None,
             url_file: None,
+            stored_credential: false,
         }
     }
 }
@@ -325,6 +332,13 @@ pub fn resolve_postgres_url(config: &crate::Config) -> Result<String> {
         if !trimmed.is_empty() {
             return Ok(trimmed.to_string());
         }
+    }
+    if config.database.postgres.stored_credential {
+        return Err(ConfigError::Invalid(
+            "the Postgres URL is kept in database.credential; read it through \
+             bookclerk_library::database_credential::resolve_postgres_url"
+                .into(),
+        ));
     }
     Err(ConfigError::Invalid(
         "Postgres URL not configured — set [database.postgres].url, \

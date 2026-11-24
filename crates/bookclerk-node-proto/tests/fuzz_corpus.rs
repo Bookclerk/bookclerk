@@ -1,4 +1,5 @@
 //! Replays the checked-in `node_frame`, `node_account_bundle`,
+//! `shared_branch_bootstrap`,
 //! `clerk_authorization`, `clerk_authorize`, `clerk_token_request`,
 //! `clerk_token_answer`, `clerk_socket_frame`, `copy_range`, `copy_answer`
 //! `upload_part` and `tunnel_policy` fuzz corpora
@@ -18,6 +19,10 @@ mod oracle;
 /// The `node_account_bundle` oracle, shared with the fuzz target.
 #[path = "../../../fuzz/oracles/node_account_bundle.rs"]
 mod bundle_oracle;
+
+/// The `shared_branch_bootstrap` oracle, shared with the fuzz target.
+#[path = "../../../fuzz/oracles/shared_branch_bootstrap.rs"]
+mod bootstrap_oracle;
 
 /// The `clerk_authorization` oracle, shared with the fuzz target.
 #[path = "../../../fuzz/oracles/clerk_authorization.rs"]
@@ -129,6 +134,31 @@ fn copy_frame_is_taken(frame: &bookclerk_node_proto::Frame) -> bool {
         .is_none(),
         _ => false,
     }
+}
+
+#[test]
+#[allow(clippy::expect_used)]
+fn shared_branch_bootstrap_corpus_keeps_every_invariant() {
+    let mut accepted = 0usize;
+    let mut refused = 0usize;
+    for path in corpus_files("shared_branch_bootstrap") {
+        let data = std::fs::read(&path).expect("read corpus file");
+        bootstrap_oracle::check(&data);
+        let parsed = bookclerk_node_proto::parse_shared_branch_bootstrap(
+            &data,
+            bootstrap_oracle::LIBRARY_ID,
+            bootstrap_oracle::NODE_ID,
+        );
+        if parsed.is_ok() {
+            accepted += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    // The seeds include bootstraps the parser accepts, so the round trip
+    // runs, and bootstraps it refuses.
+    assert!(accepted > 0, "no corpus bootstrap parsed");
+    assert!(refused > 0, "every corpus bootstrap parsed");
 }
 
 #[test]

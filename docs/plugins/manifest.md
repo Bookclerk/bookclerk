@@ -576,7 +576,11 @@ crons = ["*/30 * * * *", "0 3 * * MON-FRI"]    # scheduled(controller), UTC
   don't make the plugin an integration: the plugin stays in that
   entrypoint's handler family, and its jobs run on that session. The
   host's one job type today, `stream_copy`, runs this way on a storage
-  plugin's destination. A plugin without one of those entrypoints that
+  plugin's destination. Every SDK serves it the same way (Rust
+  `StreamCopyHandler`, TypeScript `streamCopy(job)`, Python
+  `stream_copy(job)`): stage under a commit token derived from the
+  idempotency key, step id and destination, commit, and abort the stage on
+  any failure or cancellation. A plugin without one of those entrypoints that
   declares `jobs` is an integration.
 
 ## Logo

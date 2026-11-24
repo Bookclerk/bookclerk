@@ -19,8 +19,14 @@ pub struct Model {
     pub schema_version: i64,
     /// Monotonic compare-and-swap revision. Starts at 1.
     pub revision: i64,
-    /// JSON body of the typed domain document.
+    /// JSON body of the typed domain document; empty when
+    /// [`Self::document_parts`] names pieces in `configuration_document_parts`
+    /// instead.
     pub document_json: String,
+    /// How many `configuration_document_parts` pieces, written under
+    /// [`Self::write_operation_id`], hold the body; `0` when
+    /// [`Self::document_json`] holds it whole.
+    pub document_parts: i64,
     /// RFC 3339 timestamp of the last committed replacement.
     pub updated_at: String,
     /// Audit identity of the last writer.

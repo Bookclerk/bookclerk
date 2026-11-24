@@ -129,7 +129,7 @@ impl PluginWorker for D1Root {
         bindings: Bindings,
     ) -> Result<Entrypoints, PluginError> {
         match invocation.purpose {
-            // `bookclerk database setup d1`: no database is open yet; serve
+            // `bookclerk config database setup d1`: no database is open yet; serve
             // only the guided setup, from the host's current settings.
             InvocationPurpose::Provision => {
                 let config = bindings

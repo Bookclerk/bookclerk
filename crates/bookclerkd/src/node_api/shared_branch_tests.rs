@@ -587,3 +587,39 @@ fn a_d1_library_off_cloudflare_is_not_offered_to_shared_branches() {
     ));
     assert!(super::shared_database(&d1("https://d1-proxy.example/client/v4")).is_err());
 }
+
+/// A D1 library sends a joining shared branch the token it uses as the
+/// database credential, so the shared branch needs nothing set by hand; a
+/// PostgreSQL URL carries its own, so it gets none.
+#[test]
+fn a_d1_shared_branch_gets_the_library_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let dek = bookclerk_library::master_key::resolve_master_key_with(dir.path(), None).unwrap();
+    let d1 = SharedBranchDatabase::D1 {
+        account_id: "acct".into(),
+        database_id: "db".into(),
+        api_base: "https://api.cloudflare.com/client/v4".into(),
+    };
+    let env_token = bookclerk_config::resolve_d1_api_token().ok();
+    let before = super::shared_database_credential(&d1, dir.path(), &dek);
+    assert_eq!(before.is_some(), env_token.is_some());
+
+    let stored = bookclerk_library::database_credential::DatabaseCredential::new(
+        bookclerk_config::DatabasePluginKind::D1,
+        "library-token",
+        Some("tok_9"),
+    )
+    .unwrap();
+    bookclerk_library::database_credential::store_database_credential(dir.path(), &dek, &stored)
+        .unwrap();
+    let after = super::shared_database_credential(&d1, dir.path(), &dek).expect("a token");
+    if env_token.is_none() {
+        assert_eq!(after.secret.expose(), b"library-token");
+        assert_eq!(after.secret_id.as_deref(), Some("tok_9"));
+    }
+
+    let postgres = SharedBranchDatabase::Postgres {
+        url: bookclerk_node_proto::SecretValue::new(b"postgres://u:p@db/lib".to_vec()),
+    };
+    assert!(super::shared_database_credential(&postgres, dir.path(), &dek).is_none());
+}

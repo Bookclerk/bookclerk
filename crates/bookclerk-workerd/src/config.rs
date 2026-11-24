@@ -427,6 +427,10 @@ const SDK_PLUGIN_MIGRATION_PY: &str = include_str!(
 /// helper authors import directly).
 const SDK_SCAN_PAGE_PY: &str =
     include_str!("../../../packages/plugin-sdk-python/src/bookclerk_plugin_sdk/scan_page.py");
+/// Injected as `bookclerk_plugin_sdk/object_store.py` (the object-store
+/// destination and queue change-feed helpers authors import directly).
+const SDK_OBJECT_STORE_PY: &str =
+    include_str!("../../../packages/plugin-sdk-python/src/bookclerk_plugin_sdk/object_store.py");
 /// First-party adapter isolate: owns GRANTED / BRIDGE_TOKEN (author `PLUGIN`).
 const ADAPTER_JS: &str = r#"import { wrapPluginFromBinding } from "@bookclerk/plugin-sdk/workerd";
 export default wrapPluginFromBinding();
@@ -467,6 +471,8 @@ pub const SDK_PY_LIMITS_MODULE: &str = "bookclerk_plugin_sdk/limits.py";
 pub const SDK_PY_PLUGIN_MIGRATION_MODULE: &str = "bookclerk_plugin_sdk/plugin_migration.py";
 /// Python module path for the storefront `scan` paging helper.
 pub const SDK_PY_SCAN_PAGE_MODULE: &str = "bookclerk_plugin_sdk/scan_page.py";
+/// Python module path for the object-store destination and queue feed helpers.
+pub const SDK_PY_OBJECT_STORE_MODULE: &str = "bookclerk_plugin_sdk/object_store.py";
 /// Python module path that initializes the sparse workerd guest SDK.
 pub const SDK_PY_INIT_MODULE: &str = "bookclerk_plugin_sdk/__init__.py";
 
@@ -536,6 +542,11 @@ const SDK_PY_MODULES: &[InjectedPyModule] = &[
         module: SDK_PY_SCAN_PAGE_MODULE,
         embed_file: "sdk-scan-page.py",
         source: SDK_SCAN_PAGE_PY,
+    },
+    InjectedPyModule {
+        module: SDK_PY_OBJECT_STORE_MODULE,
+        embed_file: "sdk-object-store.py",
+        source: SDK_OBJECT_STORE_PY,
     },
 ];
 
@@ -2306,10 +2317,15 @@ mode = "deny"
 
     #[test]
     fn python_sdk_injection_covers_the_import_closure() {
-        // Walk the imports from `workerd.py` (the module authors import) and
+        // Walk the imports from the modules authors import (`workerd.py`,
+        // `scan_page.py`, `object_store.py`) and
         // require every module reached to be injected, so an isolate never
         // meets `ModuleNotFoundError` on an SDK path.
-        let mut pending = vec![SDK_PY_WORKERD_MODULE.to_string()];
+        let mut pending = vec![
+            SDK_PY_WORKERD_MODULE.to_string(),
+            SDK_PY_SCAN_PAGE_MODULE.to_string(),
+            SDK_PY_OBJECT_STORE_MODULE.to_string(),
+        ];
         let mut reached = std::collections::BTreeSet::new();
         while let Some(module) = pending.pop() {
             if !reached.insert(module.clone()) {

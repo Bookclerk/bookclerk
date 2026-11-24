@@ -53,6 +53,7 @@ database_id = "your-d1-database-uuid"
 # prefer url_file or BOOKCLERK_DATABASE_POSTGRES_URL (registered for redaction).
 # url = "postgres://user:password@localhost:5432/bookclerk"
 # url_file = "/run/secrets/postgres_url"   # path to a file containing the URL
+# stored_credential = true   # the URL is sealed in database.credential (set by a shared branch join)
 ```
 
 The Cloudflare API token comes from `BOOKCLERK_D1_API_TOKEN` (falling
@@ -90,14 +91,28 @@ on a keychain or `systemd-creds` install, with `database.credential` then
 holding only a pointer. `bookclerk config master-key move` takes the
 credential along with the key.
 
-Running the setup again mints a fresh token and deletes the one the
-previous run minted. It never deletes the database.
+Running the setup again keeps the token the previous run minted, because
+shared branches of the library hold a copy of it. It only updates the
+database ids. To replace the token, pass `--rotate-token`: the setup mints
+a new one and deletes the old one. Each shared branch then needs to join
+again. Choosing a different account always mints a new token. The setup
+never deletes the database.
 
-> [!NOTE]
-> The stored credential is sealed under this install's key. A shared
-> branch that joins a D1 library installs the library's key, so it sets
-> `BOOKCLERK_D1_API_TOKEN` instead (see
-> [Shared branches](branches.md)), or runs the setup again after joining.
+### Database credentials on a shared branch
+
+The database plugin's credential is the one secret that can't live in the
+library database, because the library needs it to open that database.
+Storage plugins' keys and store logins are sealed in the database itself,
+so a shared branch has them as soon as it opens it.
+
+A shared branch that joins a library gets the database credential along
+with the library's key: the PostgreSQL URL, or the D1 token the library
+uses. It keeps that credential in `database.credential`, sealed with the
+key and in the same store as `master.key`, tagged with the plugin it
+belongs to. A PostgreSQL branch's `config.toml` then says
+`stored_credential = true` instead of naming a URL or a file, and a D1
+branch's token comes from there. Either way, nothing needs setting by
+hand (see [Shared branches](branches.md)).
 
 These environment variables override the file:
 
@@ -169,8 +184,9 @@ sqlx-postgres driver inside SeaORM. Connecting fails closed when
 `server_version_num < 160000` or when `server_encoding` isn't UTF8.
 
 The connection URL is standard libpq style:
-`postgres://user:password@host:5432/dbname`. At least one of `url` or
-`url_file` is required:
+`postgres://user:password@host:5432/dbname`. One of `url`, `url_file` or
+`stored_credential` is required (`url_file`, then `url`, wins when more
+than one is set):
 
 ```toml
 [database]
@@ -454,8 +470,10 @@ password goes in the body) and `PUT
 These are needed to open the database or unwrap the master key, so they
 can't be stored in it:
 
-- `BOOKCLERK_AUTH_PASSWORD` or `[auth].password`, which wraps the key at
-  rest (the environment is preferred), and `[auth].key_store`, which says
+- `BOOKCLERK_AUTH_PASSWORD` (or the file `BOOKCLERK_AUTH_PASSWORD_FILE`
+  names, or a `bookclerk-auth-password` systemd credential) or
+  `[auth].password`, which wraps the key at rest (the environment is
+  preferred), and `[auth].key_store`, which says
   where new keys go;
 - `BOOKCLERK_DATABASE_POSTGRES_URL` and the D1 API token (from the
   environment, or `database.credential` and the key store it points into),
@@ -854,6 +872,18 @@ Base statements use `CREATE TABLE/INDEX IF NOT EXISTS`. The tables are
 `plugin_databases` and `bookclerk_schema_migrations`, plus the library
 model tables below.
 
+A configuration document (`configuration_documents`) wider than one piece
+the database plugin carries (the smallest of its cell, statement and
+result limits) is stored in `configuration_document_parts` pieces under a
+set id unique to the write that staged them. The document row's
+`document_json` then holds that set id, and `document_parts` its piece
+count. A write commits only while every piece it staged is still stored.
+It drops only the set it replaced and, when it did not commit, its own
+set, and only while no row names it, so it never removes pieces another
+write is still staging. Each write and each clean-up first locks the
+pieces of the sets it decides on, so two that overlap see each other's
+outcome. Work texts in `work_text_parts` follow the same rules.
+
 `patron_controls` holds the member controls an Administrator set for one
 Member, as JSON naming only the controls that differ from the library's
 default (the `core.member_controls` configuration document); a Member
@@ -896,7 +926,10 @@ library holds as works, expressions and editions:
   its gaps (`enrich_source`, `enrich_confidence`, `enrich_updated_at`), and
   `edition_enrich_attempts` records an ask that left gaps open
   (`partial` or `unmatched`), so gap-filling waits before asking again
-  ([Metadata gap-fill](../internals/discovery.md#metadata-gap-fill-open-library-compliance));
+  ([Metadata gap-fill](../internals/discovery.md#metadata-gap-fill-open-library-compliance)),
+  and a work's description, subjects or categories too wide for one cell
+  of the database plugin, or for the work's row to fit one reply, are
+  stored in `work_text_parts` pieces that the work's `text_version` names;
 - `store_listings` (one per plugin, marketplace and product, with the
   store's own text for it: synopsis, cover, credits as printed, series and
   the store's own series or show product id, ratings, and `is_explicit`

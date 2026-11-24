@@ -114,7 +114,9 @@ back (`outputs`), and whether it can remove what it created
   summary, then stores the settings and inputs as one revision. A grant
   the plugin does not return as a credential is dropped.
 - A run sees what an earlier run stored, so a second run updates and
-  rotates rather than duplicating.
+  rotates rather than duplicating. The D1 database's setup is the
+  exception: it keeps its token unless asked to rotate, since shared
+  branches hold a copy.
 - The host seals the credentials before writing the revision that names
   them. A running instance picks up the new revision, and with it the new
   credentials, as it does any configuration change.
@@ -131,7 +133,9 @@ back (`outputs`), and whether it can remove what it created
   `config.toml` and seals the returned token with the data-encryption key
   in `database.credential`, kept in the same store as the master key (the
   file, the OS keychain or `systemd-creds`), never in the environment or
-  the database it opens.
+  the database it opens. The credential is tagged with its plugin, so the
+  same path serves any database plugin's setup, and a joining shared
+  branch receives and keeps it the same way.
 
 ## Consequences
 

@@ -9,8 +9,9 @@
 //!    box key; only this process can open it, and it never passes through
 //!    the browser or a log.
 //! 3. [`apply_shared_branch_bootstrap`] writes them as this install's own
-//!    bootstrap: the database connection into `config.toml` (a Postgres URL
-//!    into a `0600` file named by `url_file`), the DEK into `master.key`
+//!    bootstrap: the database connection into `config.toml`, the database
+//!    plugin's credential (a Postgres URL, D1's API token) sealed into
+//!    `database.credential` in the master key's store, the DEK into `master.key`
 //!    (wrapped with this install's own `BOOKCLERK_AUTH_PASSWORD` or
 //!    `[auth].password` when set), and `node-identity.json` with the node
 //!    id the library recorded (`kind = shared`). The daemon then starts
@@ -27,6 +28,9 @@ use bookclerk_library::control_plane::{
     encode_node_identity_file, library_contents, node_identity_path, LibraryContents,
     LibraryLinkKeys,
 };
+use bookclerk_library::database_credential::{
+    stage_database_credential, DatabaseCredential, StagedDatabaseCredential,
+};
 use bookclerk_library::LibraryStore;
 use bookclerk_node_proto::{
     open_shared_branch_bootstrap, ConnectionType, SharedBranchBootstrap, SharedBranchDatabase,
@@ -36,10 +40,11 @@ use zeroize::Zeroizing;
 use crate::branch::{post_redeem, BranchRedeem};
 use crate::enroll::JoinError;
 
-/// File under the files directory that holds a shared branch's Postgres URL, mode
-/// `0600`. `[database.postgres].url_file` names it by its absolute path
-/// (a relative `url_file` would be read from the daemon's working
-/// directory).
+/// File under the files directory where an earlier version kept a shared
+/// branch's Postgres URL in the clear (mode `0600`, named by
+/// `[database.postgres].url_file`). A join now seals the URL into
+/// `database.credential` instead; the name stays one of the files a join
+/// record may list, so an earlier join can still be confirmed or undone.
 pub const SHARED_BRANCH_POSTGRES_URL_FILE: &str = "database-postgres.url";
 
 /// Environment variables that would outrank a shared branch's `[database]`
@@ -196,6 +201,10 @@ pub struct AppliedSharedBranch {
     pub database: DatabasePluginKind,
     /// True when `master.key` is wrapped with this install's password.
     pub wrapped: bool,
+    /// The store the database plugin's credential went to (this install's
+    /// master key store), or `None` when the library sent none (a D1
+    /// library whose token is only in its environment).
+    pub database_credential: Option<bookclerk_config::KeyStoreKind>,
     /// The config file written.
     pub config_file: PathBuf,
 }
@@ -674,7 +683,20 @@ impl PendingSharedBranchJoin {
             })?;
         }
         let mut failed = Vec::new();
+        let credential_file = self
+            .marker
+            .parent()
+            .map(bookclerk_library::database_credential::database_credential_path);
         for file in self.applied.files.iter().rev() {
+            // A credential the join created names a store item of its own:
+            // delete that before the file that names it goes.
+            if file.backup.is_none() && credential_file.as_deref() == Some(file.target.as_path()) {
+                if let Some(files_dir) = self.marker.parent() {
+                    bookclerk_library::database_credential::forget_database_credential_item(
+                        files_dir,
+                    );
+                }
+            }
             let restored = match &file.backup {
                 // A copy that is gone was already moved back; one that
                 // cannot be checked is a failure, not a restore.
@@ -727,10 +749,11 @@ impl std::fmt::Display for RevertFailed {
 
 /// The bootstrap files a shared branch join may replace, in the order it writes
 /// them.
-fn shared_branch_join_targets(files_dir: &Path, config_file: &Path) -> [PathBuf; 4] {
+fn shared_branch_join_targets(files_dir: &Path, config_file: &Path) -> [PathBuf; 5] {
     [
         files_dir.join(SHARED_BRANCH_POSTGRES_URL_FILE),
         node_identity_path(files_dir),
+        bookclerk_library::database_credential::database_credential_path(files_dir),
         bookclerk_library::master_key_path(files_dir),
         config_file.to_path_buf(),
     ]
@@ -807,15 +830,16 @@ pub fn interrupted_shared_branch_join(files_dir: &Path, config_file: &Path) -> O
 
 /// Writes `bootstrap` as this install's own bootstrap under `files_dir`:
 ///
-/// - `database-postgres.url` (Postgres only): the URL, mode `0600`;
 /// - `node-identity.json`: the node id the library recorded, bound to its
 ///   library;
+/// - `database.credential` (when there is one): the database plugin's
+///   credential (the Postgres URL, or the D1 token the library sent),
+///   sealed with the DEK and put in the store the master key goes to;
 /// - `master.key`: the library's DEK, wrapped with `password` (this
 ///   install's `BOOKCLERK_AUTH_PASSWORD` or `[auth].password`) when set;
 /// - `[database]` in `config_file` (other settings kept): `postgres` with
-///   `url_file` naming the URL file (never the URL itself in the TOML), or
-///   `d1` with its ids (the D1 API token stays this node's
-///   environment-only bootstrap).
+///   `stored_credential = true` (never the URL itself in the TOML), or `d1`
+///   with its ids.
 ///
 /// The files go in as one recoverable step. All the new contents are first
 /// written and synced beside their targets (hidden `.<name>.shared-branch-<hex>`
@@ -856,39 +880,59 @@ pub fn apply_shared_branch_bootstrap(
     } else {
         Config::default()
     };
-    let mut url: Option<Zeroizing<String>> = None;
-    let database = match &bootstrap.database {
-        SharedBranchDatabase::Postgres { url: secret } => {
-            let text = Zeroizing::new(
-                std::str::from_utf8(secret.expose())
-                    .map_err(|_| JoinError::Record("malformed database URL".into()))?
-                    .trim()
-                    .to_string(),
-            );
-            if text.is_empty() {
-                return Err(JoinError::Record("empty database URL".into()));
+    let unusable = |err: &dyn std::fmt::Display| {
+        JoinError::Record(format!("unusable database credential: {err}"))
+    };
+    let secret_text = |secret: &bookclerk_node_proto::SecretValue| {
+        std::str::from_utf8(secret.expose())
+            .map(str::to_string)
+            .map_err(|_| JoinError::Record("malformed database credential".into()))
+    };
+    let (database, credential) = match &bootstrap.database {
+        SharedBranchDatabase::Postgres { url } => {
+            if bootstrap.database_credential.is_some() {
+                return Err(JoinError::Record(
+                    "a PostgreSQL bootstrap carries its credential in its URL".into(),
+                ));
             }
-            bookclerk_config::register_secret(&text);
-            let url_file = std::path::absolute(files_dir.join(SHARED_BRANCH_POSTGRES_URL_FILE))
-                .map_err(|err| record("database URL file", &err))?;
+            let text = Zeroizing::new(secret_text(url)?);
+            let credential = DatabaseCredential::new(DatabasePluginKind::Postgres, &text, None)
+                .map_err(|err| unusable(&err))?;
             cfg.database.plugin = DatabasePluginKind::Postgres.as_str().into();
             cfg.database.postgres.url = None;
-            cfg.database.postgres.url_file = Some(url_file);
-            url = Some(text);
-            DatabasePluginKind::Postgres
+            cfg.database.postgres.url_file = None;
+            cfg.database.postgres.stored_credential = true;
+            (DatabasePluginKind::Postgres, Some(credential))
         }
         SharedBranchDatabase::D1 {
             account_id,
             database_id,
             api_base,
         } => {
+            let credential = match &bootstrap.database_credential {
+                Some(sent) => {
+                    let text = Zeroizing::new(secret_text(&sent.secret)?);
+                    Some(
+                        DatabaseCredential::new(
+                            DatabasePluginKind::D1,
+                            &text,
+                            sent.secret_id.as_deref(),
+                        )
+                        .map_err(|err| unusable(&err))?,
+                    )
+                }
+                None => None,
+            };
             cfg.database.plugin = DatabasePluginKind::D1.as_str().into();
             cfg.database.d1.account_id.clone_from(account_id);
             cfg.database.d1.database_id.clone_from(database_id);
             cfg.database.d1.api_base = checked_d1_api_base(api_base)?;
-            DatabasePluginKind::D1
+            (DatabasePluginKind::D1, credential)
         }
     };
+    if let Some(credential) = &credential {
+        bookclerk_config::register_secret(credential.secret());
+    }
     let identity = encode_node_identity_file(&bootstrap.node_id, &bootstrap.library_id)
         .map_err(|err| record("node identity", &err))?;
     let password = password.map(str::trim).filter(|p| !p.is_empty());
@@ -899,6 +943,26 @@ pub fn apply_shared_branch_bootstrap(
     let master_key =
         bookclerk_library::store_master_key(files_dir, bootstrap.dek.expose(), password)
             .map_err(|err| record("master.key", &err))?;
+    // The credential follows the key into the same store, staged the same
+    // way: its `database.credential` is published with the other files.
+    let staged = match credential
+        .as_ref()
+        .map(|credential| {
+            stage_database_credential(
+                files_dir,
+                bootstrap.dek.expose(),
+                credential,
+                master_key.store(),
+            )
+        })
+        .transpose()
+    {
+        Ok(staged) => staged,
+        Err(err) => {
+            master_key.discard();
+            return Err(record("database credential", &err));
+        }
+    };
     let publish = || -> Result<(), JoinError> {
         // `0700`, as for a minted key; done before any target changes.
         bookclerk_library::prepare_master_key_dir(files_dir)
@@ -907,23 +971,20 @@ pub fn apply_shared_branch_bootstrap(
             .to_toml_string()
             .map_err(|err| record("config.toml", &err))?;
         let mut files = Vec::with_capacity(4);
-        if let Some(text) = &url {
-            // Recorded in the caller's form, as the other targets are, so the
-            // next start's `shared_branch_join_targets` names the same path; only the
-            // config holds the absolute one.
-            files.push(NewFile {
-                what: "database URL file",
-                target: files_dir.join(SHARED_BRANCH_POSTGRES_URL_FILE),
-                bytes: text.as_bytes(),
-                private: true,
-            });
-        }
         files.push(NewFile {
             what: "node identity",
             target: node_identity_path(files_dir),
             bytes: &identity,
             private: true,
         });
+        if let Some(staged) = &staged {
+            files.push(NewFile {
+                what: "database credential",
+                target: bookclerk_library::database_credential::database_credential_path(files_dir),
+                bytes: staged.bytes(),
+                private: true,
+            });
+        }
         files.push(NewFile {
             what: "master.key",
             target: bookclerk_library::master_key_path(files_dir),
@@ -951,6 +1012,17 @@ pub fn apply_shared_branch_bootstrap(
         } else {
             master_key.discard();
         }
+        if let Some(staged) = staged {
+            let path = bookclerk_library::database_credential::database_credential_path(files_dir);
+            if still_published(&path, staged.bytes()) {
+                tracing::warn!(
+                    path = %path.display(),
+                    "kept the new database credential because database.credential still names it after a failed join"
+                );
+            } else {
+                staged.discard();
+            }
+        }
         return Err(err);
     }
     if password.is_none() && master_key.store() == bookclerk_config::KeyStoreKind::File {
@@ -958,6 +1030,7 @@ pub fn apply_shared_branch_bootstrap(
             files_dir,
         ));
     }
+    let database_credential = staged.as_ref().map(StagedDatabaseCredential::store);
     tracing::info!(
         library_id = %bootstrap.library_id,
         node_id = %bootstrap.node_id,
@@ -968,6 +1041,7 @@ pub fn apply_shared_branch_bootstrap(
     Ok(AppliedSharedBranch {
         database,
         wrapped: password.is_some(),
+        database_credential,
         config_file: config_file.to_path_buf(),
     })
 }
@@ -983,7 +1057,24 @@ mod tests {
             library_id: "library-1".into(),
             node_id: "0b5c3d52-6f1e-4f39-9a3c-1b7f0a2c9e11".into(),
             database,
+            database_credential: None,
             dek: SecretValue::new(vec![5u8; 32]),
+        }
+    }
+
+    /// A D1 bootstrap carrying `secret` (and `id`) as its database
+    /// credential.
+    fn with_credential(secret: &[u8], id: Option<&str>) -> SharedBranchBootstrap {
+        SharedBranchBootstrap {
+            database_credential: Some(bookclerk_node_proto::SharedBranchCredential {
+                secret: SecretValue::new(secret.to_vec()),
+                secret_id: id.map(str::to_string),
+            }),
+            ..bootstrap(SharedBranchDatabase::D1 {
+                account_id: "acct".into(),
+                database_id: "db-uuid".into(),
+                api_base: "https://api.cloudflare.com/client/v4".into(),
+            })
         }
     }
 
@@ -1216,19 +1307,26 @@ mod tests {
         let cfg = Config::from_toml_file(&config).unwrap();
         assert_eq!(cfg.database.plugin, "postgres");
         assert!(!cfg.daemon.tray, "other settings are kept");
-        let url_file = files.path().join(SHARED_BRANCH_POSTGRES_URL_FILE);
+        // The URL is sealed into database.credential, in the store the
+        // master key went to, never in a plaintext file.
+        assert!(cfg.database.postgres.stored_credential);
+        assert_eq!(cfg.database.postgres.url_file, None);
+        assert!(!files.path().join(SHARED_BRANCH_POSTGRES_URL_FILE).exists());
         assert_eq!(
-            cfg.database.postgres.url_file.as_deref(),
-            Some(url_file.as_path())
+            applied.database_credential,
+            Some(bookclerk_config::KeyStoreKind::File)
         );
-        assert_eq!(
-            std::fs::read_to_string(&url_file).unwrap(),
-            "postgres://u:pw-1@db/lib"
-        );
+        let credential_file =
+            bookclerk_library::database_credential::database_credential_path(files.path());
+        let raw = std::fs::read(&credential_file).unwrap();
+        assert!(!raw.windows(4).any(|w| w == b"pw-1"), "sealed");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
-            let mode = std::fs::metadata(&url_file).unwrap().permissions().mode();
+            let mode = std::fs::metadata(&credential_file)
+                .unwrap()
+                .permissions()
+                .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
         // master.key is the DEK wrapped with this install's password.
@@ -1291,6 +1389,67 @@ mod tests {
         }
     }
 
+    /// The library's D1 token is kept in the joined install's master key
+    /// store, so it needs no `BOOKCLERK_D1_API_TOKEN`; undoing the join
+    /// deletes it again.
+    #[test]
+    fn a_d1_join_keeps_the_library_token_and_an_undo_removes_it() {
+        let files = tempfile::tempdir().unwrap();
+        let config = files.path().join("config.toml");
+        let applied = apply_shared_branch_bootstrap(
+            files.path(),
+            &config,
+            &with_credential(b"library-token", Some("tok_7")),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            applied.database_credential,
+            Some(bookclerk_config::KeyStoreKind::File)
+        );
+        let dek =
+            bookclerk_library::master_key::resolve_master_key_with(files.path(), None).unwrap();
+        assert_eq!(dek.as_bytes(), &[5u8; 32], "the library's key");
+        let credential =
+            bookclerk_library::database_credential::load_database_credential(files.path(), &dek)
+                .unwrap()
+                .unwrap();
+        assert_eq!(credential.secret(), "library-token");
+        assert_eq!(credential.secret_id(), Some("tok_7"));
+        let credential_file =
+            bookclerk_library::database_credential::database_credential_path(files.path());
+        let raw = std::fs::read(&credential_file).unwrap();
+        assert!(!raw.windows(13).any(|w| w == b"library-token"), "sealed");
+        bookclerk_library::uncache_master_key(&dek);
+
+        pending_shared_branch_join(files.path(), &config)
+            .unwrap()
+            .revert()
+            .unwrap();
+        assert!(!credential_file.exists());
+    }
+
+    /// A token the joined install can't store refuses the join before any
+    /// file is written.
+    #[test]
+    fn a_malformed_d1_token_refuses_the_join() {
+        let files = tempfile::tempdir().unwrap();
+        let config = files.path().join("config.toml");
+        let err = apply_shared_branch_bootstrap(
+            files.path(),
+            &config,
+            &with_credential(b"has space", None),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("unusable database credential"),
+            "{err}"
+        );
+        assert!(!config.exists());
+        assert!(!bookclerk_library::master_key_path(files.path()).exists());
+    }
+
     #[test]
     fn a_d1_bootstrap_without_a_password_writes_an_unwrapped_key() {
         let files = tempfile::tempdir().unwrap();
@@ -1341,8 +1500,8 @@ mod tests {
         assert_eq!(std::fs::read(&identity).unwrap(), b"original identity");
         assert_eq!(std::fs::read(&key).unwrap(), b"original key");
         assert!(config.is_dir());
-        // The URL file did not exist before, so it is gone again, and no
-        // staged file or backup is left behind.
+        // The credential file did not exist before, so it is gone again,
+        // and no staged file or backup is left behind.
         let mut left: Vec<String> = std::fs::read_dir(files.path())
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())

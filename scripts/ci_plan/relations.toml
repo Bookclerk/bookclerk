@@ -23,6 +23,7 @@ paths = [
     "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/_wire.py",
     "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/plugin_migration.py",
     "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/scan_page.py",
+    "packages/plugin-sdk-python/src/bookclerk_plugin_sdk/object_store.py",
 ]
 # Injected into every workerd isolate: check the workerd-runtime guests,
 # not the whole installation.
@@ -48,6 +49,12 @@ paths = ["crates/bookclerk-integrations/src/portal/**"]
 [[test_input]]
 package = "bookclerk-cli"
 paths = ["docs/server/cli-reference.md"]
+
+[[test_input]]
+package = "bookclerk-storage"
+# key_syntax's shared-vector test reads the object-store key vectors that
+# the TypeScript and Python SDK tests also check.
+paths = ["packages/plugin-sdk/scripts/fixtures/object-store-keys.json"]
 
 [[test_input]]
 package = "bookclerk-plugin-manifest"
@@ -508,6 +515,14 @@ package = "bookclerk-node-proto"
 paths = [
   "fuzz/corpus/node_account_bundle/**",
   "fuzz/oracles/node_account_bundle.rs",
+]
+
+[[test_input]]
+package = "bookclerk-node-proto"
+# The shared branch bootstrap oracle is shared with the replay test through `#[path]`.
+paths = [
+  "fuzz/corpus/shared_branch_bootstrap/**",
+  "fuzz/oracles/shared_branch_bootstrap.rs",
 ]
 
 [[test_input]]

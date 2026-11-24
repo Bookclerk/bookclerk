@@ -20,8 +20,9 @@
 #   /data    acquired audiobooks: `bookclerk plugins config set local root /data/Audiobooks`
 #
 # Operator auth is on by default (token sealed in library.db, or
-# BOOKCLERK_OPERATOR_TOKEN). Set BOOKCLERK_AUTH_PASSWORD to wrap master.key at
-# rest. bookclerkd listens on loopback inside the container; to publish the
+# BOOKCLERK_OPERATOR_TOKEN). Wrap master.key at rest with a password mounted
+# as a secret file and named by BOOKCLERK_AUTH_PASSWORD_FILE (preferred: it
+# stays out of `docker inspect`), or BOOKCLERK_AUTH_PASSWORD. bookclerkd listens on loopback inside the container; to publish the
 # port, override explicitly, e.g.:
 #   -e BOOKCLERK_DAEMON_LISTEN=0.0.0.0:8787 -p 8787:8787
 #
