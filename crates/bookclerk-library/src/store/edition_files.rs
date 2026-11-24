@@ -1169,7 +1169,6 @@ impl LibraryStore {
             .filter(edition_files::Column::OwnerKind.eq(owner.kind()))
             .filter(edition_files::Column::OwnerId.eq(owner.id()))
             .filter(labels)
-            .order_by_asc(edition_files::Column::Destination)
             .one(self.db())
             .await
             .map_err(LibraryError::Orm)?
