@@ -880,6 +880,8 @@ pub async fn record_answers(
     let mut report = AnswerReport::default();
     let mut listings = Vec::new();
     let mut listing_work = Vec::new();
+    // Listings kept by ISBN on an edition this library named, per work.
+    let mut pinned: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for answer in answers {
         if !waiting.contains(&answer.work) {
             report.dropped += u64::try_from(answer.editions.len()).unwrap_or(u64::MAX);
@@ -894,13 +896,30 @@ pub async fn record_answers(
             if placed.as_deref() == Some(answer.work.as_str()) {
                 listings.push(listing);
                 listing_work.push(answer.work.clone());
-            } else {
-                report.dropped += 1;
+                continue;
             }
+            // An edition named by ISBN alone never reaches the resolver's
+            // placement (a weak identifier needs a known language and
+            // abridgement on both sides). It is kept on the one edition of
+            // the asked work that carries that ISBN, the one this library
+            // named in its question, without creating anything (#926).
+            if placed.is_none() {
+                if let Some(target) = isbn_only_edition(store, &answer.work, edition).await? {
+                    if let Some(id) = store
+                        .record_catalog_listing_on_edition(&listing, &target)
+                        .await?
+                    {
+                        report.listings += 1;
+                        pinned.entry(answer.work.clone()).or_default().insert(id);
+                        continue;
+                    }
+                }
+            }
+            report.dropped += 1;
         }
     }
     let recorded = store.record_catalog_listings(&listings).await?;
-    let mut kept: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut kept: BTreeMap<String, BTreeSet<String>> = pinned;
     // A work with an edition the pool could not place this time keeps its
     // listings: the branch still named it, so none of them is expired.
     let mut unsure: BTreeSet<&String> = BTreeSet::new();
@@ -943,6 +962,68 @@ pub async fn record_answers(
     run_batches(store, "catalog answer", statements).await?;
     report.works = u64::try_from(settled.len()).unwrap_or(u64::MAX);
     Ok(AnswersRecorded::Recorded(report))
+}
+
+/// The edition of `work_id` a branch's answered `edition` lands on by ISBN
+/// alone: `Some` only when the answer names an ISBN and no ASIN, and
+/// exactly one edition of the work carries that ISBN here.
+///
+/// An answer with an ASIN that the resolver did not place is a
+/// contradiction, and an ISBN on several editions of the work (or none) is
+/// ambiguous; both are dropped as before.
+///
+/// # Errors
+///
+/// Returns the read error.
+async fn isbn_only_edition(
+    store: &LibraryStore,
+    work_id: &str,
+    edition: &LookupEdition,
+) -> Result<Option<String>> {
+    let meta = &edition.metadata;
+    if meta.asin.as_deref().is_some_and(|a| !a.trim().is_empty()) {
+        return Ok(None);
+    }
+    let Some(isbn) = meta
+        .isbn
+        .as_deref()
+        .and_then(|raw| resolve::normalize_identifier(resolve::IdentifierScheme::Isbn, raw))
+    else {
+        return Ok(None);
+    };
+    // Only editions of the asked work are read, and two are enough to tell
+    // one from several, read in pages within the plugin's row limit, so a
+    // widely shared ISBN never makes a large read.
+    let select = edition_identifiers::Entity::find()
+        .filter(edition_identifiers::Column::Scheme.eq(resolve::IdentifierScheme::Isbn.as_str()))
+        .filter(edition_identifiers::Column::Value.eq(isbn))
+        .filter(
+            edition_identifiers::Column::EditionId.in_subquery(
+                sea_orm::sea_query::Query::select()
+                    .column(editions::Column::Id)
+                    .from(editions::Entity)
+                    .and_where(
+                        editions::Column::ExpressionId.in_subquery(
+                            sea_orm::sea_query::Query::select()
+                                .column(expressions::Column::Id)
+                                .from(expressions::Entity)
+                                .and_where(expressions::Column::WorkId.eq(work_id))
+                                .to_owned(),
+                        ),
+                    )
+                    .to_owned(),
+            ),
+        )
+        .order_by_asc(edition_identifiers::Column::EditionId);
+    let of_work: Vec<String> = read_paged(store, select, Some(2))
+        .await?
+        .into_iter()
+        .map(|row| row.edition_id)
+        .collect();
+    Ok(match of_work.as_slice() {
+        [only] => Some(only.clone()),
+        _ => None,
+    })
 }
 
 /// `observed_at` of an expired branch listing: older than any TTL, so

@@ -11,6 +11,8 @@
 pub mod account_credential_revisions;
 pub mod account_downloads;
 pub mod account_links;
+pub mod account_mail;
+pub mod account_mail_settings;
 pub mod account_pace;
 pub mod account_scan_state;
 pub mod account_shares;
@@ -48,6 +50,7 @@ pub mod edition_enrich_attempts;
 pub mod edition_files;
 pub mod edition_identifiers;
 pub mod editions;
+pub mod email_verifications;
 pub mod embeddings;
 pub mod encrypted_secrets;
 pub mod event_deliveries;

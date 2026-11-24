@@ -1330,6 +1330,128 @@
         "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
       }
     },
+    "/api/auth/verify-email": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Uses a verification link. The link is the proof, so no sign-in is\nneeded; it works once, for 24 hours, and only while the patron still\nhas the address it was sent to.",
+        "description": "Access: anyone holding the link.",
+        "operationId": "post_verify_email",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyEmailBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The address is verified.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailVerified"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is malformed, or the link is unknown, used, expired or for an address the patron no longer has. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "this link is invalid or has expired"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "403": {
+            "description": "A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not sent as `application/json`. As `text/plain`, when the request did not declare a JSON body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "send the body with Content-Type: application/json"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `token` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read or changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      }
+    },
     "/api/users": {
       "get": {
         "tags": [
@@ -3777,6 +3899,150 @@
                   "error": "not_found",
                   "message": "That page or resource was not found.",
                   "status": 404
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`); ask again after `Retry-After` seconds.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "No auth layer. Routes that need a caller say so in `security`; the handler checks it."
+      }
+    },
+    "/api/users/{id}/invite-email": {
+      "post": {
+        "tags": [
+          "Users"
+        ],
+        "summary": "Mails a user a new invite through account mail. The invite's ticket is\nminted when the mail is sent and voids the user's other unredeemed\ntickets, so only the newest invite works.",
+        "operationId": "post_user_invite_email",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "User id.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "The invite is queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountMailQueued"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller is not signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller may not do this, or the user is disabled. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "not_found",
+                  "message": "That page or resource was not found.",
+                  "status": 404
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The user has no email address, or account mail is not set up.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the user has no email address"
                 }
               }
             }
@@ -18317,6 +18583,632 @@
           },
           "500": {
             "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/notifications/account-mail": {
+      "get": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Reads account mail's settings and whether it can be sent.",
+        "description": "Access: the operator, an Owner or an Administrator.",
+        "operationId": "get_account_mail",
+        "responses": {
+          "200": {
+            "description": "The settings and status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountMailStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can manage account mail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      },
+      "put": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Chooses the notifier instance that sends account mail, or turns it\noff. Choosing another instance clears the last test.",
+        "description": "Access: the operator, an Owner or an Administrator.",
+        "operationId": "put_account_mail",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountMailSettingsBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The settings and status after the change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountMailStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is malformed, or the instance does not send account mail. As `text/plain`, when the body is not syntactically valid JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "that notifier does not send account mail"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to parse the request body as JSON: expected value at line 1 column 1"
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "only an Administrator can manage account mail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The body is not sent as `application/json`. As `text/plain`, when the request did not declare a JSON body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "send the body with Content-Type: application/json"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Expected request with `Content-Type: application/json`"
+              }
+            }
+          },
+          "422": {
+            "description": "The JSON does not fit the body: a missing field, a wrong type or an unknown shape.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "Failed to deserialize the JSON body into the target type: missing field `plugin_instance_id` at line 1 column 2"
+              }
+            }
+          },
+          "500": {
+            "description": "The library could not be changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/notifications/account-mail/test": {
+      "post": {
+        "tags": [
+          "Notifications"
+        ],
+        "summary": "Sends a test message to the caller's own email address through the\naccount-mail notifier. Its delivery marks the notifier tested, which\nself-service password reset requires.",
+        "description": "Access: an Owner or an Administrator with an email address.",
+        "operationId": "post_account_mail_test",
+        "responses": {
+          "202": {
+            "description": "The test is queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountMailQueued"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "sign in first"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not an Administrator, or is the operator, who has no address. A signed-in user who must enroll a second factor first gets `mfa_enrollment_required`. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorJson"
+                    }
+                  ]
+                },
+                "examples": {
+                  "mfa_enrollment_required": {
+                    "summary": "The user must enroll a second factor first",
+                    "value": {
+                      "error": "mfa_enrollment_required",
+                      "message": "This server requires a passkey or authenticator app. Set one up to continue, or log out and finish later.",
+                      "status": 403
+                    }
+                  },
+                  "route": {
+                    "summary": "The route's own refusal",
+                    "value": {
+                      "error": "sign in as a library user with an email address to test account mail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The caller has no email address, or account mail is not set up.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "account mail is not set up; choose a notifier first"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The test could not be written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "the library could not be read or changed"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The sign-in could not be checked because the library did not answer in time (`session_check_unavailable`). The response carries `Retry-After`; ask again rather than treating the caller as signed out.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorJson"
+                },
+                "examples": {
+                  "session_check_unavailable": {
+                    "summary": "The sign-in could not be checked in time",
+                    "value": {
+                      "error": "session_check_unavailable",
+                      "message": "Your sign-in could not be checked yet. Try again in a moment.",
+                      "status": 503
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The request ran past the API's time budget.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "request timed out"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operatorToken": []
+          },
+          {
+            "operatorSession": []
+          },
+          {
+            "portalSession": []
+          }
+        ],
+        "x-bookclerk-access": "The operator, or any signed-in user."
+      }
+    },
+    "/api/auth/profile/email/verification": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Sends the caller a new link to verify their email address, voiding the\nlast one. A patron may ask once every five minutes.",
+        "description": "Access: any signed-in library user, for themselves.",
+        "operationId": "post_my_email_verification",
+        "responses": {
+          "202": {
+            "description": "The message is queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountMailQueued"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No one is signed in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "unauthorized",
+                  "message": "Operator authentication is required. Sign in with your operator token.",
+                  "status": 401
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session has no library user. A write sent with a session cookie but without a matching `Origin` or `Referer` is refused.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                },
+                "example": {
+                  "error": "forbidden",
+                  "message": "You do not have access to this resource.",
+                  "status": 403
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "There is no address to verify, it is already verified, or account mail is not set up.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "your email address is already verified"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "A link was sent less than five minutes ago.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Seconds to wait before asking again."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                },
+                "example": {
+                  "error": "a link was sent recently; try again in a few minutes"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The message could not be written.",
             "content": {
               "application/json": {
                 "schema": {
@@ -37029,7 +37921,7 @@
             }
           },
           "409": {
-            "description": "The email is used by another account (`email_in_use`).",
+            "description": "The email is used by another account (`email_in_use`), or another change to the address landed while this one was being applied (`email_changed`; reload and try again). It does not detect a change made before this request read the address, so it does not reject a stale form.",
             "content": {
               "application/json": {
                 "schema": {
@@ -53283,6 +54175,73 @@
           "abridged"
         ]
       },
+      "AccountMailQueued": {
+        "type": "object",
+        "description": "The answer to a queued account mail.",
+        "required": [
+          "mail_id"
+        ],
+        "properties": {
+          "mail_id": {
+            "type": "string",
+            "description": "The message's id. The send runs as a job; its outcome is kept for\n30 days.",
+            "example": "1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e"
+          }
+        }
+      },
+      "AccountMailSettingsBody": {
+        "type": "object",
+        "description": "The body of `PUT /api/notifications/account-mail`.",
+        "required": [
+          "plugin_instance_id"
+        ],
+        "properties": {
+          "plugin_instance_id": {
+            "type": "string",
+            "description": "A notifier instance whose plugin sends account mail, or `null` to\nturn account mail off. The key is required.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
+            "nullable": true
+          }
+        }
+      },
+      "AccountMailStatus": {
+        "type": "object",
+        "description": "Account mail's settings and whether it can be sent.",
+        "required": [
+          "ready"
+        ],
+        "properties": {
+          "plugin_instance_id": {
+            "type": "string",
+            "description": "The notifier instance that sends account mail; `null` when none is\nchosen.",
+            "example": "3f9c2b7e-1d4a-4c8e-9b2f-6a7d8e9f0a1b",
+            "nullable": true
+          },
+          "ready": {
+            "type": "boolean",
+            "description": "Whether invites and verification messages are sent.",
+            "example": true
+          },
+          "not_ready": {
+            "description": "Why not, when not ready.",
+            "type": "string",
+            "enum": [
+              "not_configured",
+              "notifier_missing",
+              "no_public_origin",
+              null
+            ],
+            "nullable": true
+          },
+          "tested_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When a test message through this instance was last delivered.",
+            "example": "2026-11-23T10:00:00Z",
+            "nullable": true
+          }
+        }
+      },
       "AccountRef": {
         "type": "object",
         "description": "One store account, by storefront plugin key and store account id.",
@@ -54173,6 +55132,7 @@
               "id",
               "role",
               "has_password",
+              "email_verified",
               "has_avatar",
               "avatar_source"
             ],
@@ -54204,6 +55164,11 @@
                 "type": "boolean",
                 "description": "True when a local password hash is stored (invite users may be false).",
                 "example": true
+              },
+              "email_verified": {
+                "type": "boolean",
+                "description": "True when the email address was proven by a link mailed to it.",
+                "example": false
               },
               "has_avatar": {
                 "type": "boolean",
@@ -54280,6 +55245,7 @@
           "id",
           "role",
           "has_password",
+          "email_verified",
           "has_avatar",
           "avatar_source"
         ],
@@ -54311,6 +55277,11 @@
             "type": "boolean",
             "description": "True when a local password hash is stored (invite users may be false).",
             "example": true
+          },
+          "email_verified": {
+            "type": "boolean",
+            "description": "True when the email address was proven by a link mailed to it.",
+            "example": false
           },
           "has_avatar": {
             "type": "boolean",
@@ -57748,7 +58719,7 @@
           },
           "mint_invite": {
             "type": "boolean",
-            "description": "When true (default), also mint an invite/claim ticket.",
+            "description": "When true (default), also invite the user: by mail when account mail\nis ready and an email is given, otherwise as a claim ticket and link\nin the answer.",
             "example": true
           }
         }
@@ -59260,6 +60231,20 @@
             "description": "Seconds until the elevated session expires.",
             "example": 900,
             "minimum": 0
+          }
+        }
+      },
+      "EmailVerified": {
+        "type": "object",
+        "description": "The answer to a used verification link.",
+        "required": [
+          "verified"
+        ],
+        "properties": {
+          "verified": {
+            "type": "boolean",
+            "description": "Always true; a link that did not verify is a `400`.",
+            "example": true
           }
         }
       },
@@ -64484,6 +65469,15 @@
           }
         }
       },
+      "NotReady": {
+        "type": "string",
+        "description": "Why account mail cannot be sent yet.",
+        "enum": [
+          "not_configured",
+          "notifier_missing",
+          "no_public_origin"
+        ]
+      },
       "NotificationCatalog": {
         "type": "object",
         "description": "Everything the routing screens pick from.",
@@ -64555,7 +65549,8 @@
           "name",
           "channel",
           "personal",
-          "address_fields"
+          "address_fields",
+          "account_mail"
         ],
         "properties": {
           "plugin_instance_id": {
@@ -64589,6 +65584,11 @@
               "$ref": "#/components/schemas/AddressFieldJson"
             },
             "description": "What a patron enters for a personal destination."
+          },
+          "account_mail": {
+            "type": "boolean",
+            "description": "Whether it can send account mail (invites, email verification and\npassword resets).",
+            "example": false
           }
         }
       },
@@ -77264,7 +78264,8 @@
         "description": "Body of `POST /api/users`: the new user and, when one was asked for,\nthe invite that lets them claim it.",
         "required": [
           "ok",
-          "user"
+          "user",
+          "invite_emailed"
         ],
         "properties": {
           "ok": {
@@ -77291,6 +78292,11 @@
             "description": "Invite link that redeems the claim ticket, when one was minted.",
             "example": "https://books.example.com/invite?ticket=7Qf3kZp0wL2mN9xT1cRb8vHd",
             "nullable": true
+          },
+          "invite_emailed": {
+            "type": "boolean",
+            "description": "True when the invite was mailed to the user's address instead of\nreturned: account mail is ready and the user has an email address.\nThe ticket is minted when the mail is sent, so `claim_ticket` and\n`invite_url` are then empty.",
+            "example": false
           }
         }
       },
@@ -77656,7 +78662,8 @@
           "id",
           "role",
           "status",
-          "has_password"
+          "has_password",
+          "email_verified"
         ],
         "properties": {
           "id": {
@@ -77703,6 +78710,11 @@
             "type": "boolean",
             "description": "Whether a local password is stored for the user.",
             "example": true
+          },
+          "email_verified": {
+            "type": "boolean",
+            "description": "Whether the email address was proven by a link mailed to it.",
+            "example": false
           }
         }
       },
@@ -77741,6 +78753,20 @@
             "description": "Always `true` when `email` is present: Bookclerk trusts the address the Owner recorded.",
             "example": true,
             "nullable": true
+          }
+        }
+      },
+      "VerifyEmailBody": {
+        "type": "object",
+        "description": "The body of `POST /api/auth/verify-email`.",
+        "required": [
+          "token"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "The token from the link: 64 lowercase hex characters.",
+            "example": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
           }
         }
       },
