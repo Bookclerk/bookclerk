@@ -130,7 +130,7 @@ pub(crate) struct PasswordResetPasskeyBody {
     #[schema(example = "2c7e4f0a-9b1d-4e3c-a5f6-7d8e9f0a1b2c")]
     challenge_id: String,
     /// The `PublicKeyCredential` from `navigator.credentials.get()`.
-    #[schema(value_type = Object)]
+    #[schema(schema_with = crate::passkeys::credential_schema)]
     credential: serde_json::Value,
 }
 
@@ -261,7 +261,7 @@ pub(crate) async fn get_password_reset(
         (status = 400, description = "The body is not one object whose only key is a valid `email`.", body = crate::http_error::ErrorJson),
         (status = 409, description = "Self-service reset is not set up (`reset_unavailable`).", body = crate::http_error::ErrorJson, example = json!({"error": "reset_unavailable", "message": "Password reset by email is not set up. Ask an administrator.", "status": 409})),
         (status = 415, description = "The body is not sent as `application/json`.", body = crate::http_error::ErrorJson),
-        (status = 429, description = "Too many requests from this client; retry after `Retry-After` seconds.", body = crate::auth::LoginThrottled, headers(("Retry-After" = u64, description = "Seconds to wait before retrying."))),
+        (status = 429, description = "Too many requests from this client; retry after `Retry-After` seconds.", body = crate::auth::LoginThrottled, headers(("Retry-After" = u64, description = "Seconds to wait before retrying.")), example = json!({"error": "too_many_requests", "message": "Too many failed login attempts. Try again in 45 seconds.", "status": 429, "retry_after_secs": 45})),
         (status = 500, description = "The library could not be read or written.", body = crate::http_error::ErrorJson),
     ),
 )]
@@ -315,7 +315,7 @@ pub(crate) async fn post_password_reset(
         (status = 200, description = "The link works.", body = PasswordResetLinkState),
         (status = 400, description = "The body is malformed, or the link is unknown, used, expired, for an address the account no longer has verified, or for a disabled account (`invalid_link`).", body = crate::http_error::ErrorJson),
         (status = 415, description = "The body is not sent as `application/json`.", body = crate::http_error::ErrorJson),
-        (status = 429, description = "Too many failed attempts from this client; retry after `Retry-After` seconds.", body = crate::auth::LoginThrottled, headers(("Retry-After" = u64, description = "Seconds to wait before retrying."))),
+        (status = 429, description = "Too many failed attempts from this client; retry after `Retry-After` seconds.", body = crate::auth::LoginThrottled, headers(("Retry-After" = u64, description = "Seconds to wait before retrying.")), example = json!({"error": "too_many_requests", "message": "Too many failed login attempts. Try again in 45 seconds.", "status": 429, "retry_after_secs": 45})),
         (status = 500, description = "The library could not be read.", body = crate::http_error::ErrorJson),
     ),
 )]
@@ -364,7 +364,7 @@ pub(crate) async fn post_password_reset_check(
         (status = 400, description = "The body is malformed or the link does not work (`invalid_link`), or the daemon's origin is not a valid WebAuthn relying party.", body = crate::http_error::ErrorJson),
         (status = 409, description = "The link does not ask for a passkey (`passkey_not_needed`).", body = crate::http_error::ErrorJson),
         (status = 415, description = "The body is not sent as `application/json`.", body = crate::http_error::ErrorJson),
-        (status = 429, description = "Too many failed attempts from this client; retry after `Retry-After` seconds.", body = crate::auth::LoginThrottled, headers(("Retry-After" = u64, description = "Seconds to wait before retrying."))),
+        (status = 429, description = "Too many failed attempts from this client; retry after `Retry-After` seconds.", body = crate::auth::LoginThrottled, headers(("Retry-After" = u64, description = "Seconds to wait before retrying.")), example = json!({"error": "too_many_requests", "message": "Too many failed login attempts. Try again in 45 seconds.", "status": 429, "retry_after_secs": 45})),
         (status = 500, description = "The library could not be read, or the challenge could not be stored.", body = crate::http_error::ErrorJson),
     ),
 )]
@@ -437,7 +437,7 @@ pub(crate) async fn post_password_reset_passkey(
         (status = 400, description = "The body is malformed, or the link is unknown, used, expired, for an address the account no longer has verified, or for a disabled account (`invalid_link`).", body = crate::http_error::ErrorJson),
         (status = 401, description = "The account's second factor is missing (`second_factor_required`) or wrong (`invalid_code`).", body = crate::http_error::ErrorJson, example = json!({"error": "second_factor_required", "message": "Enter the code from your authenticator app.", "status": 401})),
         (status = 415, description = "The body is not sent as `application/json`.", body = crate::http_error::ErrorJson),
-        (status = 429, description = "Too many failed attempts from this client; retry after `Retry-After` seconds.", body = crate::auth::LoginThrottled, headers(("Retry-After" = u64, description = "Seconds to wait before retrying."))),
+        (status = 429, description = "Too many failed attempts from this client; retry after `Retry-After` seconds.", body = crate::auth::LoginThrottled, headers(("Retry-After" = u64, description = "Seconds to wait before retrying.")), example = json!({"error": "too_many_requests", "message": "Too many failed login attempts. Try again in 45 seconds.", "status": 429, "retry_after_secs": 45})),
         (status = 500, description = "The password could not be hashed, or the library could not be read or written.", body = crate::http_error::ErrorJson),
     ),
 )]

@@ -45115,6 +45115,12 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/LoginThrottled"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many failed login attempts. Try again in 45 seconds.",
+                  "retry_after_secs": 45,
+                  "status": 429
                 }
               }
             }
@@ -45263,6 +45269,12 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/LoginThrottled"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many failed login attempts. Try again in 45 seconds.",
+                  "retry_after_secs": 45,
+                  "status": 429
                 }
               }
             }
@@ -45426,6 +45438,12 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/LoginThrottled"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many failed login attempts. Try again in 45 seconds.",
+                  "retry_after_secs": 45,
+                  "status": 429
                 }
               }
             }
@@ -45589,6 +45607,12 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/LoginThrottled"
+                },
+                "example": {
+                  "error": "too_many_requests",
+                  "message": "Too many failed login attempts. Try again in 45 seconds.",
+                  "retry_after_secs": 45,
+                  "status": 429
                 }
               }
             }
@@ -68066,8 +68090,17 @@
                 "example": "2c7e4f0a-9b1d-4e3c-a5f6-7d8e9f0a1b2c"
               },
               "credential": {
-                "type": "object",
-                "description": "The `PublicKeyCredential` from `navigator.credentials.get()`."
+                "description": "W3C PublicKeyCredential as the browser serializes it: a registration attestation (`response.attestationObject`) or an authentication assertion (`response.authenticatorData`, `signature`, `userHandle`), binary fields base64url-encoded.",
+                "example": {
+                  "extensions": {},
+                  "id": "pQECAyYgASFYIE",
+                  "rawId": "pQECAyYgASFYIE",
+                  "response": {
+                    "attestationObject": "o2NmbXRkbm9uZWdhdHRTdG10oGhhdXRoRGF0YViU",
+                    "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uY3JlYXRlIiwiY2hhbGxlbmdlIjoiazl1MlhvM2NaMVFwN21UNHZXOHlBMmJDNWRFNmZHN2hJOGpLOWxNMG5PMSIsIm9yaWdpbiI6Imh0dHBzOi8vYm9va3MuZXhhbXBsZS5jb20ifQ"
+                  },
+                  "type": "public-key"
+                }
               }
             },
             "nullable": true
@@ -68119,8 +68152,17 @@
             "example": "2c7e4f0a-9b1d-4e3c-a5f6-7d8e9f0a1b2c"
           },
           "credential": {
-            "type": "object",
-            "description": "The `PublicKeyCredential` from `navigator.credentials.get()`."
+            "description": "W3C PublicKeyCredential as the browser serializes it: a registration attestation (`response.attestationObject`) or an authentication assertion (`response.authenticatorData`, `signature`, `userHandle`), binary fields base64url-encoded.",
+            "example": {
+              "extensions": {},
+              "id": "pQECAyYgASFYIE",
+              "rawId": "pQECAyYgASFYIE",
+              "response": {
+                "attestationObject": "o2NmbXRkbm9uZWdhdHRTdG10oGhhdXRoRGF0YViU",
+                "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uY3JlYXRlIiwiY2hhbGxlbmdlIjoiazl1MlhvM2NaMVFwN21UNHZXOHlBMmJDNWRFNmZHN2hJOGpLOWxNMG5PMSIsIm9yaWdpbiI6Imh0dHBzOi8vYm9va3MuZXhhbXBsZS5jb20ifQ"
+              },
+              "type": "public-key"
+            }
           }
         }
       },
