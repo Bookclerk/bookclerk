@@ -364,16 +364,20 @@ async fn run_subject_candidates(
     if forget_if_removed(library, subject).await? {
         return Ok(format!("subject={} removed", subject.key()));
     }
+    // Pinned fetches the full job queue turned away. The job fails after
+    // its other work so a retry admits them; the ones already admitted
+    // fold into their pending rows.
+    let mut unqueued = 0usize;
     for store in &remote {
-        if let Err(err) =
-            enqueue_pinned_candidates(state, subject, &store.instance_id, payload.trigger).await
-        {
-            tracing::warn!(
+        match enqueue_pinned_candidates(state, subject, &store.instance_id, payload.trigger).await {
+            Ok(AdmitJob::Created(_) | AdmitJob::Duplicate(_)) => {}
+            Ok(AdmitJob::QueueFull) => unqueued = unqueued.saturating_add(1),
+            Err(err) => tracing::warn!(
                 subject = %subject.key(),
                 instance = %store.instance_id,
                 error = %err,
                 "could not queue a discover fetch for a storefront on another node"
-            );
+            ),
         }
     }
     let dropped = match &deployed {
@@ -403,6 +407,12 @@ async fn run_subject_candidates(
     };
     // Ask the branches what they can supply of what people here look at.
     crate::catalog_lookup::ask_branches_if_due(library).await;
+    if unqueued > 0 {
+        anyhow::bail!(
+            "subject={}: the job queue is full; {unqueued} storefront fetch(es) on other nodes not queued",
+            subject.key()
+        );
+    }
     Ok(format!(
         "subject={} seeds={} stores={} candidates={} failed={} remote_stores={} \
          dropped_stores={dropped} pruned_calls={pruned} pruned_listings={pruned_listings}",
@@ -1145,6 +1155,25 @@ mod tests {
         assert!(queued(&library)
             .await
             .contains(&(JobKind::DiscoverFeed, subject.key())));
+
+        // A full job queue fails the fetch so a retry queues the pinned one.
+        {
+            use sea_orm::ConnectionTrait;
+            library
+                .db()
+                .execute_unprepared("UPDATE jobs SET state = 'succeeded'")
+                .await
+                .unwrap();
+        }
+        let max_pending = std::mem::replace(&mut state.config.write().await.jobs.max_pending, 0);
+        let mut full = discover_options(&state.config.read().await.clone(), None);
+        full.fetch_storefront_candidates = true;
+        let again = deployed_instances_of(&library, &keys).await.unwrap();
+        let err = run_subject_candidates(&state, &library, &subject, &payload, full, Some(again))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("job queue is full"), "{err}");
+        state.config.write().await.jobs.max_pending = max_pending;
 
         // The pinned fetch, run on a node without that store, asks nothing.
         let pinned_payload = JobPayload {

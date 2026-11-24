@@ -81,7 +81,8 @@ operator, a household user, or a portal identity) has a **subject key**
    A storefront deployed only on other nodes is asked there: the subject's
    job asks the stores this node runs, then queues one `discover_candidates`
    job pinned to each other store's plugin instance, which routing sends to
-   a node that runs it. Each pinned job saves that store's rows and queues
+   a node that runs it (when the job queue is full, the subject's job fails
+   after its other work so a retry queues the rest). Each pinned job saves that store's rows and queues
    the subject's ranking 5 s later, so several stores finishing together
    fold into one ranking. Rows of a store no node deploys any more are
    dropped when the subject's job runs, so a retired store's titles leave

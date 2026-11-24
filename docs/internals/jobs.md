@@ -710,8 +710,8 @@ node that runs it needs. At admission the daemon records
   down, or deployed only where the outputs are not) is left out, and the
   acquire runs without its overlay rather than waiting. Which plugins are
   providers comes from the admitting node's installed plugins, since the
-  instance list does not record entrypoints; with a failed discovery no
-  provider is preferred. The requirements sweep resolves node-bound outputs
+  instance list does not record entrypoints, reused for 30 s so a bulk
+  acquire discovers once; with a failed discovery no provider is preferred. The requirements sweep resolves node-bound outputs
   only, so it treats a preferred provider as a dropped requirement and
   removes it once the grace period ends, while claims accept the extra
   instances.

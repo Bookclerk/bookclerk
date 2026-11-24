@@ -223,6 +223,37 @@ pub(crate) async fn node_bound_output_keys(
 /// preference can safely differ between nodes, so a config without plugin
 /// directories or a failed discovery prefers none.
 async fn metadata_provider_keys(state: &AppState) -> std::collections::BTreeSet<String> {
+    // A bulk acquire admits one job per title: reuse a recent discovery
+    // rather than walking and hashing every plugin for each.
+    if let Some(keys) = cached_provider_keys(std::time::Instant::now()) {
+        return keys;
+    }
+    let keys = discover_metadata_provider_keys(state).await;
+    if let Ok(mut cached) = PROVIDER_KEYS.lock() {
+        *cached = Some((std::time::Instant::now(), keys.clone()));
+    }
+    keys
+}
+
+/// How long a discovery of the metadata providers is reused.
+const PROVIDER_KEYS_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The last discovery of the metadata providers and when it ran.
+static PROVIDER_KEYS: std::sync::Mutex<
+    Option<(std::time::Instant, std::collections::BTreeSet<String>)>,
+> = std::sync::Mutex::new(None);
+
+/// The cached metadata provider keys, when a discovery ran within
+/// [`PROVIDER_KEYS_TTL`] of `now`.
+fn cached_provider_keys(now: std::time::Instant) -> Option<std::collections::BTreeSet<String>> {
+    let cached = PROVIDER_KEYS.lock().ok()?;
+    let (at, keys) = cached.as_ref()?;
+    (now.saturating_duration_since(*at) < PROVIDER_KEYS_TTL).then(|| keys.clone())
+}
+
+/// Discovers the installed metadata providers now (see
+/// [`metadata_provider_keys`]).
+async fn discover_metadata_provider_keys(state: &AppState) -> std::collections::BTreeSet<String> {
     let config = state.config.read().await.clone();
     if config.paths.is_none() {
         return std::collections::BTreeSet::new();
@@ -2296,6 +2327,10 @@ mod tests {
         let files = tempfile::tempdir().unwrap();
         let (state, _library) = crate::node_api::tests::test_state(&files).await;
         assert!(metadata_provider_keys(&state).await.is_empty());
+        // A second admission within the window reuses that discovery.
+        assert!(cached_provider_keys(std::time::Instant::now()).is_some());
+        assert!(metadata_provider_keys(&state).await.is_empty());
+        assert!(discover_metadata_provider_keys(&state).await.is_empty());
         assert!(metadata_provider_keys_from(&[]).is_empty());
     }
 

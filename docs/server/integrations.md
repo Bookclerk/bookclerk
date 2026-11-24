@@ -247,7 +247,9 @@ The acquire overlay asks the providers deployed on the node that runs the
 download, so an acquire is routed to a node that runs a provider with the
 guest up, alongside the acquire's `local` outputs, whenever one does. When
 none does (the provider is down, or deployed only on other nodes than the
-outputs), the acquire still runs, without the overlay. In a library, deploy
+outputs), the acquire still runs, without the overlay. The preference also
+lapses for an acquire that waits in the queue past the requirements grace
+period, so a node without the provider may then run it. In a library, deploy
 providers on the nodes that hold your `local` outputs.
 
 These plugins are optional, so they aren't installed by default. Install
