@@ -7250,8 +7250,8 @@ pub use edition_enrichment::{
     EditionAsin, EditionEnrichment, EnrichAttemptOutcome, EnrichCandidate, EnrichCandidatePage,
 };
 pub use edition_files::{
-    AcquireWriter, AudioStream, EditionAcquisition, EditionFile, FileOwner, FileProbe, FileRole,
-    ProbedAudioFile, RecordedFile, TitleHolding, ACQUIRE_WRITER,
+    AcquireWriter, AudioStream, CopyHolder, EditionAcquisition, EditionFile, FileOwner, FileProbe,
+    FileRole, ProbedAudioFile, RecordedFile, TitleHolding, UnlabelledAudio, ACQUIRE_WRITER,
 };
 pub use event_outbox::{inject_dispatch_page_failures, set_dispatch_chunk_for_test};
 pub use holdings::{HoldingSelection, NodeHoldingSelection, HOLDING_REMOVED};
