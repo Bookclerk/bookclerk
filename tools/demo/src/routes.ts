@@ -228,6 +228,8 @@ export const OPERATIONS: ReadonlyArray<readonly [string, string, Verdict]> = Obj
   ["GET", "/api/discover/search", "allow"],
   ["GET", "/api/discover/status", "allow"],
   ["POST", "/api/discover/sync-listening", "allow"],
+  // A read: places one book on the visitor's taste radar.
+  ["POST", "/api/discover/taste/radar", "allow"],
   ["POST", "/api/discover/title-meta", "allow"],
   ["POST", "/api/discover/title-meta/batch", "allow"],
   // A store's public sample for a title: answers a signed same-origin path.

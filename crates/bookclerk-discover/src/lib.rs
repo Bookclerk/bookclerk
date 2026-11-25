@@ -35,6 +35,7 @@ mod scope_filter;
 mod shelves;
 mod stored_feed;
 mod stored_taste;
+mod taste_axes;
 mod title_meta;
 mod ttl_cache;
 mod wish_pool;
@@ -56,9 +57,10 @@ pub use catalog_search::{
 };
 pub use embed::{
     bytes_to_vector, embed_dirty_works, embed_text, is_stand_in, open_embedder, prune_vectors,
-    serving_space, stand_in_space, text_for_work, text_vectors, vector_to_bytes, EmbedFields,
-    EmbedPass, Embedder, HashEmbedder, SharedEmbedder, VectorSource, EMBED_PAGE_WORKS,
-    LOCAL_HASH_DIMENSIONS, MODEL_LOCAL_HASH_V1, OLD_SPACE_MAX_AGE, TEXT_VECTOR_MAX_AGE,
+    serving_space, stand_in_space, text_for_wished_work, text_for_work, text_vectors,
+    vector_to_bytes, EmbedFields, EmbedPass, Embedder, HashEmbedder, SharedEmbedder, VectorSource,
+    WishText, EMBED_PAGE_WORKS, LOCAL_HASH_DIMENSIONS, MODEL_LOCAL_HASH_V1, OLD_SPACE_MAX_AGE,
+    TEXT_VECTOR_MAX_AGE,
 };
 pub use error::DiscoverError;
 pub use identity::{
@@ -92,6 +94,12 @@ pub use request_queue::{read_request_queue, StoredRequestQueue, REQUEST_QUEUE_MA
 pub use shelves::{
     build_discover_feed, flatten_feed, shelf_is_disabled, shelf_kind_catalog, DiscoverFeed,
     DiscoverShelf, FeedState, ShelfKindInfo, ShelfTaste, SERIES_CAP,
+};
+pub use taste_axes::{
+    axis_centroid, axis_scales, cluster, name_axes, ordinary_closeness, stored_taste_axes,
+    taste_fit, AxisBook, AxisMember, AxisScale, AxisSeed, StoredAxes, TasteAxis, AXIS_MIN_WORKS,
+    MAX_AXIS_SEEDS, MAX_TASTE_AXES, MIN_TASTE_AXES, ORDINARY_MIN_BOOKS, RADAR_MIN_AXES,
+    WISH_SEED_WEIGHT,
 };
 pub use title_meta::{
     check_title_meta_query, plan_title_meta_fill, resolve_title_meta, resolve_title_meta_answer,

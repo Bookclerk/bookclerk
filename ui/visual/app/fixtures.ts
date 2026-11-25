@@ -1103,6 +1103,21 @@ function signedIn(viewer: "owner" | "operator"): Routes {
     "GET /api/library/works/meaning": () => ({
       json: { search: "ready", similar: "ready" },
     }),
+    "POST /api/discover/taste/radar": () => ({
+      json: {
+        state: "ready",
+        axes: [
+          { name: "Fantasy", score: 0.82, books: 4 },
+          { name: "Science Fiction", score: 0.55, books: 3 },
+          { name: "Mystery", score: 0.18, books: 2 },
+          { name: "Like SPQR", score: 0.08, books: 2 },
+          { name: "New York Times bestseller", score: 0.34, books: 2 },
+        ].map((axis, i) => ({
+          ...axis,
+          examples: BOOKS.slice(i, i + 2).map((book) => ({ work_id: book.id, title: book.title })),
+        })),
+      },
+    }),
     "GET /api/playback/progress": () => ({
       json: {
         items: [

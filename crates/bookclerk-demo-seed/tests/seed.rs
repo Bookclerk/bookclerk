@@ -13,7 +13,7 @@ use bookclerk_demo_seed::{
     SeedReport, Seeded, StoreRecords, SAMPLE_BRANCH, SAMPLE_LOGIN, STOREFRONTS,
 };
 use bookclerk_library::control_plane::branch_title_counts;
-use bookclerk_library::entities::{editions, nodes, store_listings};
+use bookclerk_library::entities::{editions, nodes, store_listings, works};
 use bookclerk_library::{AcquireStatus, LibraryStore, UserRole};
 use bookclerk_source::records::{self, CreditRole, IdentifierScheme};
 use bookclerk_source::CatalogHit;
@@ -60,7 +60,7 @@ async fn seeds_a_member_with_books_wishlist_and_an_offline_branch() {
         report,
         SeedReport {
             user_id: report.user_id,
-            books: 10,
+            books: 22,
             branch_titles: 4,
             wishlist: 4
         }
@@ -79,7 +79,7 @@ async fn seeds_a_member_with_books_wishlist_and_an_offline_branch() {
         .all_acquire_titles(Some("sam@example.com"))
         .await
         .unwrap();
-    assert_eq!(books.len(), 10);
+    assert_eq!(books.len(), 22);
     assert!(books.iter().all(|b| b.status == AcquireStatus::Acquired
         && keys.get(b.source.as_str()) == Some(&b.plugin_key)
         && b.narrators.is_some()));
@@ -127,7 +127,7 @@ async fn seeds_a_member_with_books_wishlist_and_an_offline_branch() {
             .await
             .unwrap()
             .len(),
-        10
+        22
     );
 }
 
@@ -136,7 +136,7 @@ async fn leaves_out_the_titles_of_a_storefront_that_is_not_enrolled() {
     let dir = tempfile::tempdir().unwrap();
     let store = fresh(dir.path()).await;
     let mut keys = plugin_keys();
-    // Audible has three library titles and two branch titles.
+    // Audible has eleven library titles and two branch titles.
     keys.remove("audible");
 
     let Seeded::Wrote(report) = seed(
@@ -150,7 +150,7 @@ async fn leaves_out_the_titles_of_a_storefront_that_is_not_enrolled() {
     .unwrap() else {
         panic!("a fresh library should be seeded");
     };
-    assert_eq!((report.books, report.branch_titles), (7, 2));
+    assert_eq!((report.books, report.branch_titles), (11, 2));
     let books = store
         .all_acquire_titles(Some("sam@example.com"))
         .await
@@ -309,6 +309,8 @@ async fn writes_the_store_record_when_there_is_one() {
         CatalogHit {
             identifiers: ids(IdentifierScheme::Asin, "B0CJ6Q8CZ4"),
             cover_url: Some("https://m.media-amazon.com/images/I/james.jpg".into()),
+            description: Some("Huck's companion tells the journey himself.".into()),
+            categories: Some("Literature & Fiction; Literary Fiction".into()),
             ..hit("B0CJ6Q8CZ4", "James", "Percival Everett")
         },
     );
@@ -317,6 +319,8 @@ async fn writes_the_store_record_when_there_is_one() {
         CatalogHit {
             identifiers: ids(IdentifierScheme::Isbn, "9781549140396"),
             cover_url: Some("https://m.media-amazon.com/images/I/circe.jpg".into()),
+            description: Some("A witch is banished to an island.".into()),
+            categories: Some("Fiction, Fiction - Literary".into()),
             ..hit("9781549140396", "Circe", "Madeline Miller")
         },
     );
@@ -326,7 +330,7 @@ async fn writes_the_store_record_when_there_is_one() {
     else {
         panic!("a fresh library should be seeded");
     };
-    assert_eq!((report.books, report.branch_titles), (10, 4));
+    assert_eq!((report.books, report.branch_titles), (22, 4));
 
     let books = store
         .all_acquire_titles(Some("sam@example.com"))
@@ -388,6 +392,24 @@ async fn writes_the_store_record_when_there_is_one() {
             .unwrap()
             .unwrap();
         assert_eq!(edition.cover_url.as_deref(), Some(cover), "{product}");
+        // A branch's catalog carries no synopsis or genres; the record's
+        // reach the work all the same.
+        if product == "9781549140396" {
+            let work_id = store.work_of_edition(&edition.id).await.unwrap().unwrap();
+            let work = works::Entity::find_by_id(work_id)
+                .one(store.db())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                work.description.as_deref(),
+                Some("A witch is banished to an island.")
+            );
+            assert_eq!(
+                work.categories.as_deref(),
+                Some("Fiction, Fiction - Literary")
+            );
+        }
     }
     let phm_listing = store_listings::Entity::find()
         .filter(store_listings::Column::ProductId.eq("B08G9PRS1K"))
@@ -423,6 +445,17 @@ async fn writes_the_store_record_when_there_is_one() {
         james.cover_url.as_deref(),
         Some("https://m.media-amazon.com/images/I/james.jpg")
     );
+    // A wish keeps what its store record says of the book, so the wished
+    // work has more than a title to be placed in Sam's taste by.
+    assert_eq!(
+        james.description.as_deref(),
+        Some("Huck's companion tells the journey himself.")
+    );
+    assert_eq!(
+        james.genres.as_deref(),
+        Some("Literature & Fiction; Literary Fiction")
+    );
+    assert!(james.purchase_hints.iter().all(|h| h.price_cents.is_none()));
     // The bake lists the covers of the Library page's first rows, held
     // books and the branch's titles, in title order, which it shows once
     // the page index is built.

@@ -5,7 +5,8 @@
 //! needs from it in one `discover_tastes` cell: the reader's languages,
 //! the liked authors, narrators, categories and series
 //! ([`TasteScores`]), the seed works whose embeddings make the centroid,
-//! and the shelf context ([`ShelfTaste`]). A ranking then reads that cell
+//! the taste's axes ([`crate::taste_axes`]), and the shelf context
+//! ([`ShelfTaste`]). A ranking then reads that cell
 //! instead of the whole library, so its cost follows the subject's
 //! candidates, not the library's size.
 //!
@@ -21,12 +22,13 @@ use chrono::{DateTime, Duration, Utc};
 use crate::precompute::SubjectTaste;
 use crate::recommend::{build_taste_scores, reader_languages, shelf_taste, TasteScores};
 use crate::shelves::ShelfTaste;
+use crate::taste_axes::{AXIS_MIN_WORKS, MIN_TASTE_AXES};
 
 /// Format of the stored taste this release writes and reads.
 ///
 /// A stored taste with another format does not decode, counts as missing
 /// and is loaded from the library again.
-pub const STORED_TASTE_FORMAT: u32 = 1;
+pub const STORED_TASTE_FORMAT: u32 = 2;
 
 /// Most bytes a stored taste's JSON may take once escaped as a JSON string.
 ///
@@ -76,6 +78,17 @@ pub(crate) struct StoredTaste {
     /// Shelf titles and placement context, wish titles and linked stores
     /// included.
     pub(crate) shelf: ShelfTaste,
+    /// The model space ([`space_key`]) whose vectors the taste's axes were
+    /// looked for in, whether or not any were found; `None` when it was
+    /// stored without a model. A ranking that reads another model's space
+    /// loads the taste again, so the axes follow the model.
+    #[serde(default)]
+    pub(crate) axes_space: Option<String>,
+}
+
+/// One line that names `space`: its model, revision and language packs.
+pub(crate) fn space_key(space: &bookclerk_library::VectorSpace) -> String {
+    format!("{}@{}+{}", space.model, space.revision, space.packs)
 }
 
 impl StoredTaste {
@@ -84,12 +97,26 @@ impl StoredTaste {
         let mut shelf = shelf_taste(&taste.books, &taste.weights, &taste.listening);
         shelf.wish_titles.clone_from(&taste.wish_titles);
         shelf.linked_sources.clone_from(&taste.linked_sources);
+        let mut scores = build_taste_scores(&taste.books, &taste.weights, &taste.listening);
+        // A wish is a seed too: the one signal of a person with no books.
+        scores
+            .seed_work_ids
+            .extend(taste.wish_work_ids.iter().cloned());
         Self {
             format: STORED_TASTE_FORMAT,
             languages: reader_languages(&taste.books).into_iter().collect(),
-            scores: build_taste_scores(&taste.books, &taste.weights, &taste.listening),
+            scores,
             shelf,
+            axes_space: None,
         }
+    }
+
+    /// Whether the taste's axes are the ones a ranking in `space` reads:
+    /// always for the stand-in, whose vectors are not grouped, and
+    /// otherwise when they were looked for in `space`.
+    pub(crate) fn axes_serve(&self, space: &bookclerk_library::VectorSpace) -> bool {
+        crate::embed::is_stand_in(space)
+            || self.axes_space.as_deref() == Some(space_key(space).as_str())
     }
 
     /// The reader's languages, as ranking filters them.
@@ -146,13 +173,15 @@ impl StoredTaste {
             self.shelf.wish_titles.len(),
         ]
         .into_iter()
+        .chain(self.scores.axes.iter().map(|axis| axis.members.len()))
         .max()
         .unwrap_or(0)
     }
 
     /// Keeps at most `keep` entries of every cuttable map and set: the
     /// heaviest by weight (series by owned and listened titles), ties and
-    /// unweighted entries by key; and the first `keep` wish titles.
+    /// unweighted entries by key; the first `keep` wish titles; and the
+    /// `keep` heaviest works of each axis.
     fn keep_heaviest(&mut self, keep: usize) {
         keep_top(&mut self.scores.liked_authors, keep, |w| *w);
         keep_top(&mut self.scores.liked_narrators, keep, |w| *w);
@@ -169,6 +198,18 @@ impl StoredTaste {
             .into_iter()
             .take(keep)
             .collect();
+        // Members are stored heaviest first. An axis cut below a leaning
+        // goes, and with too few axes left the taste has none: a ranking
+        // then measures against the seed works' one centroid.
+        for axis in &mut self.scores.axes {
+            axis.members.truncate(keep);
+        }
+        self.scores
+            .axes
+            .retain(|axis| axis.members.len() >= AXIS_MIN_WORKS);
+        if self.scores.axes.len() < MIN_TASTE_AXES {
+            self.scores.axes.clear();
+        }
     }
 }
 
@@ -227,6 +268,43 @@ mod tests {
             .scores
             .liked_authors
             .contains_key("author number 000499 with a long name"));
+    }
+
+    #[test]
+    fn axes_are_cut_to_their_heaviest_works_and_go_when_too_few_are_left() {
+        use crate::taste_axes::{AxisMember, TasteAxis};
+        let axis = |name: &str, works: usize| TasteAxis {
+            name: name.into(),
+            members: (0..works)
+                .map(|i| AxisMember {
+                    work_id: format!("{name}-{i}"),
+                    weight: 9.0 - f64::from(u32::try_from(i).unwrap()),
+                })
+                .collect(),
+            ordinary: None,
+        };
+        let mut taste = wide(1);
+        taste.scores.axes = vec![axis("a", 8), axis("b", 4), axis("c", 3), axis("d", 2)];
+        assert_eq!(taste.largest_part(), 8);
+        taste.keep_heaviest(3);
+        let kept: Vec<(&str, usize)> = taste
+            .scores
+            .axes
+            .iter()
+            .map(|a| (a.name.as_str(), a.members.len()))
+            .collect();
+        assert_eq!(kept, [("a", 3), ("b", 3), ("c", 3), ("d", 2)]);
+        assert_eq!(taste.scores.axes[0].members[2].work_id, "a-2");
+        // Under two works an axis is no leaning, and no taste has one axis.
+        taste.keep_heaviest(1);
+        assert!(taste.scores.axes.is_empty());
+        // A cell that names no axes reads as a taste without them.
+        let json = serde_json::to_string(&wide(1))
+            .unwrap()
+            .replace(",\"axes\":[]", "")
+            .replace(",\"axes_space\":null", "");
+        assert!(!json.contains("axes"));
+        assert_eq!(StoredTaste::decode(&json), Some(wide(1)));
     }
 
     #[test]

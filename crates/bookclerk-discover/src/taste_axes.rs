@@ -1,0 +1,2072 @@
+//! The axes of a taste: the few directions a person's books and wishes
+//! point in, found by grouping them by meaning.
+//!
+//! One average of everything a person likes sits between their tastes and
+//! is close to none of them: the mean of hard science fiction and cosy
+//! mysteries is neither. So the seed works of a taste are split into
+//! one to six groups whose vectors sit together ([`cluster`]), whatever
+//! genre a store files them under. Each group is an axis: it points at the
+//! weighted mean of its works ([`axis_centroid`]) and is named by what its
+//! works have in common and the person's other works lack ([`name_axes`]):
+//! a genre, a series, or a phrase their descriptions share.
+//!
+//! The axes are stored with the subject's taste
+//! ([`crate::stored_taste::StoredTaste`]) as their names and member works,
+//! not as vectors, so the cell stays small and the axes survive a change
+//! of model. A ranking scores candidates against every axis, and the taste
+//! radar of a book draws the same ones, so the chart explains the
+//! shelves. See `docs/internals/discovery.md`, *Taste axes*.
+
+use std::collections::{BTreeMap, HashMap};
+
+use bookclerk_library::{DiscoverSubject, LibraryStore, VectorSpace, WorkRecord};
+use chrono::{DateTime, Utc};
+
+use crate::embed::bytes_to_vector;
+use crate::error::Result;
+use crate::precompute::BROAD_GENRES;
+use crate::stored_taste::StoredTaste;
+
+/// Most axes a taste has. More wedges than this are too thin to read on a
+/// radar or to touch on a phone.
+pub const MAX_TASTE_AXES: usize = 6;
+
+/// Fewest axes a taste has. A handful of books that all sit together are
+/// one axis: a ranking still measures against it, with the axis's own
+/// scale deciding what is close, though it takes [`RADAR_MIN_AXES`] to
+/// draw a shape.
+pub const MIN_TASTE_AXES: usize = 1;
+
+/// Fewest axes that make a shape on a radar; a taste with fewer is shown
+/// as a row for each axis.
+pub const RADAR_MIN_AXES: usize = 3;
+
+/// Fewest works on an axis. One book is a book, not a leaning.
+pub const AXIS_MIN_WORKS: usize = 2;
+
+/// Most seed works grouped, heaviest first. Bounds the grouping and the
+/// stored cell for a library of many thousands of works.
+pub const MAX_AXIS_SEEDS: usize = 400;
+
+/// What an open wish weighs as a seed. More than a book that is only in
+/// the library (0.5, less still when it is the household's), less than a
+/// book the person finished (3) or rated four stars or more (2): a wish
+/// says "I want this", a finish says "I read all of it".
+pub const WISH_SEED_WEIGHT: f64 = 1.5;
+
+/// Rounds of reassignment after which the grouping stops even if works
+/// still move.
+const CLUSTER_ROUNDS: usize = 25;
+
+/// The least a split of the seed works must hold together ([`cohesion`])
+/// to be used: under it the works are one group.
+const GROUPING_MIN_COHESION: f64 = 0.05;
+
+/// Share of an axis's works (numerator, denominator) that must carry a
+/// genre or series for it to name the axis.
+const LABEL_MIN_SHARE: (usize, usize) = (1, 3);
+
+/// Share of an axis's works (numerator, denominator) whose descriptions
+/// must hold a phrase for it to name the axis.
+const PHRASE_MIN_SHARE: (usize, usize) = (1, 2);
+
+/// How much more distinctive a description phrase must be than a genre or
+/// series to name the axis instead. Phrases are noisier than labels.
+const PHRASE_HANDICAP: f64 = 0.15;
+
+/// Least share of an axis's weight that the works able to carry a kind of
+/// name (a genre or series, or a phrase) must make up for that kind to
+/// name the axis: half.
+const VOTERS_MIN_SHARE: (usize, usize) = (1, 2);
+
+/// How far below the most distinctive name another may score and still be
+/// as good: among such names the one with the most words wins.
+const NAME_NEAR: f64 = 0.05;
+
+/// The least a name's distinctiveness may be: its share among the axis's
+/// works less its share among the person's other works.
+const NAME_MIN_DISTINCT: f64 = 0.2;
+
+/// Characters of a description read for phrases: what is embedded of it.
+const PHRASE_DESCRIPTION_CHARS: usize = 1200;
+
+/// Words a description phrase may not hold.
+const STOPWORDS: [&str; 62] = [
+    "a", "an", "the", "of", "and", "or", "in", "on", "to", "for", "with", "by", "from", "at", "is",
+    "are", "was", "were", "be", "been", "this", "that", "these", "those", "it", "its", "his",
+    "her", "their", "he", "she", "they", "as", "but", "not", "has", "have", "had", "will", "who",
+    "whom", "which", "what", "when", "where", "into", "than", "then", "so", "if", "you", "your",
+    "our", "we", "i", "him", "them", "about", "after", "before", "all", "s",
+];
+
+/// Words of praise and of where a book was reviewed. A description phrase
+/// made only of these ("Best Books", "Library Journal", "Best Book of the
+/// Year") says how a book was received and nothing of what it is about,
+/// so it names no axis.
+const RECEPTION_WORDS: [&str; 16] = [
+    "best",
+    "book",
+    "books",
+    "year",
+    "library",
+    "journal",
+    "publishers",
+    "weekly",
+    "kirkus",
+    "booklist",
+    "review",
+    "reviews",
+    "starred",
+    "audiofile",
+    "magazine",
+    "earphones",
+];
+
+/// One work on a taste axis.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AxisMember {
+    /// The work.
+    pub work_id: String,
+    /// How much it counts toward where the axis points.
+    pub weight: f64,
+}
+
+/// One axis of a taste, as it is stored.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TasteAxis {
+    /// What the axis's works have in common, for display: a genre, a
+    /// series, a phrase of their descriptions, or "Like " and a title.
+    pub name: String,
+    /// The works on the axis, heaviest first.
+    pub members: Vec<AxisMember>,
+    /// How close an ordinary book on offer sits to where the axis points
+    /// ([`ordinary_closeness`]): the cosine a book must pass to fit the
+    /// axis at all. `None` until the subject's candidates have vectors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ordinary: Option<f32>,
+}
+
+/// The axes of one subject's stored taste.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredAxes {
+    /// When the taste was stored. A newer time means other axes.
+    pub computed_at: DateTime<Utc>,
+    /// The axes, the one with the most weight first; empty when fewer
+    /// than two of the taste's seed works have a vector.
+    pub axes: Vec<TasteAxis>,
+}
+
+/// The axes of `subject`'s stored taste.
+///
+/// Reads only what a candidate fetch or a ranking stored. A taste past its
+/// age is still read: axes a day old are better than none, and the next
+/// fetch replaces them.
+///
+/// # Returns
+///
+/// `None` when the subject has no stored taste this release can read.
+///
+/// # Errors
+///
+/// Returns the library read error.
+pub async fn stored_taste_axes(
+    library: &LibraryStore,
+    subject: &DiscoverSubject,
+) -> Result<Option<StoredAxes>> {
+    let Some(row) = library.get_discover_taste(subject).await? else {
+        return Ok(None);
+    };
+    Ok(
+        StoredTaste::decode(&row.taste_json).map(|taste| StoredAxes {
+            computed_at: row.computed_at,
+            axes: taste.scores.axes,
+        }),
+    )
+}
+
+/// `vector` scaled to length 1; `None` when it has no direction.
+fn unit(vector: &[f32]) -> Option<Vec<f32>> {
+    let norm = vector
+        .iter()
+        .map(|x| f64::from(*x) * f64::from(*x))
+        .sum::<f64>()
+        .sqrt();
+    if norm <= 0.0 || !norm.is_finite() {
+        return None;
+    }
+    // Each number divided by the length is within -1..=1, which f32 holds.
+    #[allow(clippy::cast_possible_truncation)]
+    Some(
+        vector
+            .iter()
+            .map(|x| (f64::from(*x) / norm) as f32)
+            .collect(),
+    )
+}
+
+/// The dot product of two vectors of one length.
+fn dot(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
+/// Where an axis points: the weighted mean of its members' vectors, each
+/// first scaled to length 1 so a long vector counts no more than a short
+/// one. Not unit length itself.
+///
+/// # Arguments
+///
+/// * `members` - The works on the axis.
+/// * `vector_of` - The vector of a work in the space being read, when it
+///   has one. Members without one, or with a vector of another length
+///   than the first found, are left out.
+///
+/// # Returns
+///
+/// `None` when no member has a vector.
+pub fn axis_centroid<'a>(
+    members: &[AxisMember],
+    vector_of: impl Fn(&str) -> Option<&'a [f32]>,
+) -> Option<Vec<f32>> {
+    let mut sum: Option<Vec<f64>> = None;
+    let mut total = 0.0_f64;
+    for member in members {
+        let Some(vector) = vector_of(&member.work_id).and_then(unit) else {
+            continue;
+        };
+        let weight = member.weight.max(0.0);
+        match &mut sum {
+            Some(acc) if acc.len() == vector.len() => {
+                for (into, x) in acc.iter_mut().zip(&vector) {
+                    *into += weight * f64::from(*x);
+                }
+                total += weight;
+            }
+            Some(_) => {}
+            None => {
+                sum = Some(vector.iter().map(|x| weight * f64::from(*x)).collect());
+                total = weight;
+            }
+        }
+    }
+    let sum = sum.filter(|_| total > 0.0)?;
+    // A mean of numbers within -1..=1.
+    #[allow(clippy::cast_possible_truncation)]
+    Some(sum.into_iter().map(|x| (x / total) as f32).collect())
+}
+
+/// The narrowest band between an axis's own works and the person's other
+/// works that a fit is measured across. Two axes whose works are equally
+/// close to a centroid would otherwise divide by nothing.
+const AXIS_MIN_BAND: f32 = 0.02;
+
+/// The band of a taste's only axis, which has no other works to be
+/// measured against: a book fits it in full as close as its own works and
+/// not at all this much further off. A first setting, not yet measured.
+const SOLO_AXIS_BAND: f32 = 0.15;
+
+/// How much the second and the third best axis of a book count beside its
+/// best: half, then a quarter. A fourth adds nothing.
+const AXIS_SHARES: [f32; 3] = [1.0, 0.5, 0.25];
+
+/// One axis as a book is measured against it.
+///
+/// A model's vectors all point roughly the same way, so a cosine of 0.8
+/// says nothing by itself. An axis therefore carries its own scale: how
+/// close its own works sit to where it points, and how close an ordinary
+/// book on offer does. A book's fit is where it lands between the two.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AxisScale {
+    /// Where the axis points ([`axis_centroid`]).
+    pub centroid: Vec<f32>,
+    /// Weighted mean cosine of the axis's own works to `centroid`: a book
+    /// this close fits the axis in full.
+    pub near: f32,
+    /// The cosine at which a book does not fit the axis at all: how close
+    /// an ordinary book on offer sits ([`TasteAxis::ordinary`]). Until
+    /// that is known, the weighted mean cosine of the other axes' works
+    /// or, for a taste's only axis, a fixed band below `near`.
+    pub far: f32,
+    /// How much the axis counts in a ranking beside the taste's other
+    /// axes, above 0 and at most 1: the square root of its works' mean
+    /// weight over the heaviest axis's. An axis of books somebody wished
+    /// for or finished pulls harder than one of books that are only in
+    /// the library.
+    pub strength: f32,
+}
+
+impl AxisScale {
+    /// The cosine of `vector` to where the axis points; `None` when it is
+    /// of another length.
+    #[must_use]
+    pub fn closeness(&self, vector: &[f32]) -> Option<f32> {
+        (vector.len() == self.centroid.len()).then(|| crate::embed::cosine(&self.centroid, vector))
+    }
+
+    /// How well a book at cosine `closeness` to the axis fits it: 0 when it
+    /// is no closer than an ordinary book, 1 when it is as close as the
+    /// axis's own.
+    #[must_use]
+    pub fn fit(&self, closeness: f32) -> f32 {
+        let band = (self.near - self.far).max(AXIS_MIN_BAND);
+        let fit = (closeness - self.far) / band;
+        if fit.is_finite() {
+            fit.clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    }
+
+    /// What a book at cosine `closeness` adds to a ranking: its
+    /// [`fit`](Self::fit) times the axis's `strength`.
+    #[must_use]
+    pub fn pull(&self, closeness: f32) -> f32 {
+        self.fit(closeness) * self.strength
+    }
+
+    /// The scale with `ordinary` as the cosine at which a book does not
+    /// fit, kept below `near` by the narrowest band.
+    #[must_use]
+    pub fn against(mut self, ordinary: f32) -> Self {
+        if ordinary.is_finite() {
+            self.far = ordinary.min(self.near - AXIS_MIN_BAND);
+        }
+        self
+    }
+}
+
+/// Fewest books on offer that say how close an ordinary book sits to an
+/// axis.
+pub const ORDINARY_MIN_BOOKS: usize = 12;
+
+/// The share of the books on offer that sit no closer to an axis than an
+/// "ordinary" book does: three quarters. Only the closest quarter fits an
+/// axis at all.
+const ORDINARY_SHARE: (usize, usize) = (3, 4);
+
+/// How close an ordinary book on offer sits to where an axis points.
+///
+/// Nearly every book of a kind sits within a narrow band of cosines to
+/// any centroid, well above the person's own unlike books, so a scale
+/// that starts at those calls nearly every book a fit. The scale starts
+/// instead where three quarters of the books on offer are left behind.
+///
+/// # Arguments
+///
+/// * `centroid` - Where the axis points ([`axis_centroid`]).
+/// * `offered` - The vectors of the books on offer, in the centroid's
+///   space; those of another length are left out.
+///
+/// # Returns
+///
+/// The upper quartile of the books' cosines to `centroid`; `None` with
+/// fewer than [`ORDINARY_MIN_BOOKS`] of them.
+pub fn ordinary_closeness<'a>(
+    centroid: &[f32],
+    offered: impl IntoIterator<Item = &'a [f32]>,
+) -> Option<f32> {
+    let mut cosines: Vec<f32> = offered
+        .into_iter()
+        .filter(|vector| vector.len() == centroid.len())
+        .map(|vector| crate::embed::cosine(centroid, vector))
+        .filter(|cosine| cosine.is_finite())
+        .collect();
+    if cosines.len() < ORDINARY_MIN_BOOKS {
+        return None;
+    }
+    cosines.sort_by(f32::total_cmp);
+    let at = (cosines.len() * ORDINARY_SHARE.0 / ORDINARY_SHARE.1).min(cosines.len() - 1);
+    cosines.get(at).copied()
+}
+
+/// The mean weight of an axis's works; 0 for an axis without works.
+fn mean_weight(axis: &TasteAxis) -> f64 {
+    let total: f64 = axis.members.iter().map(|m| m.weight.max(0.0)).sum();
+    if axis.members.is_empty() {
+        0.0
+    } else {
+        total / count(axis.members.len())
+    }
+}
+
+/// The weighted mean cosine of `members`' vectors to `centroid`; `None`
+/// when none has a vector of its length or a weight.
+fn mean_closeness<'a>(
+    centroid: &[f32],
+    members: impl Iterator<Item = &'a AxisMember>,
+    vector_of: impl Fn(&str) -> Option<&'a [f32]>,
+) -> Option<f32> {
+    let mut sum = 0.0_f64;
+    let mut total = 0.0_f64;
+    for member in members {
+        let Some(vector) = vector_of(&member.work_id).filter(|v| v.len() == centroid.len()) else {
+            continue;
+        };
+        let weight = member.weight.max(0.0);
+        sum += weight * f64::from(crate::embed::cosine(centroid, vector));
+        total += weight;
+    }
+    // A mean of cosines, within -1..=1.
+    #[allow(clippy::cast_possible_truncation)]
+    (total > 0.0).then(|| (sum / total) as f32)
+}
+
+/// The scale of each axis in the space `vector_of` reads.
+///
+/// # Arguments
+///
+/// * `axes` - A taste's stored axes.
+/// * `vector_of` - The vector of a work, when it has one in that space.
+///
+/// # Returns
+///
+/// One entry for each axis, in order; `None` for an axis none of whose
+/// works has a vector.
+pub fn axis_scales<'a>(
+    axes: &'a [TasteAxis],
+    vector_of: impl Fn(&str) -> Option<&'a [f32]> + Copy,
+) -> Vec<Option<AxisScale>> {
+    let heaviest = axes.iter().map(mean_weight).fold(0.0_f64, f64::max);
+    axes.iter()
+        .enumerate()
+        .map(|(at, axis)| {
+            let centroid = axis_centroid(&axis.members, vector_of)?;
+            let near = mean_closeness(&centroid, axis.members.iter(), vector_of)?;
+            let others = axes
+                .iter()
+                .enumerate()
+                .filter(|(other, _)| *other != at)
+                .flat_map(|(_, other)| other.members.iter());
+            let far = mean_closeness(&centroid, others, vector_of)
+                .map_or(near - SOLO_AXIS_BAND, |far| far.min(near - AXIS_MIN_BAND));
+            // A share of the heaviest axis's weight, within 0..=1.
+            #[allow(clippy::cast_possible_truncation)]
+            let strength = if heaviest > 0.0 {
+                (mean_weight(axis) / heaviest).sqrt() as f32
+            } else {
+                1.0
+            };
+            let scale = AxisScale {
+                centroid,
+                near,
+                far,
+                strength,
+            };
+            Some(match axis.ordinary {
+                Some(ordinary) => scale.against(ordinary),
+                None => scale,
+            })
+        })
+        .collect()
+}
+
+/// How well a book fits a whole taste, from its fit on each axis: the best
+/// axis in full, the second at half and the third at a quarter, so a book
+/// near one axis ranks high and a book near several ranks higher.
+///
+/// # Returns
+///
+/// 0 to 1.75.
+#[must_use]
+pub fn taste_fit(fits: impl IntoIterator<Item = f32>) -> f32 {
+    let mut fits: Vec<f32> = fits.into_iter().filter(|fit| fit.is_finite()).collect();
+    fits.sort_by(|a, b| b.total_cmp(a));
+    fits.iter()
+        .zip(AXIS_SHARES)
+        .map(|(fit, share)| fit.clamp(0.0, 1.0) * share)
+        .sum()
+}
+
+/// One seed work as it is grouped.
+#[derive(Debug, Clone)]
+pub struct AxisSeed {
+    /// The work.
+    pub work_id: String,
+    /// How much the work counts in the taste.
+    pub weight: f64,
+    /// The work's vector, any length above zero.
+    pub vector: Vec<f32>,
+}
+
+/// The works' unit vectors with what they all share taken out: each less
+/// their plain mean, scaled to length 1 again, and how far each sat from
+/// that mean.
+///
+/// A model's vectors all point roughly the same way, and that shared part
+/// drowns what tells one theme from another. Without it, works of a theme
+/// sit together and themes sit apart.
+///
+/// # Returns
+///
+/// `None` when a work sits on the mean itself (all the works are one
+/// point, or there is only one): there is then nothing to take out.
+fn apart(points: &[(usize, Vec<f32>)], dims: usize) -> Option<Vec<(Vec<f32>, f64)>> {
+    let mut mean = vec![0.0_f64; dims];
+    for (_, vector) in points {
+        for (into, x) in mean.iter_mut().zip(vector) {
+            *into += f64::from(*x);
+        }
+    }
+    let n = count(points.len());
+    points
+        .iter()
+        .map(|(_, vector)| {
+            // A difference of numbers within -1..=1.
+            #[allow(clippy::cast_possible_truncation)]
+            let rest: Vec<f32> = vector
+                .iter()
+                .zip(&mean)
+                .map(|(x, m)| (f64::from(*x) - m / n) as f32)
+                .collect();
+            let off = rest
+                .iter()
+                .map(|x| f64::from(*x) * f64::from(*x))
+                .sum::<f64>()
+                .sqrt();
+            (off > 1e-6)
+                .then(|| unit(&rest))
+                .flatten()
+                .map(|v| (v, off))
+        })
+        .collect()
+}
+
+/// The works of each group of `assigned` (a group number per work), in
+/// the order of the lowest work of each.
+fn groups_of(assigned: &[usize]) -> Vec<Vec<usize>> {
+    let mut numbers: Vec<usize> = Vec::new();
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for (at, number) in assigned.iter().enumerate() {
+        match numbers.iter().position(|seen| seen == number) {
+            Some(group) => groups[group].push(at),
+            None => {
+                numbers.push(*number);
+                groups.push(vec![at]);
+            }
+        }
+    }
+    groups
+}
+
+/// Ways to split works into groups, by joining the two most alike groups
+/// again and again (two groups are as alike as their works are on
+/// average), from every work on its own down to two groups.
+///
+/// # Arguments
+///
+/// * `likeness` - How alike each two works are, a square table.
+/// * `most` - The most groups a split may have.
+///
+/// # Returns
+///
+/// A group number per work for each split of two to `most` groups, the
+/// split with the fewest groups first. Empty for fewer than two works.
+fn splits(likeness: &[Vec<f64>], most: usize) -> Vec<Vec<usize>> {
+    let n = likeness.len();
+    // Each live group's works, and the summed likeness between groups.
+    let mut members: Vec<Option<Vec<usize>>> = (0..n).map(|at| Some(vec![at])).collect();
+    let mut between: Vec<Vec<f64>> = likeness.to_vec();
+    let mut live = n;
+    let mut found: Vec<Vec<usize>> = Vec::new();
+    while live >= 2 {
+        if live <= most {
+            let mut assigned = vec![0_usize; n];
+            for (group, works) in members.iter().enumerate() {
+                for at in works.iter().flatten() {
+                    assigned[*at] = group;
+                }
+            }
+            found.push(assigned);
+        }
+        if live == 2 {
+            break;
+        }
+        // The two most alike groups: the first such when several are.
+        let mut closest: Option<(usize, usize, f64)> = None;
+        for a in 0..n {
+            let Some(of_a) = &members[a] else { continue };
+            for b in (a + 1)..n {
+                let Some(of_b) = &members[b] else { continue };
+                let alike = between[a][b] / (count(of_a.len()) * count(of_b.len()));
+                if closest.is_none_or(|(_, _, most_alike)| alike > most_alike) {
+                    closest = Some((a, b, alike));
+                }
+            }
+        }
+        let Some((a, b, _)) = closest else { break };
+        let moved = members[b].take().unwrap_or_default();
+        if let Some(of_a) = &mut members[a] {
+            of_a.extend(moved);
+        }
+        for other in 0..n {
+            let add = between[b][other];
+            between[a][other] += add;
+            between[other][a] = between[a][other];
+        }
+        live -= 1;
+    }
+    found.reverse();
+    found
+}
+
+/// Settles a split: each work moves to the group whose centre it is most
+/// like, until none moves. A group left with fewer than
+/// [`AXIS_MIN_WORKS`] works is dissolved into the others while another
+/// group remains: its work is a book apart, not a leaning.
+///
+/// # Arguments
+///
+/// * `points` - The works' unit vectors.
+/// * `assigned` - A group number per work, below `points.len()`.
+///
+/// # Returns
+///
+/// The settled group number per work.
+fn settle(points: &[&[f32]], mut assigned: Vec<usize>) -> Vec<usize> {
+    let dims = points.first().map_or(0, |point| point.len());
+    for _ in 0..CLUSTER_ROUNDS {
+        let mut sizes = vec![0_usize; points.len()];
+        for group in &assigned {
+            sizes[*group] += 1;
+        }
+        let live = sizes.iter().filter(|size| **size > 0).count();
+        // The smallest group that is too small goes, when another stays.
+        let dissolved = (0..sizes.len())
+            .filter(|group| sizes[*group] > 0 && sizes[*group] < AXIS_MIN_WORKS)
+            .min_by_key(|group| sizes[*group])
+            .filter(|_| live > 1);
+        let centres: Vec<Option<Vec<f32>>> = (0..sizes.len())
+            .map(|group| {
+                if sizes[group] == 0 || dissolved == Some(group) {
+                    return None;
+                }
+                let mut sum = vec![0.0_f64; dims];
+                for (at, point) in points.iter().enumerate() {
+                    if assigned[at] == group {
+                        for (into, x) in sum.iter_mut().zip(*point) {
+                            *into += f64::from(*x);
+                        }
+                    }
+                }
+                // Narrowing sums of at most a few hundred numbers within
+                // -1..=1.
+                #[allow(clippy::cast_possible_truncation)]
+                let mean: Vec<f32> = sum.into_iter().map(|x| x as f32).collect();
+                unit(&mean)
+            })
+            .collect();
+        let mut moved = false;
+        for (at, point) in points.iter().enumerate() {
+            let mut best: Option<(usize, f32)> = None;
+            for (group, centre) in centres.iter().enumerate() {
+                let Some(centre) = centre else { continue };
+                let alike = dot(centre, point);
+                if best.is_none_or(|(_, most)| alike > most) {
+                    best = Some((group, alike));
+                }
+            }
+            if let Some((group, _)) = best {
+                if assigned[at] != group {
+                    assigned[at] = group;
+                    moved = true;
+                }
+            }
+        }
+        if !moved && dissolved.is_none() {
+            break;
+        }
+    }
+    assigned
+}
+
+/// How well a split holds together, from -1 to 1: for each work, how much
+/// closer it sits to the works of its own group than to those of the
+/// nearest other group (the silhouette), averaged over the works. 0 for
+/// one group, and for a work alone in its group.
+fn cohesion(likeness: &[Vec<f64>], groups: &[Vec<usize>]) -> f64 {
+    if groups.len() < 2 {
+        return 0.0;
+    }
+    let apart = |at: usize, others: &[usize]| {
+        let far: f64 = others
+            .iter()
+            .filter(|other| **other != at)
+            .map(|other| 1.0 - likeness[at][*other])
+            .sum();
+        let n = others.iter().filter(|other| **other != at).count();
+        (n > 0).then(|| far / count(n))
+    };
+    let mut total = 0.0_f64;
+    let mut works = 0_usize;
+    for (number, group) in groups.iter().enumerate() {
+        for at in group {
+            works += 1;
+            let Some(own) = apart(*at, group) else {
+                continue;
+            };
+            let nearest = groups
+                .iter()
+                .enumerate()
+                .filter(|(other, _)| *other != number)
+                .filter_map(|(_, other)| apart(*at, other))
+                .fold(f64::INFINITY, f64::min);
+            let widest = own.max(nearest);
+            if nearest.is_finite() && widest > 0.0 {
+                total += (nearest - own) / widest;
+            }
+        }
+    }
+    if works == 0 {
+        0.0
+    } else {
+        total / count(works)
+    }
+}
+
+/// Splits the seed works of a taste into groups that sit together in the
+/// embedding space.
+///
+/// The works are grouped by meaning alone: how much a work counts decides
+/// which works are grouped when there are too many and where an axis
+/// points afterwards ([`axis_centroid`]), never which group a work joins,
+/// so a few heavy works do not pull unlike ones in with them. What the
+/// works all share is taken out first (their plain mean), so themes sit
+/// apart.
+///
+/// Nothing is left to chance, so the same taste gives the same groups,
+/// and a taste whose vectors move a little keeps them:
+///
+/// 1. The two most alike groups are joined again and again, from every
+///    work on its own (`splits`). That gives one way to split the works
+///    into each number of groups from two to [`MAX_TASTE_AXES`] (fewer
+///    when there are not [`AXIS_MIN_WORKS`] works for each).
+/// 2. Each split is settled: works move to the group they are most like,
+///    and a group left with one work is dissolved (`settle`).
+/// 3. The split whose groups hold together best is kept (`cohesion`);
+///    of two that hold as well, the one with fewer groups. A small taste
+///    with one clear leaning is two groups, not three made up to fill a
+///    chart. Works that do not split at all (under
+///    `GROUPING_MIN_COHESION`), or fewer than four of them, are one
+///    group.
+///
+/// # Arguments
+///
+/// * `seeds` - The seed works. Only the [`MAX_AXIS_SEEDS`] heaviest are
+///   grouped; a work without a direction, or whose vector differs in
+///   length from the heaviest work's, is left out.
+///
+/// # Returns
+///
+/// The groups as positions in `seeds`, the group with the most weight
+/// first and each group's heaviest work first. Empty when fewer than
+/// [`AXIS_MIN_WORKS`] works have a vector.
+#[must_use]
+pub fn cluster(seeds: &[AxisSeed]) -> Vec<Vec<usize>> {
+    let mut order: Vec<usize> = (0..seeds.len()).collect();
+    order.sort_by(|a, b| {
+        seeds[*b]
+            .weight
+            .total_cmp(&seeds[*a].weight)
+            .then_with(|| seeds[*a].work_id.cmp(&seeds[*b].work_id))
+    });
+    order.truncate(MAX_AXIS_SEEDS);
+    let dims = order.first().map_or(0, |first| seeds[*first].vector.len());
+    // (position in `seeds`, unit vector), heaviest first.
+    let points: Vec<(usize, Vec<f32>)> = order
+        .into_iter()
+        .filter(|position| seeds[*position].vector.len() == dims)
+        .filter_map(|position| Some((position, unit(&seeds[position].vector)?)))
+        .collect();
+    if points.len() < MIN_TASTE_AXES * AXIS_MIN_WORKS {
+        return Vec::new();
+    }
+    // Grouped without what the works all share, when they differ at all.
+    let parted: Vec<Vec<f32>> = match apart(&points, dims) {
+        Some(parted) => parted.into_iter().map(|(vector, _)| vector).collect(),
+        None => points.iter().map(|(_, vector)| vector.clone()).collect(),
+    };
+    let vectors: Vec<&[f32]> = parted.iter().map(Vec::as_slice).collect();
+    let likeness: Vec<Vec<f64>> = vectors
+        .iter()
+        .map(|a| vectors.iter().map(|b| f64::from(dot(a, b))).collect())
+        .collect();
+    let most = MAX_TASTE_AXES.min(vectors.len() / AXIS_MIN_WORKS);
+    let mut kept: Vec<Vec<usize>> = vec![(0..vectors.len()).collect()];
+    let mut best = GROUPING_MIN_COHESION;
+    for split in splits(&likeness, most) {
+        let groups: Vec<Vec<usize>> = groups_of(&settle(&vectors, split))
+            .into_iter()
+            .filter(|group| group.len() >= AXIS_MIN_WORKS)
+            .collect();
+        let held = cohesion(&likeness, &groups);
+        // Fewer groups come first: more must hold together better.
+        if held > best + 1e-6 {
+            best = held;
+            kept = groups;
+        }
+    }
+    let mut groups: Vec<(f64, Vec<usize>)> = kept
+        .into_iter()
+        .map(|group| {
+            let members: Vec<usize> = group.into_iter().map(|at| points[at].0).collect();
+            let weight = members.iter().map(|m| seeds[*m].weight.max(0.0)).sum();
+            (weight, members)
+        })
+        .collect();
+    // A stable sort: equal weights keep the order of their first works.
+    groups.sort_by(|a, b| b.0.total_cmp(&a.0));
+    groups.into_iter().map(|(_, members)| members).collect()
+}
+
+/// What is known of a work when axes are named.
+#[derive(Debug, Clone, Default)]
+pub struct AxisBook {
+    /// Display title.
+    pub title: String,
+    /// Genres, categories or subjects, as one line of labels.
+    pub genres: Option<String>,
+    /// Names of the series the work belongs to.
+    pub series: Vec<String>,
+    /// Synopsis; may contain HTML.
+    pub description: Option<String>,
+    /// How much the work counts in the taste: a name is judged by the
+    /// weight of the works that carry it, so a few light library books
+    /// do not name an axis of wishes.
+    pub weight: f64,
+}
+
+impl AxisBook {
+    /// Whether anything is known of what the work is about: a genre, a
+    /// series or a description. A work with none is embedded from its
+    /// title and author alone.
+    #[must_use]
+    pub fn says_something(&self) -> bool {
+        let filled = |text: &Option<String>| text.as_deref().is_some_and(|t| !t.trim().is_empty());
+        filled(&self.genres)
+            || filled(&self.description)
+            || self.series.iter().any(|series| !series.trim().is_empty())
+    }
+
+    /// What naming reads of a library work that counts 1.
+    #[must_use]
+    pub fn of(work: &WorkRecord) -> Self {
+        Self::of_wished(work, None, 1.0)
+    }
+
+    /// What naming reads of a library work that counts `weight`, with
+    /// what an open wish for it knows wherever the work has none of its
+    /// own: a work only a wish names carries no genres or description.
+    #[must_use]
+    pub fn of_wished(
+        work: &WorkRecord,
+        wish: Option<&crate::embed::WishText>,
+        weight: f64,
+    ) -> Self {
+        let own = |text: &Option<String>| text.clone().filter(|text| !text.trim().is_empty());
+        Self {
+            title: work.title.clone(),
+            genres: own(&work.categories)
+                .or_else(|| own(&work.subjects))
+                .or_else(|| wish.and_then(|wish| own(&wish.genres))),
+            series: if work.series.is_empty() {
+                wish.and_then(|wish| own(&wish.series))
+                    .into_iter()
+                    .collect()
+            } else {
+                work.series.clone()
+            },
+            description: own(&work.description)
+                .or_else(|| wish.and_then(|wish| own(&wish.description))),
+            weight,
+        }
+    }
+}
+
+/// The words of the start of a description, without its markup.
+fn description_words(description: &str) -> Vec<String> {
+    let mut text = String::new();
+    let mut in_tag = false;
+    for c in description.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' if in_tag => {
+                in_tag = false;
+                text.push(' ');
+            }
+            _ if in_tag => {}
+            _ => text.push(c),
+        }
+        if text.chars().count() >= PHRASE_DESCRIPTION_CHARS {
+            break;
+        }
+    }
+    text.split(|c: char| !(c.is_alphanumeric() || c == '\'' || c == '’'))
+        .map(|word| word.trim_matches(['\'', '’']))
+        .filter(|word| !word.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// `phrase` as an axis shows it: as written, but a phrase written all in
+/// capitals ("NEW YORK TIMES") with only each word's first letter so.
+fn phrase_display(phrase: &str) -> String {
+    let shouted =
+        phrase.chars().any(char::is_alphabetic) && !phrase.chars().any(char::is_lowercase);
+    if !shouted {
+        return phrase.to_string();
+    }
+    phrase
+        .split(' ')
+        .map(|word| {
+            let mut letters = word.chars();
+            letters.next().map_or_else(String::new, |first| {
+                first.to_string() + &letters.as_str().to_lowercase()
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The phrases of two to four words in a description that hold no
+/// stopword or number and are not only praise or a reviewer's name
+/// ([`RECEPTION_WORDS`]), each once, as (phrase as shown, lowercase key).
+///
+/// A run of words with a stopword in it ("One Of The New") is a piece of
+/// a sentence, not a name for anything.
+fn description_phrases(description: &str) -> Vec<(String, String)> {
+    let words = description_words(description);
+    let lower: Vec<String> = words.iter().map(|word| word.to_lowercase()).collect();
+    let plain = |word: &str| STOPWORDS.contains(&word) || word.chars().all(char::is_numeric);
+    let mut phrases: Vec<(String, String)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for len in 2..=4 {
+        for start in 0..words.len().saturating_sub(len - 1) {
+            let end = start + len;
+            if lower[start..end].iter().any(|word| plain(word)) {
+                continue;
+            }
+            let reception = lower[start..end]
+                .iter()
+                .all(|word| RECEPTION_WORDS.contains(&word.as_str()));
+            if reception {
+                continue;
+            }
+            let key = lower[start..end].join(" ");
+            if seen.insert(key.clone()) {
+                phrases.push((phrase_display(&words[start..end].join(" ")), key));
+            }
+        }
+    }
+    phrases
+}
+
+/// The genre labels of one work as an axis may be named, each once, as
+/// (label as written, lowercase key), without the empty ones and those in
+/// [`BROAD_GENRES`].
+///
+/// A line that lists its labels with `;` or `>` is split on those alone,
+/// so a store category with a comma in it ("Mystery, Thriller &
+/// Suspense") stays one label; any other line is split on commas.
+fn axis_labels(genres: &str) -> Vec<(String, String)> {
+    let parts: Vec<&str> = if genres.contains([';', '>']) {
+        genres.split([';', '>']).collect()
+    } else {
+        genres.split(',').collect()
+    };
+    let mut labels: Vec<(String, String)> = Vec::new();
+    for label in parts.into_iter().map(str::trim) {
+        let key = label.to_lowercase();
+        if key.is_empty()
+            || BROAD_GENRES.contains(&key.as_str())
+            || labels.iter().any(|(_, seen)| *seen == key)
+        {
+            continue;
+        }
+        labels.push((label.to_string(), key));
+    }
+    labels
+}
+
+/// A name an axis could take.
+struct Candidate {
+    /// The name as first written.
+    display: String,
+    /// Whether it is a description phrase (not a genre or a series).
+    phrase: bool,
+    /// Works carrying it, by the group they are in.
+    works: Vec<usize>,
+    /// The weight of the works carrying it, by the group they are in.
+    weights: Vec<f64>,
+    /// The weight of the works carrying it in all.
+    total: f64,
+}
+
+/// Whether the weight `part` is at least the share `of` (numerator,
+/// denominator) of the weight `whole`.
+fn at_least(part: f64, whole: f64, of: (usize, usize)) -> bool {
+    part * count(of.1) + 1e-9 >= whole * count(of.0)
+}
+
+/// `count` as a float; the counts here are of works, far below the
+/// integers f64 holds exactly.
+fn count(count: usize) -> f64 {
+    f64::from(u32::try_from(count).unwrap_or(u32::MAX))
+}
+
+/// Names each group of a taste by what its works share and the person's
+/// other works lack.
+///
+/// A name is a genre label, a series, or a phrase of two to four words
+/// from the works' descriptions. Its distinctiveness is the share of the
+/// group's works that carry it less the share of the other groups' works
+/// that do, each work counted by its weight, so the works that make the
+/// axis name it and not the light ones that sit with them, and only works
+/// that carry a name of that kind at all counted, and those at least
+/// half of the group's weight; the most distinctive names the group, a genre or series
+/// winning over a phrase unless the phrase is clearly more distinctive
+/// (`PHRASE_HANDICAP`), and among names about as distinctive as the best
+/// the one with the most words, so a longer phrase wins over the shorter
+/// one inside it. A group with nothing distinctive enough is named after its first
+/// work, "Like *title*". No two groups share a name.
+///
+/// # Arguments
+///
+/// * `groups` - The groups, each a list of positions in `books`, the
+///   work that best stands for the group first.
+/// * `books` - What is known of each work.
+///
+/// # Returns
+///
+/// One name for each group, in the order of `groups`.
+#[must_use]
+pub fn name_axes(groups: &[Vec<usize>], books: &[AxisBook]) -> Vec<String> {
+    let mut candidates: Vec<Candidate> = Vec::new();
+    let mut by_key: HashMap<(bool, String), usize> = HashMap::new();
+    for (group, members) in groups.iter().enumerate() {
+        for member in members {
+            let Some(book) = books.get(*member) else {
+                continue;
+            };
+            let mut found: Vec<(bool, String, String)> = Vec::new();
+            for (label, key) in book.genres.as_deref().map(axis_labels).unwrap_or_default() {
+                found.push((false, label, key));
+            }
+            for series in &book.series {
+                let key = series.trim().to_lowercase();
+                if !key.is_empty() && !found.iter().any(|(_, _, seen)| *seen == key) {
+                    found.push((false, series.trim().to_string(), key));
+                }
+            }
+            for (phrase, key) in book
+                .description
+                .as_deref()
+                .map(description_phrases)
+                .unwrap_or_default()
+            {
+                found.push((true, phrase, key));
+            }
+            for (phrase, display, key) in found {
+                let at = *by_key.entry((phrase, key)).or_insert_with(|| {
+                    candidates.push(Candidate {
+                        display,
+                        phrase,
+                        works: vec![0; groups.len()],
+                        weights: vec![0.0; groups.len()],
+                        total: 0.0,
+                    });
+                    candidates.len() - 1
+                });
+                candidates[at].works[group] += 1;
+                candidates[at].weights[group] += book.weight.max(0.0);
+                candidates[at].total += book.weight.max(0.0);
+            }
+        }
+    }
+    // The weight in each group of the works that can carry a name of a
+    // kind at all: [works with a genre or a series, works with a
+    // description]. A work the library knows nothing of has no say in
+    // what the works beside it share.
+    let voting: Vec<[f64; 2]> = groups
+        .iter()
+        .map(|members| {
+            let mut weights = [0.0_f64; 2];
+            for book in members.iter().filter_map(|member| books.get(*member)) {
+                let weight = book.weight.max(0.0);
+                let labelled = !book.series.iter().all(|series| series.trim().is_empty())
+                    || book
+                        .genres
+                        .as_deref()
+                        .is_some_and(|genres| !axis_labels(genres).is_empty());
+                if labelled {
+                    weights[0] += weight;
+                }
+                if book
+                    .description
+                    .as_deref()
+                    .is_some_and(|text| !text.trim().is_empty())
+                {
+                    weights[1] += weight;
+                }
+            }
+            weights
+        })
+        .collect();
+    let everyone: [f64; 2] = [0, 1].map(|kind| voting.iter().map(|weights| weights[kind]).sum());
+    let mut taken: Vec<String> = Vec::new();
+    let mut names = Vec::with_capacity(groups.len());
+    for (group, members) in groups.iter().enumerate() {
+        // (score, words, display) of every name that qualifies.
+        let mut qualified: Vec<(f64, usize, &str)> = Vec::new();
+        let whole: f64 = members
+            .iter()
+            .filter_map(|member| books.get(*member))
+            .map(|book| book.weight.max(0.0))
+            .sum();
+        for candidate in &candidates {
+            let kind = usize::from(candidate.phrase);
+            let own = voting[group][kind];
+            // A few known works do not speak for an axis made mostly of
+            // works nothing is known of.
+            if !at_least(own, whole, VOTERS_MIN_SHARE) {
+                continue;
+            }
+            let others = everyone[kind] - own;
+            let inside = candidate.weights[group];
+            let share = if candidate.phrase {
+                PHRASE_MIN_SHARE
+            } else {
+                LABEL_MIN_SHARE
+            };
+            if candidate.works[group] < AXIS_MIN_WORKS
+                || !at_least(inside, own, share)
+                || taken.contains(&candidate.display.to_lowercase())
+            {
+                continue;
+            }
+            let outside = candidate.total - inside;
+            let distinct = if own > 0.0 { inside / own } else { 0.0 }
+                - if others > 0.0 { outside / others } else { 0.0 };
+            if distinct < NAME_MIN_DISTINCT {
+                continue;
+            }
+            let score = distinct
+                - if candidate.phrase {
+                    PHRASE_HANDICAP
+                } else {
+                    0.0
+                };
+            let words = candidate
+                .display
+                .split_whitespace()
+                .filter(|word| word.chars().any(char::is_alphanumeric))
+                .count();
+            qualified.push((score, words, candidate.display.as_str()));
+        }
+        // Names about as distinctive as the best are as good as it: among
+        // them the one that says most wins, so a light work beside the
+        // axis's own does not decide between labels all of those share.
+        let top = qualified
+            .iter()
+            .map(|(score, _, _)| *score)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let best = qualified
+            .into_iter()
+            .filter(|(score, _, _)| *score >= top - NAME_NEAR)
+            .max_by(|a, b| {
+                a.1.cmp(&b.1)
+                    .then(a.0.total_cmp(&b.0))
+                    .then_with(|| b.2.cmp(a.2))
+            });
+        let name = match best {
+            Some((_, _, display)) => display.to_string(),
+            None => {
+                let title = members
+                    .first()
+                    .and_then(|member| books.get(*member))
+                    .map_or("", |book| book.title.trim());
+                format!("Like {title}")
+            }
+        };
+        taken.push(name.to_lowercase());
+        names.push(name);
+    }
+    names
+}
+
+/// Builds the axes of a taste from its seed works' weights.
+///
+/// # Arguments
+///
+/// * `library` - The library store.
+/// * `space` - The model's space whose stored work vectors are grouped.
+/// * `weights` - Each seed work and how much it counts.
+/// * `offered` - The vectors, in `space`, of the books on offer to the
+///   subject: each axis records how close an ordinary one sits
+///   ([`ordinary_closeness`]) when there are enough.
+///
+/// # Returns
+///
+/// The axes, the one with the most weight first (none when fewer than
+/// [`AXIS_MIN_WORKS`] seed works have a vector), and whether they are
+/// settled: at least half of the seed works had a vector. Axes that are
+/// not settled were built while the library was still being embedded and
+/// are built again by the next ranking.
+///
+/// # Errors
+///
+/// Returns the library read error.
+pub(crate) async fn build_axes(
+    library: &LibraryStore,
+    space: &VectorSpace,
+    weights: &BTreeMap<String, f64>,
+    offered: &[Vec<f32>],
+) -> Result<(Vec<TasteAxis>, bool)> {
+    let mut heaviest: Vec<(&String, f64)> = weights
+        .iter()
+        .filter(|(_, weight)| **weight > 0.0)
+        .map(|(id, weight)| (id, *weight))
+        .collect();
+    heaviest.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    heaviest.truncate(MAX_AXIS_SEEDS);
+    if heaviest.len() < MIN_TASTE_AXES * AXIS_MIN_WORKS {
+        return Ok((Vec::new(), true));
+    }
+    let wanted = heaviest.len();
+    let ids: Vec<String> = heaviest.iter().map(|(id, _)| (*id).clone()).collect();
+    let stored = library
+        .vectors(bookclerk_library::VECTOR_KIND_WORK, space, &ids)
+        .await?;
+    let seeds: Vec<AxisSeed> = heaviest
+        .into_iter()
+        .filter_map(|(id, weight)| {
+            Some(AxisSeed {
+                work_id: id.clone(),
+                weight,
+                vector: bytes_to_vector(stored.get(id)?),
+            })
+        })
+        .collect();
+    let settled = seeds.len() * 2 >= wanted;
+    let with_vector: Vec<String> = seeds.iter().map(|seed| seed.work_id.clone()).collect();
+    let works = library.works_by_ids(&with_vector).await?;
+    // A wished work is named from what its wish knows of the book.
+    let wished: HashMap<String, crate::embed::WishText> = library
+        .list_global_request_queue()
+        .await?
+        .iter()
+        .map(|entry| (entry.work_id.clone(), crate::embed::WishText::of(entry)))
+        .collect();
+    let books: Vec<AxisBook> = seeds
+        .iter()
+        .map(|seed| {
+            works
+                .get(&seed.work_id)
+                .map(|work| AxisBook::of_wished(work, wished.get(&seed.work_id), seed.weight))
+                .unwrap_or_default()
+        })
+        .collect();
+    // A work nothing is known of is embedded from its title and author
+    // alone. Such works sit together whatever they are about, so they
+    // are left out while the works something is known of are at least
+    // half of the taste.
+    let known: Vec<bool> = books.iter().map(AxisBook::says_something).collect();
+    let (seeds, books): (Vec<AxisSeed>, Vec<AxisBook>) =
+        if known.iter().filter(|known| **known).count() * 2 >= seeds.len() {
+            seeds
+                .into_iter()
+                .zip(books)
+                .zip(known)
+                .filter(|(_, known)| *known)
+                .map(|(pair, _)| pair)
+                .unzip()
+        } else {
+            (seeds, books)
+        };
+    let groups = cluster(&seeds);
+    if groups.is_empty() {
+        return Ok((Vec::new(), settled));
+    }
+    // A group is named after its first work when nothing else stands
+    // out: put the work nearest where the group points first.
+    let groups: Vec<Vec<usize>> = groups
+        .into_iter()
+        .map(|mut members| {
+            let of_group: Vec<AxisMember> = members
+                .iter()
+                .map(|m| AxisMember {
+                    work_id: seeds[*m].work_id.clone(),
+                    weight: seeds[*m].weight,
+                })
+                .collect();
+            let by_id: HashMap<&str, &[f32]> = members
+                .iter()
+                .map(|m| (seeds[*m].work_id.as_str(), seeds[*m].vector.as_slice()))
+                .collect();
+            if let Some(centre) = axis_centroid(&of_group, |id| by_id.get(id).copied()) {
+                let likeness = |m: &usize| crate::embed::cosine(&centre, &seeds[*m].vector);
+                if let Some(nearest) = (0..members.len()).max_by(|a, b| {
+                    likeness(&members[*a])
+                        .total_cmp(&likeness(&members[*b]))
+                        .then_with(|| b.cmp(a))
+                }) {
+                    members.swap(0, nearest);
+                }
+            }
+            members
+        })
+        .collect();
+    let names = name_axes(&groups, &books);
+    let vector_of: HashMap<&str, &[f32]> = seeds
+        .iter()
+        .map(|seed| (seed.work_id.as_str(), seed.vector.as_slice()))
+        .collect();
+    let axes = groups
+        .into_iter()
+        .zip(names)
+        .map(|(members, name)| {
+            let mut members: Vec<AxisMember> = members
+                .into_iter()
+                .map(|m| AxisMember {
+                    work_id: seeds[m].work_id.clone(),
+                    weight: seeds[m].weight,
+                })
+                .collect();
+            let ordinary = axis_centroid(&members, |id| vector_of.get(id).copied())
+                .and_then(|centre| ordinary_closeness(&centre, offered.iter().map(Vec::as_slice)));
+            members.sort_by(|a, b| {
+                b.weight
+                    .total_cmp(&a.weight)
+                    .then_with(|| a.work_id.cmp(&b.work_id))
+            });
+            TasteAxis {
+                name,
+                members,
+                ordinary,
+            }
+        })
+        .collect();
+    Ok((axes, settled))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A seed pointing along `vector`.
+    fn seed(work_id: &str, weight: f64, vector: [f32; 3]) -> AxisSeed {
+        AxisSeed {
+            work_id: work_id.to_string(),
+            weight,
+            vector: vector.to_vec(),
+        }
+    }
+
+    /// The work ids of each group, sorted within the group.
+    fn ids(seeds: &[AxisSeed], groups: &[Vec<usize>]) -> Vec<Vec<String>> {
+        groups
+            .iter()
+            .map(|group| {
+                let mut ids: Vec<String> =
+                    group.iter().map(|m| seeds[*m].work_id.clone()).collect();
+                ids.sort();
+                ids
+            })
+            .collect()
+    }
+
+    /// Nine works in three tight bunches along the three axes.
+    fn three_bunches() -> Vec<AxisSeed> {
+        vec![
+            seed("x1", 3.0, [1.0, 0.05, 0.0]),
+            seed("x2", 1.0, [1.0, 0.0, 0.05]),
+            seed("x3", 1.0, [0.9, 0.1, 0.0]),
+            seed("y1", 2.0, [0.0, 1.0, 0.05]),
+            seed("y2", 2.0, [0.05, 1.0, 0.0]),
+            seed("y3", 2.0, [0.0, 0.9, 0.1]),
+            seed("z1", 0.5, [0.0, 0.05, 1.0]),
+            seed("z2", 0.5, [0.05, 0.0, 1.0]),
+            seed("z3", 0.5, [0.1, 0.0, 0.9]),
+        ]
+    }
+
+    #[test]
+    fn works_that_sit_together_make_a_group_heaviest_group_first() {
+        let seeds = three_bunches();
+        let groups = cluster(&seeds);
+        assert_eq!(
+            ids(&seeds, &groups),
+            [["y1", "y2", "y3"], ["x1", "x2", "x3"], ["z1", "z2", "z3"]],
+            "by weight: 6, then 5, then 1.5"
+        );
+        // The same taste in another order gives the same groups.
+        let mut shuffled = seeds.clone();
+        shuffled.reverse();
+        assert_eq!(ids(&shuffled, &cluster(&shuffled)), ids(&seeds, &groups));
+    }
+
+    #[test]
+    fn a_small_taste_has_fewer_axes_and_one_work_has_none() {
+        let seeds = three_bunches();
+        // Five works are two groups: the x's and two of the y's.
+        assert_eq!(
+            ids(&seeds, &cluster(&seeds[..5])),
+            [vec!["x1", "x2", "x3"], vec!["y1", "y2"]]
+        );
+        // Two works that sit together are one axis.
+        assert_eq!(ids(&seeds, &cluster(&seeds[..2])), [["x1", "x2"]]);
+        assert!(cluster(&seeds[..1]).is_empty());
+        assert!(cluster(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_stray_work_joins_a_group_and_does_not_cost_an_axis() {
+        // Three bunches and a loner between two of them. A split that
+        // leaves the loner a group of its own dissolves that group, and
+        // the three bunches still come out.
+        let mut seeds = three_bunches();
+        seeds.push(seed("loner", 0.1, [-1.0, -1.0, 0.2]));
+        let groups = ids(&seeds, &cluster(&seeds));
+        assert_eq!(groups.len(), 3, "{groups:?}");
+        for bunch in ["x", "y", "z"] {
+            assert!(
+                groups
+                    .iter()
+                    .any(|group| (1..=3).all(|n| group.contains(&format!("{bunch}{n}")))),
+                "{bunch}: {groups:?}"
+            );
+        }
+        assert_eq!(groups.iter().flatten().count(), 10, "the loner joins one");
+
+        // Two bunches and a loner: two axes, not none.
+        let mut two: Vec<AxisSeed> = seeds[..6].to_vec();
+        two.push(seed("z1", 0.5, [0.0, 0.0, 1.0]));
+        let groups = ids(&two, &cluster(&two));
+        assert_eq!(groups.len(), 2, "{groups:?}");
+        assert_eq!(groups.iter().flatten().count(), 7);
+    }
+
+    #[test]
+    fn a_taste_with_one_axis_is_measured_across_a_fixed_band() {
+        let axes = [TasteAxis {
+            name: "Only".into(),
+            members: vec![
+                AxisMember {
+                    work_id: "a".into(),
+                    weight: 1.0,
+                },
+                AxisMember {
+                    work_id: "b".into(),
+                    weight: 1.0,
+                },
+            ],
+            ordinary: None,
+        }];
+        let vectors: HashMap<&str, Vec<f32>> =
+            HashMap::from([("a", vec![1.0, 0.1, 0.0]), ("b", vec![1.0, -0.1, 0.0])]);
+        let scales = axis_scales(&axes, |id| vectors.get(id).map(Vec::as_slice));
+        let scale = scales[0].as_ref().unwrap();
+        assert!((scale.near - scale.far - SOLO_AXIS_BAND).abs() < 1e-6);
+        // As close as its own works: in full. At a right angle: not at all.
+        assert!((scale.fit(scale.near) - 1.0).abs() < 1e-6);
+        assert!(scale.fit(0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn works_without_a_direction_or_of_another_length_are_left_out() {
+        let mut seeds = three_bunches();
+        seeds.push(seed("zero", 9.0, [0.0, 0.0, 0.0]));
+        seeds.push(AxisSeed {
+            work_id: "short".into(),
+            weight: 0.1,
+            vector: vec![1.0, 0.0],
+        });
+        let groups = cluster(&seeds);
+        assert_eq!(groups.len(), 3);
+        assert!(ids(&seeds, &groups)
+            .iter()
+            .flatten()
+            .all(|id| id != "zero" && id != "short"));
+    }
+
+    #[test]
+    fn a_taste_with_one_leaning_is_two_groups_not_three() {
+        // A tight bunch and works that share nothing with each other:
+        // the split that holds together best sets the bunch against the
+        // rest. Cutting the rest up to reach three groups holds worse.
+        let seeds = vec![
+            seed("x1", 2.0, [1.0, 0.05, 0.0]),
+            seed("x2", 2.0, [1.0, 0.0, 0.05]),
+            seed("x3", 2.0, [0.9, 0.1, 0.0]),
+            seed("x4", 2.0, [1.0, 0.05, 0.05]),
+            seed("a", 1.0, [-0.2, 1.0, 0.1]),
+            seed("b", 1.0, [-0.2, 0.6, 0.8]),
+            seed("c", 1.0, [-0.2, 0.1, 1.0]),
+            seed("d", 1.0, [-0.2, 0.9, 0.5]),
+        ];
+        assert_eq!(
+            ids(&seeds, &cluster(&seeds)),
+            [vec!["x1", "x2", "x3", "x4"], vec!["a", "b", "c", "d"]]
+        );
+    }
+
+    /// Seeds from the real model's vectors of the demo library and of two
+    /// people's wishes (see the file's note): the works at `positions`,
+    /// the first `light` of them library books and the rest wishes.
+    fn real_seeds(positions: &[usize], light: usize) -> Vec<AxisSeed> {
+        let file: serde_json::Value =
+            serde_json::from_str(include_str!("testdata/taste_axes_real_vectors.json")).unwrap();
+        let works = file["works"].as_array().unwrap();
+        positions
+            .iter()
+            .enumerate()
+            .map(|(at, position)| AxisSeed {
+                work_id: works[*position]["title"].as_str().unwrap().to_string(),
+                weight: if at < light { 0.5 } else { WISH_SEED_WEIGHT },
+                vector: serde_json::from_value(works[*position]["vector"].clone()).unwrap(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_real_small_taste_splits_into_its_one_leaning_and_the_rest() {
+        // Ten library books and four wishes, as the model sees them. The
+        // fantasy books and both fantasy wishes are one group; nothing
+        // else in the taste holds together well enough to be cut up.
+        let library = [1, 4, 5, 6, 7, 9, 10, 11, 12, 13];
+        let mut positions = library.to_vec();
+        positions.extend([14, 15, 16, 17]);
+        let seeds = real_seeds(&positions, library.len());
+        let groups = ids(&seeds, &cluster(&seeds));
+        assert_eq!(groups.len(), 2, "{groups:?}");
+        assert_eq!(
+            groups[1],
+            [
+                "Iron Flame",
+                "Mistborn 1: The Final Empire 1 of 3",
+                "Mistborn 1: The Final Empire 2 of 3",
+                "The Way of Kings",
+                "Wind and Truth",
+            ]
+        );
+        assert_eq!(groups[0].len(), 9);
+        // The library alone splits the same way.
+        let seeds = real_seeds(&library, library.len());
+        let groups = ids(&seeds, &cluster(&seeds));
+        assert_eq!(groups.len(), 2, "{groups:?}");
+        assert_eq!(groups[1].len(), 3, "the Sanderson books: {groups:?}");
+    }
+
+    #[test]
+    fn a_real_taste_of_three_wished_themes_keeps_each_theme_whole() {
+        // The same library with twelve wishes: three space operas, three
+        // mysteries and six histories of the Second World War.
+        let library = [1, 4, 5, 6, 7, 9, 10, 11, 12, 13];
+        let mut positions = library.to_vec();
+        positions.extend(18..30);
+        let seeds = real_seeds(&positions, library.len());
+        let groups = ids(&seeds, &cluster(&seeds));
+        assert_eq!(groups.len(), 4, "{groups:?}");
+        let group_of = |title: &str| {
+            groups
+                .iter()
+                .position(|group| group.iter().any(|id| id == title))
+                .unwrap()
+        };
+        let war = group_of("D-Day");
+        assert_eq!(
+            groups[war],
+            [
+                "Band of Brothers",
+                "Citizen Soldiers",
+                "D-Day",
+                "The Rise and Fall of the Third Reich",
+                "The Splendid and the Vile",
+                "Unbroken",
+            ],
+            "the six histories and no passenger"
+        );
+        let space = group_of("Leviathan Wakes");
+        for title in ["Hyperion", "Red Rising", "Dune", "Project Hail Mary"] {
+            assert_eq!(group_of(title), space, "{title}");
+        }
+        let mysteries = group_of("The Thursday Murder Club");
+        for title in [
+            "Murder on the Orient Express",
+            "The No. 1 Ladies' Detective Agency",
+        ] {
+            assert_eq!(group_of(title), mysteries, "{title}");
+        }
+        assert_eq!(
+            group_of("The Way of Kings"),
+            group_of("Mistborn 1: The Final Empire 1 of 3")
+        );
+        assert_eq!(
+            [war, space, mysteries]
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    fn splits_join_the_most_alike_first_and_cohesion_scores_them() {
+        // Works 0 and 1 are alike, 2 and 3 are alike, the pairs are not.
+        let likeness = vec![
+            vec![1.0, 0.9, 0.1, 0.0],
+            vec![0.9, 1.0, 0.0, 0.1],
+            vec![0.1, 0.0, 1.0, 0.8],
+            vec![0.0, 0.1, 0.8, 1.0],
+        ];
+        let found = splits(&likeness, 3);
+        assert_eq!(found.len(), 2, "two groups, then three");
+        assert_eq!(groups_of(&found[0]), [vec![0, 1], vec![2, 3]]);
+        assert_eq!(groups_of(&found[1]), [vec![0, 1], vec![2], vec![3]]);
+        assert!(splits(&likeness[..1], 3).is_empty());
+        // No split is offered above the most groups asked for.
+        assert_eq!(splits(&likeness, 2).len(), 1);
+
+        let pairs = cohesion(&likeness, &groups_of(&found[0]));
+        let crossed = cohesion(&likeness, &[vec![0, 2], vec![1, 3]]);
+        assert!(pairs > 0.8, "{pairs}");
+        assert!(crossed < 0.0, "{crossed}");
+        assert!(cohesion(&likeness, &[vec![0, 1, 2, 3]]).abs() < 1e-12);
+        // A work alone in its group counts for nothing.
+        let with_loner = cohesion(&likeness, &groups_of(&found[1]));
+        assert!(with_loner > 0.0 && with_loner < pairs, "{with_loner}");
+    }
+
+    #[test]
+    fn settling_moves_a_misplaced_work_and_dissolves_a_lone_one() {
+        let x1 = [1.0_f32, 0.0];
+        let x2 = [0.99_f32, 0.14];
+        let y1 = [0.0_f32, 1.0];
+        let y2 = [0.14_f32, 0.99];
+        let stray = [0.6_f32, 0.8];
+        let points: Vec<&[f32]> = vec![&x1, &x2, &y1, &y2, &stray];
+        // x2 starts with the y's and moves back; the stray's own group
+        // dissolves and it joins the y's, which it is more like.
+        let settled = settle(&points, vec![0, 2, 2, 2, 4]);
+        assert_eq!(groups_of(&settled), [vec![0, 1], vec![2, 3, 4]]);
+        // One group of one work has nowhere to dissolve into.
+        let alone: Vec<&[f32]> = vec![&x1];
+        assert_eq!(settle(&alone, vec![0]), [0]);
+    }
+
+    #[test]
+    fn a_centroid_is_the_weighted_mean_of_unit_vectors() {
+        let members = [
+            AxisMember {
+                work_id: "a".into(),
+                weight: 3.0,
+            },
+            AxisMember {
+                work_id: "b".into(),
+                weight: 1.0,
+            },
+            AxisMember {
+                work_id: "none".into(),
+                weight: 5.0,
+            },
+        ];
+        let a = [2.0_f32, 0.0];
+        let b = [0.0_f32, 0.5];
+        let centroid = axis_centroid(&members, |id| match id {
+            "a" => Some(&a[..]),
+            "b" => Some(&b[..]),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(centroid, [0.75, 0.25], "length does not count, weight does");
+        assert!(axis_centroid(&members[2..], |_| None).is_none());
+    }
+
+    #[test]
+    fn themes_group_by_meaning_whatever_their_works_weigh() {
+        // Every vector shares a large part, as a model's do: unlike works
+        // still have a cosine near 0.9. Three wishes weigh six times what
+        // the six library books do.
+        let work = |id: &str, weight: f64, theme: usize, lean: f32| {
+            let mut vector = vec![3.0, 0.0, 0.0, 0.0, lean];
+            vector[theme] = 1.0;
+            AxisSeed {
+                work_id: id.into(),
+                weight,
+                vector,
+            }
+        };
+        let seeds = vec![
+            work("wish1", 1.5, 1, 0.1),
+            work("wish2", 1.5, 1, -0.1),
+            work("wish3", 1.5, 1, 0.0),
+            work("held1", 0.25, 2, 0.1),
+            work("held2", 0.25, 2, -0.1),
+            work("held3", 0.25, 2, 0.0),
+            work("held4", 0.25, 3, 0.1),
+            work("held5", 0.25, 3, -0.1),
+            work("held6", 0.25, 3, 0.0),
+        ];
+        let groups = ids(&seeds, &cluster(&seeds));
+        assert_eq!(groups.len(), 3, "{groups:?}");
+        let mut wishes = groups[0].clone();
+        wishes.sort_unstable();
+        assert_eq!(wishes, ["wish1", "wish2", "wish3"], "the heaviest first");
+        for group in &groups[1..] {
+            assert_eq!(group.len(), 3, "{groups:?}");
+            let theme = &group[0][..4];
+            assert!(group.iter().all(|id| id.starts_with(theme)));
+        }
+        // Works that are all one point are one group, not an error.
+        let same: Vec<AxisSeed> = (0..4)
+            .map(|at| work(&format!("s{at}"), 1.0, 1, 0.0))
+            .collect();
+        assert_eq!(cluster(&same).len(), 1);
+    }
+
+    #[test]
+    fn an_ordinary_book_is_where_three_quarters_of_the_offer_is_left_behind() {
+        let centroid = [1.0_f32, 0.0];
+        // Cosines 0.00, 0.05, … 0.95 to the centroid.
+        let offered: Vec<Vec<f32>> = (0..20_u8)
+            .map(|at| {
+                let cosine = f32::from(at) * 0.05;
+                vec![cosine, (1.0 - cosine * cosine).sqrt()]
+            })
+            .collect();
+        let ordinary = ordinary_closeness(&centroid, offered.iter().map(Vec::as_slice)).unwrap();
+        assert!((ordinary - 0.75).abs() < 1e-5, "{ordinary}");
+        // Too few books, or books of another space, say nothing.
+        let few = offered
+            .iter()
+            .take(ORDINARY_MIN_BOOKS - 1)
+            .map(Vec::as_slice);
+        assert_eq!(ordinary_closeness(&centroid, few), None);
+        let other = [0.5_f32, 0.5, 0.5];
+        assert_eq!(
+            ordinary_closeness(&other, offered.iter().map(Vec::as_slice)),
+            None
+        );
+    }
+
+    #[test]
+    fn an_axis_of_wishes_pulls_harder_than_one_of_library_books() {
+        let axis = |name: &str, weight: f64, ordinary: Option<f32>| TasteAxis {
+            name: name.into(),
+            members: ["1", "2"]
+                .iter()
+                .map(|n| AxisMember {
+                    work_id: format!("{name}{n}"),
+                    weight,
+                })
+                .collect(),
+            ordinary,
+        };
+        let axes = [axis("w", 1.5, Some(0.6)), axis("h", 0.375, None)];
+        let w = [1.0_f32, 0.0];
+        let h = [0.0_f32, 1.0];
+        let scales = axis_scales(&axes, |id| {
+            Some(if id.starts_with('w') { &w[..] } else { &h[..] })
+        });
+        let wished = scales[0].as_ref().unwrap();
+        let held = scales[1].as_ref().unwrap();
+        assert_eq!((wished.strength, held.strength), (1.0, 0.5));
+        // The wished axis starts at its ordinary book, not at the other
+        // axis's works.
+        assert_eq!((wished.near, wished.far), (1.0, 0.6));
+        assert_eq!((held.near, held.far), (1.0, 0.0));
+        assert_eq!(wished.fit(0.6), 0.0);
+        assert!((wished.pull(0.8) - 0.5).abs() < 1e-5);
+        assert!((held.pull(0.8) - 0.4).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_heavy_works_of_an_axis_name_it_not_its_light_ones() {
+        let weighed = |title: &str, genres: &str, series: &[&str], weight: f64| AxisBook {
+            weight,
+            ..book(title, genres, series, "")
+        };
+        let books = vec![
+            weighed("Red Rising", "Science Fiction", &[], 1.5),
+            weighed("Hyperion", "Science Fiction", &[], 1.5),
+            weighed("Leviathan Wakes", "Science Fiction", &[], 1.5),
+            weighed("The Final Empire", "Fantasy", &["Mistborn"], 0.25),
+            weighed("The Final Empire (2)", "Fantasy", &["Mistborn"], 0.25),
+            weighed("A Garden Year", "Gardening", &[], 1.0),
+            weighed("Garden Beds", "Gardening", &[], 1.0),
+        ];
+        // By count, Mistborn (2 of 5, none outside) would beat nothing
+        // else here but still qualify; by weight it is a tenth of the
+        // axis, and the wishes' genre names it.
+        let names = name_axes(&[vec![3, 0, 1, 2, 4], vec![5, 6]], &books);
+        assert_eq!(names, ["Science Fiction", "Gardening"]);
+    }
+
+    #[test]
+    fn among_names_as_good_the_one_that_says_most_wins() {
+        let weighed = |title: &str, genres: &str, weight: f64| AxisBook {
+            weight,
+            ..book(title, genres, &[], "")
+        };
+        let books = vec![
+            weighed("D-Day", "History; Military; World War II", 1.5),
+            weighed("Citizen Soldiers", "History; Military; World War II", 1.5),
+            weighed("Unbroken", "History; Military; World War II", 1.5),
+            weighed("Band of Brothers", "History; Military; World War II", 1.5),
+            // A light book beside them carries one of their labels.
+            weighed("The Way of Kings", "Epic; Military", 0.25),
+            weighed(
+                "Orient Express",
+                "Mystery, Thriller & Suspense; Classics",
+                1.5,
+            ),
+            weighed(
+                "Thursday Murder Club",
+                "Mystery, Thriller & Suspense; Cozy",
+                1.5,
+            ),
+            // Nothing is known of these two: they have no say.
+            weighed("Iron Flame", "", 1.5),
+            weighed("The Women", "", 1.5),
+            weighed("Mistborn", "Fantasy", 0.5),
+            weighed("Mistborn (2)", "Fantasy", 0.5),
+        ];
+        let names = name_axes(
+            &[vec![0, 1, 2, 3, 4], vec![5, 6], vec![7, 8, 9, 10]],
+            &books,
+        );
+        // The third group is mostly works nothing is known of: its two
+        // light fantasies do not speak for it.
+        assert_eq!(
+            names,
+            [
+                "World War II",
+                "Mystery, Thriller & Suspense",
+                "Like Iron Flame"
+            ]
+        );
+        // A line without `;` or `>` lists its labels with commas.
+        let labels: Vec<String> = axis_labels("Fantasy, Epic, Fiction")
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect();
+        assert_eq!(labels, ["Fantasy", "Epic"]);
+    }
+
+    #[test]
+    fn a_wished_work_is_named_from_what_its_wish_knows() {
+        let now = Utc::now();
+        let work = WorkRecord {
+            id: "w".into(),
+            kind: "book".into(),
+            title: "D-Day".into(),
+            parent_work_id: None,
+            credits: vec!["Stephen E. Ambrose".into()],
+            narrators: Vec::new(),
+            series: Vec::new(),
+            description: None,
+            subjects: None,
+            categories: Some(" ".into()),
+            cover_url: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let wish = crate::embed::WishText {
+            series: Some("Ambrose".into()),
+            genres: Some("History, Military".into()),
+            description: Some("The Normandy landings.".into()),
+        };
+        let named = AxisBook::of_wished(&work, Some(&wish), 1.5);
+        assert_eq!(named.genres.as_deref(), Some("History, Military"));
+        assert_eq!(named.series, ["Ambrose"]);
+        assert_eq!(named.description.as_deref(), Some("The Normandy landings."));
+        assert!((named.weight - 1.5).abs() < 1e-9);
+        let bare = AxisBook::of(&work);
+        assert_eq!((bare.genres, bare.weight), (None, 1.0));
+    }
+
+    #[test]
+    fn a_shouted_phrase_is_shown_in_plain_capitals() {
+        assert_eq!(phrase_display("NEW YORK TIMES"), "New York Times");
+        assert_eq!(phrase_display("New York Times"), "New York Times");
+        assert_eq!(phrase_display("FBI agent"), "FBI agent");
+        let phrases = description_phrases("A NEW YORK TIMES BESTSELLER");
+        assert!(phrases
+            .iter()
+            .any(|(shown, key)| shown == "New York Times Bestseller"
+                && key == "new york times bestseller"));
+    }
+
+    #[test]
+    fn a_fit_runs_from_the_other_axes_works_to_the_axis_own() {
+        let axis = |name: &str, ids: [&str; 2]| TasteAxis {
+            name: name.into(),
+            members: ids
+                .iter()
+                .map(|id| AxisMember {
+                    work_id: (*id).into(),
+                    weight: 1.0,
+                })
+                .collect(),
+            ordinary: None,
+        };
+        let axes = [
+            axis("x", ["x1", "x2"]),
+            axis("y", ["y1", "y2"]),
+            axis("gone", ["g1", "g2"]),
+        ];
+        let x = [1.0_f32, 0.0];
+        let y = [0.0_f32, 1.0];
+        let scales = axis_scales(&axes, |id| match id {
+            "x1" | "x2" => Some(&x[..]),
+            "y1" | "y2" => Some(&y[..]),
+            _ => None,
+        });
+        assert!(scales[2].is_none(), "no work of the axis has a vector");
+        let scale = scales[0].as_ref().unwrap();
+        assert_eq!((scale.near, scale.far), (1.0, 0.0));
+        assert_eq!(scale.fit(scale.closeness(&x).unwrap()), 1.0);
+        assert_eq!(scale.fit(scale.closeness(&y).unwrap()), 0.0);
+        let between = scale.fit(scale.closeness(&[1.0, 1.0]).unwrap());
+        assert!((between - 0.707).abs() < 0.01, "{between}");
+        assert_eq!(scale.fit(-0.5), 0.0, "never below nothing");
+        assert_eq!(scale.closeness(&[1.0, 0.0, 0.0]), None);
+        // Works equally close to both ends still give a band to measure in.
+        let flat = AxisScale {
+            centroid: vec![1.0, 0.0],
+            near: 0.8,
+            far: 0.8,
+            strength: 0.5,
+        };
+        assert_eq!(flat.pull(0.9), 0.5, "a weaker axis pulls less");
+        assert!((flat.clone().against(0.5).fit(0.65) - 0.5).abs() < 1e-5);
+        assert!(
+            (flat.clone().against(0.95).far - 0.78).abs() < 1e-5,
+            "kept below near"
+        );
+        assert_eq!(flat.fit(0.8), 0.0);
+        assert_eq!(flat.fit(0.9), 1.0);
+    }
+
+    #[test]
+    fn a_book_near_several_axes_fits_better_than_a_book_near_one() {
+        assert_eq!(taste_fit([0.2, 1.0, 0.0]), 1.1);
+        assert_eq!(taste_fit([1.0]), 1.0);
+        assert_eq!(taste_fit([1.0, 1.0, 1.0, 1.0, 1.0]), 1.75);
+        assert_eq!(taste_fit([]), 0.0);
+        assert!(taste_fit([0.8, 0.8]) > taste_fit([1.0]));
+    }
+
+    /// A book with `genres`, in `series`, described by `description`.
+    fn book(title: &str, genres: &str, series: &[&str], description: &str) -> AxisBook {
+        AxisBook {
+            title: title.to_string(),
+            genres: (!genres.is_empty()).then(|| genres.to_string()),
+            series: series.iter().map(|s| (*s).to_string()).collect(),
+            description: (!description.is_empty()).then(|| description.to_string()),
+            weight: 1.0,
+        }
+    }
+
+    #[test]
+    fn a_group_is_named_by_what_its_works_share_and_the_others_lack() {
+        let books = [
+            book("Dune", "Fiction, Science Fiction", &[], ""),
+            book("Hyperion", "Science Fiction, Classics", &[], ""),
+            book("Guards! Guards!", "Fiction, Fantasy", &["Discworld"], ""),
+            book("Mort", "Fantasy, Humor", &["Discworld"], ""),
+            book(
+                "Educated",
+                "Biography",
+                &[],
+                "<p>The #1 <b>New York Times</b> bestseller about a girl.</p>",
+            ),
+            book(
+                "Becoming",
+                "Memoir",
+                &[],
+                "A New York Times bestseller, and the story of a life.",
+            ),
+            book("Loner", "", &[], "Nothing in common."),
+            book("Other", "", &[], "With anything else at all."),
+        ];
+        let groups = vec![vec![0, 1], vec![2, 3], vec![4, 5], vec![6, 7]];
+        assert_eq!(
+            name_axes(&groups, &books),
+            [
+                "Science Fiction",
+                "Discworld",
+                "New York Times bestseller",
+                "Like Loner"
+            ],
+            "a genre; a series before the genre beside it by name; the longest \
+             shared phrase; and the first work when nothing is shared"
+        );
+    }
+
+    #[test]
+    fn a_label_everyone_carries_names_nothing_and_no_name_is_used_twice() {
+        let books = [
+            book("A", "Fantasy", &[], ""),
+            book("B", "Fantasy", &[], ""),
+            book("C", "Fantasy", &[], ""),
+            book("D", "Fantasy", &[], ""),
+        ];
+        let groups = vec![vec![0, 1], vec![2, 3]];
+        assert_eq!(name_axes(&groups, &books), ["Like A", "Like C"]);
+        // Shared by one group and half of the other: still the first's name
+        // (1.0 - 0.5), and the other falls back.
+        let books = [
+            book("A", "Noir", &[], ""),
+            book("B", "Noir", &[], ""),
+            book("C", "Noir", &[], ""),
+            book("D", "Cozy", &[], ""),
+        ];
+        assert_eq!(name_axes(&groups, &books), ["Noir", "Like C"]);
+        // A work nothing is known of has no say: every work that could
+        // carry the label does, so it sets no group apart.
+        let books = [
+            book("A", "Noir", &[], ""),
+            book("B", "Noir", &[], ""),
+            book("C", "Noir", &[], ""),
+            book("D", "", &[], ""),
+        ];
+        assert_eq!(name_axes(&groups, &books), ["Like A", "Like C"]);
+    }
+
+    #[test]
+    fn phrases_skip_markup_stopword_ends_and_numbers() {
+        let phrases: Vec<String> =
+            description_phrases("<i>The</i> winner of the 2019 Hugo Award, at last")
+                .into_iter()
+                .map(|(phrase, _)| phrase)
+                .collect();
+        assert!(phrases.contains(&"Hugo Award".to_string()));
+        assert!(phrases.iter().all(|p| !p.ends_with("2019")));
+        assert!(phrases.iter().all(|p| !p.starts_with("The ")));
+        assert!(phrases.iter().all(|p| !p.ends_with(" the")));
+        assert!(phrases.iter().all(|p| !p.contains('<')));
+    }
+
+    #[test]
+    fn praise_and_reviewers_are_not_phrases() {
+        let phrases: Vec<String> = description_phrases(
+            "One of the best books of the year. Library Journal starred review. \
+             A New York Times bestseller about a generation ship.",
+        )
+        .into_iter()
+        .map(|(phrase, _)| phrase)
+        .collect();
+        for dull in [
+            "best books",
+            "best books of the year",
+            "Library Journal",
+            "starred review",
+            "Library Journal starred review",
+            "One of the best",
+        ] {
+            assert!(!phrases.iter().any(|p| p == dull), "{dull}");
+        }
+        // A phrase with a word of its own stays.
+        assert!(phrases.contains(&"New York Times bestseller".to_string()));
+        assert!(phrases.contains(&"generation ship".to_string()));
+    }
+}

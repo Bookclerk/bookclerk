@@ -99,6 +99,10 @@ const WISH_SHELVES: usize = 3;
 /// Most titles of one series on a shelf that is not about series, so one
 /// long series cannot crowd the others out.
 pub const SERIES_CAP: usize = 2;
+/// Most titles by one author on a shelf that caps authors
+/// ([`SeriesRule::CapAuthors`]), so one prolific author a taste leans to
+/// cannot be the whole shelf.
+pub const AUTHOR_CAP: usize = 2;
 
 /// Shelf kinds Discover can emit (for config / UI ignore lists).
 #[must_use]
@@ -112,7 +116,7 @@ pub fn shelf_kind_catalog() -> Vec<ShelfKindInfo> {
         kind("narrator", "Narrated by {Narrator}"),
         kind("genre", "Because you like {Genre}"),
         kind("starter_genre", "Popular in {Genre}"),
-        kind("similar_taste", "Similar to books you finish"),
+        kind("similar_taste", "Similar to your books and wishes"),
         kind("chirp_deals", "Chirp deals"),
         kind("from_store", "Picked for you on {Store}"),
         kind("requests", "On the wishlist"),
@@ -171,6 +175,9 @@ pub fn shelf_is_disabled(shelf_id: &str, disabled: &[String]) -> bool {
 enum SeriesRule {
     /// At most [`SERIES_CAP`] titles per series; the rest wait for another shelf.
     Cap,
+    /// [`Self::Cap`], and at most [`AUTHOR_CAP`] titles by one author, for
+    /// a shelf that is about what books are like and not who wrote them.
+    CapAuthors,
     /// Every title may stay, but series take turns so the top of the shelf
     /// shows several of them rather than one in a row.
     Interleave,
@@ -322,13 +329,26 @@ pub fn build_discover_feed(
         );
     }
 
-    builder.push(
-        "similar_taste",
-        "Similar to books you finish",
-        Some("Embedding / taste overlap"),
-        |r| has_category(r, "similar_taste"),
-        SeriesRule::Cap,
-    );
+    // Ordered by how well a title fits the taste by meaning, not by its
+    // whole score: a liked author or narrator adds more points than a fit
+    // does, and would fill this shelf with that one person's books. A
+    // taste built on one author's books fits that author's other books
+    // best, so the shelf also takes no more than [`AUTHOR_CAP`] by one
+    // author; "More from {Author}" is the shelf for those. Titles of equal
+    // fit keep the order they were given in.
+    if !shelf_is_disabled("similar_taste", disabled_shelves) {
+        let items = builder.take_by(
+            |r| has_category(r, "similar_taste"),
+            SeriesRule::CapAuthors,
+            |r| r.taste_points,
+        );
+        builder.push_items(
+            "similar_taste",
+            "Similar to your books and wishes",
+            Some("Embedding / taste overlap"),
+            items,
+        );
+    }
 
     // Genres the stores were browsed by (the genres the taste leans to,
     // and the starter genres while it is thin): one shelf per genre, best
@@ -471,7 +491,8 @@ impl FeedBuilder<'_> {
         let mut seen = HashSet::new();
         sorted.retain(|r| seen.insert(recommendation_map_key(r)));
         let picked = match rule {
-            SeriesRule::Cap => cap_series(&sorted, self.cap),
+            SeriesRule::Cap => cap_series(&sorted, self.cap, None),
+            SeriesRule::CapAuthors => cap_series(&sorted, self.cap, Some(AUTHOR_CAP)),
             SeriesRule::Interleave => interleave_series(&sorted, self.cap),
         };
         for r in &picked {
@@ -527,13 +548,37 @@ fn series_key(r: &Recommendation) -> Option<String> {
 }
 
 /// The first `cap` of `sorted` (best first) with at most [`SERIES_CAP`]
-/// titles of one series; titles without a series are not limited.
-fn cap_series(sorted: &[&Recommendation], cap: usize) -> Vec<Recommendation> {
+/// titles of one series; titles without a series are not limited. With
+/// `author_cap`, also at most that many titles by one author: a title
+/// counts for each author it names, and is left out when any of them has
+/// had their share.
+fn cap_series(
+    sorted: &[&Recommendation],
+    cap: usize,
+    author_cap: Option<usize>,
+) -> Vec<Recommendation> {
     let mut per_series: HashMap<String, usize> = HashMap::new();
+    let mut per_author: HashMap<String, usize> = HashMap::new();
     let mut out = Vec::with_capacity(cap.min(sorted.len()));
     for r in sorted {
         if out.len() >= cap {
             break;
+        }
+        let authors: Vec<String> = r
+            .authors
+            .as_deref()
+            .map(split_people)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|name| name.to_lowercase())
+            .collect();
+        if let Some(author_cap) = author_cap {
+            if authors
+                .iter()
+                .any(|name| per_author.get(name).copied().unwrap_or(0) >= author_cap)
+            {
+                continue;
+            }
         }
         if let Some(series) = series_key(r) {
             let n = per_series.entry(series).or_insert(0);
@@ -541,6 +586,9 @@ fn cap_series(sorted: &[&Recommendation], cap: usize) -> Vec<Recommendation> {
                 continue;
             }
             *n += 1;
+        }
+        for name in authors {
+            *per_author.entry(name).or_insert(0) += 1;
         }
         out.push((*r).clone());
     }
@@ -700,7 +748,7 @@ fn because_you_like(r: &Recommendation, liked_author: &str, taste: &ShelfTaste) 
         || has_category(r, "similar_taste")
         || r.reasons
             .iter()
-            .any(|x| x.contains("related") || x.contains("similar to titles you finish")))
+            .any(|x| x.contains("related") || x.contains(crate::recommend::SIMILAR_REASON)))
     {
         return false;
     }
@@ -739,7 +787,7 @@ fn because_you_like(r: &Recommendation, liked_author: &str, taste: &ShelfTaste) 
     let similar = r
         .reasons
         .iter()
-        .any(|x| x.contains("similar to titles you finish") || x.contains("related"));
+        .any(|x| x.contains(crate::recommend::SIMILAR_REASON) || x.contains("related"));
     if similar {
         // Prefer when overall taste includes this author heavily — already gated by shelf.
         return !liked.is_empty();
@@ -1413,7 +1461,7 @@ mod tests {
                 authors: Some("Other Writer".into()),
                 reasons: vec![
                     "libro related to “Seed By Ada”".into(),
-                    "similar to titles you finish (sim 0.40)".into(),
+                    format!("{} (sim 0.40)", crate::recommend::SIMILAR_REASON),
                 ],
                 categories: vec!["similar_taste".into()],
                 ..rec("OtherBook", 18.0, &[])
@@ -1434,6 +1482,50 @@ mod tests {
             .iter()
             .any(|s| s.id.starts_with("because:") && !s.items.is_empty()));
         assert!(!feed.shelf_kinds.is_empty());
+    }
+
+    #[test]
+    fn the_similar_shelf_is_ordered_by_fit_not_by_who_wrote_the_book() {
+        // A liked author's book outscores a closer fit by a stranger; the
+        // shelf of similar titles still opens with the closer fit.
+        let similar = |title: &str, score: f64, taste_points: f64| Recommendation {
+            taste_points,
+            authors: Some(format!("Author of {title}")),
+            series: None,
+            ..rec(title, score, &["similar_taste"])
+        };
+        let recs = vec![
+            similar("By a liked author", 20.0, 1.6),
+            similar("Closest", 7.0, 5.5),
+            similar("Close", 6.0, 3.0),
+            similar("Close too", 9.0, 3.0),
+        ];
+        let feed = build_discover_feed(&recs, &ShelfTaste::default(), 8, &[]);
+        assert_eq!(
+            titles(&feed, "similar_taste"),
+            ["Closest", "Close", "Close too", "By a liked author"]
+        );
+        // No more than two by one author, however well the rest fit.
+        let mut one_author = recs.clone();
+        one_author.extend((0..4).map(|n| Recommendation {
+            authors: Some("Prolific Writer, Co Author".into()),
+            ..similar(&format!("Prolific {n}"), 30.0, 9.0 - f64::from(n))
+        }));
+        let feed = build_discover_feed(&one_author, &ShelfTaste::default(), 8, &[]);
+        assert_eq!(
+            titles(&feed, "similar_taste"),
+            [
+                "Prolific 0",
+                "Prolific 1",
+                "Closest",
+                "Close",
+                "Close too",
+                "By a liked author"
+            ]
+        );
+        let hidden = vec!["similar_taste".to_string()];
+        let feed = build_discover_feed(&recs, &ShelfTaste::default(), 8, &hidden);
+        assert!(titles(&feed, "similar_taste").is_empty());
     }
 
     #[test]

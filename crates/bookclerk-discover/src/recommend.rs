@@ -27,6 +27,7 @@ use crate::identity::{
 use crate::purchase::{
     purchase_hints_for, seed_purchase_hint, seed_source_is_trusted, PurchaseHint,
 };
+use crate::taste_axes::{axis_scales, ordinary_closeness, taste_fit, AxisScale, TasteAxis};
 
 /// Per open wish on the global queue. Large enough that multi-user demand
 /// dominates typical local taste scores (~1–25) while recommend signals still
@@ -102,6 +103,14 @@ pub struct Recommendation {
     /// card. Used while ranking; never stored or sent.
     #[serde(skip)]
     pub expression_id: Option<String>,
+    /// Points of [`Self::score`] that come from the card's fit to the
+    /// subject's taste by meaning (its taste axes, or the seed centroid
+    /// without them); 0 when the card does not count as similar. The
+    /// "Similar to your books and wishes" shelf is ordered by it, so that
+    /// shelf shows what the taste is about and not who wrote or read it.
+    /// Kept only while a feed is built, not stored or served.
+    #[serde(skip)]
+    pub taste_points: f64,
     /// Display title as shown on the storefront or library card.
     #[schema(example = "The Left Hand of Darkness")]
     pub title: String,
@@ -704,13 +713,14 @@ pub(crate) async fn rank_candidates(
     let mut scored: HashMap<String, Recommendation> = HashMap::new();
 
     for (c, text) in candidates.into_iter().zip(&candidate_texts) {
+        let similar = similarity.boost(text);
         let (mut score, mut reasons, mut categories) = score_work_against_taste(
             c.authors.as_deref(),
             c.narrators.as_deref(),
             c.series.as_deref(),
             c.series_index.as_deref(),
             &profile,
-            similarity.boost(text),
+            similar,
         );
         // Origin / category / deals are candidate-specific (not on wishlist rows).
         reasons.insert(0, c.origin.clone());
@@ -777,6 +787,7 @@ pub(crate) async fn rank_candidates(
         let mut rec = Recommendation {
             work_id: c.work_id,
             expression_id: c.expression_id,
+            taste_points: similar.map_or(0.0, |similar| similar.score),
             title: c.title,
             authors: c.authors,
             narrators: c.narrators,
@@ -817,13 +828,14 @@ pub(crate) async fn rank_candidates(
         if library_owns_work(library, &entry).await? {
             continue;
         }
+        let similar = similarity.boost(text);
         let (taste_score, mut reasons, mut categories) = score_work_against_taste(
             entry.authors.as_deref(),
             None,
             None,
             None,
             &profile,
-            similarity.boost(text),
+            similar,
         );
         if entry.wish_count > 1 {
             reasons.push(format!("wishlisted by {} people", entry.wish_count));
@@ -856,6 +868,7 @@ pub(crate) async fn rank_candidates(
         let mut rec = Recommendation {
             work_id: Some(entry.work_id),
             expression_id: entry.expression_id,
+            taste_points: similar.map_or(0.0, |similar| similar.score),
             title: entry.title,
             authors: entry.authors,
             narrators: entry.narrators,
@@ -920,6 +933,11 @@ pub(crate) struct TasteScores {
     pub(crate) series_affinity: HashMap<String, SeriesAffinity>,
     /// Works whose stored embeddings make up the seed centroid.
     pub(crate) seed_work_ids: std::collections::BTreeSet<String>,
+    /// The taste's axes: its seed works and wishes grouped by meaning.
+    /// Empty until a taste is stored with a model's vectors, and for a
+    /// taste with too few works that sit together.
+    #[serde(default)]
+    pub(crate) axes: Vec<crate::taste_axes::TasteAxis>,
 }
 
 /// Weighted author/narrator/category likes, series affinity, and optional embedding centroid.
@@ -934,6 +952,10 @@ struct TasteProfile {
     series_affinity: HashMap<String, SeriesAffinity>,
     /// Mean embedding of seed works when embeddings are available.
     seed_centroid: Option<Vec<f32>>,
+    /// The taste's axes with their scales in a model's space; empty when
+    /// the taste has none stored, the space is the stand-in's, or none of
+    /// their works has a vector there.
+    axes: Vec<AxisScale>,
 }
 
 impl TasteProfile {
@@ -945,14 +967,116 @@ impl TasteProfile {
         opts: &RecommendOptions,
     ) -> Result<Self> {
         let seed_centroid = seed_embedding_centroid(library, &scores.seed_work_ids, opts).await?;
+        let axes = stored_axis_scales(library, &scores.axes, opts).await?;
         Ok(Self {
             liked_authors: scores.liked_authors,
             liked_narrators: scores.liked_narrators,
             liked_categories: scores.liked_categories,
             series_affinity: scores.series_affinity,
             seed_centroid,
+            axes,
         })
     }
+}
+
+/// The scales of a taste's stored `axes` in the space `opts` names.
+///
+/// # Returns
+///
+/// Empty when similarity is off, the space is the stand-in's (hash vectors
+/// do not group by meaning), or no axis has a work with a vector there;
+/// the ranking then measures against the one seed centroid.
+///
+/// # Errors
+///
+/// Returns the library read error.
+async fn stored_axis_scales(
+    library: &LibraryStore,
+    axes: &[TasteAxis],
+    opts: &RecommendOptions,
+) -> Result<Vec<AxisScale>> {
+    if !opts.embeddings_enabled || axes.is_empty() || is_stand_in(&opts.vectors.space) {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<String> = axes
+        .iter()
+        .flat_map(|axis| axis.members.iter().map(|member| member.work_id.clone()))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let vectors: HashMap<String, Vec<f32>> = library
+        .vectors(
+            bookclerk_library::VECTOR_KIND_WORK,
+            &opts.vectors.space,
+            &ids,
+        )
+        .await?
+        .iter()
+        .map(|(id, bytes)| (id.clone(), bytes_to_vector(bytes)))
+        .collect();
+    Ok(axis_scales(axes, |id| vectors.get(id).map(Vec::as_slice))
+        .into_iter()
+        .flatten()
+        .collect())
+}
+
+/// How the reason of a title ranked up for sitting near the taste's seed
+/// works starts. The seeds are books finished, rated or held and open
+/// wishes, so it names both. Shelves find such titles by it.
+pub(crate) const SIMILAR_REASON: &str = "similar to your books and wishes";
+
+/// What a book counts in a taste for being in the library, before anyone
+/// finished or rated it: someone chose to buy it. Until this counted only
+/// once the audio was downloaded, a library that had downloaded nothing
+/// had no taste.
+const HELD_BOOK_WEIGHT: f64 = 0.5;
+
+/// How much one book counts in a taste: half a point for being in the
+/// library (every title here is one an account or a branch holds, with
+/// its audio or not), 3 more when finished and 2 more for a rating of four
+/// stars or more (1 for three), times the book's multiplier in `weights`.
+fn book_taste_weight(book: &TasteTitle, weights: &TasteWeights) -> f64 {
+    let mut weight = HELD_BOOK_WEIGHT;
+    if book.is_finished {
+        weight += 3.0;
+    }
+    if let Some(r) = book.rating_overall {
+        if r >= 4.0 {
+            weight += 2.0;
+        } else if r >= 3.0 {
+            weight += 1.0;
+        }
+    }
+    weight * taste_multiplier(weights, book)
+}
+
+/// How much each seed work of a taste counts when its axes are found: the
+/// book's weight ([`book_taste_weight`]) plus what its listening adds.
+///
+/// # Arguments
+///
+/// * `books` - Books whose finishes and ratings shape the taste.
+/// * `weights` - How much each book counts (see [`TasteWeights`]).
+/// * `listening` - Listening rows; each adds its engagement to its work.
+pub(crate) fn seed_weights(
+    books: &[TasteTitle],
+    weights: &TasteWeights,
+    listening: &[ListeningSignal],
+) -> std::collections::BTreeMap<String, f64> {
+    let mut seeds: std::collections::BTreeMap<String, f64> = std::collections::BTreeMap::new();
+    for book in books {
+        let weight = book_taste_weight(book, weights);
+        if weight > 0.0 {
+            *seeds.entry(book.work_id.clone()).or_default() += weight;
+        }
+    }
+    for row in listening {
+        let weight = listening_engagement(row) * listening_multiplier(weights, row);
+        if let Some(work) = row.work_id.as_ref().filter(|_| weight > 0.0) {
+            *seeds.entry(work.clone()).or_default() += weight;
+        }
+    }
+    seeds
 }
 
 /// Accumulates liked people/categories, series affinity, and a seed embedding centroid.
@@ -986,21 +1110,7 @@ pub(crate) fn build_taste_scores(
     let mut listening_engagement_by_uuid: HashMap<String, f64> = HashMap::new();
 
     for book in books {
-        let mut weight = 0.0;
-        if book.is_finished {
-            weight += 3.0;
-        }
-        if let Some(r) = book.rating_overall {
-            if r >= 4.0 {
-                weight += 2.0;
-            } else if r >= 3.0 {
-                weight += 1.0;
-            }
-        }
-        if book.acquired {
-            weight += 0.5;
-        }
-        weight *= taste_multiplier(weights, book);
+        let weight = book_taste_weight(book, weights);
         if weight <= 0.0 {
             continue;
         }
@@ -1050,6 +1160,7 @@ pub(crate) fn build_taste_scores(
         liked_categories,
         series_affinity,
         seed_work_ids,
+        axes: Vec::new(),
     }
 }
 
@@ -1098,10 +1209,7 @@ fn score_work_against_taste(
 
     if let Some(similar) = similar {
         score += similar.score;
-        reasons.push(format!(
-            "similar to titles you finish (sim {:.2})",
-            similar.similarity
-        ));
+        reasons.push(format!("{SIMILAR_REASON} (sim {:.2})", similar.similarity));
         push_shelf_category(&mut categories, "similar_taste");
     }
 
@@ -1113,7 +1221,8 @@ fn score_work_against_taste(
 struct SimilarityBoost {
     /// Points added to the score.
     score: f64,
-    /// Cosine similarity between the text's vector and the seed centroid.
+    /// Cosine similarity between the text's vector and the seed centroid,
+    /// or the axis the text fits best when the taste has axes.
     similarity: f32,
 }
 
@@ -1137,6 +1246,14 @@ const MODEL_MAX_STANDING: f32 = 3.0;
 /// Points per standard deviation above the mean.
 const MODEL_STANDING_WEIGHT: f64 = 2.5;
 
+/// Least fit to a taste's axes ([`taste_fit`]) for a text to count as
+/// similar: a quarter of the way from an ordinary book to an axis's own.
+const AXIS_MIN_FIT: f32 = 0.25;
+
+/// Points for a text that lands as close to one axis as the axis's own
+/// books. A text close to several axes earns up to 1.75 times this.
+const AXIS_FIT_WEIGHT: f64 = 6.0;
+
 /// Longest one ranking spends embedding texts that have no stored vector;
 /// the rest are ranked without similarity and embedded by a later ranking.
 const TEXT_EMBED_BUDGET: std::time::Duration = std::time::Duration::from_secs(45);
@@ -1150,7 +1267,18 @@ const TEXT_EMBED_BUDGET: std::time::Duration = std::time::Duration::from_secs(45
 /// above the ranking's mean by [`MODEL_MIN_STANDING`] deviations. The
 /// stand-in's hash vectors are near zero unless texts share words, and
 /// keep their fixed threshold.
+///
+/// A taste with axes ([`crate::taste_axes`]) is not one direction, so its
+/// texts are measured against every axis instead: each axis carries its
+/// own scale, from where an ordinary text of the ranking sits to the
+/// axis's own books ([`AxisScale::fit`]), an axis of wishes or finished
+/// books counts for more than one of books only in the library
+/// ([`AxisScale::pull`]), and a text's fits add up ([`taste_fit`]), so a
+/// text near one axis scores and a text near several scores more.
 struct TasteSimilarity {
+    /// Fit to the taste's axes and cosine to the closest axis, by
+    /// [`text_hash`]; empty for a taste without axes.
+    fits: HashMap<String, (f32, f32)>,
     /// Similarity to the seed centroid by [`text_hash`]; a text without a
     /// vector has none.
     similarities: HashMap<String, f32>,
@@ -1165,6 +1293,7 @@ impl TasteSimilarity {
     /// No text is similar: similarity is off, or the taste has no centroid.
     fn none() -> Self {
         Self {
+            fits: HashMap::new(),
             similarities: HashMap::new(),
             spread: None,
             stand_in: true,
@@ -1184,13 +1313,10 @@ impl TasteSimilarity {
         opts: &RecommendOptions,
         texts: &[String],
     ) -> Result<Self> {
-        let Some(centroid) = profile
-            .seed_centroid
-            .as_deref()
-            .filter(|_| opts.embeddings_enabled)
-        else {
+        if !opts.embeddings_enabled || (profile.seed_centroid.is_none() && profile.axes.is_empty())
+        {
             return Ok(Self::none());
-        };
+        }
         let space = &opts.vectors.space;
         let deadline = std::time::Instant::now() + TEXT_EMBED_BUDGET;
         let vectors = match &opts.vectors.embedder {
@@ -1207,16 +1333,60 @@ impl TasteSimilarity {
             }
             None => text_vectors(library, space, None, texts, None).await?,
         };
+        let stand_in = is_stand_in(space);
+        if !profile.axes.is_empty() && !stand_in {
+            // Each axis is measured from where the texts of this ranking
+            // ordinarily sit, when there are enough of them to say.
+            let axes: Vec<AxisScale> = profile
+                .axes
+                .iter()
+                .map(|axis| {
+                    let offered = vectors.values().map(Vec::as_slice);
+                    match ordinary_closeness(&axis.centroid, offered) {
+                        Some(ordinary) => axis.clone().against(ordinary),
+                        None => axis.clone(),
+                    }
+                })
+                .collect();
+            let fits = vectors
+                .into_iter()
+                .filter_map(|(hash, vector)| {
+                    let closeness: Vec<(f32, f32)> = axes
+                        .iter()
+                        .filter_map(|axis| {
+                            let closeness = axis.closeness(&vector)?;
+                            Some((axis.pull(closeness), closeness))
+                        })
+                        .collect();
+                    // The cosine shown is to the axis the text fits best.
+                    let (_, nearest) = closeness
+                        .iter()
+                        .copied()
+                        .max_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)))?;
+                    let fit = taste_fit(closeness.iter().map(|(fit, _)| *fit));
+                    Some((hash, (fit, nearest)))
+                })
+                .collect();
+            return Ok(Self {
+                fits,
+                similarities: HashMap::new(),
+                spread: None,
+                stand_in,
+            });
+        }
+        let Some(centroid) = profile.seed_centroid.as_deref() else {
+            return Ok(Self::none());
+        };
         let similarities: HashMap<String, f32> = vectors
             .into_iter()
             .filter(|(_, vector)| vector.len() == centroid.len())
             .map(|(hash, vector)| (hash, cosine(centroid, &vector)))
             .collect();
-        let stand_in = is_stand_in(space);
         let spread = (!stand_in && similarities.len() >= MODEL_MIN_POOL)
             .then(|| mean_and_deviation(similarities.values().copied()))
             .filter(|(_, deviation)| *deviation > 1e-6);
         Ok(Self {
+            fits: HashMap::new(),
             similarities,
             spread,
             stand_in,
@@ -1226,7 +1396,14 @@ impl TasteSimilarity {
     /// What `text`'s similarity adds to its score, when it counts as
     /// similar.
     fn boost(&self, text: &str) -> Option<SimilarityBoost> {
-        let similarity = *self.similarities.get(&text_hash(text))?;
+        let hash = text_hash(text);
+        if let Some((fit, similarity)) = self.fits.get(&hash).copied() {
+            return (fit > AXIS_MIN_FIT).then(|| SimilarityBoost {
+                score: f64::from(fit) * AXIS_FIT_WEIGHT,
+                similarity,
+            });
+        }
+        let similarity = *self.similarities.get(&hash)?;
         if self.stand_in {
             return (similarity > STAND_IN_MIN_SIMILARITY).then(|| SimilarityBoost {
                 score: f64::from(similarity) * STAND_IN_SIMILARITY_WEIGHT,
@@ -1258,7 +1435,7 @@ fn mean_and_deviation(values: impl Iterator<Item = f32> + Clone) -> (f32, f32) {
 }
 
 /// The text embedded for a storefront candidate.
-fn candidate_text(candidate: &crate::candidates::StorefrontCandidate) -> String {
+pub(crate) fn candidate_text(candidate: &crate::candidates::StorefrontCandidate) -> String {
     embed_text(&EmbedFields {
         title: &candidate.title,
         authors: candidate.authors.as_deref(),
@@ -1273,8 +1450,8 @@ fn queue_entry_text(entry: &bookclerk_library::GlobalQueueEntry) -> String {
     embed_text(&EmbedFields {
         title: &entry.title,
         authors: entry.authors.as_deref(),
-        series: None,
-        genres: None,
+        series: entry.series.as_deref(),
+        genres: entry.genres.as_deref(),
         description: entry.description.as_deref(),
     })
 }
@@ -2767,6 +2944,127 @@ mod tests {
         let taste = shelf_taste(&[], &weights, &[row("mine"), row("household")]);
         let weight = taste.authors.get("ann author").map(|(_, w)| *w);
         assert_eq!(weight, Some(full * 1.5));
+    }
+
+    #[tokio::test]
+    async fn a_taste_with_axes_ranks_by_every_axis_and_higher_for_several() {
+        let library = bookclerk_plugin_database_sqlite::open_store_memory()
+            .await
+            .unwrap();
+        let space = bookclerk_library::VectorSpace {
+            model: "@embedder/axes".into(),
+            revision: "r1".into(),
+            packs: String::new(),
+        };
+        // Texts along one axis, between two, and along none of the three.
+        let texts: Vec<(String, [f32; 4])> = vec![
+            ("on x".into(), [1.0, 0.0, 0.0, 0.0]),
+            ("between x and y".into(), [1.0, 1.0, 0.0, 0.0]),
+            ("on y, mostly".into(), [0.1, 1.0, 0.0, 0.0]),
+            ("elsewhere".into(), [0.0, 0.0, 0.0, 1.0]),
+        ];
+        let rows: Vec<(String, Vec<u8>)> = texts
+            .iter()
+            .map(|(text, vector)| (text_hash(text), crate::embed::vector_to_bytes(vector)))
+            .collect();
+        let new: Vec<bookclerk_library::NewVector<'_>> = rows
+            .iter()
+            .map(|(hash, bytes)| bookclerk_library::NewVector {
+                target_id: hash,
+                vector: bytes,
+                text_hash: hash,
+            })
+            .collect();
+        library
+            .put_vectors(bookclerk_library::VECTOR_KIND_TEXT, &space, 4, &new)
+            .await
+            .unwrap();
+        let axis = |centroid: [f32; 4]| AxisScale {
+            centroid: centroid.to_vec(),
+            near: 1.0,
+            far: 0.0,
+            strength: 1.0,
+        };
+        let profile = TasteProfile {
+            liked_authors: HashMap::new(),
+            liked_narrators: HashMap::new(),
+            liked_categories: HashMap::new(),
+            series_affinity: HashMap::new(),
+            // A centroid between the axes, close to none of them: what the
+            // axes replace.
+            seed_centroid: Some(vec![1.0, 1.0, 1.0, 0.0]),
+            axes: vec![
+                axis([1.0, 0.0, 0.0, 0.0]),
+                axis([0.0, 1.0, 0.0, 0.0]),
+                axis([0.0, 0.0, 1.0, 0.0]),
+            ],
+        };
+        let opts = RecommendOptions {
+            vectors: VectorSource::new(space.clone(), None),
+            ..RecommendOptions::default()
+        };
+        let all: Vec<String> = texts.iter().map(|(text, _)| text.clone()).collect();
+        let similarity = TasteSimilarity::load(&library, &profile, &opts, &all)
+            .await
+            .unwrap();
+        let score = |text: &str| similarity.boost(text).map(|boost| boost.score);
+        // Four texts are fewer than a model's ranking needs to be judged
+        // against each other; an axis carries its own scale.
+        let on_x = score("on x").unwrap();
+        assert!((on_x - AXIS_FIT_WEIGHT).abs() < 1e-6, "{on_x}");
+        // 0.707 on both: the best in full and the second at half.
+        let between = score("between x and y").unwrap();
+        assert!((between - std::f64::consts::FRAC_1_SQRT_2 * 1.5 * AXIS_FIT_WEIGHT).abs() < 1e-3);
+        assert!(between > on_x, "near two axes ranks above near one");
+        assert!(score("on y, mostly").unwrap() > on_x);
+        assert_eq!(score("elsewhere"), None);
+        assert_eq!(score("never embedded"), None);
+        let nearest = similarity.boost("on y, mostly").unwrap().similarity;
+        assert!(nearest > 0.99, "the cosine to the best axis: {nearest}");
+
+        // With enough texts to say where an ordinary one sits, an axis is
+        // measured from there: a dozen texts at 0.6 to x no longer score,
+        // though 0.6 of the way from the person's other books.
+        let ordinary: Vec<String> = (0..12).map(|at| format!("ordinary {at}")).collect();
+        let bytes = crate::embed::vector_to_bytes(&[0.6, 0.0, 0.0, 0.8]);
+        let hashes: Vec<String> = ordinary.iter().map(|text| text_hash(text)).collect();
+        let more: Vec<bookclerk_library::NewVector<'_>> = hashes
+            .iter()
+            .map(|hash| bookclerk_library::NewVector {
+                target_id: hash,
+                vector: &bytes,
+                text_hash: hash,
+            })
+            .collect();
+        library
+            .put_vectors(bookclerk_library::VECTOR_KIND_TEXT, &space, 4, &more)
+            .await
+            .unwrap();
+        let crowd: Vec<String> = all.iter().chain(&ordinary).cloned().collect();
+        let among = TasteSimilarity::load(&library, &profile, &opts, &crowd)
+            .await
+            .unwrap();
+        let score = |text: &str| among.boost(text).map(|boost| boost.score);
+        assert_eq!(score("ordinary 0"), None);
+        assert!((score("on x").unwrap() - AXIS_FIT_WEIGHT).abs() < 1e-6);
+        // 0.707 to x is now a quarter of the way from 0.6 to 1.
+        let between = score("between x and y").unwrap();
+        let expected = f64::from(std::f32::consts::FRAC_1_SQRT_2)
+            + (f64::from(std::f32::consts::FRAC_1_SQRT_2) - 0.6) / 0.4 / 2.0;
+        assert!(
+            (between - expected * AXIS_FIT_WEIGHT).abs() < 1e-3,
+            "{between}"
+        );
+
+        // The stand-in's hash vectors do not group by meaning: one centroid.
+        let stand_in = RecommendOptions {
+            vectors: VectorSource::stand_in(),
+            ..RecommendOptions::default()
+        };
+        let none = TasteSimilarity::load(&library, &profile, &stand_in, &all)
+            .await
+            .unwrap();
+        assert!(none.fits.is_empty());
     }
 
     #[test]

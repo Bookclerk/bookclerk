@@ -88,6 +88,7 @@ mod search_index;
 mod search_rerank;
 #[cfg(test)]
 mod startup_tests;
+mod taste_radar;
 mod totp;
 mod tray_companion;
 mod uploads;

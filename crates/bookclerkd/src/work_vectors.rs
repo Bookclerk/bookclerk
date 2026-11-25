@@ -223,6 +223,8 @@ pub(crate) struct WorkVectors {
     held: Mutex<Held>,
     /// Vectors of store search hits.
     hits: Mutex<HitCache>,
+    /// The radar axes built for the subjects asked about lately.
+    pub(crate) radars: crate::taste_radar::AxisCache,
     /// The store searches whose model work is under way.
     pub(crate) search_work: SearchSlots,
 }
@@ -309,10 +311,12 @@ impl WorkVectors {
         self.held.lock().await.looked = None;
     }
 
-    /// Forgets the matrix and every query vector: the daemon reads another
+    /// Forgets the matrix, every query vector and the radar axes: the
+    /// daemon reads another
     /// library store now, whose vectors may carry the same stamp.
     pub(crate) async fn reset(&self) {
         *self.held.lock().await = Held::default();
+        self.radars.clear().await;
     }
 
     /// The vector an earlier page of the same search made for `text`.
