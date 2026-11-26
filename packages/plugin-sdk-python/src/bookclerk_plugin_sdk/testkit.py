@@ -61,6 +61,9 @@ from .limits import limit_exceeded_details, parse_limit_exceeded
 from .testkit_bindings import TestKv as TestKv
 from .testkit_bindings import TestKvOperation as TestKvOperation
 from .testkit_bindings import TestWebhooks as TestWebhooks
+from .testkit_tcp import TestConnect as TestConnect
+from .testkit_tcp import TestDial as TestDial
+from .testkit_tcp import TestTcpConnection as TestTcpConnection
 from .workerd import PluginError
 
 TestDatabaseProfile = Literal["first-party", "d1", "minimum"]

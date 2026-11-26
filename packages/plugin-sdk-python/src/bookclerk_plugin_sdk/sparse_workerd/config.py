@@ -48,9 +48,11 @@ SDK_PY_SIBLING_MODULES = (
     ("bookclerk_plugin_sdk/db_value.py", "db_value.py", "sdk-db-value.py"),
     ("bookclerk_plugin_sdk/scan_page.py", "scan_page.py", "sdk-scan-page.py"),
     ("bookclerk_plugin_sdk/object_store.py", "object_store.py", "sdk-object-store.py"),
+    ("bookclerk_plugin_sdk/tcp.py", "tcp.py", "sdk-tcp.py"),
 )
 """SDK modules ``workerd.py`` imports inside the isolate, injected beside it,
-plus ``scan_page.py`` and ``object_store.py``, which authors import directly.
+plus ``scan_page.py``, ``object_store.py`` and ``tcp.py``, which authors import
+directly.
 
 Each entry is ``(isolate module path, source file name, embedded file name)``.
 Together with ``__init__.py`` and ``workerd.py`` this is the SDK's in-package

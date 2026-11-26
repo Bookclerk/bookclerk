@@ -84,6 +84,13 @@ input_from = "guest"
 side = "host"
 artifacts = ["bookclerk"]
 
+[targets.egress_starttls_frames]
+crate = "bookclerk-workerd"
+boundary = "Frames a plugin writes on a STARTTLS-capable tunnel through the launcher's egress relay"
+input_from = "guest"
+side = "host"
+artifacts = ["bookclerk"]
+
 [targets.egress_policy]
 crate = "bookclerk-plugin-manifest"
 boundary = "Guest egress allowlist (EgressPolicy JSON wire form)"

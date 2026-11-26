@@ -127,6 +127,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "egress_starttls_frames"
+path = "fuzz_targets/egress_starttls_frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "setting_destination"
 path = "fuzz_targets/setting_destination.rs"
 test = false

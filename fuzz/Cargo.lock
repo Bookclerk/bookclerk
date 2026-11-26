@@ -473,6 +473,7 @@ dependencies = [
  "tracing-subscriber",
  "utoipa",
  "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]
@@ -590,6 +591,7 @@ dependencies = [
  "bookclerk-plugin-manifest",
  "bookclerk-plugin-notifier-email",
  "bookclerk-plugin-sdk",
+ "bookclerk-plugin-source-chirp",
  "bookclerk-plugin-source-graphicaudio",
  "bookclerk-plugin-source-libro",
  "bookclerk-resolve",
@@ -861,6 +863,7 @@ dependencies = [
  "async-trait",
  "base64 0.23.1",
  "bookclerk-plugin-sdk",
+ "mrml",
  "serde_json",
  "tokio",
  "uuid",
@@ -901,6 +904,24 @@ dependencies = [
  "url",
  "uuid",
  "webpki-roots",
+]
+
+[[package]]
+name = "bookclerk-plugin-source-chirp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bookclerk-plugin-sdk",
+ "bookclerk-scan-delta",
+ "bookclerk-storefront",
+ "bytes",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1839,6 +1860,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
 
 [[package]]
+name = "enum-as-inner"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0359ee92f81184d7985519e474bda2a5738476334edd3746c9b1265c067afe70"
+dependencies = [
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "enumflags2"
 version = "0.7.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2354,6 +2387,12 @@ dependencies = [
  "markup5ever",
  "memchr",
 ]
+
+[[package]]
+name = "htmlparser"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "48ce8546b993eaf241d69ded33b1be6d205dd9857ec879d9d18bd05d3676e144"
 
 [[package]]
 name = "http"
@@ -3094,6 +3133,20 @@ name = "mp4ameta"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "453e991b2efe96c288cbc2d03a19e353504294559ecb6c03067fff5bd824616d"
+
+[[package]]
+name = "mrml"
+version = "6.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a92ff9ad398a7d556481a607b912370999bc6441537c90a979c16d73c91a832"
+dependencies = [
+ "enum-as-inner",
+ "htmlparser",
+ "indexmap",
+ "itertools",
+ "rustc-hash",
+ "thiserror",
+]
 
 [[package]]
 name = "multiversion_no_op"
@@ -5022,7 +5075,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

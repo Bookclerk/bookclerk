@@ -12,7 +12,8 @@
 //! - an accepted request is one `httparse` reads as a complete request with
 //!   the same method; a `CONNECT` names a valid authority, every other
 //!   method an absolute `http(s)://` URL whose host and port match the
-//!   tunnel target;
+//!   tunnel target; a `CONNECT` whose host ends in the STARTTLS suffix
+//!   becomes a framed tunnel to the name before it, and no other does;
 //! - the rewritten request head is itself a complete request to `httparse`,
 //!   in origin form, with exactly one `host` header naming the target, a
 //!   `connection` header of `close` or `upgrade`, and none of the hop-by-hop
@@ -24,6 +25,7 @@
 use bookclerk_workerd::egress_relay::{
     parse_request_head, parse_response_head, RelayRequest, Scheme,
 };
+use bookclerk_workerd::egress_starttls::STARTTLS_HOST_SUFFIX;
 
 /// Headers the relay never forwards from workerd.
 const STRIPPED: [&str; 6] = [
@@ -71,6 +73,15 @@ fn check_request(head: &[u8]) {
             assert_ne!(target.port, 0);
             assert_eq!(target.host, target.host.to_ascii_lowercase());
             assert!(path.eq_ignore_ascii_case(&target.authority()));
+            assert!(!target.host.ends_with(STARTTLS_HOST_SUFFIX));
+        }
+        RelayRequest::FramedTunnel(target) => {
+            assert_eq!(method, "CONNECT");
+            assert!(!target.host.is_empty() && !target.host.ends_with('.'));
+            assert_ne!(target.port, 0);
+            assert_eq!(target.host, target.host.to_ascii_lowercase());
+            let dialed = format!("{}{STARTTLS_HOST_SUFFIX}:{}", target.host, target.port);
+            assert!(path.eq_ignore_ascii_case(&dialed), "{path} vs {dialed}");
         }
         RelayRequest::Forward {
             scheme,

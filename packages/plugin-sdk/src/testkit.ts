@@ -72,6 +72,13 @@ export {
   type TestWebhooks,
   type TestWebhooksOptions,
 } from "./testkit-bindings.js";
+export {
+  createTestConnect,
+  type TestConnect,
+  type TestConnectOptions,
+  type TestDial,
+  type TestTcpConnection,
+} from "./testkit-tcp.js";
 
 /** The capability profiles the kit enforces, in the order conformance runs report them. */
 export const TEST_DATABASE_PROFILES = ["first-party", "d1", "minimum"] as const;

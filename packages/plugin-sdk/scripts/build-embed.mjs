@@ -8,7 +8,7 @@
  * so it must be one self-contained ES module: the author runtime
  * (`plugin.ts`), the generated Cap'n Proto codecs (`generated-wire.ts`) the
  * adapter decodes `/invoke` bodies with, and the typed SQL helpers. Only
- * `cloudflare:workers` stays external.
+ * `cloudflare:workers` and `cloudflare:sockets` stay external.
  *
  * The output is committed; CI rebuilds it and fails on drift. The Rust SDK
  * crate and the Python SDK ship byte-identical mirrors kept in step by
@@ -41,7 +41,7 @@ await build({
   target: "es2022",
   // `node:*` only appears behind runtime feature checks that never fire in
   // workerd (`crypto.subtle` is always present there).
-  external: ["cloudflare:workers", "node:*"],
+  external: ["cloudflare:workers", "cloudflare:sockets", "node:*"],
   legalComments: "none",
   // Keep the bundle readable and byte-stable across machines.
   minify: false,

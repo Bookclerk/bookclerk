@@ -41,6 +41,20 @@
  */
 
 import "./cloudflare-workers.d.ts";
+import { connect as workersConnect } from "cloudflare:sockets";
+import { createConnect, type TcpConnect } from "./tcp.js";
+
+/**
+ * Opens a TCP socket, as Workers `connect()` from `cloudflare:sockets`, with
+ * `startTls()` and `secureTransport: "on"` that work under Bookclerk: the
+ * launcher's egress relay does the TLS (see the `tcp` module). The host
+ * must be in the plugin's `[capabilities.network] tcp` grant.
+ *
+ * @param address - `"host:port"` or `{ hostname, port }`.
+ * @param options - `secureTransport` and `allowHalfOpen`, as on Workers.
+ * @returns The socket.
+ */
+export const connect: TcpConnect = createConnect(workersConnect);
 
 export {
   AdapterDatabaseSession,
@@ -399,3 +413,23 @@ export type {
   WriteChunksOptions,
   WriteProgress,
 } from "./db-execute.js";
+export {
+  MAX_TCP_FRAME_PAYLOAD,
+  MAX_TLS_FAILURE_REASON_BYTES,
+  RelayFrameDecoder,
+  STARTTLS_HOST_SUFFIX,
+  createConnect,
+  encodeDataFrames,
+  encodeStartTlsFrame,
+  parseTcpAddress,
+} from "./tcp.js";
+export type {
+  RelayFrame,
+  SecureTransport,
+  TcpConnect,
+  TcpDial,
+  TcpSocket,
+  TcpSocketAddress,
+  TcpSocketInfo,
+  TcpSocketOptions,
+} from "./tcp.js";

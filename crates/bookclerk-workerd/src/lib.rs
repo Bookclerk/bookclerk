@@ -23,6 +23,7 @@ pub mod config;
 pub mod control;
 pub mod egress;
 pub mod egress_relay;
+pub mod egress_starttls;
 pub mod ensure;
 pub mod grant;
 pub mod granted;

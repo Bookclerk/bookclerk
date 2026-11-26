@@ -84,6 +84,26 @@ export {
   MAX_CHANGES_CURSOR_BYTES,
 } from "./plugin.js";
 export { scanPage } from "./scan-page.js";
+export {
+  MAX_TCP_FRAME_PAYLOAD,
+  MAX_TLS_FAILURE_REASON_BYTES,
+  RelayFrameDecoder,
+  STARTTLS_HOST_SUFFIX,
+  createConnect,
+  encodeDataFrames,
+  encodeStartTlsFrame,
+  parseTcpAddress,
+} from "./tcp.js";
+export type {
+  RelayFrame,
+  SecureTransport,
+  TcpConnect,
+  TcpDial,
+  TcpSocket,
+  TcpSocketAddress,
+  TcpSocketInfo,
+  TcpSocketOptions,
+} from "./tcp.js";
 export { STREAM_COPY_COMMAND, streamCopy, streamCopyCommitToken } from "./stream-copy.js";
 export type { StreamCopySpec } from "./stream-copy.js";
 export {

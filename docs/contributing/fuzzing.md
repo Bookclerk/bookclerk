@@ -27,6 +27,7 @@ boundary extends it.
 | `workerd_control` | Lines on workerd's stdout, shared with plugin isolates, that report the bridge RPC port on Windows (`--control-fd`) | `bookclerk-workerd::control` |
 | `egress_policy` | The guest egress allowlist | `bookclerk-plugin-manifest::EgressPolicy` |
 | `egress_relay_head` | Request heads workerd sends the launcher's egress relay (plugin code) and response heads from the servers a plugin reached | `bookclerk-workerd::egress_relay` |
+| `egress_starttls_frames` | Frames a plugin sends the egress relay on a STARTTLS tunnel (plugin code) | `bookclerk-workerd::egress_starttls` |
 | `egress_bridge` | The workerd egress gate (`bridge/egress.js`) every workerd guest's `fetch()` and `connect()` goes through, run in an embedded JavaScript engine against `EgressPolicy` | `bookclerk-workerd` bridge |
 | `plugin_manifest` | `plugin.toml` parse, validation, derived egress and consent | `bookclerk-plugin-manifest` |
 | `setting_destination` | Operator-entered values of network settings: the one destination each grants | `bookclerk-plugin-manifest::derive_setting_destination` |
@@ -159,6 +160,14 @@ only that. The others check:
   and every other header intact. A final response head carries exactly one
   `connection: close`. The shared oracle is
   `fuzz/oracles/egress_relay_head.rs`, replayed from `bookclerk-workerd`.
+  A `CONNECT` to a host with the STARTTLS suffix becomes a framed tunnel to
+  the real host, and no plain tunnel keeps the suffix.
+- **`egress_starttls_frames`**: the input is fed to the frame decoder in
+  reads of varying size and must decode to the same frames and the same
+  error as a whole-buffer reference reading of the layout; every decoded
+  frame re-encodes to the bytes it came from. The oracle is
+  `fuzz/oracles/egress_starttls_frames.rs`, replayed from
+  `bookclerk-workerd`.
 - **`workerd_control`**: a port the parser accepts agrees with an
   independent `serde_json::Value` reading, every listen object that reading
   accepts is accepted once re-encoded canonically, and no structured log

@@ -217,12 +217,19 @@ Workerd egress is matched by the shared `EgressPolicy` and
   root list (`webpki-roots`), checked by the launcher's egress relay. The
   host's own trust store isn't consulted, so a guest sees the same roots on
   every platform.
-- **TCP.** `import { connect } from "cloudflare:sockets"` is forwarded to
-  the egress worker's inbound CONNECT handler
-  (`compatibilityFlags = ["experimental"]` plus
+- **TCP.** `connect()` reaches the egress worker's inbound CONNECT
+  handler (`compatibilityFlags = ["experimental"]` plus
   `workerd serve --experimental`; workerd#6059). Fetch grants never imply
-  TCP. Prefer `secureTransport: "starttls"` then `socket.startTls()`:
-  incoming CONNECT with TLS isn't supported by the pinned workerd.
+  TCP. Use the SDK's `connect()` (`@bookclerk/plugin-sdk/workerd`, or
+  `bookclerk_plugin_sdk.tcp` in Python) rather than `cloudflare:sockets`
+  directly: the pinned workerd can't start TLS on a relayed socket, so for
+  `secureTransport: "starttls"` and `"on"` the SDK opens a framed tunnel
+  and the launcher's egress relay starts TLS when the plugin calls
+  `startTls()`. The relay checks the certificate for the dialed name
+  against the same Mozilla roots as HTTPS, and a certificate that doesn't
+  verify rejects `startTls()` with the reason. TLS targets must be a host
+  name or IPv4 address (see
+  [The egress relay](../internals/workerd-bridge.md#the-egress-relay)).
 - **Redirect headers.** Cross-origin redirects drop `Authorization`
   (Fetch CORS non-wildcard request-header), plus `Cookie`, `Cookie2` and
   `Proxy-Authorization` as defense in depth.

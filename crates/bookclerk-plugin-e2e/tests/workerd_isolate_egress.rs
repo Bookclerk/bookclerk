@@ -8,6 +8,10 @@
 //!
 //! - granted destinations work (an HTTP fetch and a raw TCP socket), and an
 //!   ungranted port is refused for either;
+//! - the SDK's `connect()` reaches a server-first protocol on a framed
+//!   tunnel and `startTls()` makes the launcher's relay start a TLS handshake
+//!   with the server, whose self-signed certificate it then refuses (the
+//!   relay trusts Mozilla's roots only);
 //! - on Linux, neither process holds an IP socket and both run under the
 //!   seccomp filter that refuses to create one.
 
@@ -32,16 +36,42 @@ const PLUGIN_ID: &str = "isolate_egress_probe";
 
 /// The isolate: `fetch <url>` and `tcp <port>`, each answering one line.
 const MODULE: &str = r#"
-import { BookclerkEntrypoint, CliEntrypoint, cliArgs, jsonPayload } from "@bookclerk/plugin-sdk/workerd";
+import { BookclerkEntrypoint, CliEntrypoint, cliArgs, connect as sdkConnect, jsonPayload } from "@bookclerk/plugin-sdk/workerd";
 import { connect } from "cloudflare:sockets";
 
 const CLI = { commands: [
   { name: "fetch", about: "GET a URL", args: [{ name: "url", long: "url", kind: "string", required: true, positional: false }] },
   { name: "tcp", about: "echo over a socket", args: [{ name: "port", long: "port", kind: "string", required: true, positional: false }] },
+  { name: "starttls", about: "upgrade a socket", args: [{ name: "port", long: "port", kind: "string", required: true, positional: false }] },
 ] };
+
+async function line(reader) {
+  let out = "";
+  while (!out.endsWith("\n")) {
+    const { value, done } = await reader.read();
+    if (done) throw new Error(`closed after ${JSON.stringify(out)}`);
+    out += new TextDecoder().decode(value);
+  }
+  return out;
+}
+
+async function starttls(port) {
+  const plain = sdkConnect({ hostname: "127.0.0.1", port }, { secureTransport: "starttls" });
+  const reader = plain.readable.getReader();
+  const writer = plain.writable.getWriter();
+  const greeting = await line(reader);
+  await writer.write(new TextEncoder().encode("STARTTLS\r\n"));
+  const go = await line(reader);
+  reader.releaseLock();
+  writer.releaseLock();
+  const secure = plain.startTls();
+  await secure.opened;
+  return `${greeting}${go}secure`;
+}
 
 async function run(params) {
   const args = cliArgs(params);
+  if (params.command === "starttls") return starttls(Number(args.port));
   if (params.command === "fetch") {
     const res = await fetch(args.url);
     const refusal = res.headers.get("x-bookclerk-error");
@@ -74,8 +104,8 @@ export default class Probe extends BookclerkEntrypoint {
 "#;
 
 /// The probe's `plugin.toml`: fetch to loopback on `http_port` and a TCP
-/// grant for `tcp_port`.
-fn manifest(http_port: u16, tcp_port: u16) -> String {
+/// grant for `tcp_port` and `tls_port`.
+fn manifest(http_port: u16, tcp_port: u16, tls_port: u16) -> String {
     format!(
         "api_version = 3\n\
          id = \"{PLUGIN_ID}\"\n\
@@ -97,7 +127,7 @@ fn manifest(http_port: u16, tcp_port: u16) -> String {
          [capabilities.network]\n\
          mode = \"outbound\"\n\
          domains = [\"127.0.0.1:{http_port}\"]\n\
-         tcp = [{{ host = \"127.0.0.1\", ports = [{tcp_port}] }}]\n\
+         tcp = [{{ host = \"127.0.0.1\", ports = [{tcp_port}, {tls_port}] }}]\n\
          address_cidrs = [\"127.0.0.1/32\"]\n"
     )
 }
@@ -109,13 +139,17 @@ struct Install {
 }
 
 impl Install {
-    fn new(http_port: u16, tcp_port: u16) -> Self {
+    fn new(http_port: u16, tcp_port: u16, tls_port: u16) -> Self {
         let files = tempfile::tempdir().expect("tempdir");
         let paths = Paths::from_files_dir(files.path().to_path_buf());
         let root = paths.files_dir.join("plugins").join(PLUGIN_ID);
         std::fs::create_dir_all(root.join("modules")).expect("install dir");
         std::fs::write(root.join("modules/index.js"), MODULE).expect("module");
-        std::fs::write(root.join("plugin.toml"), manifest(http_port, tcp_port)).expect("manifest");
+        std::fs::write(
+            root.join("plugin.toml"),
+            manifest(http_port, tcp_port, tls_port),
+        )
+        .expect("manifest");
         let mut config = Config {
             paths: Some(paths),
             ..Default::default()
@@ -198,7 +232,29 @@ async fn a_jailed_isolate_reaches_granted_hosts_only_through_the_host() {
         }
     });
 
-    let install = Install::new(http_port, echo_port);
+    // A server-first protocol that upgrades: greets, answers STARTTLS, then
+    // reports the first byte of the client's next flight (0x16 is a TLS
+    // handshake record, the relay's ClientHello).
+    let tls = TcpListener::bind("127.0.0.1:0").await.expect("tls bind");
+    let tls_port = tls.local_addr().expect("addr").port();
+    let (hello_tx, hello_rx) = tokio::sync::oneshot::channel::<u8>();
+    tokio::spawn(async move {
+        let Ok((mut stream, _)) = tls.accept().await else {
+            return;
+        };
+        let _ = stream.write_all(b"220 probe ready\r\n").await;
+        let mut line = [0_u8; 10];
+        if stream.read_exact(&mut line).await.is_err() || &line != b"STARTTLS\r\n" {
+            return;
+        }
+        let _ = stream.write_all(b"220 go ahead\r\n").await;
+        let mut first = [0_u8; 1];
+        if stream.read_exact(&mut first).await.is_ok() {
+            let _ = hello_tx.send(first[0]);
+        }
+    });
+
+    let install = Install::new(http_port, echo_port, tls_port);
     let plugin = find(&install.config);
     let session = tokio::time::timeout(
         ng_harness::SPAWN_TIMEOUT,
@@ -226,6 +282,20 @@ async fn a_jailed_isolate_reaches_granted_hosts_only_through_the_host() {
 
     let (code, text) = invoke(&session, "tcp", "port", &echo_port.to_string()).await;
     assert_eq!((code, text.as_str()), (0, "ping"), "granted socket");
+
+    // STARTTLS through the SDK: the plain exchange works, then the relay
+    // starts TLS with the server and refuses its certificate.
+    let (code, text) = invoke(&session, "starttls", "port", &tls_port.to_string()).await;
+    assert_ne!(code, 0, "a self-signed server must not verify: {text}");
+    assert!(text.contains("TLS handshake failed"), "{text}");
+    let first = tokio::time::timeout(Duration::from_secs(10), hello_rx)
+        .await
+        .expect("the relay started a handshake")
+        .expect("server saw the client's flight");
+    assert_eq!(
+        first, 0x16,
+        "the relay's first upgraded byte is a TLS handshake record"
+    );
 
     // A port the grant does not name: the host refuses the tunnel.
     let refused = TcpListener::bind("127.0.0.1:0")
